@@ -1,0 +1,71 @@
+# Seed-timing model: SIR seeded by a smooth importation pulse (mechanism B of
+# the 2026-05-20 seed-timing-inference proposal).
+#
+# The epidemic is seeded not by a nonzero initial I, but by an external
+# importation inflow whose rate is a logistic soft-onset switching on near the
+# seed time `tau`:
+#
+#     seed : --> I  @  lambda / (1 + exp(-(t - tau)/w))
+#
+#   tau    — seed onset time (the estimand)
+#   lambda — importation strength (individuals/day) at full switch-on
+#   w      — pulse width: the timescale over which the influx ramps from ~0 to
+#            ~lambda. Finite w makes the rate smooth in tau, so the likelihood
+#            is differentiable in tau (a discrete seed event would be a step).
+#
+# Why this form:
+#   * It is an ordinary smooth rate expression, so tau is an estimable global
+#     parameter (gradients flow; IF2 / PMMH / PGAS handle it without special
+#     casing) — unlike a discrete `add(I,1) at [tau]` event.
+#   * The inflow has no infector, so the lineage layer mints each imported
+#     individual with parent = Import (it is NOT a #[lineage] transmission).
+#     Because I is the destination of the #[lineage] infection it is in the
+#     identity-tracked subgraph, so the seed inflow is recorded and Import-
+#     rooted automatically — the genealogy's deepest structure encodes tau.
+#   * Bare `t` in the rate exercises the Gillespie time-dependent re-evaluation
+#     path (see incident 2026-05-20-gillespie-bare-time-frozen-propensity).
+
+time_unit = 'days
+
+compartments { S, I, R }
+
+parameters {
+  beta   : rate        in [0.001, 5.0]
+  gamma  : rate        in [0.01, 1.0]
+  tau    : real        in [0.0, 120.0]
+  lambda : positive    in [0.0, 100.0]
+  w      : positive    in [0.1, 20.0]
+  N0     : count       in [100, 1000000]
+  rho    : probability in [0.01, 1.0]
+  k      : positive    in [0.1, 1000.0]
+}
+
+let N = S + I + R
+
+transitions {
+  #[lineage]
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+  seed      :     --> I  @ lambda / (1 + exp(-(t - tau) / w))
+}
+
+observations {
+  # Daily reported cases ~ NegBin around a reporting fraction of incidence.
+  # Daily (not weekly) so the growth-phase onset — which carries tau — is
+  # well sampled.
+  cases : {
+    projected  = incidence(infection)
+    every      = 1 'days
+    likelihood = neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+init {
+  S = N0
+  I = 0
+}
+
+simulate {
+  from = 0 'days
+  to   = 120 'days
+}

@@ -1,0 +1,650 @@
+{
+  "ir_version": "0.5",
+  "validated_by": "ocaml-compiler-v0.5",
+  "model": {
+    "name": "seed_timing",
+    "version": "0.3",
+    "time_unit": "days",
+    "description": null,
+    "compartments": [
+      { "name": "S", "kind": "integer" },
+      { "name": "I", "kind": "integer" },
+      { "name": "R", "kind": "integer" }
+    ],
+    "transitions": [
+      {
+        "name": "infection",
+        "stoichiometry": [ [ "S", -1 ], [ "I", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "div",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "param": "beta" },
+                    "right": { "pop": "S" }
+                  }
+                },
+                "right": { "pop": "I" }
+              }
+            },
+            "right": { "pop_sum": [ "S", "I", "R" ] }
+          }
+        },
+        "metadata": {
+          "origin_kind": "transmission",
+          "source_compartment": "S",
+          "dest_compartment": "I"
+        },
+        "rate_grad": {
+          "beta": {
+            "bin_op": {
+              "op": "div",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "pop": "S" },
+                      "right": { "pop": "I" }
+                    }
+                  },
+                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "pop_sum": [ "S", "I", "R" ] },
+                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                }
+              }
+            }
+          }
+        },
+        "lineage": {
+          "is_lineage_event": true,
+          "parent_pool_weights": [
+            [
+              "I",
+              {
+                "bin_op": {
+                  "op": "div",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S" }
+                    }
+                  },
+                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                }
+              }
+            ]
+          ]
+        }
+      },
+      {
+        "name": "recovery",
+        "stoichiometry": [ [ "I", -1 ], [ "R", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": { "param": "gamma" },
+            "right": { "pop": "I" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "intrinsic",
+          "source_compartment": "I",
+          "dest_compartment": "R"
+        },
+        "rate_grad": { "gamma": { "pop": "I" } }
+      },
+      {
+        "name": "seed",
+        "stoichiometry": [ [ "I", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "div",
+            "left": { "param": "lambda" },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": { "const": 1.0 },
+                "right": {
+                  "un_op": {
+                    "op": "exp",
+                    "arg": {
+                      "bin_op": {
+                        "op": "div",
+                        "left": {
+                          "un_op": {
+                            "op": "neg",
+                            "arg": {
+                              "bin_op": {
+                                "op": "sub",
+                                "left": { "time": null },
+                                "right": { "param": "tau" }
+                              }
+                            }
+                          }
+                        },
+                        "right": { "param": "w" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": {
+          "origin_kind": "inflow",
+          "source_compartment": null,
+          "dest_compartment": "I"
+        },
+        "rate_grad": {
+          "tau": {
+            "bin_op": {
+              "op": "div",
+              "left": {
+                "un_op": {
+                  "op": "neg",
+                  "arg": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "lambda" },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "un_op": {
+                              "op": "exp",
+                              "arg": {
+                                "bin_op": {
+                                  "op": "div",
+                                  "left": {
+                                    "un_op": {
+                                      "op": "neg",
+                                      "arg": {
+                                        "bin_op": {
+                                          "op": "sub",
+                                          "left": { "time": null },
+                                          "right": { "param": "tau" }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "right": { "param": "w" }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": { "param": "w" },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "param": "w" },
+                                  "right": { "param": "w" }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "add",
+                      "left": { "const": 1.0 },
+                      "right": {
+                        "un_op": {
+                          "op": "exp",
+                          "arg": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "bin_op": {
+                                      "op": "sub",
+                                      "left": { "time": null },
+                                      "right": { "param": "tau" }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": { "param": "w" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "right": {
+                    "bin_op": {
+                      "op": "add",
+                      "left": { "const": 1.0 },
+                      "right": {
+                        "un_op": {
+                          "op": "exp",
+                          "arg": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "bin_op": {
+                                      "op": "sub",
+                                      "left": { "time": null },
+                                      "right": { "param": "tau" }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": { "param": "w" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "lambda": {
+            "bin_op": {
+              "op": "div",
+              "left": {
+                "bin_op": {
+                  "op": "add",
+                  "left": { "const": 1.0 },
+                  "right": {
+                    "un_op": {
+                      "op": "exp",
+                      "arg": {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "un_op": {
+                              "op": "neg",
+                              "arg": {
+                                "bin_op": {
+                                  "op": "sub",
+                                  "left": { "time": null },
+                                  "right": { "param": "tau" }
+                                }
+                              }
+                            }
+                          },
+                          "right": { "param": "w" }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "add",
+                      "left": { "const": 1.0 },
+                      "right": {
+                        "un_op": {
+                          "op": "exp",
+                          "arg": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "bin_op": {
+                                      "op": "sub",
+                                      "left": { "time": null },
+                                      "right": { "param": "tau" }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": { "param": "w" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "right": {
+                    "bin_op": {
+                      "op": "add",
+                      "left": { "const": 1.0 },
+                      "right": {
+                        "un_op": {
+                          "op": "exp",
+                          "arg": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "bin_op": {
+                                      "op": "sub",
+                                      "left": { "time": null },
+                                      "right": { "param": "tau" }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": { "param": "w" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "w": {
+            "bin_op": {
+              "op": "div",
+              "left": {
+                "un_op": {
+                  "op": "neg",
+                  "arg": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "lambda" },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "un_op": {
+                              "op": "exp",
+                              "arg": {
+                                "bin_op": {
+                                  "op": "div",
+                                  "left": {
+                                    "un_op": {
+                                      "op": "neg",
+                                      "arg": {
+                                        "bin_op": {
+                                          "op": "sub",
+                                          "left": { "time": null },
+                                          "right": { "param": "tau" }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "right": { "param": "w" }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "un_op": {
+                                      "op": "neg",
+                                      "arg": {
+                                        "bin_op": {
+                                          "op": "sub",
+                                          "left": { "time": null },
+                                          "right": { "param": "tau" }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "param": "w" },
+                                  "right": { "param": "w" }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "add",
+                      "left": { "const": 1.0 },
+                      "right": {
+                        "un_op": {
+                          "op": "exp",
+                          "arg": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "bin_op": {
+                                      "op": "sub",
+                                      "left": { "time": null },
+                                      "right": { "param": "tau" }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": { "param": "w" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "right": {
+                    "bin_op": {
+                      "op": "add",
+                      "left": { "const": 1.0 },
+                      "right": {
+                        "un_op": {
+                          "op": "exp",
+                          "arg": {
+                            "bin_op": {
+                              "op": "div",
+                              "left": {
+                                "un_op": {
+                                  "op": "neg",
+                                  "arg": {
+                                    "bin_op": {
+                                      "op": "sub",
+                                      "left": { "time": null },
+                                      "right": { "param": "tau" }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": { "param": "w" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
+    "ode_equations": [],
+    "time_functions": [],
+    "tables": [],
+    "interventions": [],
+    "observations": [
+      {
+        "name": "cases",
+        "data_stream": "cases",
+        "schedule": {
+          "regular": { "start": 0.0, "step": 1.0, "end": 120.0 }
+        },
+        "projection": { "cumulative_flow": "infection" },
+        "likelihood": {
+          "neg_binomial": {
+            "mean": {
+              "bin_op": {
+                "op": "mul",
+                "left": { "param": "rho" },
+                "right": { "projected": null }
+              }
+            },
+            "dispersion": { "param": "k" }
+          }
+        }
+      }
+    ],
+    "parameters": [
+      {
+        "name": "beta",
+        "value": null,
+        "bounds": [ 0.001, 5.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "rate",
+        "param_dim": null
+      },
+      {
+        "name": "gamma",
+        "value": null,
+        "bounds": [ 0.01, 1.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "rate",
+        "param_dim": null
+      },
+      {
+        "name": "tau",
+        "value": null,
+        "bounds": [ 0.0, 120.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "real",
+        "param_dim": null
+      },
+      {
+        "name": "lambda",
+        "value": null,
+        "bounds": [ 0.0, 100.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "positive",
+        "param_dim": null
+      },
+      {
+        "name": "w",
+        "value": null,
+        "bounds": [ 0.1, 20.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "positive",
+        "param_dim": null
+      },
+      {
+        "name": "N0",
+        "value": null,
+        "bounds": [ 100.0, 1000000.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "count",
+        "param_dim": null
+      },
+      {
+        "name": "rho",
+        "value": null,
+        "bounds": [ 0.01, 1.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "probability",
+        "param_dim": null
+      },
+      {
+        "name": "k",
+        "value": null,
+        "bounds": [ 0.1, 1000.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "positive",
+        "param_dim": null
+      }
+    ],
+    "initial_conditions": {
+      "parameterized": { "S": { "param": "N0" }, "I": { "const": 0.0 } }
+    },
+    "output": {
+      "times": { "regular": { "start": 0.0, "step": 1.0, "end": 120.0 } },
+      "format": "tsv",
+      "trajectory": true,
+      "observations": true
+    },
+    "simulation": {
+      "t_start": 0.0,
+      "t_end": 120.0,
+      "time_semantics": "continuous",
+      "dt": null,
+      "rng_seed": null
+    },
+    "scenarios": [],
+    "model_structure": {
+      "dimensions": [],
+      "compartment_dims": { "S": [], "I": [], "R": [] },
+      "base_compartments": [ "S", "I", "R" ],
+      "transmission_transitions": [ "infection" ],
+      "infectious_compartments": [ "I" ]
+    },
+    "identity_tracked_compartments": [ "I", "R" ]
+  }
+}
