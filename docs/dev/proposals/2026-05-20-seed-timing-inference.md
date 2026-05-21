@@ -643,10 +643,27 @@ bounds resolution — not for schedule times.)*
   `reserved_time_names`), so bare `t` in a rate resolves to simulation time.
 - Source-less inflows already parse and run (`sir_demography.camdl`:
   `birth : --> S @ mu * N`).
-  Therefore the seed transition `seed : --> I @ lambda / (1 + exp(-(t - tau)/w))`
-  compiles and simulates with `tau`, `lambda`, `w` as ordinary parameters. The
-  one modeling detail to settle against the dimensional checker is `lambda`'s
-  dimension (population-level inflow rate, individuals/time).
+  The seed transition `seed : --> I @ lambda / (1 + exp(-(t - tau)/w))` compiles
+  and simulates with `tau`, `lambda`, `w` as ordinary parameters.
+
+  **Implemented and verified.** The fixture
+  `rust/crates/sim/tests/fixtures/seed_timing.{camdl,ir.json}` and the CLI
+  end-to-end tests `rust/crates/cli/tests/seed_timing_e2e.rs` exercise this:
+  the seed inflow is Import-rooted (V3); a particle-filter likelihood profile
+  over τ is peaked at the true seed time (E1 identifiability); and `lambda`
+  compiles as a `positive` parameter (the dimensional checker emits only a
+  benign `I300` info on `w`'s dimension — no annotation required).
+
+  **One bug surfaced and was fixed during implementation.** A rate using bare
+  `t` was *not* classified as time-dependent (only named `TimeFunc` forcings
+  were), so the **Gillespie** backend froze the seed propensity at its `t=0`
+  value — silently producing wrong dynamics (a late seed produced zero inflow
+  and no epidemic). The chain-binomial / tau-leap backends were unaffected
+  (they re-evaluate every substep). Fixed by extending the classifier to
+  `Expr::Time`; see
+  `docs/dev/incidents/2026-05-20-gillespie-bare-time-frozen-propensity.md`.
+  So mechanism B worked on the fixed-step backends with no change; Gillespie
+  needed this one sim-core fix (now landed).
 
 **(V3) The lineage Import contract is already met.**
 `rust/crates/sim/src/lineage/event_log.rs` (≈line 197) records a transition when
@@ -670,8 +687,16 @@ inference math and must be a conservative standalone slice.
 
 **Net consequence for sequencing.** The headline build (mechanism B, E1) needs
 **no language primitive, no lineage change, and no inference-stack change** — it
-is a fixture + an evaluation harness + ridge-reporting output. The `ivp`
-refactor (§5) and the deconvolution baseline (§6.2) are separable follow-ons.
+is a fixture + an evaluation harness + ridge-reporting output (plus the one
+Gillespie classifier fix noted in V2, now landed). The `ivp` refactor (§5) and
+the deconvolution baseline (§6.2) are separable follow-ons.
+
+**Status (2026-05-20).** Mechanism B is implemented and verified end-to-end
+(fixture, Import-rooting, τ identifiability profile). Still to build, in the §6.3
+order: (2) ridge reporting (§7) — the 2D `(τ, N_seed)` posterior +
+sloppy-eigenvector + prior-vs-data decomposition; (3) the `ivp` refactor (§5);
+(4) the deconvolution baseline (§6.2). The genealogical likelihood on τ awaits
+the lineage Tree-likelihood path.
 
 ---
 
