@@ -16,13 +16,18 @@
 //! full [`EventLog`] from the file alone, with no model.
 
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use crate::error::SimError;
 
-use super::event_log::{EventLog, EventRecord};
+use super::event_log::{EventLog, EventRecord, RouteInfo};
 use super::writer::LineListFormat;
+use super::{CompartmentId, DemeId};
+
+/// Event-log metadata: the t=0 tracked pools and the per-transition route table.
+/// Read up front (Parquet footer / TSV header) so events can then be streamed.
+type EventLogMeta = (Vec<(DemeId, CompartmentId, i64)>, Vec<RouteInfo>);
 
 /// On-disk format tag (TSV reuses [`LineListFormat`]).
 const TSV_MAGIC: &str = "# camdl-event-log v1";
@@ -45,6 +50,62 @@ fn parse_weights_cell(s: &str) -> Result<Option<Vec<f64>>, SimError> {
 
 const EVENT_COLUMNS: &[&str] =
     &["time", "transition", "multiplicity", "batched", "step", "lineage_weights"];
+
+/// Parse one TSV data row's tab-split fields into an [`EventRecord`].
+/// `row_for_error` is the 1-based file line number, for diagnostics only.
+fn parse_event_fields(f: &[&str], row_for_error: usize) -> Result<EventRecord, SimError> {
+    if f.len() != EVENT_COLUMNS.len() {
+        return Err(SimError::Validation(format!(
+            "event log row {}: expected {} columns, got {}",
+            row_for_error,
+            EVENT_COLUMNS.len(),
+            f.len()
+        )));
+    }
+    let time: f64 = f[0]
+        .parse()
+        .map_err(|e| SimError::Validation(format!("event log time '{}': {}", f[0], e)))?;
+    let transition: usize = f[1]
+        .parse()
+        .map_err(|e| SimError::Validation(format!("event log transition '{}': {}", f[1], e)))?;
+    let multiplicity: u64 = f[2]
+        .parse()
+        .map_err(|e| SimError::Validation(format!("event log multiplicity '{}': {}", f[2], e)))?;
+    let batched: bool = f[3]
+        .parse()
+        .map_err(|e| SimError::Validation(format!("event log batched '{}': {}", f[3], e)))?;
+    let step: u64 = f[4]
+        .parse()
+        .map_err(|e| SimError::Validation(format!("event log step '{}': {}", f[4], e)))?;
+    let lineage_weights = parse_weights_cell(f[5])?;
+    Ok(EventRecord { time, transition, multiplicity, batched, step, lineage_weights })
+}
+
+/// Parse one TSV metadata header line (`# initial_pools\t…` / `# transitions\t…`)
+/// into the metadata accumulators.
+fn parse_tsv_meta_line(
+    line: &str,
+    initial_pools: &mut Option<Vec<(DemeId, CompartmentId, i64)>>,
+    transitions: &mut Option<Vec<RouteInfo>>,
+) -> Result<(), SimError> {
+    if let Some(rest) = line.strip_prefix("# initial_pools\t") {
+        *initial_pools = Some(
+            serde_json::from_str(rest)
+                .map_err(|e| SimError::Validation(format!("event log initial_pools: {}", e)))?,
+        );
+    } else if let Some(rest) = line.strip_prefix("# transitions\t") {
+        *transitions = Some(
+            serde_json::from_str(rest)
+                .map_err(|e| SimError::Validation(format!("event log transitions: {}", e)))?,
+        );
+    } else {
+        return Err(SimError::Validation(format!(
+            "event log: unexpected metadata line '{}'",
+            line
+        )));
+    }
+    Ok(())
+}
 
 /// Write the event log as TSV.
 pub fn write_tsv(log: &EventLog, path: &Path) -> Result<(), SimError> {
@@ -103,22 +164,7 @@ pub fn read_tsv(path: &Path) -> Result<EventLog, SimError> {
         let line = lines
             .next()
             .ok_or_else(|| SimError::Validation("event log: truncated metadata".to_string()))?;
-        if let Some(rest) = line.strip_prefix("# initial_pools\t") {
-            initial_pools = Some(
-                serde_json::from_str(rest)
-                    .map_err(|e| SimError::Validation(format!("event log initial_pools: {}", e)))?,
-            );
-        } else if let Some(rest) = line.strip_prefix("# transitions\t") {
-            transitions = Some(
-                serde_json::from_str(rest)
-                    .map_err(|e| SimError::Validation(format!("event log transitions: {}", e)))?,
-            );
-        } else {
-            return Err(SimError::Validation(format!(
-                "event log: unexpected metadata line '{}'",
-                line
-            )));
-        }
+        parse_tsv_meta_line(line, &mut initial_pools, &mut transitions)?;
     }
     let header = lines
         .next()
@@ -137,31 +183,7 @@ pub fn read_tsv(path: &Path) -> Result<EventLog, SimError> {
             continue;
         }
         let f: Vec<&str> = line.split('\t').collect();
-        if f.len() != EVENT_COLUMNS.len() {
-            return Err(SimError::Validation(format!(
-                "event log row {}: expected {} columns, got {}",
-                lineno + 5,
-                EVENT_COLUMNS.len(),
-                f.len()
-            )));
-        }
-        let time: f64 = f[0]
-            .parse()
-            .map_err(|e| SimError::Validation(format!("event log time '{}': {}", f[0], e)))?;
-        let transition: usize = f[1]
-            .parse()
-            .map_err(|e| SimError::Validation(format!("event log transition '{}': {}", f[1], e)))?;
-        let multiplicity: u64 = f[2]
-            .parse()
-            .map_err(|e| SimError::Validation(format!("event log multiplicity '{}': {}", f[2], e)))?;
-        let batched: bool = f[3]
-            .parse()
-            .map_err(|e| SimError::Validation(format!("event log batched '{}': {}", f[3], e)))?;
-        let step: u64 = f[4]
-            .parse()
-            .map_err(|e| SimError::Validation(format!("event log step '{}': {}", f[4], e)))?;
-        let lineage_weights = parse_weights_cell(f[5])?;
-        events.push(EventRecord { time, transition, multiplicity, batched, step, lineage_weights });
+        events.push(parse_event_fields(&f, lineno + 5)?);
     }
 
     Ok(EventLog {
@@ -171,6 +193,70 @@ pub fn read_tsv(path: &Path) -> Result<EventLog, SimError> {
             .ok_or_else(|| SimError::Validation("event log: missing transitions".to_string()))?,
         events,
     })
+}
+
+/// TSV header reader: magic + the two metadata lines, stopping before the rows.
+/// Cheap regardless of file size (reads ~4 lines).
+fn read_metadata_tsv(path: &Path) -> Result<EventLogMeta, SimError> {
+    let file = File::open(path)
+        .map_err(|e| SimError::Validation(format!("read event log {}: {}", path.display(), e)))?;
+    let mut lines = BufReader::new(file).lines();
+    let magic = lines
+        .next()
+        .ok_or_else(|| SimError::Validation("empty event log".to_string()))?
+        .map_err(|e| SimError::Validation(format!("event log read: {}", e)))?;
+    if magic != TSV_MAGIC {
+        return Err(SimError::Validation(format!(
+            "event log: bad magic line '{}', expected '{}'",
+            magic, TSV_MAGIC
+        )));
+    }
+    let mut initial_pools = None;
+    let mut transitions = None;
+    for _ in 0..2 {
+        let line = lines
+            .next()
+            .ok_or_else(|| SimError::Validation("event log: truncated metadata".to_string()))?
+            .map_err(|e| SimError::Validation(format!("event log read: {}", e)))?;
+        parse_tsv_meta_line(&line, &mut initial_pools, &mut transitions)?;
+    }
+    Ok((
+        initial_pools
+            .ok_or_else(|| SimError::Validation("event log: missing initial_pools".to_string()))?,
+        transitions
+            .ok_or_else(|| SimError::Validation("event log: missing transitions".to_string()))?,
+    ))
+}
+
+/// Stream a TSV event log's rows, calling `f` per [`EventRecord`] in file order.
+/// Skips the 4 header lines (magic, two metadata, column header); the metadata
+/// is read separately by [`read_metadata_tsv`]. Bounded memory: one line at a
+/// time.
+fn for_each_event_tsv(
+    path: &Path,
+    mut f: impl FnMut(EventRecord) -> Result<(), SimError>,
+) -> Result<(), SimError> {
+    let file = File::open(path)
+        .map_err(|e| SimError::Validation(format!("read event log {}: {}", path.display(), e)))?;
+    let mut lineno = 0usize;
+    let mut data_started = false;
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| SimError::Validation(format!("event log read: {}", e)))?;
+        lineno += 1;
+        if !data_started {
+            // 4 header lines: magic, # initial_pools, # transitions, columns.
+            if lineno >= 4 {
+                data_started = true;
+            }
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        f(parse_event_fields(&fields, lineno)?)?;
+    }
+    Ok(())
 }
 
 /// Write the event log in the requested format.
@@ -195,22 +281,57 @@ pub fn write(log: &EventLog, path: &Path, format: LineListFormat) -> Result<(), 
     }
 }
 
-/// Read an event log, auto-detecting TSV vs Parquet by extension.
-pub fn read(path: &Path) -> Result<EventLog, SimError> {
-    let ext = path
-        .extension()
+fn ext_of(path: &Path) -> String {
+    path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "tsv" => read_tsv(path),
+        .to_ascii_lowercase()
+}
+
+/// Read an event log's metadata (t=0 pools + route table) without its rows,
+/// auto-detecting format by extension. Cheap: reads the Parquet footer / the
+/// TSV header only.
+pub fn read_metadata(path: &Path) -> Result<EventLogMeta, SimError> {
+    match ext_of(path).as_str() {
+        "tsv" => read_metadata_tsv(path),
         "parquet" => {
             #[cfg(feature = "lineage-parquet")]
             {
-                parquet_impl::read_parquet(path)
+                parquet_impl::read_metadata_parquet(path)
             }
             #[cfg(not(feature = "lineage-parquet"))]
             {
+                Err(SimError::Validation(
+                    "reading Parquet event logs requires the 'lineage-parquet' cargo feature."
+                        .to_string(),
+                ))
+            }
+        }
+        other => Err(SimError::Validation(format!(
+            "cannot infer event-log format from extension '.{}'; use a .tsv or .parquet file",
+            other
+        ))),
+    }
+}
+
+/// Stream an event log's rows, calling `f` per [`EventRecord`] in recorded
+/// (file) order, auto-detecting format by extension. Bounded memory — the whole
+/// log is never materialised (Parquet row group by row group, TSV line by
+/// line). Pair with [`read_metadata`] to recover the route table first.
+pub fn for_each_event(
+    path: &Path,
+    f: impl FnMut(EventRecord) -> Result<(), SimError>,
+) -> Result<(), SimError> {
+    match ext_of(path).as_str() {
+        "tsv" => for_each_event_tsv(path, f),
+        "parquet" => {
+            #[cfg(feature = "lineage-parquet")]
+            {
+                parquet_impl::for_each_event_parquet(path, f)
+            }
+            #[cfg(not(feature = "lineage-parquet"))]
+            {
+                let _ = f;
                 Err(SimError::Validation(
                     "reading Parquet event logs requires the 'lineage-parquet' cargo feature."
                         .to_string(),
@@ -316,20 +437,14 @@ mod parquet_impl {
         Ok(())
     }
 
-    pub fn read_parquet(path: &Path) -> Result<EventLog, SimError> {
-        let file = File::open(path)
-            .map_err(|e| SimError::Validation(format!("open event log {}: {}", path.display(), e)))?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| SimError::Validation(format!("event log parquet reader: {}", e)))?;
-
-        // Pull the route table + initial pools from key-value metadata.
+    /// Extract the route table + t=0 pools from the file's key-value metadata
+    /// (the Parquet footer).
+    fn read_kv_metadata(
+        builder: &ParquetRecordBatchReaderBuilder<File>,
+    ) -> Result<EventLogMeta, SimError> {
         let kv = builder.metadata().file_metadata().key_value_metadata();
         let find = |key: &str| -> Option<String> {
-            kv.and_then(|m| {
-                m.iter()
-                    .find(|x| x.key == key)
-                    .and_then(|x| x.value.clone())
-            })
+            kv.and_then(|m| m.iter().find(|x| x.key == key).and_then(|x| x.value.clone()))
         };
         let pools_json = find(KV_INITIAL_POOLS).ok_or_else(|| {
             SimError::Validation("event log parquet: missing initial_pools metadata".to_string())
@@ -341,7 +456,50 @@ mod parquet_impl {
             .map_err(|e| SimError::Validation(format!("event log initial_pools: {}", e)))?;
         let transitions = serde_json::from_str(&routes_json)
             .map_err(|e| SimError::Validation(format!("event log transitions: {}", e)))?;
+        Ok((initial_pools, transitions))
+    }
 
+    /// Decode one record batch's rows into [`EventRecord`]s, calling `f` per row.
+    fn decode_batch(
+        batch: &RecordBatch,
+        f: &mut impl FnMut(EventRecord) -> Result<(), SimError>,
+    ) -> Result<(), SimError> {
+        let time = batch.column(0).as_any().downcast_ref::<Float64Array>().unwrap();
+        let transition = batch.column(1).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let multiplicity = batch.column(2).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let batched = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
+        let step = batch.column(4).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let weights = batch.column(5).as_any().downcast_ref::<StringArray>().unwrap();
+        for r in 0..batch.num_rows() {
+            let lineage_weights = if weights.is_null(r) {
+                None
+            } else {
+                Some(serde_json::from_str::<Vec<f64>>(weights.value(r)).map_err(|e| {
+                    SimError::Validation(format!("event log lineage_weights: {}", e))
+                })?)
+            };
+            f(EventRecord {
+                time: time.value(r),
+                transition: transition.value(r) as usize,
+                multiplicity: multiplicity.value(r),
+                batched: batched.value(r),
+                step: step.value(r),
+                lineage_weights,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn open_builder(path: &Path) -> Result<ParquetRecordBatchReaderBuilder<File>, SimError> {
+        let file = File::open(path)
+            .map_err(|e| SimError::Validation(format!("open event log {}: {}", path.display(), e)))?;
+        ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|e| SimError::Validation(format!("event log parquet reader: {}", e)))
+    }
+
+    pub fn read_parquet(path: &Path) -> Result<EventLog, SimError> {
+        let builder = open_builder(path)?;
+        let (initial_pools, transitions) = read_kv_metadata(&builder)?;
         let reader = builder
             .build()
             .map_err(|e| SimError::Validation(format!("event log parquet build: {}", e)))?;
@@ -349,34 +507,34 @@ mod parquet_impl {
         for batch in reader {
             let batch =
                 batch.map_err(|e| SimError::Validation(format!("event log batch: {}", e)))?;
-            let time = batch.column(0).as_any().downcast_ref::<Float64Array>().unwrap();
-            let transition = batch.column(1).as_any().downcast_ref::<UInt64Array>().unwrap();
-            let multiplicity = batch.column(2).as_any().downcast_ref::<UInt64Array>().unwrap();
-            let batched = batch.column(3).as_any().downcast_ref::<BooleanArray>().unwrap();
-            let step = batch.column(4).as_any().downcast_ref::<UInt64Array>().unwrap();
-            let weights = batch.column(5).as_any().downcast_ref::<StringArray>().unwrap();
-            for r in 0..batch.num_rows() {
-                let lineage_weights = if weights.is_null(r) {
-                    None
-                } else {
-                    Some(
-                        serde_json::from_str::<Vec<f64>>(weights.value(r)).map_err(|e| {
-                            SimError::Validation(format!("event log lineage_weights: {}", e))
-                        })?,
-                    )
-                };
-                events.push(EventRecord {
-                    time: time.value(r),
-                    transition: transition.value(r) as usize,
-                    multiplicity: multiplicity.value(r),
-                    batched: batched.value(r),
-                    step: step.value(r),
-                    lineage_weights,
-                });
-            }
+            decode_batch(&batch, &mut |rec| {
+                events.push(rec);
+                Ok(())
+            })?;
         }
-
         Ok(EventLog { initial_pools, transitions, events })
+    }
+
+    /// Read only the metadata (footer), without decoding any rows.
+    pub fn read_metadata_parquet(path: &Path) -> Result<EventLogMeta, SimError> {
+        read_kv_metadata(&open_builder(path)?)
+    }
+
+    /// Stream rows row-group by row-group, calling `f` per [`EventRecord`].
+    /// Bounded memory: one batch (≤ `BATCH_ROWS`) decoded at a time.
+    pub fn for_each_event_parquet(
+        path: &Path,
+        mut f: impl FnMut(EventRecord) -> Result<(), SimError>,
+    ) -> Result<(), SimError> {
+        let reader = open_builder(path)?
+            .build()
+            .map_err(|e| SimError::Validation(format!("event log parquet build: {}", e)))?;
+        for batch in reader {
+            let batch =
+                batch.map_err(|e| SimError::Validation(format!("event log batch: {}", e)))?;
+            decode_batch(&batch, &mut f)?;
+        }
+        Ok(())
     }
 }
 

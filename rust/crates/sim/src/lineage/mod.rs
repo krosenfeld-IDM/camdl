@@ -60,7 +60,7 @@ use crate::state::{IntState, RealState};
 
 pub use deme::DemeMap;
 pub use event_log::{EventLog, EventRecord, EventRecorder, RouteInfo};
-pub use realize::{realize, RealizeSummary};
+pub use realize::{realize, realize_from_path, RealizeSummary};
 pub use writer::{LineListEntry, LineListFormat, LineListWriter, TsvLineListWriter};
 #[cfg(feature = "lineage-parquet")]
 pub use writer::ParquetLineListWriter;

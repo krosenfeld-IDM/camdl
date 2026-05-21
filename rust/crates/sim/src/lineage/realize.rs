@@ -115,51 +115,73 @@ fn readable_compartments(routes: &[RouteInfo]) -> HashSet<CompartmentId> {
     readable
 }
 
-/// Replay `log` at `identity_seed`, writing the realized line list to `writer`.
-///
-/// Returns the line-list log-probability, edge count, and sub-`dt` diagnostic.
-/// The writer is initialized, written, and finalized within this call.
-pub fn realize(
-    log: &EventLog,
-    identity_seed: u64,
-    writer: &mut dyn LineListWriter,
-) -> Result<RealizeSummary, SimError> {
-    let mut rng = LineageRng::from_sim_seed(identity_seed);
-    let mut identity = IdentityState::new();
-    let readable = readable_compartments(&log.transitions);
+/// Mutable replay state, threaded through every recorded event. Shared by the
+/// in-memory [`realize`] and the streaming [`realize_from_path`] entry points so
+/// the per-event attribution logic has a single source of truth regardless of
+/// whether the event log is materialised in RAM or streamed from disk.
+struct RealizeState {
+    rng: LineageRng,
+    identity: IdentityState,
+    readable: HashSet<CompartmentId>,
+    total_logprob: f64,
+    edges: u64,
+    sub_dt_edges: f64,
+    any_batched: bool,
+    /// Frozen start-of-step parent pools for the batched step currently being
+    /// replayed (`None` outside a batched step / for Gillespie). Refreshed when
+    /// the `step` index changes on a batched event.
+    snapshot: Option<StepSnapshot>,
+    snapshot_step: Option<u64>,
+}
 
-    // Seed the t=0 tracked pools exactly as the shipped observer did
-    // (declaration order → IDs 0.. minted in the same order).
-    for &(deme, comp, count) in &log.initial_pools {
-        identity.seed_pool(deme, comp, count);
+impl RealizeState {
+    fn new(
+        identity_seed: u64,
+        initial_pools: &[(DemeId, CompartmentId, i64)],
+        transitions: &[RouteInfo],
+    ) -> Self {
+        let mut identity = IdentityState::new();
+        // Seed the t=0 tracked pools exactly as the shipped observer did
+        // (declaration order → IDs 0.. minted in the same order).
+        for &(deme, comp, count) in initial_pools {
+            identity.seed_pool(deme, comp, count);
+        }
+        RealizeState {
+            rng: LineageRng::from_sim_seed(identity_seed),
+            identity,
+            readable: readable_compartments(transitions),
+            total_logprob: 0.0,
+            edges: 0,
+            sub_dt_edges: 0.0,
+            any_batched: false,
+            snapshot: None,
+            snapshot_step: None,
+        }
     }
 
-    writer.init()?;
-
-    let mut total_logprob = 0.0;
-    let mut edges: u64 = 0;
-    let mut sub_dt_edges = 0.0;
-    let mut any_batched = false;
-
-    // Frozen start-of-step parent pools for the batched step currently being
-    // replayed (`None` outside a batched step / for Gillespie). Refreshed when
-    // the `step` index changes on a batched event.
-    let mut snapshot: Option<StepSnapshot> = None;
-    let mut snapshot_step: Option<u64> = None;
-
-    for rec in &log.events {
-        let route = &log.transitions[rec.transition];
-        any_batched |= rec.batched;
+    /// Process one recorded event in order: refresh the batched-step snapshot,
+    /// accumulate the sub-`dt` diagnostic, and realize the event's identities.
+    /// Events MUST be fed in recorded (time) order — the same order the
+    /// simulator produced them — for the snapshot logic and RNG draws to match
+    /// the shipped observer.
+    fn process(
+        &mut self,
+        rec: &EventRecord,
+        transitions: &[RouteInfo],
+        writer: &mut dyn LineListWriter,
+    ) -> Result<(), SimError> {
+        let route = &transitions[rec.transition];
+        self.any_batched |= rec.batched;
 
         if rec.batched {
             // Take the snapshot once per batched step (at its first event).
-            if snapshot_step != Some(rec.step) {
-                snapshot = Some(StepSnapshot::of(&identity));
-                snapshot_step = Some(rec.step);
+            if self.snapshot_step != Some(rec.step) {
+                self.snapshot = Some(StepSnapshot::of(&self.identity));
+                self.snapshot_step = Some(rec.step);
             }
         } else {
-            snapshot = None;
-            snapshot_step = None;
+            self.snapshot = None;
+            self.snapshot_step = None;
         }
 
         // Sub-`dt` bias accounting, mirroring the shipped observer: only the
@@ -169,13 +191,14 @@ pub fn realize(
         // earlier in the step are excluded, exactly as the shipped observer's
         // snapshot did).
         if rec.lineage_weights.is_some() {
-            edges += rec.multiplicity;
-            if let (true, Some(dst), Some(snap)) = (rec.batched, route.destination, snapshot.as_ref())
+            self.edges += rec.multiplicity;
+            if let (true, Some(dst), Some(snap)) =
+                (rec.batched, route.destination, self.snapshot.as_ref())
             {
                 let m = rec.multiplicity as f64;
                 let p = snap.pool_len(route.destination_deme, dst) as f64;
                 if p + m > 0.0 {
-                    sub_dt_edges += m * (m / (p + m));
+                    self.sub_dt_edges += m * (m / (p + m));
                 }
             }
         }
@@ -183,25 +206,71 @@ pub fn realize(
         realize_event(
             rec,
             route,
-            &mut identity,
-            &readable,
-            snapshot.as_ref(),
-            &mut rng,
+            &mut self.identity,
+            &self.readable,
+            self.snapshot.as_ref(),
+            &mut self.rng,
             writer,
-            &mut total_logprob,
-        )?;
+            &mut self.total_logprob,
+        )
     }
 
+    fn finish(self) -> RealizeSummary {
+        let exact = !self.any_batched;
+        let sub_dt_fraction = if self.edges == 0 {
+            0.0
+        } else {
+            self.sub_dt_edges / self.edges as f64
+        };
+        RealizeSummary {
+            total_logprob: self.total_logprob,
+            edges: self.edges,
+            sub_dt_fraction,
+            exact,
+        }
+    }
+}
+
+/// Replay an in-memory `log` at `identity_seed`, writing the realized line list
+/// to `writer`.
+///
+/// Returns the line-list log-probability, edge count, and sub-`dt` diagnostic.
+/// The writer is initialized, written, and finalized within this call.
+pub fn realize(
+    log: &EventLog,
+    identity_seed: u64,
+    writer: &mut dyn LineListWriter,
+) -> Result<RealizeSummary, SimError> {
+    let mut state = RealizeState::new(identity_seed, &log.initial_pools, &log.transitions);
+    writer.init()?;
+    for rec in &log.events {
+        state.process(rec, &log.transitions, writer)?;
+    }
     writer.finish()?;
+    Ok(state.finish())
+}
 
-    let exact = !any_batched;
-    let sub_dt_fraction = if edges == 0 {
-        0.0
-    } else {
-        sub_dt_edges / edges as f64
-    };
-
-    Ok(RealizeSummary { total_logprob, edges, sub_dt_fraction, exact })
+/// Replay an event log read **incrementally from disk** at `identity_seed`,
+/// writing the realized line list to `writer`.
+///
+/// The event log is never fully materialised in RAM: the metadata (route table,
+/// t=0 pools) is read from the file's footer/header, then events are streamed in
+/// recorded order (Parquet row group by row group, TSV line by line) and fed to
+/// the same per-event logic as [`realize`]. Resident memory is bounded by the
+/// identity pools, not the log length. Format is auto-detected by extension.
+pub fn realize_from_path(
+    path: &std::path::Path,
+    identity_seed: u64,
+    writer: &mut dyn LineListWriter,
+) -> Result<RealizeSummary, SimError> {
+    let (initial_pools, transitions) = super::event_log_io::read_metadata(path)?;
+    let mut state = RealizeState::new(identity_seed, &initial_pools, &transitions);
+    writer.init()?;
+    super::event_log_io::for_each_event(path, |rec| {
+        state.process(&rec, &transitions, writer)
+    })?;
+    writer.finish()?;
+    Ok(state.finish())
 }
 
 /// Realize one event's `multiplicity` firings: sample identities, mint/move IDs,

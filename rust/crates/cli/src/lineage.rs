@@ -222,11 +222,6 @@ pub fn run_simulate_event_log(a: &SimulateArgs, run: &SimRun) {
 /// the recorded per-pool weights. Different `--identity-seed`s give i.i.d.
 /// draws from `P(identities | event log)`.
 pub fn cmd_lineage_realize(a: &LineageRealizeArgs) {
-    let event_log = sim::lineage::event_log_io::read(&a.event_log).unwrap_or_else(|e| {
-        eprintln!("error: reading event log {}: {:?}", a.event_log.display(), e);
-        std::process::exit(1);
-    });
-
     let format = resolve_format_with_path(a.tsv, &a.format, a.output.as_deref())
         .unwrap_or_else(|e| {
             eprintln!("error: {}", e);
@@ -242,8 +237,8 @@ pub fn cmd_lineage_realize(a: &LineageRealizeArgs) {
         std::process::exit(1);
     });
 
-    let summary =
-        sim::lineage::realize(&event_log, a.identity_seed, writer.as_mut()).unwrap_or_else(|e| {
+    let summary = sim::lineage::realize_from_path(&a.event_log, a.identity_seed, writer.as_mut())
+        .unwrap_or_else(|e| {
             eprintln!("error: realize: {:?}", e);
             std::process::exit(1);
         });
