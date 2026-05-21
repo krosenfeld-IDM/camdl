@@ -242,6 +242,36 @@ mod parquet_impl {
     const KV_INITIAL_POOLS: &str = "camdl.event_log.initial_pools";
     const KV_TRANSITIONS: &str = "camdl.event_log.transitions";
 
+    /// Rows per Arrow record batch / Parquet row group. Mirrors the line-list
+    /// writer: a few thousand rows keeps the in-RAM column buffers small (the
+    /// writer never materialises columns for the whole log at once) and lets the
+    /// reader stream row-group by row-group.
+    pub(super) const BATCH_ROWS: usize = 8192;
+
+    fn batch_for(events: &[EventRecord], schema: &Arc<Schema>) -> Result<RecordBatch, SimError> {
+        let time: Vec<f64> = events.iter().map(|e| e.time).collect();
+        let transition: Vec<u64> = events.iter().map(|e| e.transition as u64).collect();
+        let multiplicity: Vec<u64> = events.iter().map(|e| e.multiplicity).collect();
+        let batched: Vec<bool> = events.iter().map(|e| e.batched).collect();
+        let step: Vec<u64> = events.iter().map(|e| e.step).collect();
+        let weights: Vec<Option<String>> = events
+            .iter()
+            .map(|e| e.lineage_weights.as_ref().map(|v| serde_json::to_string(v).unwrap()))
+            .collect();
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float64Array::from(time)),
+                Arc::new(UInt64Array::from(transition)),
+                Arc::new(UInt64Array::from(multiplicity)),
+                Arc::new(BooleanArray::from(batched)),
+                Arc::new(UInt64Array::from(step)),
+                Arc::new(StringArray::from(weights)),
+            ],
+        )
+        .map_err(|e| SimError::Validation(format!("event log batch build: {}", e)))
+    }
+
     fn schema() -> Schema {
         Schema::new(vec![
             Field::new("time", DataType::Float64, false),
@@ -272,32 +302,14 @@ mod parquet_impl {
         let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
             .map_err(|e| SimError::Validation(format!("event log parquet init: {}", e)))?;
 
-        let time: Vec<f64> = log.events.iter().map(|e| e.time).collect();
-        let transition: Vec<u64> = log.events.iter().map(|e| e.transition as u64).collect();
-        let multiplicity: Vec<u64> = log.events.iter().map(|e| e.multiplicity).collect();
-        let batched: Vec<bool> = log.events.iter().map(|e| e.batched).collect();
-        let step: Vec<u64> = log.events.iter().map(|e| e.step).collect();
-        let weights: Vec<Option<String>> = log
-            .events
-            .iter()
-            .map(|e| e.lineage_weights.as_ref().map(|v| serde_json::to_string(v).unwrap()))
-            .collect();
-
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Float64Array::from(time)),
-                Arc::new(UInt64Array::from(transition)),
-                Arc::new(UInt64Array::from(multiplicity)),
-                Arc::new(BooleanArray::from(batched)),
-                Arc::new(UInt64Array::from(step)),
-                Arc::new(StringArray::from(weights)),
-            ],
-        )
-        .map_err(|e| SimError::Validation(format!("event log batch build: {}", e)))?;
-        writer
-            .write(&batch)
-            .map_err(|e| SimError::Validation(format!("event log batch write: {}", e)))?;
+        // One row group per BATCH_ROWS chunk: bounded column buffers, and the
+        // file is readable row-group by row-group.
+        for chunk in log.events.chunks(BATCH_ROWS) {
+            let batch = batch_for(chunk, &schema)?;
+            writer
+                .write(&batch)
+                .map_err(|e| SimError::Validation(format!("event log batch write: {}", e)))?;
+        }
         writer
             .close()
             .map_err(|e| SimError::Validation(format!("event log parquet close: {}", e)))?;
@@ -436,6 +448,33 @@ mod tests {
         write_parquet(&log, &path).unwrap();
         let back = read_parquet(&path).unwrap();
         assert_eq!(log, back);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A log larger than `parquet_impl::BATCH_ROWS` must round-trip across
+    /// multiple row groups in original (time) order. Locks in the chunked
+    /// writer so a regression to a single giant batch is caught.
+    #[cfg(feature = "lineage-parquet")]
+    #[test]
+    fn parquet_round_trip_multiple_row_groups() {
+        let mut log = sample_log();
+        let n = parquet_impl::BATCH_ROWS * 2 + 7; // spans >2 row groups
+        log.events = (0..n)
+            .map(|i| EventRecord {
+                time: i as f64 * 0.5,
+                transition: i % 2,
+                multiplicity: 1,
+                batched: false,
+                step: i as u64,
+                lineage_weights: if i % 2 == 0 { Some(vec![1.0, 2.0]) } else { None },
+            })
+            .collect();
+        let path = std::env::temp_dir()
+            .join(format!("camdl_evlog_multi_{}.parquet", std::process::id()));
+        write_parquet(&log, &path).unwrap();
+        let back = read_parquet(&path).unwrap();
+        assert_eq!(log.events.len(), back.events.len());
+        assert_eq!(log, back, "multi-row-group round trip must preserve order and values");
         std::fs::remove_file(&path).ok();
     }
 }
