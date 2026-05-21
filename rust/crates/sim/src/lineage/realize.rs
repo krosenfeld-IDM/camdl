@@ -32,7 +32,7 @@
 //! clean exact likelihood (§4a). [`realize`] returns the running total
 //! alongside the per-entry column.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::SimError;
 
@@ -83,6 +83,38 @@ pub struct RealizeSummary {
     pub exact: bool,
 }
 
+/// Compartments whose identity pool is ever *read* during replay, so their IDs
+/// must be retained. Reads happen at exactly three sites:
+///   - source removals (`remove_uniform` / `pool_len` on `route.source`),
+///   - parent sampling (`route.parent_pools`),
+///   - the sub-`dt` diagnostic, which reads a *lineage* transition's destination
+///     pool size at step start.
+///
+/// A compartment that is none of these (e.g. an absorbing `R` reached only by a
+/// non-lineage recovery) is **write-only**: pushing IDs into it grows the pool
+/// to O(cumulative arrivals) for no benefit. `realize_event` skips those pushes.
+/// The individual is still minted and recorded in the line list — only the
+/// never-read pool membership is dropped, so the realized output is unchanged.
+fn readable_compartments(routes: &[RouteInfo]) -> HashSet<CompartmentId> {
+    let mut readable = HashSet::new();
+    for route in routes {
+        if let Some(src) = route.source {
+            readable.insert(src);
+        }
+        for &(comp, _deme) in &route.parent_pools {
+            readable.insert(comp);
+        }
+        // A lineage transition (non-empty parent pools) has its destination pool
+        // read by the sub-`dt` diagnostic in `realize`.
+        if !route.parent_pools.is_empty() {
+            if let Some(dst) = route.destination {
+                readable.insert(dst);
+            }
+        }
+    }
+    readable
+}
+
 /// Replay `log` at `identity_seed`, writing the realized line list to `writer`.
 ///
 /// Returns the line-list log-probability, edge count, and sub-`dt` diagnostic.
@@ -94,6 +126,7 @@ pub fn realize(
 ) -> Result<RealizeSummary, SimError> {
     let mut rng = LineageRng::from_sim_seed(identity_seed);
     let mut identity = IdentityState::new();
+    let readable = readable_compartments(&log.transitions);
 
     // Seed the t=0 tracked pools exactly as the shipped observer did
     // (declaration order → IDs 0.. minted in the same order).
@@ -151,6 +184,7 @@ pub fn realize(
             rec,
             route,
             &mut identity,
+            &readable,
             snapshot.as_ref(),
             &mut rng,
             writer,
@@ -176,6 +210,7 @@ fn realize_event(
     rec: &EventRecord,
     route: &RouteInfo,
     identity: &mut IdentityState,
+    readable: &HashSet<CompartmentId>,
     snapshot: Option<&StepSnapshot>,
     rng: &mut LineageRng,
     writer: &mut dyn LineListWriter,
@@ -184,6 +219,13 @@ fn realize_event(
     let source = route.source;
     let destination = route.destination;
     let child_deme = route.child_deme;
+    // Only retain IDs in pools that are ever read (see `readable_compartments`).
+    // Pushing into a write-only pool (e.g. absorbing R) is a pure memory leak.
+    let push_if_readable = |identity: &mut IdentityState, deme: DemeId, comp: CompartmentId, id: IndividualId| {
+        if readable.contains(&comp) {
+            identity.push(deme, comp, id);
+        }
+    };
 
     for _ in 0..rec.multiplicity {
         let (individual, parent, parent_deme, src_for_record, dst_for_record, logp) =
@@ -208,7 +250,7 @@ fn realize_event(
                 }
                 let child = identity.mint();
                 if let Some(dst) = destination {
-                    identity.push(route.destination_deme, dst, child);
+                    push_if_readable(identity, route.destination_deme, dst, child);
                 }
                 (
                     child,
@@ -228,7 +270,7 @@ fn realize_event(
                             Some(id) => (id, -(n as f64).ln()),
                             None => (identity.mint(), 0.0),
                         };
-                        identity.push(route.destination_deme, dst, id);
+                        push_if_readable(identity, route.destination_deme, dst, id);
                         (id, ParentRef::None, None, Some(src), Some(dst), logp)
                     }
                     (Some(src), None) => {
@@ -244,7 +286,7 @@ fn realize_event(
                     (None, Some(dst)) => {
                         // Inflow (import): mint a new ID, no parent, no choice.
                         let id = identity.mint();
-                        identity.push(route.destination_deme, dst, id);
+                        push_if_readable(identity, route.destination_deme, dst, id);
                         (id, ParentRef::Import, None, None, Some(dst), 0.0)
                     }
                     (None, None) => {
@@ -352,4 +394,51 @@ fn sample_parent(
     // §4a: P = (mass_b/Λ) · (1/|pool_b|) = w_b/Λ.
     let logp = chosen_mass.ln() - (pool_len as f64).ln() - total.ln();
     Ok((parent, chosen_deme, logp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(source: Option<CompartmentId>, dest: Option<CompartmentId>, parents: Vec<(CompartmentId, DemeId)>) -> RouteInfo {
+        RouteInfo {
+            source,
+            source_deme: 0,
+            destination: dest,
+            destination_deme: 0,
+            child_deme: 0,
+            touches_tracked: true,
+            parent_pools: parents,
+        }
+    }
+
+    /// SIR: infection (lineage, S→I, parent pool I) + recovery (I→R, non-lineage).
+    /// Readable = sources ∪ parent pools ∪ lineage destinations = {S, I}; the
+    /// absorbing R (a write-only recovery destination) is excluded.
+    #[test]
+    fn readable_excludes_absorbing_recovery_compartment() {
+        let s = 0; let i = 1; let r = 2;
+        let routes = vec![
+            route(Some(s), Some(i), vec![(i, 0)]), // #[lineage] infection
+            route(Some(i), Some(r), vec![]),       // recovery
+        ];
+        let readable = readable_compartments(&routes);
+        assert!(readable.contains(&s), "infection source S must be readable");
+        assert!(readable.contains(&i), "I is a parent pool / lineage destination");
+        assert!(!readable.contains(&r), "absorbing R is write-only and must be excluded");
+    }
+
+    /// Waning immunity (R→S) makes R a source, so R becomes readable and its
+    /// pool must be retained.
+    #[test]
+    fn readable_includes_recovery_compartment_when_it_is_a_source() {
+        let s = 0; let i = 1; let r = 2;
+        let routes = vec![
+            route(Some(s), Some(i), vec![(i, 0)]),
+            route(Some(i), Some(r), vec![]),
+            route(Some(r), Some(s), vec![]), // waning: R→S
+        ];
+        let readable = readable_compartments(&routes);
+        assert!(readable.contains(&r), "R is a source under waning immunity → readable");
+    }
 }
