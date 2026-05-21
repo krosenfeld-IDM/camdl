@@ -165,20 +165,29 @@ fn collect_int_comp_deps(
     }
 }
 
-/// Returns true if the expression contains any time function reference.
-fn expr_has_time_func(expr: &Expr) -> bool {
+/// Returns true if the expression's value depends on simulation time `t` —
+/// either via a named time function (`TimeFunc`, e.g. a seasonal forcing) or a
+/// bare time reference (`Time`, e.g. `t` in `lambda / (1 + exp(-(t-tau)/w))`).
+///
+/// This drives `time_dep_transitions`, which Gillespie re-evaluates at every
+/// output/intervention boundary as time advances (the SSA otherwise freezes a
+/// transition's propensity between events). Missing `Expr::Time` here means a
+/// rate that depends on bare `t` is frozen at its `t=0` value under Gillespie,
+/// silently producing wrong dynamics (the chain-binomial / tau-leap backends
+/// re-evaluate every substep regardless, so they are unaffected).
+fn expr_is_time_dependent(expr: &Expr) -> bool {
     match expr {
-        Expr::TimeFunc(_) => true,
+        Expr::Time(_) | Expr::TimeFunc(_) => true,
         Expr::BinOp(w) => {
-            expr_has_time_func(&w.bin_op.left) || expr_has_time_func(&w.bin_op.right)
+            expr_is_time_dependent(&w.bin_op.left) || expr_is_time_dependent(&w.bin_op.right)
         }
-        Expr::UnOp(w) => expr_has_time_func(&w.un_op.arg),
+        Expr::UnOp(w) => expr_is_time_dependent(&w.un_op.arg),
         Expr::Cond(w) => {
-            expr_has_time_func(&w.cond.pred)
-                || expr_has_time_func(&w.cond.then)
-                || expr_has_time_func(&w.cond.else_)
+            expr_is_time_dependent(&w.cond.pred)
+                || expr_is_time_dependent(&w.cond.then)
+                || expr_is_time_dependent(&w.cond.else_)
         }
-        Expr::TableLookup(w) => w.table_lookup.indices.iter().any(expr_has_time_func),
+        Expr::TableLookup(w) => w.table_lookup.indices.iter().any(expr_is_time_dependent),
         _ => false,
     }
 }
@@ -471,7 +480,8 @@ impl CompiledModel {
 
         // Build dependency graph for sparse propensity updates.
         // comp_to_transitions[local_int_idx] = [transition indices that reference it]
-        // time_dep_transitions = [transition indices with TimeFunc in rate expression]
+        // time_dep_transitions = [transition indices whose rate depends on time
+        // `t` — via a TimeFunc forcing or a bare `Time` reference]
         let n_int_comps = int_local_to_global.len();
         let mut comp_to_transitions: Vec<Vec<usize>> = vec![vec![]; n_int_comps];
         let mut time_dep_transitions: Vec<usize> = Vec::new();
@@ -481,7 +491,7 @@ impl CompiledModel {
             for local_idx in deps {
                 comp_to_transitions[local_idx].push(tr_idx);
             }
-            if expr_has_time_func(&tr.rate) {
+            if expr_is_time_dependent(&tr.rate) {
                 time_dep_transitions.push(tr_idx);
             }
         }
@@ -876,5 +886,50 @@ impl CompiledModel {
         }
 
         Ok((IntState::from_vec(int_counts), RealState::from_vec(real_values)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expr_is_time_dependent;
+    use ir::expr::{BinOp, Expr, UnOp};
+
+    /// Regression: a bare `Time` reference must classify as time-dependent.
+    /// Before the fix, only `TimeFunc` (named forcings) matched, so a rate like
+    /// `lambda / (1 + exp(-(t - tau)/w))` was excluded from
+    /// `time_dep_transitions` and Gillespie froze its propensity at `t=0`.
+    #[test]
+    fn bare_time_is_time_dependent() {
+        // t
+        assert!(expr_is_time_dependent(&Expr::time()));
+        // -(t - tau) / w  — the logistic-pulse exponent: Time nested under
+        // BinOp/UnOp must still be detected.
+        let exponent = Expr::bin_op(
+            BinOp::Div,
+            Expr::un_op(UnOp::Neg, Expr::bin_op(BinOp::Sub, Expr::time(), Expr::param("tau"))),
+            Expr::param("w"),
+        );
+        assert!(expr_is_time_dependent(&exponent));
+        // lambda / (1 + exp(exponent))
+        let pulse = Expr::bin_op(
+            BinOp::Div,
+            Expr::param("lambda"),
+            Expr::bin_op(BinOp::Add, Expr::const_(1.0), Expr::un_op(UnOp::Exp, exponent)),
+        );
+        assert!(expr_is_time_dependent(&pulse));
+    }
+
+    /// A rate with no time reference (only params/consts) is not time-dependent.
+    #[test]
+    fn time_free_rate_is_not_time_dependent() {
+        // beta * S * I / N  has no time term (Pop/Param/Const only)
+        let rate = Expr::bin_op(
+            BinOp::Mul,
+            Expr::param("beta"),
+            Expr::bin_op(BinOp::Mul, Expr::pop("S"), Expr::pop("I")),
+        );
+        assert!(!expr_is_time_dependent(&rate));
+        // `dt` is the step size, a constant — not time-varying.
+        assert!(!expr_is_time_dependent(&Expr::dt()));
     }
 }
