@@ -796,6 +796,10 @@ fn run_simulate(a: &args::SimulateArgs) {
     let mut obs_data: Vec<Vec<ObsRow>> = Vec::new(); // per-stream
     let mut obs_stream_names: Vec<String> = Vec::new();
     let mut obs_times_cache: Vec<Vec<f64>> = Vec::new();
+    // --dates: (origin, time_unit) captured from the model inside the loop so
+    // the post-loop obs writers can render the calendar column (the per-run
+    // `model` is out of scope by then). Set once; identical across runs.
+    let mut dates_render: Option<(String, String)> = None;
 
     // ── Main loop: scenarios × draws × replicates ─────────────────────────
     let mut run_idx = 0usize;
@@ -853,12 +857,33 @@ fn run_simulate(a: &args::SimulateArgs) {
                 .map(|c| c.name.as_str()).collect();
             let tr_names: Vec<&str> = model.transitions.iter().map(|t| t.name.as_str()).collect();
 
+            // --dates: an additive calendar column rendered from the model
+            // origin + time_unit (2026-05-22 §6.7). Numeric `t` stays canonical.
+            let date_origin: Option<&str> = if a.dates {
+                match model.origin.as_deref() {
+                    Some(o) => {
+                        if dates_render.is_none() {
+                            dates_render = Some((o.to_string(), model.time_unit.clone()));
+                        }
+                        Some(o)
+                    }
+                    None => {
+                        eprintln!("error: --dates requires the model to declare an `origin` \
+                                   (e.g. `origin = date(\"2020-01-01\")`).");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                None
+            };
+
             if !traj_header_written {
                 writeln!(out, "# {}", version::VERSION).unwrap();
                 if total_runs > 1 { write!(out, "replicate\t").unwrap(); }
                 if n_scenarios > 1 { write!(out, "scenario\t").unwrap(); }
                 if n_draws > 1 { write!(out, "draw\t").unwrap(); }
                 write!(out, "t").unwrap();
+                if date_origin.is_some() { write!(out, "\tdate").unwrap(); }
                 for n in &int_names  { write!(out, "\t{}", n).unwrap(); }
                 for n in &real_names { write!(out, "\t{}", n).unwrap(); }
                 for n in &tr_names   { write!(out, "\tflow_{}", n).unwrap(); }
@@ -871,6 +896,11 @@ fn run_simulate(a: &args::SimulateArgs) {
                 if n_scenarios > 1 { write!(out, "{}\t", scenario.as_deref().unwrap_or("baseline")).unwrap(); }
                 if n_draws > 1 { write!(out, "{}\t", draw_idx + 1).unwrap(); }
                 write!(out, "{}", snap.t).unwrap();
+                if let Some(o) = date_origin {
+                    let d = ir::caltime::internal_to_date(o, snap.t, &model.time_unit)
+                        .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
+                    write!(out, "\t{}", d).unwrap();
+                }
                 for &c in &snap.int_state.counts  { write!(out, "\t{}", c).unwrap(); }
                 for &v in &snap.real_state.values { write!(out, "\t{:.4}", v).unwrap(); }
                 for &f in &snap.flows.counts      { write!(out, "\t{}", f).unwrap(); }
@@ -880,6 +910,18 @@ fn run_simulate(a: &args::SimulateArgs) {
 
         // ── Observation sampling ───────────��────────────────────────────────
         if want_obs {
+            // Capture (origin, time_unit) for the post-loop --dates obs writers
+            // while `model` is in scope. Validate origin presence up front.
+            if a.dates && dates_render.is_none() {
+                match model.origin.as_deref() {
+                    Some(o) => dates_render = Some((o.to_string(), model.time_unit.clone())),
+                    None => {
+                        eprintln!("error: --dates requires the model to declare an `origin` \
+                                   (e.g. `origin = date(\"2020-01-01\")`).");
+                        std::process::exit(1);
+                    }
+                }
+            }
             let compiled = std::sync::Arc::new(
                 sim::CompiledModel::new(model.clone()).unwrap_or_else(|e| {
                     eprintln!("error compiling model for obs: {:?}", e);
@@ -985,11 +1027,16 @@ fn run_simulate(a: &args::SimulateArgs) {
                 .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
             let mut out = std::io::BufWriter::new(f);
 
+            // --dates: additive calendar column (same policy as trajectory),
+            // rendered from the captured (origin, time_unit).
+            let date_render = dates_render.as_ref();
+
             // Header
             if multi_rep { write!(out, "replicate\t").unwrap(); }
             if n_scenarios > 1 { write!(out, "scenario\t").unwrap(); }
             if n_draws > 1 { write!(out, "draw\t").unwrap(); }
             write!(out, "time").unwrap();
+            if date_render.is_some() { write!(out, "\tdate").unwrap(); }
             for name in &obs_stream_names { write!(out, "\t{}", name).unwrap(); }
             writeln!(out).unwrap();
 
@@ -1002,7 +1049,13 @@ fn run_simulate(a: &args::SimulateArgs) {
                     if multi_rep { write!(out, "{}\t", run + 1).unwrap(); }
                     if n_scenarios > 1 { write!(out, "{}\t", obs_data[0][row_idx].scenario).unwrap(); }
                     if n_draws > 1 { write!(out, "{}\t", obs_data[0][row_idx].draw).unwrap(); }
-                    write!(out, "{}", obs_data[0][row_idx].time).unwrap();
+                    let t_val = obs_data[0][row_idx].time;
+                    write!(out, "{}", t_val).unwrap();
+                    if let Some((o, tu)) = date_render {
+                        let d = ir::caltime::internal_to_date(o, t_val, tu)
+                            .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
+                        write!(out, "\t{}", d).unwrap();
+                    }
                     for si in 0..obs_stream_names.len() {
                         let val = obs_data[si][row_idx].value;
                         if val == val.round() && val.abs() < 1e15 {
@@ -1020,6 +1073,7 @@ fn run_simulate(a: &args::SimulateArgs) {
 
         // --obs-dir: one file per stream
         if let Some(ref dir) = obs_dir {
+            let date_render = dates_render.as_ref();
             for (si, name) in obs_stream_names.iter().enumerate() {
                 let path = format!("{}/{}.tsv", dir, name);
                 let f = std::fs::File::create(&path)
@@ -1029,17 +1083,27 @@ fn run_simulate(a: &args::SimulateArgs) {
                 if multi_rep { write!(out, "replicate\t").unwrap(); }
                 if n_scenarios > 1 { write!(out, "scenario\t").unwrap(); }
                 if n_draws > 1 { write!(out, "draw\t").unwrap(); }
-                writeln!(out, "time\t{}", name).unwrap();
+                if date_render.is_some() {
+                    writeln!(out, "time\tdate\t{}", name).unwrap();
+                } else {
+                    writeln!(out, "time\t{}", name).unwrap();
+                }
 
                 for row in &obs_data[si] {
                     if multi_rep { write!(out, "{}\t", row.replicate).unwrap(); }
                     if n_scenarios > 1 { write!(out, "{}\t", row.scenario).unwrap(); }
                     if n_draws > 1 { write!(out, "{}\t", row.draw).unwrap(); }
+                    write!(out, "{}", row.time).unwrap();
+                    if let Some((o, tu)) = date_render {
+                        let d = ir::caltime::internal_to_date(o, row.time, tu)
+                            .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
+                        write!(out, "\t{}", d).unwrap();
+                    }
                     let val = row.value;
                     if val == val.round() && val.abs() < 1e15 {
-                        writeln!(out, "{}\t{}", row.time, val as i64).unwrap();
+                        writeln!(out, "\t{}", val as i64).unwrap();
                     } else {
-                        writeln!(out, "{}\t{:.6}", row.time, val).unwrap();
+                        writeln!(out, "\t{:.6}", val).unwrap();
                     }
                 }
                 drop(out);

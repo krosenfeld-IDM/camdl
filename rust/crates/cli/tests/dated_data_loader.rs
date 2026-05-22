@@ -256,6 +256,99 @@ fn numeric_shift_invariance() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// §9.8 output rendering: `--dates` adds a calendar `date` column to obs
+/// output, rendered from the model origin; the numeric `time` column is
+/// unchanged (byte-identical to a run without `--dates`).
+#[test]
+fn dates_flag_adds_calendar_column() {
+    let Some(camdl) = camdl_bin() else { return };
+    let tmp = tempdir("datesout");
+    let model = model_with_origin(&tmp, "2020-02-28");
+
+    let common: Vec<&str> = {
+        let mut v = vec![
+            "simulate", model.to_str().unwrap(),
+            "--backend", "chain_binomial", "--dt", "1", "--seed", "7",
+        ];
+        v.extend_from_slice(BASE_PARAMS);
+        v
+    };
+
+    // Without --dates.
+    let plain = tmp.join("plain.tsv");
+    let mut a1 = common.clone();
+    a1.extend(["--obs-only", plain.to_str().unwrap()]);
+    assert!(run(&camdl, &a1).status.success());
+
+    // With --dates.
+    let dated = tmp.join("dated.tsv");
+    let mut a2 = common.clone();
+    a2.extend(["--dates", "--obs-only", dated.to_str().unwrap()]);
+    assert!(run(&camdl, &a2).status.success());
+
+    let plain_txt = std::fs::read_to_string(&plain).unwrap();
+    let dated_txt = std::fs::read_to_string(&dated).unwrap();
+
+    // Header gains a `date` column.
+    let dated_hdr = dated_txt.lines().next().unwrap();
+    assert!(dated_hdr.starts_with("time\tdate\t"), "header: {dated_hdr}");
+    assert!(plain_txt.lines().next().unwrap().starts_with("time\t"));
+
+    // t=0 → origin date; the numeric `time` column matches the plain run.
+    let plain_times: Vec<&str> = plain_txt.lines().skip(1)
+        .map(|l| l.split('\t').next().unwrap()).collect();
+    let dated_rows: Vec<Vec<&str>> = dated_txt.lines().skip(1)
+        .map(|l| l.split('\t').collect()).collect();
+    assert_eq!(dated_rows[0][1], "2020-02-28", "t=0 renders to origin");
+    assert_eq!(dated_rows[1][1], "2020-02-29", "t=1 is the leap day");
+    let dated_times: Vec<&str> = dated_rows.iter().map(|r| r[0]).collect();
+    assert_eq!(plain_times, dated_times, "numeric time column must be unchanged");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// §9.8 `--dates` with no origin → clear error.
+#[test]
+fn dates_flag_requires_origin() {
+    let Some(camdl) = camdl_bin() else { return };
+    let tmp = tempdir("datesnoorigin");
+    let ir = seed_timing_ir();
+    let mut args = vec![
+        "simulate", ir.to_str().unwrap(),
+        "--backend", "chain_binomial", "--dt", "1", "--seed", "7", "--dates",
+    ];
+    args.extend_from_slice(BASE_PARAMS);
+    let out = tmp.join("o.tsv");
+    args.extend(["--obs-only", out.to_str().unwrap()]);
+    let o = run(&camdl, &args);
+    assert!(!o.status.success(), "--dates without origin must fail");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("origin"),
+        "error should mention origin");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// §7 backward-compat: a run *without* `--dates` is byte-identical to the
+/// pre-feature behaviour — no `date` column anywhere.
+#[test]
+fn no_dates_flag_is_unchanged() {
+    let Some(camdl) = camdl_bin() else { return };
+    let tmp = tempdir("nodates");
+    let model = model_with_origin(&tmp, "2020-02-28");
+    let mut args = vec![
+        "simulate", model.to_str().unwrap(),
+        "--backend", "chain_binomial", "--dt", "1", "--seed", "7",
+    ];
+    args.extend_from_slice(BASE_PARAMS);
+    let out = tmp.join("o.tsv");
+    args.extend(["--obs-only", out.to_str().unwrap()]);
+    assert!(run(&camdl, &args).status.success());
+    let txt = std::fs::read_to_string(&out).unwrap();
+    assert!(!txt.contains("date"), "no --dates → no date column even with origin set");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// §9.7 multi-timezone civil-date alignment: a TSV whose cells carry mixed
 /// trailing offsets loads to the *same* internal time as the offset-stripped
 /// sibling — the offset is discarded, every row maps to the same civil date.

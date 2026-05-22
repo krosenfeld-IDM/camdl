@@ -207,6 +207,14 @@ pub struct SimulateArgs {
     #[arg(long, conflicts_with_all = ["obs", "obs_dir", "output"])]
     pub obs_only: Option<PathBuf>,
 
+    /// Add a calendar `date` column (rendered from the model `origin` +
+    /// `time_unit`) alongside the numeric `t`/`time` column in trajectory
+    /// and observation output. Numeric time stays the canonical, diff-stable
+    /// default; `--dates` is purely additive (2026-05-22 calendar-time §6.7).
+    /// No-op with a clear error if the model declares no `origin`.
+    #[arg(long)]
+    pub dates: bool,
+
     /// Print resolved run plan without simulating
     #[arg(long)]
     pub dry_run: bool,
