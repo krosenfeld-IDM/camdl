@@ -103,6 +103,45 @@ only `f64`. `Model.origin` is the one date-shaped value that crosses inward, and
 it is inert at runtime (a string we will pre-resolve to an integer cache). This
 seam is the surface to engineer ruthlessly (§6.4, §9).
 
+### 2.2 The core engine is origin-invariant (measured)
+
+A reviewer raised the load-bearing worry that the *engine* might not be
+shift-invariant — that the same data+model fit at a different absolute origin
+gives a different likelihood — which would make the dated loader "faithfully
+feed a broken engine." **Measured, it is invariant.** Shifting `t_start`, the
+data times, and the time-typed params (`tau`) together by `c`, the
+particle-filter log-likelihood is *identical*:
+
+| shift c | −20 | −11 | 0 | +11 | +20 |
+|---|---|---|---|---|---|
+| loglik | −178.5525 | −178.5525 | −178.5525 | −178.5525 | −178.5525 |
+
+— including **negative** origins (`c=−20`, `t_start=−20`), so the §5.5
+negative-time path works when `t_start` is set below the data. Two facts make
+this robust and explain the reviewer's *apparent* non-invariance:
+
+- **The integration window is data-driven, not `simulation.t_end`-driven.** Both
+  `pfilter` and the `fit` path (`if2.rs` iterates `for obs_idx in 0..n_obs`,
+  propagating `t_start → each obs_time`) run from `t_start` to the **last
+  observation**; `simulation.t_end` does not bound the fit. So holding `to`
+  fixed while shifting `from`+data (the reviewer's protocol) does **not** change
+  the fit — ruling out the `to`-confound for both paths.
+- **The remaining failure mode is a model anchor not shifted with the origin.**
+  The only way to break invariance is an absolute time value that does *not*
+  move when the origin moves — e.g. the seed-timing report model's `[fixed]
+  t_rep` (the WA testing-onset date) used in `rho(t) = …/(1+exp(−(t−t_rep)/w))`.
+  Shift `from`/`tau`/data but leave `t_rep` at its absolute value and `(t−t_rep)`
+  changes → the likelihood shifts. This is a *modeling* issue, **not** an engine
+  bug, and it is exactly what the `instant` parameter-kind (§6.7) fixes: an
+  `instant` is origin-relative and re-anchors with the origin; a bare-`real`
+  absolute anchor is the footgun.
+
+**Consequence for the proposal:** no engine-fix is a prerequisite (the core is
+invariant). What *is* load-bearing is (a) the integration-window spec — derive
+it from the data, never floor at `0` (§6.6, now a hard spec) — and (b) that all
+time-typed quantities are origin-relative, which the `instant` kind enforces.
+A shift-invariance golden (§9.0) locks the property as a regression guard.
+
 ---
 
 ## 3. The two sides, and what each one needs to know about time
@@ -357,13 +396,30 @@ existing obs-time/`dt` alignment behavior. A fast/hot epidemic is served by
 choosing small `dt` (§4), in whatever `time_unit` the model uses; it requires no
 date-layer change and no sub-day unit.
 
-### 6.6 Negative time / origin decoupling (made explicit)
+### 6.6 The integration window + origin-relativity (hard spec, not an audit note)
 
-- `origin` is an I/O anchor only. `t_init` (initial-condition time) is a separate
-  quantity, possibly negative or estimated.
-- No code floors time at `0`. The integration interval is derived from the data
-  and `t_init`.
-- Recorded as an invariant the audit (§5.5) checks, not an emergent property.
+This is a spec, because §2.2 shows it is where a *non*-invariance would come
+from if it were left implicit:
+
+- **`t_init` is `simulate.from`.** The model already has it; it is the
+  initial-condition time and the integration start. It **may be negative** and
+  may be estimated. `origin` (the I/O calendar anchor) is *separate* and carries
+  no dynamical meaning.
+- **The integration window is derived from the data, never floored.** The fit
+  runs `t_start → last observation` (data-driven; not `simulation.t_end` — §2.2).
+  The loader sets `t_start = min(t_init, min(obs_t))` and the end at
+  `max(t_init-window-end, max(obs_t))`. An observation outside the window
+  **auto-extends** the window (or hard-errors) — it is **never silently
+  truncated**, and `t_start` is **never** floored to `0`/`origin`.
+- **Guard the `interval_steps` underflow (§5.5).** With the derived window
+  `t_start ≤ min(obs_t)` always holds, so `interval_steps(t_start, obs, dt)` is
+  non-negative by construction; add an explicit check/test so a future regression
+  surfaces as an error, not a `usize` wrap.
+- **All time-typed quantities are origin-relative.** `instant`-kind params (`tau`,
+  `t_init`, and any reporting-onset `t_rep`) are anchored to `origin` and shift
+  *with* it; re-anchoring the origin moves them together (§2.2's failure mode is
+  a `[fixed]` absolute `t_rep` that does not). This is the model-level invariant
+  the `instant` kind (§6.7) enforces.
 
 ### 6.7 Output rendering (report results as dates)
 
@@ -566,6 +622,23 @@ The numeric path is the default and must not move. Dates are purely additive.
 - A model **with** `origin` but a **numeric** data file still uses the numeric
   values directly (origin affects only *date* cells and output rendering) — so
   adding `origin` for date-rendering never silently reinterprets numeric data.
+
+### 9.0.1 Shift-invariance golden — run on the numeric engine, before any date code
+
+The engine must give the same likelihood under a consistent change of origin;
+this is the property the dated loader *relies on*, so it is pinned independently
+of dates (it currently **passes** — §2.2):
+
+- **Numeric-engine shift-invariance:** for a fixed θ, shift `(t_start, the data
+  times, every time-typed param)` by `c ∈ {−20, −11, +11, +20}` and assert the
+  log-likelihood is **bit-identical** to `c=0`. Run on `pfilter` and on a `fit`
+  iteration. Negative `c` (origin after the first obs → negative internal times)
+  is included.
+- **Anti-test (catches the real footgun):** shifting `t_start`+data+`tau` but
+  **leaving an absolute anchor** (`t_rep` as a bare `real`) unshifted **must**
+  change the loglik — and the same model with `t_rep` declared `instant` (so it
+  re-anchors) **must** stay invariant. This locks the §6.7 origin-relativity
+  contract.
 
 ### 9.1 The conversion core (`rata_die` + `D` table), per language
 
