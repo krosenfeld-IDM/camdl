@@ -88,6 +88,13 @@ pub struct InferenceCore {
     /// either mode so you can see how often the path fired.
     #[arg(long, default_value_t = false)]
     pub allow_degenerate_rates: bool,
+
+    /// Time-column format for `--data`: `auto` (detect numeric-vs-date over
+    /// the whole column), `numeric` (force `f64`), or `date` (force ISO
+    /// dates, requires the model's `origin`). Dated columns convert via
+    /// the model `origin` + `time_unit` (2026-05-22 calendar-time).
+    #[arg(long, default_value = "auto")]
+    pub time_format: crate::caltime_load::TimeFormat,
 }
 
 /// `--obs NAME` + `--flow NAME`

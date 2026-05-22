@@ -283,8 +283,15 @@ impl FitRunConfig {
         let mut data_entries: Vec<_> = effective.iter().collect();
         data_entries.sort_by_key(|(k, _)| k.as_str());
 
+        let time_opts = crate::caltime_load::TimeOpts {
+            origin: model.origin.as_deref(),
+            time_unit: &model.time_unit,
+            dt,
+            t_start: compiled.model.simulation.t_start,
+            format: crate::caltime_load::TimeFormat::Auto,
+        };
         for (stream_name, data_path) in &data_entries {
-            let obs = load_observations(data_path, stream_name, dt)?;
+            let obs = load_observations(data_path, stream_name, dt, &time_opts)?;
             let obs_model = model.observations.iter()
                 .find(|o| o.name == **stream_name)
                 .cloned()
@@ -1009,8 +1016,13 @@ pub fn auto_rw_sd_from_value(_current_value: f64, lower: f64, upper: f64, transf
 }
 
 /// Load observations from TSV, validating time alignment with dt.
-fn load_observations(path: &str, column: &str, dt: f64) -> Result<Vec<Observation>, String> {
-    let observations = crate::pfilter::load_data_tsv_column(path, column)?;
+fn load_observations(
+    path: &str,
+    column: &str,
+    dt: f64,
+    opts: &crate::caltime_load::TimeOpts,
+) -> Result<Vec<Observation>, String> {
+    let observations = crate::pfilter::load_data_tsv_column(path, column, opts)?;
     // Validate time alignment
     for obs in &observations {
         let remainder = obs.time % dt;

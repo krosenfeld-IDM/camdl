@@ -9,6 +9,7 @@ mod sampling;
 mod batch;
 mod eval;
 mod pfilter;        // used internally by fit runner for data loading
+mod caltime_load;   // dated-data loader: column detection + date→internal-time (2026-05-22)
 mod data;
 mod fit;
 mod compare;

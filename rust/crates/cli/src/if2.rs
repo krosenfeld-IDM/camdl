@@ -191,7 +191,14 @@ pub fn cmd_if2(a: &crate::args::If2Args) {
     let params = compiled.default_params.clone();
 
     // Load data
-    let observations: Vec<Observation> = crate::pfilter::load_data_tsv_pub(&data_path)
+    let time_opts = crate::caltime_load::TimeOpts {
+        origin: model.origin.as_deref(),
+        time_unit: &model.time_unit,
+        dt,
+        t_start: compiled.model.simulation.t_start,
+        format: a.inference.time_format,
+    };
+    let observations: Vec<Observation> = crate::pfilter::load_data_tsv_pub(&data_path, &time_opts)
         .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
         .into_iter()
         .map(|o| Observation { time: o.time, value: o.value })

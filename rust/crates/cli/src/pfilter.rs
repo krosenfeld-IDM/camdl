@@ -91,8 +91,16 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         .unwrap_or_else(|e| { eprintln!("compile error: {:?}", e); std::process::exit(1); });
     let params = compiled.default_params.clone();
 
-    // Load data
-    let observations = load_data_tsv(&data_path)
+    // Load data — route the time column through the calendar-time boundary
+    // translator (numeric or dated, per --time-format + the model origin).
+    let time_opts = TimeOpts {
+        origin: model.origin.as_deref(),
+        time_unit: &model.time_unit,
+        dt,
+        t_start: compiled.model.simulation.t_start,
+        format: a.inference.time_format,
+    };
+    let observations = load_data_tsv(&data_path, &time_opts)
         .unwrap_or_else(|e| { eprintln!("error loading data: {}", e); std::process::exit(1); });
 
     eprintln!("pfilter: {} observations, {} particles, dt={}, seed={}",
@@ -391,16 +399,22 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
     }
 }
 
-/// Load observation data from a TSV file.
-/// Expected columns: time, then one or more value columns.
-/// Uses the first value column.
-pub fn load_data_tsv_pub(path: &str) -> Result<Vec<Observation>, String> {
-    load_data_tsv(path)
+use crate::caltime_load::{check_substeps_and_grid, convert_time_column, TimeFormat, TimeOpts};
+
+/// Load observation data from a TSV file (first value column), routing the
+/// time column through the calendar-time boundary translator (numeric or
+/// dated, per `opts`). The `_pub` suffix is historical (cross-module reuse).
+pub fn load_data_tsv_pub(path: &str, opts: &TimeOpts) -> Result<Vec<Observation>, String> {
+    load_data_tsv(path, opts)
 }
 
 /// Load observations from a specific column in a TSV file.
 /// The column name must match a header field. First column is always time.
-pub fn load_data_tsv_column(path: &str, column: &str) -> Result<Vec<Observation>, String> {
+pub fn load_data_tsv_column(
+    path: &str,
+    column: &str,
+    opts: &TimeOpts,
+) -> Result<Vec<Observation>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("{}: {}", path, e))?;
     let mut lines = content.lines();
@@ -417,7 +431,11 @@ pub fn load_data_tsv_column(path: &str, column: &str) -> Result<Vec<Observation>
             "column '{}' not found in data file '{}'. Available columns: {:?}",
             column, path, &cols[1..]))?;
 
-    let mut observations = Vec::new();
+    // Two-pass: collect raw time cells + values, then convert the whole
+    // time column at once (whole-column detection — proposal §6.3).
+    let mut time_cells: Vec<&str> = Vec::new();
+    let mut rows: Vec<usize> = Vec::new();
+    let mut values: Vec<f64> = Vec::new();
     for (line_num, line) in lines.enumerate() {
         if line.trim().is_empty() { continue; }
         let fields: Vec<&str> = line.split('\t').collect();
@@ -425,26 +443,18 @@ pub fn load_data_tsv_column(path: &str, column: &str) -> Result<Vec<Observation>
             return Err(format!("line {}: expected {}+ columns, got {}",
                 line_num + 2, col_idx + 1, fields.len()));
         }
-        let time: f64 = fields[0].trim().parse()
-            .map_err(|_| format!("line {}: cannot parse time '{}'", line_num + 2, fields[0]))?;
         let value: f64 = fields[col_idx].trim().parse()
             .map_err(|_| format!("line {}: cannot parse value '{}' in column '{}'",
                 line_num + 2, fields[col_idx], column))?;
-        observations.push(Observation { time, value });
+        time_cells.push(fields[0]);
+        rows.push(line_num + 2);
+        values.push(value);
     }
 
-    for i in 1..observations.len() {
-        if observations[i].time < observations[i - 1].time {
-            return Err(format!(
-                "observations not in chronological order: t={} at row {} follows t={} at row {}",
-                observations[i].time, i + 2, observations[i - 1].time, i + 1));
-        }
-    }
-
-    Ok(observations)
+    finalize_observations(time_cells, values, rows, opts)
 }
 
-fn load_data_tsv(path: &str) -> Result<Vec<Observation>, String> {
+fn load_data_tsv(path: &str, opts: &TimeOpts) -> Result<Vec<Observation>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("{}: {}", path, e))?;
     let mut lines = content.lines();
@@ -454,26 +464,54 @@ fn load_data_tsv(path: &str) -> Result<Vec<Observation>, String> {
         return Err(format!("data file needs at least 2 columns (time, value), got {}", cols.len()));
     }
 
-    let mut observations = Vec::new();
+    let mut time_cells: Vec<&str> = Vec::new();
+    let mut rows: Vec<usize> = Vec::new();
+    let mut values: Vec<f64> = Vec::new();
     for (line_num, line) in lines.enumerate() {
         if line.trim().is_empty() { continue; }
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 2 {
             return Err(format!("line {}: expected 2+ columns, got {}", line_num + 2, fields.len()));
         }
-        let time: f64 = fields[0].trim().parse()
-            .map_err(|_| format!("line {}: cannot parse time '{}'", line_num + 2, fields[0]))?;
         let value: f64 = fields[1].trim().parse()
             .map_err(|_| format!("line {}: cannot parse value '{}'", line_num + 2, fields[1]))?;
-        observations.push(Observation { time, value });
+        time_cells.push(fields[0]);
+        rows.push(line_num + 2);
+        values.push(value);
     }
+
+    finalize_observations(time_cells, values, rows, opts)
+}
+
+/// Shared back-half: convert the raw time column, run the distinct-substep +
+/// off-grid checks, validate chronological order, and zip into `Observation`s.
+fn finalize_observations(
+    time_cells: Vec<&str>,
+    values: Vec<f64>,
+    rows: Vec<usize>,
+    opts: &TimeOpts,
+) -> Result<Vec<Observation>, String> {
+    let row_offset = rows.first().copied().unwrap_or(2);
+    let times = convert_time_column(&time_cells, opts, row_offset)?;
+    let was_dated = opts.format != TimeFormat::Numeric
+        && time_cells.iter().any(|c| {
+            !c.trim().is_empty() && ir::caltime::parse_iso_date(c.trim()).is_ok()
+                && c.trim().parse::<f64>().is_err()
+        });
+    check_substeps_and_grid(&times, &rows, opts, was_dated)?;
+
+    let observations: Vec<Observation> = times
+        .iter()
+        .zip(values.iter())
+        .map(|(&time, &value)| Observation { time, value })
+        .collect();
 
     // Validate chronological ordering (equal times OK — multi-stream observations)
     for i in 1..observations.len() {
         if observations[i].time < observations[i - 1].time {
             return Err(format!(
                 "observations not in chronological order: t={} at row {} follows t={} at row {}",
-                observations[i].time, i + 2, observations[i - 1].time, i + 1
+                observations[i].time, rows[i], observations[i - 1].time, rows[i - 1]
             ));
         }
     }
@@ -660,10 +698,20 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
+    fn numeric_opts() -> TimeOpts<'static> {
+        TimeOpts {
+            origin: None,
+            time_unit: "days",
+            dt: 1.0,
+            t_start: 0.0,
+            format: TimeFormat::Auto,
+        }
+    }
+
     #[test]
     fn load_data_rejects_out_of_order() {
         let path = write_temp_tsv("out_of_order", "time\tcases\n7\t10\n14\t20\n10\t15\n21\t30\n");
-        let result = load_data_tsv(&path);
+        let result = load_data_tsv(&path, &numeric_opts());
         assert!(result.is_err(), "should reject out-of-order times");
         let err = result.err().unwrap();
         assert!(err.contains("not in chronological order"), "error message: {}", err);
@@ -675,7 +723,7 @@ mod tests {
     fn load_data_accepts_equal_times() {
         // Equal times are valid (multi-stream observations at same time point)
         let path = write_temp_tsv("equal_times", "time\tcases\n7\t10\n7\t5\n14\t20\n");
-        let result = load_data_tsv(&path);
+        let result = load_data_tsv(&path, &numeric_opts());
         assert!(result.is_ok(), "equal times should be accepted: {:?}", result.err());
         let obs = result.unwrap();
         assert_eq!(obs.len(), 3);
@@ -685,9 +733,27 @@ mod tests {
     #[test]
     fn load_data_accepts_sorted() {
         let path = write_temp_tsv("sorted", "time\tcases\n7\t10\n14\t20\n21\t30\n");
-        let result = load_data_tsv(&path);
+        let result = load_data_tsv(&path, &numeric_opts());
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 3);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn load_data_dated_matches_numeric() {
+        // §9.4 byte-identity: dated cells against an origin produce the same
+        // observation vector as the equivalent numeric day-numbers.
+        let dated = write_temp_tsv(
+            "dated",
+            "time\tcases\n2020-03-01\t10\n2020-03-08\t20\n2020-03-15\t30\n",
+        );
+        let numeric = write_temp_tsv("dated_num", "time\tcases\n0\t10\n7\t20\n14\t30\n");
+        let mut o = numeric_opts();
+        o.origin = Some("2020-03-01");
+        let from_dates = load_data_tsv(&dated, &o).unwrap();
+        let from_nums = load_data_tsv(&numeric, &numeric_opts()).unwrap();
+        assert_eq!(from_dates, from_nums);
+        std::fs::remove_file(&dated).ok();
+        std::fs::remove_file(&numeric).ok();
     }
 }

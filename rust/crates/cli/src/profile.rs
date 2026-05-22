@@ -481,14 +481,21 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // multi-stream rewrite, and matches what `camdl pfilter` does.
     // For multi-stream resolution every column must match by name;
     // no ambiguity is allowed.
+    let time_opts = crate::caltime_load::TimeOpts {
+        origin: model.origin.as_deref(),
+        time_unit: &model.time_unit,
+        dt,
+        t_start: compiled.model.simulation.t_start,
+        format: a.inference.time_format,
+    };
     let load_stream_obs = |column: &str| -> Vec<Observation> {
         let result = if resolved_obs.len() == 1 {
             // Single stream: try by-name first, fall back to first
             // value column if the TSV has only (time, value).
-            crate::pfilter::load_data_tsv_column(&data_path, column)
-                .or_else(|_| crate::pfilter::load_data_tsv_pub(&data_path))
+            crate::pfilter::load_data_tsv_column(&data_path, column, &time_opts)
+                .or_else(|_| crate::pfilter::load_data_tsv_pub(&data_path, &time_opts))
         } else {
-            crate::pfilter::load_data_tsv_column(&data_path, column)
+            crate::pfilter::load_data_tsv_column(&data_path, column, &time_opts)
         };
         match result {
             Ok(v) => v.into_iter().map(|o| Observation { time: o.time, value: o.value }).collect(),

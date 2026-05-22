@@ -761,12 +761,21 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         let mut per_stream_obs = Vec::new();
         let mut data_hashes: HashMap<String, String> = HashMap::new();
         let mut canonical_times: Option<Vec<f64>> = None;
+        // Survey hardcodes dt=1.0 (see cmd_survey); reuse it for the dated-
+        // loader's substep/grid checks.
+        let time_opts = crate::caltime_load::TimeOpts {
+            origin: model.origin.as_deref(),
+            time_unit: &model.time_unit,
+            dt: 1.0,
+            t_start: compiled.model.simulation.t_start,
+            format: crate::caltime_load::TimeFormat::Auto,
+        };
         for (stream_name, data_path) in &entries {
             let obs_model_ir = model.observations.iter()
                 .find(|o| o.name == **stream_name).cloned()
                 .ok_or_else(|| format!(
                     "no observation block named '{}' in model", stream_name))?;
-            let observations = load_observations_from_tsv(data_path, stream_name)?;
+            let observations = load_observations_from_tsv(data_path, stream_name, &time_opts)?;
             let times: Vec<f64> = observations.iter().map(|o| o.time).collect();
             match &canonical_times {
                 None => canonical_times = Some(times),
@@ -875,8 +884,15 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         sorted_obs.sort_by(|a, b| a.name.cmp(&b.name));
 
         let mut canonical_times: Option<Vec<f64>> = None;
+        let time_opts = crate::caltime_load::TimeOpts {
+            origin: model.origin.as_deref(),
+            time_unit: &model.time_unit,
+            dt: 1.0,
+            t_start: compiled.model.simulation.t_start,
+            format: crate::caltime_load::TimeFormat::Auto,
+        };
         for obs in sorted_obs {
-            let observations = load_observations_from_tsv(&data_path, &obs.name)?;
+            let observations = load_observations_from_tsv(&data_path, &obs.name, &time_opts)?;
             let times: Vec<f64> = observations.iter().map(|o| o.time).collect();
             match &canonical_times {
                 None => canonical_times = Some(times),
@@ -914,13 +930,15 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
 /// Load (time, value) pairs from a TSV column. Mirrors profile's
 /// load helper: by-name lookup with fallback to column 1 for 2-column
 /// TSVs.
-fn load_observations_from_tsv(path: &str, column: &str)
-    -> Result<Vec<Observation>, String>
-{
-    let by_name = crate::pfilter::load_data_tsv_column(path, column);
+fn load_observations_from_tsv(
+    path: &str,
+    column: &str,
+    opts: &crate::caltime_load::TimeOpts,
+) -> Result<Vec<Observation>, String> {
+    let by_name = crate::pfilter::load_data_tsv_column(path, column, opts);
     let raw = match by_name {
         Ok(v) => v,
-        Err(_) => crate::pfilter::load_data_tsv_pub(path)?,
+        Err(_) => crate::pfilter::load_data_tsv_pub(path, opts)?,
     };
     Ok(raw.into_iter().map(|o| Observation { time: o.time, value: o.value }).collect())
 }

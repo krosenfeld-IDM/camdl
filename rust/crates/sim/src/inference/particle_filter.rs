@@ -13,7 +13,7 @@ use super::traits::{ProcessModel, ObservationModel, SMCConfig};
 use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, RESAMPLE_RNG_STREAM, init_particle_rngs};
 use super::resampling::systematic_resample;
 /// Observation: one data point at a specific time.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Observation {
     pub time: f64,
     pub value: f64,
