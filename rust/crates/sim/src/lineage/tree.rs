@@ -333,10 +333,65 @@ impl PrunedNode {
     }
 }
 
+/// An individual's **deme as a function of time**: the ordered `(entry_time,
+/// deme)` segments it occupies, derived from the `deme` column of its line-list
+/// events. A non-migrating individual has exactly one segment (its birth deme);
+/// each migration appends a segment. This is what makes human migration correct:
+/// a migrant's deme at *sampling* time differs from its birth deme, and the
+/// structured-coalescent migration term (future) reads deme-at-arbitrary-time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DemeTrajectory {
+    /// `(entry_time, deme)`, sorted ascending by time, consecutive equal demes
+    /// collapsed. Always non-empty; `segments[0].0` is the birth time.
+    segments: Vec<(f64, DemeId)>,
+}
+
+impl DemeTrajectory {
+    /// Build from raw `(time, deme)` focal-event pairs (any order). Sorts by
+    /// time and collapses consecutive equal demes (recovery in the same patch is
+    /// not a deme change).
+    fn from_events(mut raw: Vec<(f64, DemeId)>) -> Self {
+        debug_assert!(!raw.is_empty(), "an individual must have ≥1 focal event");
+        raw.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut segments: Vec<(f64, DemeId)> = Vec::with_capacity(raw.len());
+        for (t, d) in raw {
+            match segments.last() {
+                Some(&(_, last_deme)) if last_deme == d => {} // no deme change
+                _ => segments.push((t, d)),
+            }
+        }
+        DemeTrajectory { segments }
+    }
+
+    /// The deme at the individual's birth/infection (first segment).
+    pub fn birth_deme(&self) -> DemeId {
+        self.segments[0].1
+    }
+
+    /// The deme the individual occupies at time `t`: the last segment whose
+    /// entry time is `≤ t` (the birth deme if `t` precedes birth).
+    pub fn deme_at(&self, t: f64) -> DemeId {
+        let mut deme = self.segments[0].1;
+        for &(entry, d) in &self.segments {
+            if entry <= t {
+                deme = d;
+            } else {
+                break;
+            }
+        }
+        deme
+    }
+
+    /// Number of demes visited (1 = never migrated).
+    pub fn n_segments(&self) -> usize {
+        self.segments.len()
+    }
+}
+
 /// Per-individual facts derived from the line list, independent of the forest
-/// topology. The sampling layer draws on these (deme + removal time); the tree
-/// builder uses the resulting per-individual sampling time to place pendant
-/// tips.
+/// topology. The sampling layer draws on these (deme trajectory + removal time);
+/// the tree builder uses the resulting per-individual sampling time to place
+/// pendant tips.
 ///
 /// - `infection_time`: when the individual was born — its earliest focal event
 ///   time (the lineage event that created it, or its seed/import time). Equal to
@@ -345,14 +400,14 @@ impl PrunedNode {
 ///   time at which it is the focal individual of a *non-lineage* event
 ///   (progression / recovery / death; `parent_kind == none`). `None` if it never
 ///   appears in such an event (still infected at the simulation horizon).
-/// - `deme`: the individual's stratum, read from the `deme` column of its birth
-///   event (its destination stratum at infection / seeding).
+/// - `trajectory`: the individual's deme over time (one segment if it never
+///   migrated). Use [`DemeTrajectory::deme_at`] for the deme at a given time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndividualSummary {
     pub id: IndividualId,
     pub infection_time: f64,
     pub removal_time: Option<f64>,
-    pub deme: DemeId,
+    pub trajectory: DemeTrajectory,
 }
 
 impl IndividualSummary {
@@ -361,6 +416,13 @@ impl IndividualSummary {
     /// reaches the end of observation rather than its (unknown) removal.
     pub fn removal_or(&self, sim_end: f64) -> f64 {
         self.removal_time.unwrap_or(sim_end)
+    }
+
+    /// The deme the individual is in **when sampled** (its removal time, or
+    /// `sim_end` if never removed) — the correct stratum for surveillance-style
+    /// sampling, as opposed to where it was infected.
+    pub fn deme_at_sampling(&self, sim_end: f64) -> DemeId {
+        self.trajectory.deme_at(self.removal_or(sim_end))
     }
 }
 
@@ -373,45 +435,79 @@ impl IndividualSummary {
 /// `infection_time = 0` and `removal_time = None` — matching the forest's
 /// treatment of seed roots.
 pub fn summarize(entries: &[LineListEntry]) -> (HashMap<IndividualId, IndividualSummary>, f64) {
-    let mut map: HashMap<IndividualId, IndividualSummary> = HashMap::new();
+    /// Per-individual accumulator: removal time, the raw `(time, deme)` focal
+    /// events that become the deme trajectory, and the running current deme
+    /// (to tell a migration from a removal).
+    struct Acc {
+        removal: Option<f64>,
+        segments: Vec<(f64, DemeId)>,
+        cur_deme: Option<DemeId>,
+    }
+
+    let mut acc: HashMap<IndividualId, Acc> = HashMap::new();
     let mut sim_end = 0.0_f64;
 
+    // Entries are in recorded (time) order, so each individual's events arrive
+    // in order — required to classify deme changes correctly.
     for e in entries {
         sim_end = sim_end.max(e.time);
         let is_lineage = matches!(e.parent, ParentRef::Individual(_));
 
-        // Focal individual: born at its earliest focal-event time; the deme at
-        // that earliest event is its stratum.
-        let s = map.entry(e.individual).or_insert(IndividualSummary {
-            id: e.individual,
-            infection_time: e.time,
-            removal_time: None,
-            deme: e.deme,
-        });
-        if e.time < s.infection_time {
-            s.infection_time = e.time;
-            s.deme = e.deme;
-        }
-        // A non-lineage focal event is a progression / removal: take the latest
-        // such time as the removal time.
-        if !is_lineage {
-            s.removal_time = Some(match s.removal_time {
-                Some(t) => t.max(e.time),
-                None => e.time,
-            });
+        let a = acc
+            .entry(e.individual)
+            .or_insert(Acc { removal: None, segments: Vec::new(), cur_deme: None });
+        // Every focal event records the individual's deme at that time.
+        a.segments.push((e.time, e.deme));
+
+        if is_lineage {
+            // Infection (birth): sets the initial deme.
+            a.cur_deme = Some(e.deme);
+        } else {
+            // A non-lineage focal event is either a migration (deme changes —
+            // the individual stays infectious, so it is NOT a removal) or a
+            // removal/progression in place (deme unchanged — recovery/death).
+            // Take the latest in-place event as the removal time; migrations are
+            // interior to the infectious period.
+            match a.cur_deme {
+                Some(cur) if cur != e.deme => {
+                    a.cur_deme = Some(e.deme); // migration, not a removal
+                }
+                _ => {
+                    a.removal = Some(match a.removal {
+                        Some(t) => t.max(e.time),
+                        None => e.time,
+                    });
+                }
+            }
         }
 
         // Ensure a pure-parent seed (only ever a parent_id) exists as a root
-        // individual: infection_time 0, never removed, deme from parent_deme.
+        // individual: a single trajectory segment at t=0 in its parent deme.
         if let ParentRef::Individual(p) = e.parent {
-            map.entry(p).or_insert(IndividualSummary {
-                id: p,
-                infection_time: 0.0,
-                removal_time: None,
-                deme: e.parent_deme.unwrap_or(0),
+            let pd = e.parent_deme.unwrap_or(0);
+            acc.entry(p).or_insert(Acc {
+                removal: None,
+                segments: vec![(0.0, pd)],
+                cur_deme: Some(pd),
             });
         }
     }
+
+    let map = acc
+        .into_iter()
+        .map(|(id, a)| {
+            let trajectory = DemeTrajectory::from_events(a.segments);
+            (
+                id,
+                IndividualSummary {
+                    id,
+                    infection_time: trajectory.segments[0].0,
+                    removal_time: a.removal,
+                    trajectory,
+                },
+            )
+        })
+        .collect();
 
     (map, sim_end)
 }
@@ -497,7 +593,10 @@ impl Stratified {
 
 impl SamplingScheme for Stratified {
     fn sample(&self, s: &IndividualSummary, rng: &mut StatefulRng) -> Option<f64> {
-        let p = self.rate_for(s.deme);
+        // Sample at the deme the individual is in *when sampled*, not where it
+        // was infected — surveillance observes people where they are. For a
+        // migrant these differ; for a non-migrant the trajectory is one segment.
+        let p = self.rate_for(s.deme_at_sampling(self.sim_end));
         if rng.uniform() < p {
             Some(s.removal_or(self.sim_end))
         } else {
@@ -790,17 +889,71 @@ mod tests {
         let s1 = &s[&IndividualId(1)];
         assert_eq!(s1.infection_time, 1.0);
         assert_eq!(s1.removal_time, Some(4.0));
-        assert_eq!(s1.deme, 0);
+        assert_eq!(s1.trajectory.birth_deme(), 0);
         let s2 = &s[&IndividualId(2)];
         assert_eq!(s2.infection_time, 2.0);
         assert_eq!(s2.removal_time, None);
-        assert_eq!(s2.deme, 1);
+        assert_eq!(s2.trajectory.birth_deme(), 1);
         // Never-removed individual falls back to sim_end.
         assert_eq!(s2.removal_or(sim_end), 4.0);
         // Seed (pure parent) exists as a root with infection_time 0.
         let s0 = &s[&IndividualId(0)];
         assert_eq!(s0.infection_time, 0.0);
         assert_eq!(s0.removal_time, None);
+    }
+
+    /// A non-lineage focal event that *changes* deme is a migration (deme=1).
+    fn migration_entry(t: f64, ind: u64, to_deme: u32) -> LineListEntry {
+        LineListEntry {
+            time: t,
+            transition: 2,
+            individual: IndividualId(ind),
+            source: Some(2),      // I in source deme
+            destination: Some(3), // I in destination deme
+            deme: to_deme,
+            parent: ParentRef::None,
+            parent_deme: None,
+            attribution_logprob: 0.0,
+        }
+    }
+
+    #[test]
+    fn deme_trajectory_tracks_human_migration() {
+        // Individual 1: infected in deme 0 (t=1), migrates to deme 1 (t=3),
+        // recovers in deme 1 (t=5). Individual 2: same but never recovers — the
+        // migration must NOT be mistaken for a removal.
+        let entries = vec![
+            lineage_entry_deme(1.0, 1, 0, 1, 0), // infection, deme 0
+            lineage_entry_deme(1.0, 2, 0, 1, 0), // infection, deme 0
+            migration_entry(3.0, 1, 1),          // 1 migrates 0 -> 1
+            migration_entry(3.0, 2, 1),          // 2 migrates 0 -> 1
+            removal_entry(5.0, 1, 3, Some(5)),   // 1 recovers in deme 1 (deme col = 0 in helper)
+        ];
+        // removal_entry hardcodes deme=0; for individual 1 the recovery is in
+        // deme 1, but deme-change detection only needs cur_deme tracking — its
+        // recovery deme matching cur_deme is what marks a removal. Patch the
+        // recovery row's deme to 1 so it does not look like a migration back.
+        let mut entries = entries;
+        if let Some(last) = entries.last_mut() {
+            last.deme = 1;
+        }
+        let (s, sim_end) = summarize(&entries);
+        assert_eq!(sim_end, 5.0);
+
+        // Migrant who recovered.
+        let s1 = &s[&IndividualId(1)];
+        assert_eq!(s1.trajectory.birth_deme(), 0, "born in deme 0");
+        assert_eq!(s1.trajectory.n_segments(), 2, "one migration → two segments");
+        assert_eq!(s1.trajectory.deme_at(2.0), 0, "before migration: deme 0");
+        assert_eq!(s1.trajectory.deme_at(4.0), 1, "after migration: deme 1");
+        assert_eq!(s1.removal_time, Some(5.0), "recovery is the removal, not migration");
+        assert_eq!(s1.deme_at_sampling(sim_end), 1, "sampled in its current (post-migration) deme");
+
+        // Migrant still infectious at the horizon: migration must not be read as
+        // a removal.
+        let s2 = &s[&IndividualId(2)];
+        assert_eq!(s2.removal_time, None, "migration is not a removal");
+        assert_eq!(s2.deme_at_sampling(sim_end), 1, "sampled at horizon in deme 1");
     }
 
     #[test]
@@ -873,7 +1026,7 @@ mod tests {
             let mut rng = StatefulRng::new(seed);
             let sampled = select_samples(&scheme, &summaries, &mut rng);
             for id in sampled.keys() {
-                if summaries[id].deme == 0 {
+                if summaries[id].deme_at_sampling(sim_end) == 0 {
                     sum_d0 += 1;
                 } else {
                     sum_d1 += 1;
