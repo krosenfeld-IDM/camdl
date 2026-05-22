@@ -2321,6 +2321,37 @@ let test_date_requires_origin () =
   let found_e220 = List.exists (fun d -> d.Diagnostics.code = "E220") errors in
   Alcotest.(check bool) "E220 emitted when origin missing" true found_e220
 
+(* A negative lower bound (e.g. a seed time before the origin, `tau : instant
+   in [-40, 120]`) must survive — not be silently floored to 0. Regression for
+   the resolve_bounds const-eval fix (negated literals were hitting the 0.0
+   fallback). *)
+let test_negative_lower_bound () =
+  let src = {|
+    time_unit = 'days
+    compartments { S, I, R }
+    parameters {
+      beta : rate
+      gamma : rate
+      tau  : real in [-40.0, 120.0]
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * (I / N) + tau * 0.0
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = 990  I = 10 }
+    simulate { from = 0 'days  to = 60 'days }
+  |} in
+  match Compiler.compile ~name:"t" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    let tau = List.find (fun (p : Ir.parameter) -> p.name = "tau") m.Ir.parameters in
+    (match tau.Ir.bounds with
+     | Some (lo, hi) ->
+       Alcotest.(check (float 1e-9)) "lower bound preserved (not floored to 0)" (-40.0) lo;
+       Alcotest.(check (float 1e-9)) "upper bound preserved" 120.0 hi
+     | None -> Alcotest.fail "tau should carry bounds")
+
 (* ── Prior distribution syntax ──────────────────────────────────────────
    Test that ~ prior(...) syntax parses and produces correct IR priors. *)
 
@@ -4213,6 +4244,7 @@ let () =
     "origin_date", [
       Alcotest.test_case "date() converts to float days since origin" `Quick test_date_to_const;
       Alcotest.test_case "date() without origin → E220"               `Quick test_date_requires_origin;
+      Alcotest.test_case "negative lower bound preserved (not floored to 0)" `Quick test_negative_lower_bound;
     ];
     "priors", [
       Alcotest.test_case "~ log_normal(mu, sigma) parses"                `Quick test_prior_log_normal;

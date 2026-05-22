@@ -1668,19 +1668,9 @@ let expand_transitions ctx =
 
 (* ── Parameter expansion ─────────────────────────────────────────────────── *)
 
-let resolve_float_expr_simple ctx e =
-  let ir = normalize_expr (resolve_expr ctx [] e) in
-  match ir with
-  | Ir.Const f -> f
-  | _ -> 0.0
-
-let resolve_bounds ctx pbounds =
-  match pbounds with
-  | None -> None
-  | Some (lo_e, hi_e) ->
-    let lo = resolve_float_expr_simple ctx lo_e in
-    let hi = resolve_float_expr_simple ctx hi_e in
-    Some (lo, hi)
+(* resolve_float_expr_simple / resolve_bounds are defined below, after
+   eval_const_expr, so bounds can const-evaluate negative/arithmetic literals
+   (e.g. `in [-40, 120]` for an `instant` parameter). *)
 
 let param_kind_to_string = function
   | PRate        -> "rate"
@@ -1742,6 +1732,24 @@ let resolve_float_expr ctx e =
         ~hint:"Use a numeric literal or arithmetic of literals."
         ();
       0.0
+
+(* Resolve a bound expression to a float. Bounds are compile-time constants —
+   a numeric literal or arithmetic of literals, possibly **negative** (e.g. a
+   seed time `tau : instant in [-40, 120]` that may fall before the origin).
+   Const-evaluates via `eval_const_expr` so negated/arithmetic literals resolve
+   correctly; falls back to 0.0 for a genuinely non-constant bound. *)
+let resolve_float_expr_simple ctx e =
+  if is_const_expr e then eval_const_expr ctx e
+  else
+    match normalize_expr (resolve_expr ctx [] e) with
+    | Ir.Const f -> f
+    | _ -> 0.0
+
+let resolve_bounds ctx pbounds =
+  match pbounds with
+  | None -> None
+  | Some (lo_e, hi_e) ->
+    Some (resolve_float_expr_simple ctx lo_e, resolve_float_expr_simple ctx hi_e)
 
 (* ── Prior distribution resolution ─────────────────────────────────────── *)
 
