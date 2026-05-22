@@ -512,6 +512,55 @@ pub fn summarize(entries: &[LineListEntry]) -> (HashMap<IndividualId, Individual
     (map, sim_end)
 }
 
+/// Fraction of transmission edges that **cross demes** — the infector
+/// (`parent_deme`) is in a different deme than the newly infected child
+/// (`deme`), using the **event-time** demes recorded in the line list. This is
+/// the genealogical signature that distinguishes the two ways patches couple:
+///
+/// - **pathogen migration** (cross-patch force of infection): a *q*-infective
+///   infects a *p*-susceptible → cross-deme edge → **fraction > 0**.
+/// - **human migration** (people move, transmission is local): every
+///   transmission is within-deme → **fraction = 0**; the deme structure is
+///   carried by branch-wise migration ([`migration_event_count`]) instead.
+///
+/// Must use the recorded event-time `parent_deme`/`deme`, never an individual's
+/// *birth* deme: a migrant infected in *a*, moved to *b*, transmitting locally
+/// in *b* is a within-deme transmission, but birth-deme scoring would mislabel
+/// it as *a→b*. Returns `None` if there are no transmission edges.
+pub fn cross_deme_transmission_fraction(entries: &[LineListEntry]) -> Option<f64> {
+    let (mut n, mut cross) = (0u64, 0u64);
+    for e in entries {
+        if matches!(e.parent, ParentRef::Individual(_)) {
+            n += 1;
+            if e.parent_deme.is_some_and(|pd| pd != e.deme) {
+                cross += 1;
+            }
+        }
+    }
+    (n > 0).then(|| cross as f64 / n as f64)
+}
+
+/// Total number of **migration events**: non-lineage focal events that change an
+/// individual's deme (the host physically moved while infectious). The mirror of
+/// [`cross_deme_transmission_fraction`] — human migration > 0, pathogen
+/// migration = 0. Requires `entries` in recorded (time) order to detect deme
+/// changes (as written by [`super::realize`]).
+pub fn migration_event_count(entries: &[LineListEntry]) -> u64 {
+    let mut cur: HashMap<IndividualId, DemeId> = HashMap::new();
+    let mut count = 0u64;
+    for e in entries {
+        if matches!(e.parent, ParentRef::Individual(_)) {
+            cur.insert(e.individual, e.deme); // infection sets the deme
+        } else if let Some(&cd) = cur.get(&e.individual) {
+            if cd != e.deme {
+                count += 1;
+                cur.insert(e.individual, e.deme); // migration
+            }
+        }
+    }
+    count
+}
+
 /// A scheme that decides, per individual, whether it is sampled and the
 /// *sampling time* at which its pendant tip is placed. The candidate set is
 /// **all** individuals (an infector can be a tip), not just chain endpoints.
@@ -954,6 +1003,32 @@ mod tests {
         let s2 = &s[&IndividualId(2)];
         assert_eq!(s2.removal_time, None, "migration is not a removal");
         assert_eq!(s2.deme_at_sampling(sim_end), 1, "sampled at horizon in deme 1");
+    }
+
+    #[test]
+    fn cross_deme_and_migration_statistics() {
+        // Pathogen-style: one within-deme transmission (parent_deme 0, deme 0)
+        // and one cross-deme (parent_deme 0, deme 1). No migration events.
+        let p = vec![
+            lineage_entry_deme(1.0, 1, 0, 1, 0), // within
+            lineage_entry_deme(2.0, 2, 0, 1, 1), // cross (helper sets parent_deme=0)
+        ];
+        assert_eq!(cross_deme_transmission_fraction(&p), Some(0.5));
+        assert_eq!(migration_event_count(&p), 0);
+
+        // Human-style: local transmissions + a migration. Individual 1 migrates
+        // 0→1, then infects 2 locally in deme 1 (parent_deme 1 = child deme).
+        let mut infect2 = lineage_entry_deme(4.0, 2, 1, 1, 1);
+        infect2.parent_deme = Some(1);
+        let h = vec![
+            lineage_entry_deme(1.0, 1, 0, 1, 0), // within (parent_deme 0, deme 0)
+            migration_entry(3.0, 1, 1),          // 1 migrates 0 → 1
+            infect2,                             // within (parent_deme 1, deme 1)
+        ];
+        assert_eq!(cross_deme_transmission_fraction(&h), Some(0.0));
+        assert_eq!(migration_event_count(&h), 1);
+
+        assert_eq!(cross_deme_transmission_fraction(&[]), None);
     }
 
     #[test]

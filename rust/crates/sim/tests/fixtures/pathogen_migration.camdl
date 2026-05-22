@@ -1,0 +1,31 @@
+# Pathogen migration: patches couple through the FORCE OF INFECTION only.
+# Patch p's susceptibles are infected by patch q's infectives (kappa·S[p]·I[q]/N[q]);
+# nobody moves. In the genealogy, deme changes happen AT transmission nodes, so
+# the cross-deme transmission fraction is > 0 (grows with kappa).
+#
+# Paired with human_migration.camdl: calibrated to similar incidence
+# (kappa ~= 0.01 here vs m ~= 0.005 there give comparable patch-b attack rate
+# and peak timing), but structurally opposite genealogies. See proposal
+# docs/dev/proposals/2026-05-21-human-vs-pathogen-migration.md and the
+# lineage_migration_e2e test.
+
+time_unit = 'days
+compartments { S, I, R }
+dimensions { patch = [a, b] }
+stratify(by = patch)
+parameters {
+  beta  : rate in [0.001, 5.0]
+  gamma : rate in [0.01, 1.0]
+  kappa : rate in [0.0, 1.0]
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  #[lineage]
+  infection[p in patch] : S[p] --> I[p]  @ beta * S[p] * I[p] / N[p]
+  #[lineage]
+  importation[p in patch, q in patch] : S[p] --> I[p]
+    @ kappa * S[p] * I[q] / N[q] where p != q
+  recovery[p in patch]  : I[p] --> R[p]  @ gamma * I[p]
+}
+init { S[a] = 4990  I[a] = 10  S[b] = 5000 }
+simulate { from = 0 'days  to = 150 'days }

@@ -1,0 +1,26 @@
+# Human migration: transmission is LOCAL within each patch; infectives physically
+# MOVE between patches (m·I[p]). In the genealogy, every transmission is
+# within-deme (cross-deme transmission fraction = 0); the deme structure is
+# carried by branch-wise migration events instead.
+#
+# Paired with pathogen_migration.camdl: calibrated to similar incidence but
+# structurally opposite genealogies. See the proposal + lineage_migration_e2e.
+
+time_unit = 'days
+compartments { S, I, R }
+dimensions { patch = [a, b] }
+stratify(by = patch)
+parameters {
+  beta  : rate in [0.001, 5.0]
+  gamma : rate in [0.01, 1.0]
+  m     : rate in [0.0, 1.0]
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  #[lineage]
+  infection[p in patch] : S[p] --> I[p]  @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p]  @ gamma * I[p]
+  migration[p in patch, q in patch] : I[p] --> I[q]  @ m * I[p] where p != q
+}
+init { S[a] = 4990  I[a] = 10  S[b] = 5000 }
+simulate { from = 0 'days  to = 150 'days }
