@@ -94,6 +94,72 @@ pub fn cmd_fit_summary(args: &FitSummaryArgs) {
     }
 }
 
+/// Calendar context for date-rendering `instant`-kind estimands
+/// (2026-05-22 calendar-time §6.7). Sourced once per `fit summary`
+/// invocation from the fit dir's model (path via `FitMeta.model`),
+/// then shared by every formatter. When the model declares no
+/// `origin`, or cannot be loaded (moved path, parse error), rendering
+/// degrades to numeric-only — `date_for` returns `None` and no
+/// formatter changes shape.
+#[derive(Debug, Clone, Default)]
+struct CalendarContext {
+    /// `origin` date string from the model (`Some` iff declared).
+    origin: Option<String>,
+    /// Model `time_unit` (`days`/`weeks`/`months`/`years`); the divisor
+    /// for the internal-time ↔ date map.
+    time_unit: String,
+    /// Names of parameters declared `instant`-kind. Only these render
+    /// as dates; `duration`-kind and all other kinds stay numeric.
+    instant_params: std::collections::HashSet<String>,
+}
+
+impl CalendarContext {
+    /// Compute the calendar date for a rendered parameter, or `None`
+    /// when it is not an `instant` estimand or no `origin` is set.
+    /// Single source of truth for all four formatters so the date map
+    /// is applied identically (text / json / md / latex).
+    fn date_for(&self, param: &str, value: f64) -> Option<String> {
+        let origin = self.origin.as_deref()?;
+        if !self.instant_params.contains(param) {
+            return None;
+        }
+        // `internal_to_date` only errors on a malformed origin or an
+        // unknown time_unit; both would have failed earlier loads, so a
+        // None here is a safe numeric-only fallback rather than a crash.
+        ir::caltime::internal_to_date(origin, value, &self.time_unit).ok()
+    }
+}
+
+/// Load the calendar context from a fit dir: read the model path from
+/// the top-level `run.json` (`FitMeta.model`), load that model, and
+/// extract `origin`, `time_unit`, and the `instant`-kind parameter
+/// set. Any failure (no run.json, non-fit run, model moved/unparseable)
+/// degrades to an empty context (numeric-only rendering) — never panics.
+fn load_calendar_context(fit_dir: &Path) -> CalendarContext {
+    let model_path = match Run::read(fit_dir) {
+        Ok(r) => match r.kind {
+            RunKind::Fit(m) => m.model,
+            _ => return CalendarContext::default(),
+        },
+        Err(_) => return CalendarContext::default(),
+    };
+    let model = match crate::util::load_model(&model_path) {
+        Ok((m, _)) => m,
+        Err(_) => return CalendarContext::default(),
+    };
+    let instant_params = model
+        .parameters
+        .iter()
+        .filter(|p| p.param_kind.as_deref() == Some("instant"))
+        .map(|p| p.name.clone())
+        .collect();
+    CalendarContext {
+        origin: model.origin.clone(),
+        time_unit: model.time_unit.clone(),
+        instant_params,
+    }
+}
+
 /// One resolved fit-stage to render: stage name, on-disk directory,
 /// and method (so consumers can pattern-match on `MethodResult` once
 /// the typed payload is loaded).
@@ -183,7 +249,8 @@ fn discover_stages(fit_dir: &Path) -> Vec<ResolvedStage> {
 
 fn format_text(dir: &str, args: &FitSummaryArgs, stages: &[ResolvedStage], strict: bool) {
     let use_color = should_use_color(args.no_color);
-    let fmt = Formatter { use_color };
+    let cal = load_calendar_context(Path::new(dir));
+    let fmt = Formatter { use_color, cal };
     let mut had_provenance_failure = false;
 
     print!("{}", fmt.fit_header(dir));
@@ -271,7 +338,10 @@ fn format_text(dir: &str, args: &FitSummaryArgs, stages: &[ResolvedStage], stric
                 }
                 println!("    θ̂ ({} estimated params):", r.theta_hat.len());
                 for (k, v) in &r.theta_hat {
-                    println!("      {:<14} = {}", k, v);
+                    match fmt.cal.date_for(k, *v) {
+                        Some(date) => println!("      {:<14} = {}  ({})", k, v, date),
+                        None => println!("      {:<14} = {}", k, v),
+                    }
                 }
                 prev_loglik = Some(r.best_loglik);
                 prev_stage_name = Some(resolved.stage.clone());
@@ -330,6 +400,9 @@ enum BayesianView<'a> {
 
 struct Formatter {
     use_color: bool,
+    /// Calendar context for date-rendering `instant`-kind estimands.
+    /// Empty (no origin / no instant params) → numeric-only.
+    cal: CalendarContext,
 }
 
 struct StageBlock {
@@ -581,8 +654,12 @@ impl Formatter {
             } else {
                 String::new()
             };
-            s.push_str(&format!("    {:12} = {:<12.6}  {}{}\n",
-                k, v, agreement_str, ivp_marker));
+            let date_marker = match self.cal.date_for(k, v) {
+                Some(date) => format!("  ({})", date),
+                None => String::new(),
+            };
+            s.push_str(&format!("    {:12} = {:<12.6}  {}{}{}\n",
+                k, v, agreement_str, ivp_marker, date_marker));
         }
         s.push('\n');
         s
@@ -699,12 +776,17 @@ impl Formatter {
                     Some(v) => format!("{:>10.0}", v),
                     None => format!("{:>10}", "—"),
                 };
+                let date_marker = match self.cal.date_for(name, *mean) {
+                    Some(date) => format!("  ({})", date),
+                    None => String::new(),
+                };
                 s.push_str(&format!(
-                    "    {:14} {:>14.6} {} {:>8}\n",
+                    "    {:14} {:>14.6} {} {:>8}{}\n",
                     name,
                     mean,
                     ess_str,
-                    "" // per-param R̂ not surfaced in this view
+                    "", // per-param R̂ not surfaced in this view
+                    date_marker
                 ));
             }
         }
@@ -913,6 +995,15 @@ pub struct StageReport {
     /// stages.
     #[serde(rename = "_heuristic")]
     pub heuristic: Option<HeuristicReport>,
+    /// Calendar dates for `instant`-kind estimands (param name → ISO
+    /// date), present when the model declares an `origin` (2026-05-22
+    /// calendar-time §6.7). Covers IF2 point estimates and Bayesian
+    /// posterior means alike. Additive field — empty (and omitted from
+    /// JSON) for origin-less models, so existing consumers are
+    /// unaffected; the md / latex renderers read it to annotate the
+    /// posterior table value cell.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub param_dates: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -947,6 +1038,12 @@ pub struct ParameterReport {
     pub estimate: f64,
     pub chain_agreement: Option<f64>,
     pub ivp: bool,
+    /// Calendar date of `estimate` for `instant`-kind params when the
+    /// model declares an `origin` (2026-05-22 calendar-time §6.7).
+    /// Additive field — `None`/omitted for non-instant params and
+    /// origin-less models, so existing JSON consumers are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -993,6 +1090,7 @@ pub struct HeuristicReport {
 /// and LaTeX formatters. Pure on its inputs (file system + the args
 /// it was called with).
 fn build_summary_doc(dir: &str, stages: &[ResolvedStage]) -> FitSummaryDoc {
+    let cal = load_calendar_context(Path::new(dir));
     let mut stage_reports: Vec<StageReport> = Vec::new();
     let mut prev_loglik: Option<f64> = None;
     let mut prev_stage_name_owned: Option<String> = None;
@@ -1013,6 +1111,7 @@ fn build_summary_doc(dir: &str, stages: &[ResolvedStage]) -> FitSummaryDoc {
                     typed.clone(),
                     prev_loglik,
                     prev_name,
+                    &cal,
                 );
                 prev_loglik = Some(state.best_loglik);
                 r
@@ -1022,6 +1121,7 @@ fn build_summary_doc(dir: &str, stages: &[ResolvedStage]) -> FitSummaryDoc {
                     &resolved.stage,
                     &resolved.method,
                     typed.clone(),
+                    &cal,
                 );
                 if let Some(MethodResult::Pmmh(p)) = &typed {
                     prev_loglik = Some(p.map_loglik);
@@ -1104,11 +1204,24 @@ fn bayesian_stage_report(
     stage: &str,
     method: &str,
     method_result: Option<MethodResult>,
+    cal: &CalendarContext,
 ) -> StageReport {
     let (n_chains, best_loglik) = match &method_result {
         Some(MethodResult::Pgas(r)) => (r.n_chains, None),
         Some(MethodResult::Pmmh(r)) => (r.n_chains, Some(r.map_loglik)),
         _ => (0, None),
+    };
+    // Date-annotate instant-kind posterior means (keyed off the
+    // posterior mean, the value the md/latex tables render).
+    let dates_from = |pm: &BTreeMap<String, f64>| -> BTreeMap<String, String> {
+        pm.iter()
+            .filter_map(|(name, mean)| cal.date_for(name, *mean).map(|d| (name.clone(), d)))
+            .collect()
+    };
+    let param_dates: BTreeMap<String, String> = match &method_result {
+        Some(MethodResult::Pgas(r)) => dates_from(&r.posterior_mean),
+        Some(MethodResult::Pmmh(r)) => dates_from(&r.posterior_mean),
+        _ => BTreeMap::new(),
     };
     StageReport {
         name: stage.to_string(),
@@ -1124,6 +1237,7 @@ fn bayesian_stage_report(
         provenance: None,
         method_result,
         heuristic: None,
+        param_dates,
     }
 }
 
@@ -1134,6 +1248,7 @@ fn if2_stage_report(
     method_result: Option<MethodResult>,
     prev_loglik: Option<f64>,
     prev_stage_name: Option<&str>,
+    cal: &CalendarContext,
 ) -> StageReport {
     // Gate analysis — same logic as Formatter::gate_verdict_block but
     // returning structured data instead of pre-formatted strings.
@@ -1189,12 +1304,20 @@ fn if2_stage_report(
         keys.iter().filter(|k| state.tail_chain_agreement.contains_key(k.as_str()))
             .copied().collect()
     };
-    let parameters: Vec<ParameterReport> = est_keys.iter().map(|k| ParameterReport {
-        name: (*k).clone(),
-        estimate: state.start_values[*k],
-        chain_agreement: state.tail_chain_agreement.get(*k).copied(),
-        ivp: ivp_set.contains(k.as_str()),
+    let parameters: Vec<ParameterReport> = est_keys.iter().map(|k| {
+        let estimate = state.start_values[*k];
+        ParameterReport {
+            name: (*k).clone(),
+            estimate,
+            chain_agreement: state.tail_chain_agreement.get(*k).copied(),
+            ivp: ivp_set.contains(k.as_str()),
+            estimate_date: cal.date_for(k, estimate),
+        }
     }).collect();
+    let param_dates: BTreeMap<String, String> = parameters
+        .iter()
+        .filter_map(|p| p.estimate_date.clone().map(|d| (p.name.clone(), d)))
+        .collect();
 
     // Chains
     let n = state.chain_eval_logliks.len();
@@ -1280,6 +1403,7 @@ fn if2_stage_report(
         provenance: Some(provenance),
         method_result,
         heuristic: Some(HeuristicReport { overall_status, interpretation }),
+        param_dates,
     }
 }
 
@@ -1357,7 +1481,11 @@ fn render_md_stage(stage: &StageReport) -> String {
             let q025 = p.posterior_q025.get(name).copied().map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
             let q975 = p.posterior_q975.get(name).copied().map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
             let ess = p.ess_per_param.get(name).copied().map(|v| format!("{:.0}", v)).unwrap_or_else(|| "—".into());
-            s.push_str(&format!("| `{}` | {:.6} | {} | {} | {} |\n", name, mean, q025, q975, ess));
+            let mean_cell = match stage.param_dates.get(name) {
+                Some(date) => format!("{:.6} ({})", mean, date),
+                None => format!("{:.6}", mean),
+            };
+            s.push_str(&format!("| `{}` | {} | {} | {} | {} |\n", name, mean_cell, q025, q975, ess));
         }
         s.push('\n');
     } else if let Some(MethodResult::Pmmh(p)) = &stage.method_result {
@@ -1368,7 +1496,11 @@ fn render_md_stage(stage: &StageReport) -> String {
         s.push_str("| param | mean | ESS |\n|---|---|---|\n");
         for (name, mean) in &p.posterior_mean {
             let ess = p.ess.get(name).copied().map(|v| format!("{:.0}", v)).unwrap_or_else(|| "—".into());
-            s.push_str(&format!("| `{}` | {:.6} | {} |\n", name, mean, ess));
+            let mean_cell = match stage.param_dates.get(name) {
+                Some(date) => format!("{:.6} ({})", mean, date),
+                None => format!("{:.6}", mean),
+            };
+            s.push_str(&format!("| `{}` | {} | {} |\n", name, mean_cell, ess));
         }
         s.push('\n');
     }
@@ -1382,8 +1514,12 @@ fn render_md_stage(stage: &StageReport) -> String {
                 .map(|r| format!("{:.3}", r))
                 .unwrap_or_else(|| "—".into());
             let flag = if p.ivp { "ivp" } else { "" };
-            s.push_str(&format!("| `{}` | {:.6} | {} | {} |\n",
-                p.name, p.estimate, a_str, flag));
+            let est_cell = match &p.estimate_date {
+                Some(date) => format!("{:.6} ({})", p.estimate, date),
+                None => format!("{:.6}", p.estimate),
+            };
+            s.push_str(&format!("| `{}` | {} | {} | {} |\n",
+                p.name, est_cell, a_str, flag));
         }
         s.push('\n');
     }
@@ -1483,10 +1619,14 @@ fn render_latex_stage(stage: &StageReport) -> String {
                 .map(|r| format!("{:.3}", r))
                 .unwrap_or_else(|| "---".into());
             let flag = if p.ivp { "ivp" } else { "" };
+            let est_cell = match &p.estimate_date {
+                Some(date) => format!("{:.6} ({})", p.estimate, date),
+                None => format!("{:.6}", p.estimate),
+            };
             s.push_str(&format!(
-                "\\texttt{{{}}} & {:.6} & {} & {} \\\\\n",
+                "\\texttt{{{}}} & {} & {} & {} \\\\\n",
                 escape_latex(&p.name),
-                p.estimate,
+                est_cell,
                 a_str,
                 flag
             ));
@@ -1521,9 +1661,13 @@ fn render_latex_stage(stage: &StageReport) -> String {
             let q025 = p.posterior_q025.get(name).copied().map(|v| format!("{:.4}", v)).unwrap_or_else(|| "---".into());
             let q975 = p.posterior_q975.get(name).copied().map(|v| format!("{:.4}", v)).unwrap_or_else(|| "---".into());
             let ess = p.ess_per_param.get(name).copied().map(|v| format!("{:.0}", v)).unwrap_or_else(|| "---".into());
+            let mean_cell = match stage.param_dates.get(name) {
+                Some(date) => format!("{:.6} ({})", mean, date),
+                None => format!("{:.6}", mean),
+            };
             s.push_str(&format!(
-                "\\texttt{{{}}} & {:.6} & {} & {} & {} \\\\\n",
-                escape_latex(name), mean, q025, q975, ess,
+                "\\texttt{{{}}} & {} & {} & {} & {} \\\\\n",
+                escape_latex(name), mean_cell, q025, q975, ess,
             ));
         }
         s.push_str("\\bottomrule\n\\end{tabular}\n\n");
@@ -1536,9 +1680,13 @@ fn render_latex_stage(stage: &StageReport) -> String {
         s.push_str("Parameter & Mean & ESS \\\\\n\\midrule\n");
         for (name, mean) in &p.posterior_mean {
             let ess = p.ess.get(name).copied().map(|v| format!("{:.0}", v)).unwrap_or_else(|| "---".into());
+            let mean_cell = match stage.param_dates.get(name) {
+                Some(date) => format!("{:.6} ({})", mean, date),
+                None => format!("{:.6}", mean),
+            };
             s.push_str(&format!(
-                "\\texttt{{{}}} & {:.6} & {} \\\\\n",
-                escape_latex(name), mean, ess,
+                "\\texttt{{{}}} & {} & {} \\\\\n",
+                escape_latex(name), mean_cell, ess,
             ));
         }
         s.push_str("\\bottomrule\n\\end{tabular}\n\n");
@@ -1669,7 +1817,7 @@ mod tests {
     #[test]
     fn formatter_renders_pass_verdict_when_thresholds_clear() {
         let state = synthetic_fit_state();
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let block = fmt.gate_verdict_block(&state);
 
         // Â leg: max = 1.21 on gamma, threshold 1.01 → fail.
@@ -1686,7 +1834,7 @@ mod tests {
     fn formatter_emits_caveat_when_resolved_gate_absent() {
         let mut state = synthetic_fit_state();
         state.resolved_gate = None;
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let block = fmt.gate_verdict_block(&state);
         assert!(block.contains("thresholds unknown"),
             "legacy fit_state without resolved_gate must surface caveat; got: {}",
@@ -1696,7 +1844,7 @@ mod tests {
     #[test]
     fn parameter_table_filters_to_estimated_params() {
         let state = synthetic_fit_state();
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let block = fmt.parameter_table(&state);
         assert!(block.contains("R0"), "R0 row missing: {}", block);
         assert!(block.contains("Â=1.040"), "R0 agreement missing: {}", block);
@@ -1739,7 +1887,7 @@ mod tests {
             "R0 = 81.45\nsigma = 0.0791\n").unwrap();
 
         let state = synthetic_fit_state();
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let prov = fmt.provenance_block(&dir.to_string_lossy(), &state);
         assert!(prov.failed, "must flag the disagreement: {}", prov.text);
         assert!(prov.text.contains("DISAGREE"),
@@ -1767,7 +1915,7 @@ mod tests {
         std::fs::write(dir.join("mle_params.toml"),
             "R0 = 56.0\nsigma = 0.08\ngamma = 0.08\n").unwrap();
         let state = synthetic_fit_state();
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let prov = fmt.provenance_block(&dir.to_string_lossy(), &state);
         assert!(!prov.failed, "must not flag when params match: {}", prov.text);
         assert!(prov.text.contains("✓"));
@@ -2036,7 +2184,7 @@ mod tests {
 
     #[test]
     fn dt_check_pass_renders_one_line() {
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let block = fmt.dt_check_block(&dt_check_pass());
         assert!(block.contains("PASS"), "must call out pass verdict: {}", block);
         // No ladder rows on PASS — keep summary terse.
@@ -2046,7 +2194,7 @@ mod tests {
 
     #[test]
     fn dt_check_fail_includes_ladder_and_synth_recovery_note() {
-        let fmt = Formatter { use_color: false };
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
         let block = fmt.dt_check_block(&dt_check_fail());
         assert!(block.contains("FAIL"), "must call out fail: {}", block);
         // Ladder rows present so the user can see the drift.
@@ -2055,5 +2203,109 @@ mod tests {
         // detect dt bias by itself.
         assert!(block.contains("synthetic recovery"),
             "must surface the synth-recovery note on FAIL: {}", block);
+    }
+
+    // ── Calendar-time date rendering for instant estimands (§6.7) ──────
+
+    /// Calendar context with `tau` declared `instant`-kind under
+    /// `origin = 2020-02-24`, `time_unit = days` (matches the
+    /// `seed_timing_dated` fixture). `R0` is deliberately NOT an
+    /// instant, to confirm only instant params are date-annotated.
+    fn instant_cal() -> CalendarContext {
+        CalendarContext {
+            origin: Some("2020-02-24".into()),
+            time_unit: "days".into(),
+            instant_params: ["tau".to_string()].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn date_for_renders_instant_with_origin_only() {
+        let cal = instant_cal();
+        // 2020-02-24 + 23 days = 2020-03-18.
+        assert_eq!(cal.date_for("tau", 23.0).as_deref(), Some("2020-03-18"));
+        // Non-instant param: no date even though origin is set.
+        assert_eq!(cal.date_for("R0", 23.0), None);
+        // Negative internal time (seed before origin) renders a date
+        // before the origin — the seed-timing use case.
+        assert_eq!(cal.date_for("tau", -4.0).as_deref(), Some("2020-02-20"));
+    }
+
+    #[test]
+    fn date_for_numeric_only_without_origin() {
+        // Same instant set, but no origin → numeric-only (no crash).
+        let cal = CalendarContext {
+            origin: None,
+            time_unit: "days".into(),
+            instant_params: ["tau".to_string()].into_iter().collect(),
+        };
+        assert_eq!(cal.date_for("tau", 23.0), None);
+        // The fully-empty (default) context is also numeric-only.
+        assert_eq!(CalendarContext::default().date_for("tau", 23.0), None);
+    }
+
+    /// FitState with an `instant`-kind estimand `tau` so the IF2
+    /// parameter table exercises date annotation.
+    fn instant_fit_state() -> FitState {
+        let mut s = synthetic_fit_state();
+        s.start_values.insert("tau".into(), 23.0);
+        s.tail_chain_agreement.insert("tau".into(), 1.02);
+        s
+    }
+
+    #[test]
+    fn if2_text_parameter_table_annotates_instant_date() {
+        let state = instant_fit_state();
+        let fmt = Formatter { use_color: false, cal: instant_cal() };
+        let block = fmt.parameter_table(&state);
+        // tau row carries the calendar date; numeric value preserved.
+        assert!(block.contains("tau"), "tau row missing: {}", block);
+        assert!(block.contains("(2020-03-18)"),
+            "instant date annotation missing from tau row: {}", block);
+        // A non-instant param (R0) is NOT date-annotated.
+        let r0_line = block.lines().find(|l| l.trim_start().starts_with("R0")).unwrap();
+        assert!(!r0_line.contains("2020-"),
+            "non-instant R0 must stay numeric: {}", r0_line);
+    }
+
+    #[test]
+    fn if2_text_parameter_table_numeric_only_without_origin() {
+        let state = instant_fit_state();
+        // Default (no origin) context → numeric-only, no crash, no date.
+        let fmt = Formatter { use_color: false, cal: CalendarContext::default() };
+        let block = fmt.parameter_table(&state);
+        assert!(block.contains("tau"), "tau row missing: {}", block);
+        assert!(!block.contains("2020-"),
+            "no date should appear without an origin: {}", block);
+    }
+
+    #[test]
+    fn parameter_report_json_carries_estimate_date() {
+        // An instant ParameterReport with origin set serializes an
+        // `estimate_date` sibling field; a non-instant one omits it.
+        let with_date = ParameterReport {
+            name: "tau".into(),
+            estimate: 23.0,
+            chain_agreement: Some(1.02),
+            ivp: false,
+            estimate_date: Some("2020-03-18".into()),
+        };
+        let json = serde_json::to_value(&with_date).unwrap();
+        assert_eq!(json["estimate_date"], serde_json::json!("2020-03-18"));
+        // Existing fields keep their names/shapes (additive-only).
+        assert_eq!(json["name"], serde_json::json!("tau"));
+        assert_eq!(json["estimate"], serde_json::json!(23.0));
+
+        let without = ParameterReport {
+            name: "R0".into(),
+            estimate: 2.5,
+            chain_agreement: Some(1.01),
+            ivp: false,
+            estimate_date: None,
+        };
+        let json = serde_json::to_value(&without).unwrap();
+        // skip_serializing_if = Option::is_none → field absent, not null.
+        assert!(json.get("estimate_date").is_none(),
+            "numeric param must omit estimate_date entirely: {}", json);
     }
 }

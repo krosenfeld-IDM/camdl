@@ -1,0 +1,55 @@
+# Seed-timing model, calendar-dated variant (2026-05-22 calendar-time §9.10).
+#
+# Identical dynamics to `seed_timing.camdl`, with two additions that exercise
+# the date-rendering path for `instant`-kind estimands:
+#
+#   * `origin = date("2020-02-24")` — the I/O calendar anchor mapped to t = 0.
+#   * `tau : instant` — the seed onset time is declared an origin-relative
+#     instant (dimension [T]), so `camdl fit summary` renders it as a calendar
+#     date (τ ≈ day 23 → 2020-03-18) rather than a bare number.
+#
+# See `seed_timing.camdl` for the mechanism commentary; only the `origin`
+# declaration and the `tau` parameter-kind differ here.
+
+time_unit = 'days
+origin = date("2020-02-24")
+
+compartments { S, I, R }
+
+parameters {
+  beta   : rate        in [0.001, 5.0]
+  gamma  : rate        in [0.01, 1.0]
+  tau    : instant     in [0.0, 120.0]
+  lambda : positive    in [0.0, 100.0]
+  w      : positive    in [0.1, 20.0]
+  N0     : count       in [100, 1000000]
+  rho    : probability in [0.01, 1.0]
+  k      : positive    in [0.1, 1000.0]
+}
+
+let N = S + I + R
+
+transitions {
+  #[lineage]
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+  seed      :     --> I  @ lambda / (1 + exp(-(t - tau) / w))
+}
+
+observations {
+  cases : {
+    projected  = incidence(infection)
+    every      = 1 'days
+    likelihood = neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+init {
+  S = N0
+  I = 0
+}
+
+simulate {
+  from = 0 'days
+  to   = 120 'days
+}
