@@ -962,7 +962,7 @@ fn run_simulate(a: &args::SimulateArgs) {
                     // and PopSum-valued denominators explode to NaN.
                     let snap = snap_at(&traj, obs_t);
                     let draw = sampler(
-                        projected_values[ti], &snap.int_state.counts, &mut obs_rng,
+                        projected_values[ti], obs_t, &snap.int_state.counts, &mut obs_rng,
                     );
                     obs_data[si].push(ObsRow {
                         time: obs_t,

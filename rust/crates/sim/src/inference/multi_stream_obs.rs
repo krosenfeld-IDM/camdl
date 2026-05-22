@@ -315,16 +315,19 @@ impl MultiStreamObsModel {
     /// Evaluate a stream's projection given current particle state and
     /// params. `flows` is the per-stream flow counter slice (ignored for
     /// non-flow projections); `counts` is the integer compartment vector.
+    /// `t` is the observation time, threaded so a time-dependent
+    /// `StreamProjection::Expr` evaluates at the right instant.
     fn project_stream_with_params(
         &self,
         stream_idx: usize,
         flows: &[u64],
         counts: &[i64],
         params: &[f64],
+        t: f64,
     ) -> f64 {
         eval_stream_projection(
             &self.streams[stream_idx].projection,
-            flows, counts, params, &self.compiled, &self.real_s, 0.0,
+            flows, counts, params, &self.compiled, &self.real_s, t,
         )
     }
 
@@ -338,8 +341,9 @@ impl MultiStreamObsModel {
         obs_idx: usize,
         params: &[f64],
     ) -> f64 {
+        let t = self.obs_times[obs_idx];
         (0..self.streams.len()).map(|si| {
-            let projected = self.project_stream_with_params(si, cum_flows, counts, params);
+            let projected = self.project_stream_with_params(si, cum_flows, counts, params, t);
             let s = &self.streams[si];
             // GitHub #6 fix: the likelihood's p/mean/sd expressions can
             // reference compartment state (e.g. `p = projected / N`
@@ -350,7 +354,7 @@ impl MultiStreamObsModel {
             // surveys wildly inconsistent with true prevalence.
             with_scratch_int_from_counts(counts, |int_s| {
                 eval_likelihood_resolved(
-                    &s.resolved, projected, s.observations[obs_idx],
+                    &s.resolved, t, projected, s.observations[obs_idx],
                     params, &self.compiled, int_s, &self.real_s,
                 )
             })
@@ -373,9 +377,10 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
     fn log_likelihood(
         &self, state: &ParticleState, obs_idx: usize, params: &[f64],
     ) -> f64 {
+        let t = self.obs_times[obs_idx];
         (0..self.streams.len()).map(|si| {
             let projected = self.project_stream_with_params(
-                si, &state.flow_accumulators, &state.counts, params,
+                si, &state.flow_accumulators, &state.counts, params, t,
             );
             let s = &self.streams[si];
             // GH #6 (third-strike fix): evaluate likelihood arg
@@ -389,7 +394,7 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
             // ~-146 was expected). See incident 2026-04-22.
             with_scratch_int_from_counts(&state.counts, |int_s| {
                 eval_likelihood_resolved(
-                    &s.resolved, projected, s.observations[obs_idx],
+                    &s.resolved, t, projected, s.observations[obs_idx],
                     params, &self.compiled, int_s, &self.real_s,
                 )
             })
@@ -405,12 +410,13 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
     }
 
     fn sample(
-        &self, state: &ParticleState, _obs_idx: usize,
+        &self, state: &ParticleState, obs_idx: usize,
         params: &[f64], rng: &mut StatefulRng,
     ) -> Vec<f64> {
+        let t = self.obs_times[obs_idx];
         (0..self.streams.len()).map(|si| {
             let projected = self.project_stream_with_params(
-                si, &state.flow_accumulators, &state.counts, params,
+                si, &state.flow_accumulators, &state.counts, params, t,
             );
             let s = &self.streams[si];
             // GitHub #6: evaluate likelihood args against actual state,
@@ -418,7 +424,7 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
             // in p/mean/sd expressions blow up.
             with_scratch_int_from_counts(&state.counts, |int_s| {
                 sample_obs_resolved(
-                    &s.resolved, projected, params,
+                    &s.resolved, t, projected, params,
                     &self.compiled, int_s, &self.real_s, rng,
                 )
             })
@@ -426,17 +432,18 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
     }
 
     fn mean(
-        &self, state: &ParticleState, _obs_idx: usize, params: &[f64],
+        &self, state: &ParticleState, obs_idx: usize, params: &[f64],
     ) -> Vec<f64> {
+        let t = self.obs_times[obs_idx];
         (0..self.streams.len()).map(|si| {
             let projected = self.project_stream_with_params(
-                si, &state.flow_accumulators, &state.counts, params,
+                si, &state.flow_accumulators, &state.counts, params, t,
             );
             let s = &self.streams[si];
             // GitHub #6: actual state, not zero scratch.
             with_scratch_int_from_counts(&state.counts, |int_s| {
                 eval_obs_mean_resolved(
-                    &s.resolved, projected, params,
+                    &s.resolved, t, projected, params,
                     &self.compiled, int_s, &self.real_s,
                 )
             })

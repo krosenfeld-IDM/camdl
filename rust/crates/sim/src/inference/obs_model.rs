@@ -15,62 +15,6 @@ use ir::observation::ObservationModel;
 use rand::prelude::Distribution;
 use rand_distr::{Gamma, Normal};
 
-/// Build a dmeasure closure for IF2 (per-particle params).
-/// Takes (projected, observed, counts, params) → log-likelihood.
-///
-/// `counts` is the integer-compartment state at the observation time
-/// (local-indexed). Required even if the likelihood's arg expressions
-/// don't currently reference compartment state — the `diagnostic_test`
-/// sugar and any hand-inlined `p = projected / N` need it, and passing
-/// a zero scratch silently corrupts those cases. See
-/// `docs/dev/incidents/2026-04-22-observation-sampler-scratch-state.md`.
-///
-/// **Note on allocation**: this closure currently allocates a Vec per
-/// call (`counts.to_vec()`). Fine for the current uses (`camdl
-/// simulate --obs` calls this ~tens of times per run; ~2 KB total).
-/// **If this is ever wired into a hot inference loop — per-particle
-/// per-obs — copy the thread-local scratch pattern from
-/// `MultiStreamObsModel`** (`with_scratch_int_from_counts`). The
-/// hot-path pattern is already proven and zero-alloc.
-pub fn compile_obs_loglik_if2(
-    obs_model: &ObservationModel,
-    compiled: Arc<CompiledModel>,
-) -> Box<dyn Fn(f64, f64, &[i64], &[f64]) -> f64 + Send + Sync> {
-    let resolved = resolve_likelihood_from_model(&obs_model.likelihood, &compiled)
-        .unwrap_or_else(|e| panic!("observation likelihood resolution failed: {:?}", e));
-    let real_s = RealState::new(compiled.real_local_to_global.len());
-    let n_int  = compiled.int_local_to_global.len();
-
-    Box::new(move |projected: f64, observed: f64, counts: &[i64], params: &[f64]| {
-        assert_eq!(counts.len(), n_int,
-            "compile_obs_loglik_if2: counts length {} != expected {}", counts.len(), n_int);
-        let int_s = IntState::from_vec(counts.to_vec());
-        eval_likelihood_resolved(&resolved, projected, observed, params, &compiled, &int_s, &real_s)
-    })
-}
-
-/// Build a dmeasure closure for pfilter (fixed params).
-/// Takes (projected, observed, counts) → log-likelihood.
-/// See `compile_obs_loglik_if2` for the rationale behind `counts`.
-pub fn compile_obs_loglik_pf(
-    obs_model: &ObservationModel,
-    compiled: Arc<CompiledModel>,
-    params: &[f64],
-) -> Box<dyn Fn(f64, f64, &[i64]) -> f64 + Send + Sync> {
-    let resolved = resolve_likelihood_from_model(&obs_model.likelihood, &compiled)
-        .unwrap_or_else(|e| panic!("observation likelihood resolution failed: {:?}", e));
-    let params = params.to_vec();
-    let real_s = RealState::new(compiled.real_local_to_global.len());
-    let n_int  = compiled.int_local_to_global.len();
-
-    Box::new(move |projected: f64, observed: f64, counts: &[i64]| {
-        assert_eq!(counts.len(), n_int,
-            "compile_obs_loglik_pf: counts length {} != expected {}", counts.len(), n_int);
-        let int_s = IntState::from_vec(counts.to_vec());
-        eval_likelihood_resolved(&resolved, projected, observed, &params, &compiled, &int_s, &real_s)
-    })
-}
-
 /// Resolve a Likelihood using the compiled model's index maps.
 ///
 /// IM3 in 2026-04-19 inference review: previously used `.expect`,
@@ -100,8 +44,15 @@ pub(crate) fn resolve_likelihood_from_model(
 }
 
 /// Evaluate a resolved likelihood at (projected, observed, params).
+///
+/// `t` is the observation time. Likelihood expressions may reference
+/// `time` (e.g. a reporting ramp `rho_t = rho_max/(1+exp(-(t-t_rep)/w_rep))`);
+/// passing a frozen 0.0 silently corrupts any time-varying observation
+/// model. Callers thread the actual observation time
+/// (`MultiStreamObsModel::obs_times[obs_idx]`).
 pub(crate) fn eval_likelihood_resolved(
     likelihood: &ResolvedLikelihood,
+    t: f64,
     projected: f64,
     observed: f64,
     params: &[f64],
@@ -110,7 +61,7 @@ pub(crate) fn eval_likelihood_resolved(
     real_s: &RealState,
 ) -> f64 {
     let ctx = |proj: f64| EvalCtx {
-        model: compiled, int_s, real_s, params, t: 0.0, dt: 0.0, projected: Some(proj), int_float_override: None,
+        model: compiled, int_s, real_s, params, t, dt: 0.0, projected: Some(proj), int_float_override: None,
     };
 
     match likelihood {
@@ -180,62 +131,46 @@ pub(crate) fn eval_likelihood_resolved(
 // ── rmeasure: observation model sampler ─────────────────────────────────────
 
 /// Build an rmeasure closure for pfilter (fixed params).
-/// Takes (projected, counts, rng) → observation draw.
+/// Takes (projected, t, counts, rng) → observation draw.
 ///
-/// `counts` must be the integer-compartment state (local-indexed) at
-/// the observation time. The sampler evaluates likelihood argument
-/// expressions (e.g. `p = projected / PopSum([S, I, R])`) against
-/// this state. Passing a zero-filled slice silently corrupts
-/// state-dependent likelihoods — see
+/// `t` is the observation time (threaded into likelihood arg
+/// expressions so time-varying reporting / observation processes
+/// evaluate at the right instant; a frozen 0.0 silently corrupts any
+/// time-varying obs model). `counts` must be the integer-compartment
+/// state (local-indexed) at the observation time. The sampler
+/// evaluates likelihood argument expressions (e.g. `p = projected /
+/// PopSum([S, I, R])`) against this state. Passing a zero-filled
+/// slice silently corrupts state-dependent likelihoods — see
 /// `docs/dev/incidents/2026-04-22-observation-sampler-scratch-state.md`.
 pub fn compile_obs_sample_pf(
     obs_model: &ObservationModel,
     compiled: Arc<CompiledModel>,
     params: &[f64],
-) -> Box<dyn Fn(f64, &[i64], &mut crate::rng::StatefulRng) -> f64> {
+) -> Box<dyn Fn(f64, f64, &[i64], &mut crate::rng::StatefulRng) -> f64> {
     let resolved = resolve_likelihood_from_model(&obs_model.likelihood, &compiled)
         .unwrap_or_else(|e| panic!("observation likelihood resolution failed: {:?}", e));
     let params = params.to_vec();
     let real_s = RealState::new(compiled.real_local_to_global.len());
     let n_int  = compiled.int_local_to_global.len();
 
-    Box::new(move |projected: f64, counts: &[i64], rng: &mut StatefulRng| {
+    Box::new(move |projected: f64, t: f64, counts: &[i64], rng: &mut StatefulRng| {
         // GH #6 fix: evaluate likelihood args against the real state,
         // not a zero-filled scratch. Caller is responsible for passing
         // the compartment snapshot at the obs time.
         assert_eq!(counts.len(), n_int,
             "compile_obs_sample_pf: counts length {} != expected {}", counts.len(), n_int);
         let int_s = IntState::from_vec(counts.to_vec());
-        sample_obs_resolved(&resolved, projected, &params, &compiled, &int_s, &real_s, rng)
+        sample_obs_resolved(&resolved, t, projected, &params, &compiled, &int_s, &real_s, rng)
     })
 }
 
-/// Build a function that computes the observation model MEAN (no sampling).
-/// Takes (projected, counts) → E[y | projected, state, params].
-/// Used for obs_mean in prediction diagnostics. See
-/// `compile_obs_sample_pf` for the rationale behind the counts arg.
-pub fn compile_obs_mean_pf(
-    obs_model: &ObservationModel,
-    compiled: Arc<CompiledModel>,
-    params: &[f64],
-) -> Box<dyn Fn(f64, &[i64]) -> f64> {
-    let resolved = resolve_likelihood_from_model(&obs_model.likelihood, &compiled)
-        .unwrap_or_else(|e| panic!("observation likelihood resolution failed: {:?}", e));
-    let params = params.to_vec();
-    let real_s = RealState::new(compiled.real_local_to_global.len());
-    let n_int  = compiled.int_local_to_global.len();
-
-    Box::new(move |projected: f64, counts: &[i64]| {
-        assert_eq!(counts.len(), n_int,
-            "compile_obs_mean_pf: counts length {} != expected {}", counts.len(), n_int);
-        let int_s = IntState::from_vec(counts.to_vec());
-        eval_obs_mean_resolved(&resolved, projected, &params, &compiled, &int_s, &real_s)
-    })
-}
-
-/// Draw one sample from the resolved observation model.
+/// Draw one sample from the resolved observation model at observation
+/// time `t`. Likelihood expressions referencing `time` (e.g. a reporting
+/// ramp) are evaluated at `t`; a frozen 0.0 silently corrupts any
+/// time-varying observation model.
 pub(crate) fn sample_obs_resolved(
     likelihood: &ResolvedLikelihood,
+    t: f64,
     projected: f64,
     params: &[f64],
     compiled: &CompiledModel,
@@ -244,7 +179,7 @@ pub(crate) fn sample_obs_resolved(
     rng: &mut StatefulRng,
 ) -> f64 {
     let ctx = |proj: f64| EvalCtx {
-        model: compiled, int_s, real_s, params, t: 0.0, dt: 0.0, projected: Some(proj), int_float_override: None,
+        model: compiled, int_s, real_s, params, t, dt: 0.0, projected: Some(proj), int_float_override: None,
     };
 
     match likelihood {
@@ -295,8 +230,10 @@ pub(crate) fn sample_obs_resolved(
 }
 
 /// Compute E[y | projected, params] — the observation model mean, no sampling.
+/// `t` is the observation time, threaded for time-varying likelihoods.
 pub(crate) fn eval_obs_mean_resolved(
     likelihood: &ResolvedLikelihood,
+    t: f64,
     projected: f64,
     params: &[f64],
     compiled: &CompiledModel,
@@ -304,7 +241,7 @@ pub(crate) fn eval_obs_mean_resolved(
     real_s: &RealState,
 ) -> f64 {
     let ctx = |proj: f64| EvalCtx {
-        model: compiled, int_s, real_s, params, t: 0.0, dt: 0.0, projected: Some(proj), int_float_override: None,
+        model: compiled, int_s, real_s, params, t, dt: 0.0, projected: Some(proj), int_float_override: None,
     };
 
     match likelihood {
