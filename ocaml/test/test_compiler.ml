@@ -3993,6 +3993,53 @@ let test_lineage_unknown_attribute_e110 () =
   |} in
   compile_expect_error_code ~code:"E110" ~contains:"transmission" src
 
+(* 2026-05-22 calendar-time: `origin = date(...)` emits both the string and
+   the compiler-derived numeric `origin_rata_die`, and `instant`/`duration`
+   param kinds round-trip into the IR. The rata-die integer must equal the
+   shared `days_of_date` formula (= Rust `caltime::rata_die`), so the runtime
+   can read it without re-parsing the origin string. *)
+let test_origin_rata_die_emitted () =
+  let m = compile_expect_ok {|
+    origin = date("2020-02-28")
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count
+                 tau : instant  gen : duration }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  Alcotest.(check (option string)) "origin string preserved"
+    (Some "2020-02-28") m.Ir.origin;
+  (* days_of_date 2020 2 28 — the shared proleptic-Gregorian day number. *)
+  let expected = Expander.days_of_date 2020 2 28 in
+  Alcotest.(check (option int)) "origin_rata_die = days_of_date"
+    (Some expected) m.Ir.origin_rata_die;
+  let kind_of n =
+    (List.find (fun (p : Ir.parameter) -> p.name = n) m.Ir.parameters).param_kind in
+  Alcotest.(check (option string)) "tau is instant" (Some "instant") (kind_of "tau");
+  Alcotest.(check (option string)) "gen is duration" (Some "duration") (kind_of "gen")
+
+let test_origin_absent_no_rata_die () =
+  (* No origin → origin_rata_die is None (backward-compat: existing models
+     emit neither field). *)
+  let m = compile_expect_ok {|
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  Alcotest.(check (option string)) "no origin" None m.Ir.origin;
+  Alcotest.(check (option int)) "no origin_rata_die" None m.Ir.origin_rata_die
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -4265,5 +4312,9 @@ let () =
       Alcotest.test_case "identity subgraph SIRS cycle tracks {S,I,R}"     `Quick test_lineage_identity_subgraph_sirs_cycle;
       Alcotest.test_case "inert when no #[lineage] annotations"            `Quick test_lineage_inert_when_absent;
       Alcotest.test_case "E110 unknown attribute #[transmission]"          `Quick test_lineage_unknown_attribute_e110;
+    ];
+    "calendar_time", [
+      Alcotest.test_case "origin → string + numeric origin_rata_die"        `Quick test_origin_rata_die_emitted;
+      Alcotest.test_case "no origin → no origin_rata_die"                   `Quick test_origin_absent_no_rata_die;
     ];
   ]

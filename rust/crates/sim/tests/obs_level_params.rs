@@ -39,7 +39,7 @@ fn model_with_obs_param() -> (Arc<CompiledModel>, Vec<f64>) {
         version: "0.3".into(),
         time_unit: "days".into(),
         description: None,
-        origin: None,
+        origin: None, origin_rata_die: None,
         compartments: vec![
             Compartment { name: "N".into(), kind: CompartmentKind::Integer },
         ],

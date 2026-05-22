@@ -1688,6 +1688,8 @@ let param_kind_to_string = function
   | PPositive    -> "positive"
   | PCount       -> "count"
   | PReal        -> "real"
+  | PInstant     -> "instant"
+  | PDuration    -> "duration"
 
 let rec eval_const_expr ctx = function
   | EConst f -> f
@@ -3786,6 +3788,14 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     Ir.time_unit          = unit_lit_to_string ctx.time_unit;
     Ir.description        = ctx.description;
     Ir.origin             = ctx.origin;
+    (* Pre-resolve the origin to its proleptic-Gregorian day number so the
+       runtime never re-parses the origin string (2026-05-22 §6.2). The
+       integer is derived (never hand-edited) and uses the same `days_of_date`
+       the date() literal path uses, so it cannot drift from caltime. *)
+    Ir.origin_rata_die    =
+      (match ctx.origin with
+       | None -> None
+       | Some s -> let (y, m, d) = parse_iso_date s in Some (days_of_date y m d));
     Ir.compartments       = expanded_comps;
     Ir.transitions        = expanded_trs;
     Ir.ode_equations      = expand_ode_equations ctx;

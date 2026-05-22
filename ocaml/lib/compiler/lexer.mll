@@ -93,6 +93,8 @@
       "probability",   PROBABILITY;
       "positive",      POSITIVE;
       "count",         COUNT;
+      "instant",       INSTANT;
+      "duration",      DURATION;
       "and",           AND;
       "or",            OR;
       "not",           NOT;

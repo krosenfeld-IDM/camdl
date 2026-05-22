@@ -861,7 +861,11 @@ pub fn derive_transform_with_bounds(
     if let Some(ref kind) = ir_param.param_kind {
         match kind.as_str() {
             "probability" => Transform::Logit { lo: lower, hi: upper },
-            "rate" | "positive" | "count" => Transform::Log { lo: lower, hi: upper },
+            // `duration` is a positive span → log scale, like rate/count.
+            "rate" | "positive" | "count" | "duration" => Transform::Log { lo: lower, hi: upper },
+            // `instant` is an origin-relative point that may be negative
+            // (a seed before the anchor) → unconstrained real scale.
+            "instant" => Transform::None,
             _ => Transform::None,
         }
     } else {
@@ -2191,7 +2195,7 @@ mod tests {
             name: "test".into(),
             version: "0.3".into(),
             time_unit: "days".into(),
-            description: None, origin: None,
+            description: None, origin: None, origin_rata_die: None,
             compartments: vec![
                 Compartment { name: "S".into(), kind: CompartmentKind::Integer },
                 Compartment { name: "I".into(), kind: CompartmentKind::Integer },
@@ -2387,7 +2391,7 @@ mod tests {
         // them, but the simulation isn't run.
         let model = ir::Model {
             name: "t".into(), version: "0.3".into(), time_unit: "days".into(),
-            description: None, origin: None,
+            description: None, origin: None, origin_rata_die: None,
             compartments: vec![
                 Compartment { name: "S".into(), kind: CompartmentKind::Integer },
             ],
@@ -2492,7 +2496,7 @@ mod tests {
         }];
         let model = ir::Model {
             name: "t".into(), version: "0.3".into(), time_unit: "days".into(),
-            description: None, origin: None,
+            description: None, origin: None, origin_rata_die: None,
             compartments: vec![
                 Compartment { name: "S".into(), kind: CompartmentKind::Integer },
             ],
@@ -2645,7 +2649,7 @@ mod tests {
         };
         let model = ir::Model {
             name: "t".into(), version: "0.3".into(), time_unit: "days".into(),
-            description: None, origin: None,
+            description: None, origin: None, origin_rata_die: None,
             compartments: vec![], transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], interventions: vec![], observations: vec![],
             parameters: vec![beta_with_ir_prior, gamma_no_prior],
@@ -3187,7 +3191,7 @@ dt = 1.0
         };
         let model = ir::Model {
             name: "t".into(), version: "0.3".into(), time_unit: "days".into(),
-            description: None, origin: None,
+            description: None, origin: None, origin_rata_die: None,
             compartments: vec![Compartment { name: "S".into(), kind: CompartmentKind::Integer }],
             transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], interventions: vec![],

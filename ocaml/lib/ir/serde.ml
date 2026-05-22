@@ -980,7 +980,8 @@ let model_to_json (m : model) : Yojson.Safe.t =
     ("version",            str m.version);
     ("time_unit",          str m.time_unit);
     ("description",        match m.description with None -> null | Some s -> str s);
-  ] @ (match m.origin with None -> [] | Some s -> [("origin", str s)]) @ [
+  ] @ (match m.origin with None -> [] | Some s -> [("origin", str s)])
+    @ (match m.origin_rata_die with None -> [] | Some n -> [("origin_rata_die", `Int n)]) @ [
     ("compartments",       arr (List.map compartment_to_json m.compartments));
     ("transitions",        arr (List.map transition_to_json m.transitions));
     ("ode_equations",      arr (List.map ode_equation_to_json m.ode_equations));
@@ -1011,6 +1012,7 @@ let model_of_json (j : Yojson.Safe.t) : model =
     time_unit          = (match member_opt "time_unit" j with Some (`String s) -> s | _ -> "days");
     description        = (match member_opt "description" j with Some `Null | None -> None | Some s -> Some (as_string s));
     origin             = (match member_opt "origin" j with Some (`String s) -> Some s | _ -> None);
+    origin_rata_die    = (match member_opt "origin_rata_die" j with Some (`Int n) -> Some n | _ -> None);
     compartments       = List.map compartment_of_json      (as_list (member "compartments"   j));
     transitions        = List.map transition_of_json       (as_list (member "transitions"    j));
     ode_equations      = List.map ode_equation_of_json     (as_list (member "ode_equations"  j));

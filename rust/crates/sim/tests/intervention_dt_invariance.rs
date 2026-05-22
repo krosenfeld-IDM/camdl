@@ -65,7 +65,7 @@ fn periodic_xfer_model(at_day: f64, period: f64, end: f64, model_dt: Option<f64>
         version: "0.3".into(),
         time_unit: "days".into(),
         description: None,
-        origin: None,
+        origin: None, origin_rata_die: None,
         compartments: vec![int_comp("S"), int_comp("V")],
         transitions: vec![],
         ode_equations: vec![],

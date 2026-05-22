@@ -220,6 +220,13 @@ let param_dim_of_kind st kind =
   | Some "rate"           -> Known (make 0 (-1))
   | Some "probability"    -> Known dimensionless
   | Some "count"          -> Known population
+  (* Both time kinds carry dimension [T] (2026-05-22 calendar-time §6.7):
+     `instant` (origin-relative point) and `duration` (relative span). This
+     gives the checker time coverage — `rate + instant` is an E302 dimension
+     mismatch, `rate * duration` is dimensionless. The instant/duration
+     distinction is for *rendering* (date vs span), not for checking. *)
+  | Some "instant"        -> Known (make 0 1)
+  | Some "duration"       -> Known (make 0 1)
   | _                     -> fresh_var st
 
 (* ── Initialize state from model ────────────────────────────────────────── *)

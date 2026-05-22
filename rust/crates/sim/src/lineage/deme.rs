@@ -278,7 +278,7 @@ mod tests {
             version: "0".into(),
             time_unit: "days".into(),
             description: None,
-            origin: None,
+            origin: None, origin_rata_die: None,
             compartments: vec![],
             transitions: vec![],
             ode_equations: vec![],

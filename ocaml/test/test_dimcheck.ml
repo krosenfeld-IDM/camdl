@@ -44,6 +44,7 @@ let empty_model
     time_unit = "days";
     description = None;
     origin = None;
+    origin_rata_die = None;
     compartments;
     transitions;
     ode_equations;
@@ -811,6 +812,71 @@ let test_check_phase_single_error () =
   ) r.diagnostics) in
   Alcotest.(check int) "exactly one E300" 1 e300_count
 
+(* ── Time parameter-kinds: instant / duration (2026-05-22 §9.9) ────────── *)
+
+let param_dim_of name (r : Dimcheck.result) =
+  List.assoc_opt name r.param_dims
+
+let test_instant_dim_is_time () =
+  (* An `instant`-kind parameter carries dimension [T] (P^0 T^1). *)
+  let m = empty_model
+    ~parameters:[mk_param ~kind:(Some "instant") "tau"]
+    () in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check (option (pair int int))) "instant is [T]"
+    (Some (0, 1))
+    (Option.map (fun a -> (a.(0), a.(1))) (param_dim_of "tau" r))
+
+let test_duration_dim_is_time () =
+  (* A `duration`-kind parameter carries dimension [T] (P^0 T^1). *)
+  let m = empty_model
+    ~parameters:[mk_param ~kind:(Some "duration") "gen_interval"]
+    () in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check (option (pair int int))) "duration is [T]"
+    (Some (0, 1))
+    (Option.map (fun a -> (a.(0), a.(1))) (param_dim_of "gen_interval" r))
+
+let test_rate_plus_instant_e302 () =
+  (* rate = beta * (S + tau) where beta:rate (T^-1), S:P, tau:instant (T).
+     S + tau is a P + T mismatch → E302. The instant kind gives the checker
+     time coverage: adding a time to a population (or rate) is a real bug. *)
+  let m = empty_model
+    ~compartments:[mk_compartment "S"]
+    ~parameters:[mk_param ~kind:(Some "rate") "beta";
+                 mk_param ~kind:(Some "instant") "tau"]
+    ~transitions:[mk_transition "t1" (param "beta" *. (pop "S" +. param "tau"))]
+    () in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check bool) "rate + instant is E302" true (has_error "E302" r)
+
+let test_rate_times_duration_ok () =
+  (* rate = beta / gen_interval * S where beta:probability (dimensionless),
+     gen_interval:duration (T), S:P. beta/gen_interval = T^-1; * S = P*T^-1.
+     A valid per-capita-style rate built from a duration — no error. *)
+  let m = empty_model
+    ~compartments:[mk_compartment "S"]
+    ~parameters:[mk_param ~kind:(Some "probability") "beta";
+                 mk_param ~kind:(Some "duration") "gen_interval"]
+    ~transitions:[mk_transition "t1"
+                    ((param "beta" /. param "gen_interval") *. pop "S")]
+    () in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check bool) "rate from duration OK" true (no_errors r)
+
+let test_instant_vector_each_is_time () =
+  (* A stratified instant (tau[location] expanding to tau_a, tau_b) — each
+     component carries [T], the case a per-report fixed estimand set could
+     not handle. Expansion produces independent scalar params per cell. *)
+  let m = empty_model
+    ~parameters:[mk_param ~kind:(Some "instant") "tau_a";
+                 mk_param ~kind:(Some "instant") "tau_b"]
+    () in
+  let r = Dimcheck.check_model m in
+  let dim n = Option.map (fun a -> (a.(0), a.(1))) (param_dim_of n r) in
+  Alcotest.(check (option (pair int int))) "tau_a is [T]" (Some (0,1)) (dim "tau_a");
+  Alcotest.(check (option (pair int int))) "tau_b is [T]" (Some (0,1)) (dim "tau_b")
+
 (* ── Test Registration ─────────────────────────────────────────────────── *)
 
 let () =
@@ -909,6 +975,13 @@ let () =
     ];
     "e303_diagnostic", [
       Alcotest.test_case "E303 cross-transition"       `Quick test_e303_cross_transition;
+    ];
+    "time_param_kinds", [
+      Alcotest.test_case "instant is [T]"              `Quick test_instant_dim_is_time;
+      Alcotest.test_case "duration is [T]"             `Quick test_duration_dim_is_time;
+      Alcotest.test_case "rate + instant → E302"       `Quick test_rate_plus_instant_e302;
+      Alcotest.test_case "rate from duration OK"       `Quick test_rate_times_duration_ok;
+      Alcotest.test_case "instant vector each [T]"     `Quick test_instant_vector_each_is_time;
     ];
     "check_phase", [
       Alcotest.test_case "no duplicate errors"         `Quick test_check_phase_no_duplicates;

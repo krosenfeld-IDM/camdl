@@ -52,7 +52,7 @@ fn sir_model() -> (CompiledModel, Vec<f64>) {
         version: "0.3".into(),
         time_unit: "days".into(),
         description: None,
-        origin: None,
+        origin: None, origin_rata_die: None,
         compartments: vec![
             Compartment { name: "S".into(), kind: CompartmentKind::Integer },
             Compartment { name: "I".into(), kind: CompartmentKind::Integer },

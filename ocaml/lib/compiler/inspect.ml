@@ -188,6 +188,7 @@ let run_summary ppf (model : Ir.model) ctx (sum : Expander.model_summary) =
     let pkind_str k = match k with
       | Ast.PRate -> "rate" | Ast.PProbability -> "probability"
       | Ast.PPositive -> "positive" | Ast.PCount -> "count" | Ast.PReal -> "real"
+      | Ast.PInstant -> "instant" | Ast.PDuration -> "duration"
     in
     let kind_of (p : Ir.parameter) =
       match List.find_opt (fun pd ->
@@ -351,6 +352,7 @@ let run_parameters ppf (model : Ir.model) (ctx : Expander.context) =
   let pkind_str k = match k with
     | Ast.PRate -> "rate" | Ast.PProbability -> "probability"
     | Ast.PPositive -> "positive" | Ast.PCount -> "count" | Ast.PReal -> "real"
+    | Ast.PInstant -> "instant" | Ast.PDuration -> "duration"
   in
   let kind_of (p : Ir.parameter) =
     match List.find_opt (fun pd ->
@@ -802,10 +804,12 @@ let run_dims ppf (model : Ir.model) ctx =
     let kind_str = match ast_decl with
       | Some (Ast.PScalar pd) -> Ast.(match pd.pkind with
           | PRate -> "rate" | PProbability -> "probability"
-          | PPositive -> "positive" | PCount -> "count" | PReal -> "real")
+          | PPositive -> "positive" | PCount -> "count" | PReal -> "real"
+          | PInstant -> "instant" | PDuration -> "duration")
       | Some (Ast.PIndexed pd) -> Ast.(match pd.pkind with
           | PRate -> "rate" | PProbability -> "probability"
-          | PPositive -> "positive" | PCount -> "count" | PReal -> "real")
+          | PPositive -> "positive" | PCount -> "count" | PReal -> "real"
+          | PInstant -> "instant" | PDuration -> "duration")
       | None -> "?"
     in
     (* A dimension is "declared" if the param_kind gives it a known dimension
@@ -814,11 +818,11 @@ let run_dims ppf (model : Ir.model) ctx =
     let declared = match ast_decl with
       | Some (Ast.PScalar pd) ->
         pd.pdim <> None || Ast.(match pd.pkind with
-          | PRate | PProbability | PCount -> true
+          | PRate | PProbability | PCount | PInstant | PDuration -> true
           | PPositive | PReal -> false)
       | Some (Ast.PIndexed pd) ->
         pd.pdim <> None || Ast.(match pd.pkind with
-          | PRate | PProbability | PCount -> true
+          | PRate | PProbability | PCount | PInstant | PDuration -> true
           | PPositive | PReal -> false)
       | None -> false
     in

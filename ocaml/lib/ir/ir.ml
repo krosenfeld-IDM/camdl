@@ -387,6 +387,10 @@ type model = {
   time_unit:          string;           (* declared time unit, e.g. "days" *)
   description:        string option;
   origin:             string option;    (* ISO date string, e.g. "2020-01-01" *)
+  origin_rata_die:    int option;       (* compiler-derived proleptic-Gregorian
+                                           day number of `origin`; the runtime
+                                           reads this so it never re-parses the
+                                           origin string (2026-05-22 §6.2). *)
   compartments:       compartment list;
   transitions:        transition list;
   ode_equations:      ode_equation list;

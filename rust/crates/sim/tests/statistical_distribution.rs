@@ -169,7 +169,7 @@ fn test_overdispersion_variance_tau_leap() {
         version: "0.3".into(),
         time_unit: "days".into(),
         description: None,
-        origin: None,
+        origin: None, origin_rata_die: None,
         compartments: vec![
             Compartment { name: "S".into(), kind: CompartmentKind::Integer },
             Compartment { name: "I".into(), kind: CompartmentKind::Integer },
@@ -286,7 +286,7 @@ fn test_fraction_transfer_edge_cases() {
             version: "0.3".into(),
             time_unit: "days".into(),
             description: None,
-            origin: None,
+            origin: None, origin_rata_die: None,
             compartments: vec![
                 Compartment { name: "S".into(), kind: CompartmentKind::Integer },
                 Compartment { name: "V".into(), kind: CompartmentKind::Integer },

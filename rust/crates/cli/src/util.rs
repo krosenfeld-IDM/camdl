@@ -1620,7 +1620,7 @@ mod tests {
     fn mk_model(ivs: Vec<Intervention>) -> ir::Model {
         ir::Model {
             name: "t".into(), version: "0.3".into(), time_unit: "days".into(),
-            description: None, origin: None,
+            description: None, origin: None, origin_rata_die: None,
             compartments: vec![], transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], observations: vec![],
             parameters: vec![],
@@ -1814,7 +1814,7 @@ mod tests {
             version: "0.0".into(),
             time_unit: "days".into(),
             description: None,
-            origin: None,
+            origin: None, origin_rata_die: None,
             compartments: Vec::new(),
             transitions: Vec::new(),
             ode_equations: Vec::new(),

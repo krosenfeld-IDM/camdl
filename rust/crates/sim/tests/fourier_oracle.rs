@@ -51,7 +51,7 @@ fn compile_fourier(period: f64, harmonics: &[(f64, f64)]) -> CompiledTimeFuncKin
         version: "0.3".into(),
         time_unit: "days".into(),
         description: None,
-        origin: None,
+        origin: None, origin_rata_die: None,
         compartments: vec![ir::model::Compartment {
             name: "S".into(),
             kind: ir::model::CompartmentKind::Integer,

@@ -68,7 +68,11 @@ type compartment_kind = Integer | Real
 
 type compartment_decl = { cname: string; ckind: compartment_kind; cloc: loc }
 
-type param_type = PRate | PProbability | PPositive | PCount | PReal
+(* Parameter kinds. The two time kinds (PInstant, PDuration) both carry
+   dimension [T] for dimcheck (2026-05-22 calendar-time §6.7): an instant is
+   an origin-relative point (renders as a date), a duration is a relative
+   span (renders as a span, no origin). *)
+type param_type = PRate | PProbability | PPositive | PCount | PReal | PInstant | PDuration
 
 (** Explicit dimension annotation: (P exponent, T exponent) *)
 type dim_annotation = int * int

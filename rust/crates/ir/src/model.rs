@@ -136,6 +136,13 @@ pub struct Model {
     pub description:        Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin:             Option<String>,
+    /// Compiler-derived proleptic-Gregorian day number of `origin`. The
+    /// runtime reads this so it never re-parses the origin string
+    /// (2026-05-22 calendar-time §6.2). Derived by the OCaml compiler via
+    /// the same `days_of_date` the `date()` literal path uses, so it cannot
+    /// drift from `caltime::rata_die`. `None` when no `origin` is declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_rata_die:    Option<i64>,
     pub compartments:       Vec<Compartment>,
     pub transitions:        Vec<Transition>,
     pub ode_equations:      Vec<OdeEquation>,
