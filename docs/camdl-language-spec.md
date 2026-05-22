@@ -232,9 +232,18 @@ is a compile error:
 simulate { to = date("2021-06-30") }
 ```
 
-The `origin` value is stored in the IR (`"origin": "2019-01-01"`). It does not
+The `origin` value is stored in the IR as both the ISO string
+(`"origin": "2019-01-01"`) and a compiler-derived integer day number
+(`"origin_rata_die": …`) that the runtime reads without re-parsing. It does not
 affect simulation dynamics — it is purely a coordinate reference for converting
 calendar dates to simulation time.
+
+Calendar support extends beyond `date()` literals: **observation data may use an
+ISO-date time column** (auto-converted via `origin` + `time_unit`), output can be
+rendered back as dates (`simulate --dates`, and `instant`-kind estimands in `fit
+summary`), and the **`instant` / `duration` parameter kinds** carry dimension
+`[T]`. **See [`docs/dates.md`](dates.md) for the complete, canonical treatment**
+of dates across the DSL, data loading, and output.
 
 ### 2.3 Three tiers of dimensional information
 
@@ -245,7 +254,7 @@ Understanding the hierarchy makes the rest of §2 and §4–7 fit together.
 
 | Tier                    | Syntax                                               | Carries                        | Use when                                                         |
 |-------------------------|------------------------------------------------------|--------------------------------|------------------------------------------------------------------|
-| 1. **Kind keyword**     | `rate`, `probability`, `count`, `positive`, `real`   | Dimension (inferred from kind) | Common parameter cases (the 99% case).                           |
+| 1. **Kind keyword**     | `rate`, `probability`, `count`, `positive`, `real`, `instant`, `duration` | Dimension (inferred from kind) | Common parameter cases (the 99% case). `instant`/`duration` are time-typed (`[T]`) — see [`dates.md`](dates.md). |
 | 2. **Bracket annotation** | `[T]`, `[T^-1]`, `[P]`, `[P/T]`, `[1]`               | Dimension only                 | Kind keyword is under-determined (`real`, `positive`).           |
 | 3. **Unit literal**     | `'days`, `'years`, `'per_day`, `'per_year`, `'count`, `'ratio` | Dimension **+ scale**          | Concrete numeric data with a known real-world scale.             |
 
