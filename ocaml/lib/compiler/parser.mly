@@ -784,6 +784,23 @@ atom_expr:
             end_col  = $endpos.pos_cnum - $endpos.pos_bol + 1 }
         in
         EIdent (name, l) }
+  (* `origin` as a referenceable identifier — Phase 2 of the
+     2026-05-22 typed-time proposal §1.1. The ORIGIN keyword is
+     consumed by the top-level `origin = date("...")` declaration
+     via a separate production; here it appears in expression
+     position. The expander resolves `origin` to Ir.Const 0.0 in
+     anchored mode (it is the t=0 point) and errors in unanchored
+     mode. *)
+  | ORIGIN
+      { let l =
+          let open Lexing in
+          { file     = $startpos.pos_fname;
+            line     = $startpos.pos_lnum;
+            col      = $startpos.pos_cnum - $startpos.pos_bol + 1;
+            end_line = $endpos.pos_lnum;
+            end_col  = $endpos.pos_cnum - $endpos.pos_bol + 1 }
+        in
+        EIdent ("origin", l) }
   | LPAREN e = expr RPAREN     { e }
   | LPAREN e = expr RPAREN u = unit_lit
       (* (20 / 100_000) 'per_year — unit applies to the whole expression.
@@ -810,6 +827,7 @@ kw_arg_name:
   | POSITIVE    { "positive" }
   | REAL        { "real" }
   | INTEGER     { "integer" }
+  | EVERY       { "every" }  (* date_range(start, end, every = 7 'days) — §4 *)
 
 kw_expr:
   | k = kw_arg_name EQ v = expr { (k, v) }

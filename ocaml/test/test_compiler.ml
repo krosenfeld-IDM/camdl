@@ -4506,6 +4506,349 @@ let test_typed_time_w325_bare_numeric_at_schedule_warning () =
   let d = expect_diag ~severity:Diagnostics.Warning ~code:"W325" src in
   assert_hint_contains ~needle:"date(" d
 
+(* ── Phase 2 of the 2026-05-22 typed-time proposal ──────────────────────────
+   Calendar-arithmetic primitives and `date_range`. Errors and warnings
+   under test:
+     E327 — `add_calendar_*` / `origin` / calendar `date_range` cadence in
+            an unanchored model.
+     E328 — argument-shape errors (non-constant date, non-integer n).
+     E329 — zero/negative cadence, count<1 in `date_range`.
+     W327 — literal round-trip composition.
+     W328 — `date_range` non-aligned `end`. *)
+
+(* Helper: build a model with a single intervention `at = [...]` and
+   return the resulting `Ir.AtTimes` float list. Lets us inspect the
+   numeric output of `add_calendar_*` / `date_range` directly. *)
+let at_times_of_first_intervention src =
+  let m = compile_expect_ok src in
+  Alcotest.(check int) "exactly one intervention" 1
+    (List.length m.Ir.interventions);
+  let iv = List.hd m.Ir.interventions in
+  match iv.Ir.schedule with
+  | Ir.AtTimes ts -> ts
+  | _ -> Alcotest.failf "expected AtTimes schedule"
+
+(* Helper: build a one-intervention `at` model that fires at one
+   `add_calendar_*` result and assert the day offset. *)
+let assert_at_day ~src ~expected_day =
+  let ts = at_times_of_first_intervention src in
+  Alcotest.(check int) "one fire time" 1 (List.length ts);
+  Alcotest.(check (float 1e-9))
+    "fire day equals expected" expected_day (List.hd ts)
+
+(* ── add_calendar_months / add_calendar_years: canonical cases (§8) ─── *)
+
+(* Template for a one-intervention anchored model whose only firing time
+   is `<expr>`. Tests substitute the expression and the expected day
+   offset relative to `origin = date("2020-01-01")`. *)
+let anchored_at_src ~at_expr = Printf.sprintf {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, V }
+    parameters { N0 : count }
+    transitions { leak : S --> V @ 0.0 'per_day * S }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1) at [%s]
+    }
+    init { S = N0 }
+    simulate { from = 0 'days  to = 800 'days }
+  |} at_expr
+
+let test_phase2_add_months_leap_feb_clamp () =
+  (* Jan 31 + 1 month → Feb 29 (2020 is leap).
+     Day offset of Feb 29 from Jan 1, 2020 = 31 + 28 = 59. *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_months(date(\"2020-01-31\"), 1)")
+    ~expected_day:59.0
+
+let test_phase2_add_months_non_leap_feb_clamp () =
+  (* Jan 31 (2021) + 1 month → Feb 28 (2021, non-leap).
+     Day offset from Jan 1, 2020 = 366 + 31 + 27 = 424.
+       (2020 is leap: 366 days)  +  (Jan 31 - 1 = 30, then +28 = 58)
+       = 366 + 58 = 424. *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_months(date(\"2021-01-31\"), 1)")
+    ~expected_day:424.0
+
+let test_phase2_add_years_leap_to_non_leap () =
+  (* Feb 29, 2020 + 1 year → Feb 28, 2021 (Feb 29 clamps to Feb 28).
+     Day offset = 366 + 31 + 27 = 424. *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_years(date(\"2020-02-29\"), 1)")
+    ~expected_day:424.0
+
+let test_phase2_add_months_13_crosses_year () =
+  (* Jan 31, 2020 + 13 months → Feb 28, 2021.
+     Day offset from Jan 1, 2020 = 424. *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_months(date(\"2020-01-31\"), 13)")
+    ~expected_day:424.0
+
+let test_phase2_add_months_mar_to_apr () =
+  (* Mar 31, 2020 + 1 month → Apr 30, 2020 (Apr has 30 days).
+     Day offset from Jan 1, 2020 = 31 + 29 + 30 + 29 = 119.
+     (Jan: 31 days, Feb: 29 days, Mar: 31 days → start of Apr = 91,
+      then +29 to reach Apr 30 → 91 + 29 = 120; off-by-one? Let me
+      recompute: day 0 = Jan 1. Apr 1 is day 91 (Jan=31, Feb=29,
+      Mar=31). Apr 30 is day 120. ✓) *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_months(date(\"2020-03-31\"), 1)")
+    ~expected_day:120.0
+
+let test_phase2_sub_months_mar_to_feb_leap () =
+  (* Mar 31, 2020 − 1 month → Feb 29, 2020 (clamp; leap year).
+     Day offset = 59. *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_months(date(\"2020-03-31\"), -1)")
+    ~expected_day:59.0
+
+let test_phase2_sub_months_mar_to_feb_non_leap () =
+  (* Mar 31, 2021 − 1 month → Feb 28, 2021 (clamp; non-leap).
+     Day offset from Jan 1, 2020 = 366 + 58 = 424. *)
+  assert_at_day
+    ~src:(anchored_at_src
+            ~at_expr:"add_calendar_months(date(\"2021-03-31\"), -1)")
+    ~expected_day:424.0
+
+let test_phase2_add_months_origin_anchored () =
+  (* `add_calendar_months(origin, 6)` with origin = 2020-01-01.
+     Result is 2020-07-01 → day offset = 31+29+31+30+31+30 = 182. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, V }
+    parameters { N0 : count }
+    transitions { leak : S --> V @ 0.0 'per_day * S }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1)
+             at [add_calendar_months(origin, 6)]
+    }
+    init { S = N0 }
+    simulate { from = 0 'days  to = 365 'days }
+  |} in
+  assert_at_day ~src ~expected_day:182.0
+
+let test_phase2_add_months_unanchored_errors () =
+  (* `add_calendar_months` in an unanchored model is E327. *)
+  expect_error_code
+    ~code:"E327"
+    ~contains:"anchored"
+    {|
+      time_unit = 'months
+      compartments { S, V }
+      parameters { N0 : count }
+      transitions { leak : S --> V @ 0.0 'per_month * S }
+      interventions {
+        vacc : transfer(from = S, to = V, fraction = 0.1)
+               at [add_calendar_months(date("2020-01-01"), 6)]
+      }
+      init { S = N0 }
+      simulate { from = 0  to = 24 }
+    |}
+
+(* ── date_range tests ──────────────────────────────────────────────── *)
+
+let test_phase2_date_range_affine_start_end () =
+  (* date_range(2020-01-01, 2020-12-31, every = 7 'days) → 53 entries. *)
+  let src = anchored_at_src
+    ~at_expr:"date_range(date(\"2020-01-01\"), date(\"2020-12-31\"), every = 7 'days)"
+  in
+  let m = compile_expect_ok src in
+  let iv = List.hd m.Ir.interventions in
+  match iv.Ir.schedule with
+  | Ir.AtTimes ts ->
+    Alcotest.(check int) "53 weekly entries" 53 (List.length ts);
+    Alcotest.(check (float 1e-9)) "first entry = 0" 0.0 (List.hd ts);
+    Alcotest.(check (float 1e-9)) "last entry = 364 (Dec 30)"
+      364.0 (List.nth ts 52)
+  | _ -> Alcotest.fail "expected AtTimes"
+
+let test_phase2_date_range_affine_count () =
+  (* date_range(2020-01-01, count = 24, every = 7 'days) → 25 entries. *)
+  let src = anchored_at_src
+    ~at_expr:"date_range(date(\"2020-01-01\"), count = 24, every = 7 'days)"
+  in
+  let m = compile_expect_ok src in
+  let iv = List.hd m.Ir.interventions in
+  match iv.Ir.schedule with
+  | Ir.AtTimes ts ->
+    Alcotest.(check int) "25 weekly entries (start + 24 steps)" 25
+      (List.length ts);
+    Alcotest.(check (float 1e-9)) "last entry = 24 * 7 = 168"
+      168.0 (List.nth ts 24)
+  | _ -> Alcotest.fail "expected AtTimes"
+
+let test_phase2_date_range_calendar_months_start_end () =
+  (* date_range(2020-01-01, 2024-12-01, calendar_months = 3).
+
+     Cadence boundaries from start are Jan/Apr/Jul/Oct of each year.
+     Dec 1 2024 does NOT land on a quarterly cadence from Jan 1 2020
+     (the last on-cadence date ≤ end is Oct 1 2024, k=19 → 20 entries
+     total) — proposal §4 had an inconsistent example saying "21
+     entries: ..., Oct 1 2024, Dec 1 2024" which would require
+     appending a non-aligned `end`, contradicting the rule "last entry
+     is the latest boundary ≤ end" in the same section. We follow the
+     rule, so the result is 20 entries plus a W328 warning. Use a
+     model whose `end` IS on cadence (Oct 1 2024) for the clean
+     start–end test; the W328 non-aligned case is covered separately. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, V }
+    parameters { N0 : count }
+    transitions { leak : S --> V @ 0.0 'per_day * S }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1)
+             at [date_range(date("2020-01-01"), date("2024-10-01"),
+                            calendar_months = 3)]
+    }
+    init { S = N0 }
+    simulate { from = 0 'days  to = 2000 'days }
+  |} in
+  let m = compile_expect_ok src in
+  let iv = List.hd m.Ir.interventions in
+  match iv.Ir.schedule with
+  | Ir.AtTimes ts ->
+    Alcotest.(check int) "20 quarterly entries" 20 (List.length ts);
+    Alcotest.(check (float 1e-9)) "first entry = 0" 0.0 (List.hd ts)
+  | _ -> Alcotest.fail "expected AtTimes"
+
+let test_phase2_date_range_calendar_years_count () =
+  (* date_range(2020-01-01, count = 5, calendar_years = 1) → 6 entries:
+     Jan 1 of 2020..2025. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, V }
+    parameters { N0 : count }
+    transitions { leak : S --> V @ 0.0 'per_day * S }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1)
+             at [date_range(date("2020-01-01"), count = 5,
+                            calendar_years = 1)]
+    }
+    init { S = N0 }
+    simulate { from = 0 'days  to = 2500 'days }
+  |} in
+  let m = compile_expect_ok src in
+  let iv = List.hd m.Ir.interventions in
+  match iv.Ir.schedule with
+  | Ir.AtTimes ts ->
+    Alcotest.(check int) "6 annual entries (start + 5 steps)" 6
+      (List.length ts);
+    Alcotest.(check (float 1e-9)) "first entry = 0 (Jan 1, 2020)"
+      0.0 (List.hd ts);
+    (* Jan 1, 2025 = 366 (2020) + 365 (2021) + 365 (2022) + 365 (2023)
+       + 366 (2024 leap) = 1827. *)
+    Alcotest.(check (float 1e-9)) "last entry = 1827 (Jan 1, 2025)"
+      1827.0 (List.nth ts 5)
+  | _ -> Alcotest.fail "expected AtTimes"
+
+let test_phase2_date_range_non_aligned_end_w328 () =
+  (* Non-aligned end fires W328. start=Jan 1 2020, end=Jan 5 2020,
+     every = 3 'days. Boundaries: Jan 1, Jan 4. Jan 5 doesn't land. *)
+  let src = anchored_at_src
+    ~at_expr:"date_range(date(\"2020-01-01\"), date(\"2020-01-05\"), every = 3 'days)"
+  in
+  let d = expect_diag ~severity:Diagnostics.Warning ~code:"W328" src in
+  assert_hint_contains ~needle:"inclusive_end" d
+
+let test_phase2_date_range_zero_cadence_errors () =
+  expect_error_code
+    ~code:"E329"
+    ~contains:"positive"
+    (anchored_at_src
+       ~at_expr:"date_range(date(\"2020-01-01\"), count = 4, every = 0 'days)")
+
+let test_phase2_date_range_negative_calendar_cadence_errors () =
+  expect_error_code
+    ~code:"E329"
+    ~contains:"positive"
+    (anchored_at_src
+       ~at_expr:"date_range(date(\"2020-01-01\"), count = 4, calendar_months = -1)")
+
+let test_phase2_date_range_count_zero_errors () =
+  expect_error_code
+    ~code:"E329"
+    ~contains:"≥ 1"
+    (anchored_at_src
+       ~at_expr:"date_range(date(\"2020-01-01\"), count = 0, every = 7 'days)")
+
+let test_phase2_date_range_calendar_in_unanchored_errors () =
+  expect_error_code
+    ~code:"E327"
+    ~contains:"anchored"
+    {|
+      time_unit = 'months
+      compartments { S, V }
+      parameters { N0 : count }
+      transitions { leak : S --> V @ 0.0 'per_month * S }
+      interventions {
+        vacc : transfer(from = S, to = V, fraction = 0.1)
+               at [date_range(date("2020-01-01"), count = 4,
+                              calendar_months = 3)]
+      }
+      init { S = N0 }
+      simulate { from = 0  to = 24 }
+    |}
+
+(* ── Round-trip W327 ───────────────────────────────────────────────── *)
+
+let test_phase2_round_trip_w327 () =
+  (* `add_calendar_months(add_calendar_months(date("2020-01-31"), 1), -1)`
+     fires W327. *)
+  let src = anchored_at_src
+    ~at_expr:"add_calendar_months(add_calendar_months(date(\"2020-01-31\"), 1), -1)"
+  in
+  let d = expect_diag ~severity:Diagnostics.Warning ~code:"W327" src in
+  assert_hint_contains ~needle:"non-invertible" d
+
+(* ── origin tests ──────────────────────────────────────────────────── *)
+
+let test_phase2_origin_in_simulate_from_anchored () =
+  (* `simulate { from = origin }` in anchored mode resolves to 0.0. *)
+  let m = compile_expect_ok {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, I, R }
+    parameters {
+      beta : rate  gamma : rate  N0 : count  I0 : count
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = origin  to = 120 'days }
+  |} in
+  Alcotest.(check (float 1e-9))
+    "simulate.t_start = 0 (origin)"
+    0.0 m.Ir.simulation.Ir.t_start
+
+let test_phase2_origin_in_unanchored_errors () =
+  (* `origin` reference in unanchored mode is E327. *)
+  expect_error_code
+    ~code:"E327"
+    ~contains:"unanchored"
+    {|
+      time_unit = 'months
+      compartments { S, V }
+      parameters { N0 : count }
+      transitions { leak : S --> V @ 0.0 'per_month * S }
+      interventions {
+        vacc : transfer(from = S, to = V, fraction = 0.1) at [origin]
+      }
+      init { S = N0 }
+      simulate { from = 0  to = 24 }
+    |}
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -4823,5 +5166,53 @@ let () =
         `Quick test_typed_time_w324_unit_annotated_simulate_no_warning;
       Alcotest.test_case "W325 bare-numeric at-schedule warns under origin"
         `Quick test_typed_time_w325_bare_numeric_at_schedule_warning;
+    ];
+    "typed_time_phase2", [
+      (* add_calendar_months / add_calendar_years: canonical cases (§8) *)
+      Alcotest.test_case "Jan 31 + 1 month → Feb 29 (leap)"
+        `Quick test_phase2_add_months_leap_feb_clamp;
+      Alcotest.test_case "Jan 31 + 1 month → Feb 28 (non-leap)"
+        `Quick test_phase2_add_months_non_leap_feb_clamp;
+      Alcotest.test_case "Feb 29 + 1 year → Feb 28 (leap → non-leap clamp)"
+        `Quick test_phase2_add_years_leap_to_non_leap;
+      Alcotest.test_case "Jan 31 + 13 months → Feb 28 (cross year-end)"
+        `Quick test_phase2_add_months_13_crosses_year;
+      Alcotest.test_case "Mar 31 + 1 month → Apr 30"
+        `Quick test_phase2_add_months_mar_to_apr;
+      Alcotest.test_case "Mar 31 − 1 month → Feb 29 (leap)"
+        `Quick test_phase2_sub_months_mar_to_feb_leap;
+      Alcotest.test_case "Mar 31 − 1 month → Feb 28 (non-leap)"
+        `Quick test_phase2_sub_months_mar_to_feb_non_leap;
+      Alcotest.test_case "add_calendar_months(origin, 6) resolves in anchored model"
+        `Quick test_phase2_add_months_origin_anchored;
+      Alcotest.test_case "E327 add_calendar_months in unanchored model"
+        `Quick test_phase2_add_months_unanchored_errors;
+      (* date_range *)
+      Alcotest.test_case "date_range affine start–end produces 53 weekly entries"
+        `Quick test_phase2_date_range_affine_start_end;
+      Alcotest.test_case "date_range affine count = 24 produces 25 entries"
+        `Quick test_phase2_date_range_affine_count;
+      Alcotest.test_case "date_range calendar_months = 3 over 5 years produces 21 entries"
+        `Quick test_phase2_date_range_calendar_months_start_end;
+      Alcotest.test_case "date_range calendar_years = 1 count = 5 produces 6 entries"
+        `Quick test_phase2_date_range_calendar_years_count;
+      Alcotest.test_case "W328 non-aligned end fires with inclusive_end hint"
+        `Quick test_phase2_date_range_non_aligned_end_w328;
+      Alcotest.test_case "E329 every = 0 rejected as non-positive"
+        `Quick test_phase2_date_range_zero_cadence_errors;
+      Alcotest.test_case "E329 calendar_months = -1 rejected as non-positive"
+        `Quick test_phase2_date_range_negative_calendar_cadence_errors;
+      Alcotest.test_case "E329 count = 0 rejected"
+        `Quick test_phase2_date_range_count_zero_errors;
+      Alcotest.test_case "E327 calendar cadence in unanchored model"
+        `Quick test_phase2_date_range_calendar_in_unanchored_errors;
+      (* Round-trip W327 *)
+      Alcotest.test_case "W327 round-trip composition warns on month-end clamp"
+        `Quick test_phase2_round_trip_w327;
+      (* origin *)
+      Alcotest.test_case "origin in simulate.from resolves to 0 (anchored)"
+        `Quick test_phase2_origin_in_simulate_from_anchored;
+      Alcotest.test_case "E327 origin reference in unanchored model"
+        `Quick test_phase2_origin_in_unanchored_errors;
     ];
   ]

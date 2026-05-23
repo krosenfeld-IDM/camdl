@@ -115,6 +115,14 @@ let rec classify env (e : expr) : tclass =
   | EUnit (_, Days)    | EUnit (_, Weeks)    -> TExact
   | EUnit (_, Months)  | EUnit (_, Years)    -> TCalendar
   | EUnit (_, _)                              -> TOther
+  | EIdent ("origin", _) ->
+    (* Phase 2 of the 2026-05-22 typed-time proposal §1.1: the
+       reserved `origin` identifier is an Instant in anchored
+       mode. In unanchored mode the expander emits E327 at the
+       resolution site; classifying as TInstant here is correct
+       either way — the classifier is structural, and an
+       unanchored `origin` reference is malformed in any context. *)
+    TInstant
   | EIdent (name, _) ->
     (* Lookup order:
        1. let-binding → classify its body in our own env
@@ -140,6 +148,12 @@ let rec classify env (e : expr) : tclass =
        | Some `Duration -> TExact
        | None           -> TOther)
   | EFuncCall ("date", _) -> TInstant
+  | EFuncCall (("add_calendar_months" | "add_calendar_years"), _) ->
+    (* Phase 2 §4: calendar-arithmetic primitives produce an
+       Instant. Classified structurally, irrespective of whether the
+       expander successfully const-evaluated the call — a malformed
+       call still has Instant type from the user's perspective. *)
+    TInstant
   | EFuncCall _ -> TOther
   | EBinOp (Sub, l, r) ->
     let cl = classify env l and cr = classify env r in

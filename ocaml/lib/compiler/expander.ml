@@ -127,6 +127,68 @@ let parse_date_to_float origin_str date_str time_unit =
   in
   float_of_int delta /. days time_unit
 
+(* ── Proleptic-Gregorian calendar arithmetic ─────────────────────────────────
+
+   Used by `add_calendar_months` / `add_calendar_years` expander
+   primitives (Phase 2 of the 2026-05-22 typed-time proposal §4)
+   and by `date_range` for calendar cadences. These functions are
+   *constant-free* in the days-per-month sense: they do real
+   (year, month, day) arithmetic and never touch the 30.4369
+   average-month factor.
+
+   Mirrors `rust/crates/ir/src/caltime.rs`: `is_leap` and
+   `days_in_month` use identical formulas. *)
+
+let is_leap_year y =
+  (y mod 4 = 0 && y mod 100 <> 0) || y mod 400 = 0
+
+let days_in_month y m =
+  match m with
+  | 1 | 3 | 5 | 7 | 8 | 10 | 12 -> 31
+  | 4 | 6 | 9 | 11              -> 30
+  | 2                            -> if is_leap_year y then 29 else 28
+  | _ -> invalid_arg (Printf.sprintf "days_in_month: month %d out of range" m)
+
+(** `add_calendar_months (y, m, d) n` — proleptic-Gregorian
+    month-stepping with month-end clamping. The algorithm from
+    proposal §4:
+
+      m' = ((m - 1 + n) mod 12) + 1
+      y' = y + (m - 1 + n) div 12
+      d' = min(d, days_in_month(y', m'))
+
+    OCaml's built-in [mod] and [/] truncate toward zero; we need
+    Euclidean semantics so a negative `m - 1 + n` wraps correctly
+    (e.g. (m=3, n=-1): (3-1-1)=1, +1=2, fine; (m=1, n=-1):
+    (1-1-1)=-1; euclid_mod (-1) 12 = 11, m' = 12, year decrements). *)
+let add_calendar_months_ymd (y, m, d) n =
+  let total = m - 1 + n in
+  let euclid_div a b =
+    let q = a / b and r = a mod b in
+    if (r < 0 && b > 0) || (r > 0 && b < 0) then q - 1 else q
+  in
+  let euclid_mod a b =
+    let r = a mod b in
+    if (r < 0 && b > 0) || (r > 0 && b < 0) then r + b else r
+  in
+  let m' = (euclid_mod total 12) + 1 in
+  let y' = y + (euclid_div total 12) in
+  let d' = min d (days_in_month y' m') in
+  (y', m', d')
+
+let add_calendar_years_ymd (y, m, d) n =
+  (* Calendar years: same month/day shape, year offset by n, with
+     clamping if the target month is Feb 29 in a non-leap year. *)
+  let y' = y + n in
+  let d' = min d (days_in_month y' m) in
+  (y', m, d')
+
+(** Format a (y, m, d) triple as an ISO date string. Width-padded
+    to YYYY-MM-DD; years 0..9999 only (anything else is out of
+    scope for camdl). *)
+let format_iso_date (y, m, d) =
+  Printf.sprintf "%04d-%02d-%02d" y m d
+
 (* ── Data loading helpers ─────────────────────────────────────────────────── *)
 
 (** Resolve a path relative to source_dir.  Absolute paths pass through. *)
@@ -932,6 +994,479 @@ let rec is_const_expr = function
     List.for_all (fun (_, e) -> is_const_expr e) args
   | _ -> false
 
+(* ── Compile-time integer evaluator (for add_calendar_* and date_range) ───── *)
+
+(** Try to const-evaluate an expression as an integer. Accepts plain
+    `EConst` (if integer-valued), `EUnOp(Neg, ...)`, and arithmetic
+    of integers. Returns [None] if non-constant or non-integer.
+    Phase 2 of the 2026-05-22 typed-time proposal §4: `n` in
+    `add_calendar_months(d, n)` and `count`/`calendar_months`/
+    `calendar_years` in `date_range` must be compile-time integers. *)
+let rec try_eval_const_int (e : expr) : int option =
+  match e with
+  | EConst f when Float.is_integer f && Float.abs f < 1e15 ->
+    Some (int_of_float f)
+  | EUnOp (Neg, a) ->
+    (match try_eval_const_int a with
+     | Some i -> Some (-i)
+     | None -> None)
+  | EBinOp (op, l, r) ->
+    (match try_eval_const_int l, try_eval_const_int r with
+     | Some a, Some b ->
+       (match op with
+        | Add -> Some (a + b)
+        | Sub -> Some (a - b)
+        | Mul -> Some (a * b)
+        | _ -> None)
+     | _ -> None)
+  | _ -> None
+
+(** Try to const-evaluate an expression as an Instant — a compile-time
+    (y, m, d) calendar triple. Admissible forms per proposal §4:
+
+    - `date("YYYY-MM-DD")` literal,
+    - `origin` identifier (resolves via [ctx.origin]; only in
+      anchored mode),
+    - `add_calendar_months(d, n)` or `add_calendar_years(d, n)`
+      nested call (recurses on `d`).
+
+    Returns [Ok (y,m,d)] on success, [Error msg] on a shape error,
+    or [Error "_unanchored"] as a sentinel when an `origin`
+    reference is hit in unanchored mode (caller turns this into the
+    proper E327). *)
+let rec try_eval_const_instant_ymd ctx (e : expr) : (int * int * int, string) result =
+  match e with
+  | EFuncCall ("date", [("", EIdent (s, _))]) ->
+    (try Ok (parse_iso_date s)
+     with Failure msg -> Error msg)
+  | EIdent ("origin", _) ->
+    (match ctx.origin with
+     | Some s ->
+       (try Ok (parse_iso_date s)
+        with Failure msg -> Error msg)
+     | None -> Error "_unanchored")
+  | EFuncCall ("add_calendar_months", args) ->
+    (match args with
+     | [("", d); ("", n)] ->
+       (match try_eval_const_instant_ymd ctx d, try_eval_const_int n with
+        | Ok ymd, Some k -> Ok (add_calendar_months_ymd ymd k)
+        | Error e, _ -> Error e
+        | Ok _, None ->
+          Error "add_calendar_months: second argument must be a compile-time integer")
+     | _ -> Error "add_calendar_months: expected (Instant, Int) positional arguments")
+  | EFuncCall ("add_calendar_years", args) ->
+    (match args with
+     | [("", d); ("", n)] ->
+       (match try_eval_const_instant_ymd ctx d, try_eval_const_int n with
+        | Ok ymd, Some k -> Ok (add_calendar_years_ymd ymd k)
+        | Error e, _ -> Error e
+        | Ok _, None ->
+          Error "add_calendar_years: second argument must be a compile-time integer")
+     | _ -> Error "add_calendar_years: expected (Instant, Int) positional arguments")
+  | _ ->
+    Error "expected a compile-time-constant date: a `date(\"...\")` literal, \
+           `origin`, or a nested `add_calendar_months` / `add_calendar_years` call"
+
+(** Detect the literal nested round-trip pattern
+    `add_calendar_months(add_calendar_months(d, n), -n)` (and same
+    for `add_calendar_years`). Single-shape syntactic match per
+    proposal §4: let-laundered cases do not trigger.
+
+    Returns [Some primitive_name] iff the outer call is a round-trip
+    over the inner call with negated `n`. *)
+let detect_round_trip ~primitive_name ~outer_n ~inner =
+  match inner with
+  | EFuncCall (fn, [("", _); ("", inner_n_expr)]) when fn = primitive_name ->
+    (match try_eval_const_int inner_n_expr with
+     | Some inner_n -> inner_n = - outer_n && inner_n <> 0
+     | None -> false)
+  | _ -> false
+
+(** Expand a `date_range(...)` AST call to a list of `EConst` exprs
+    in the model's time units (days-from-origin). Phase 2 of the
+    2026-05-22 typed-time proposal §4.
+
+    Forms accepted (exactly one cadence kwarg):
+    - `date_range(start, end, every = D)` — affine
+    - `date_range(start, count = N, every = D)` — affine count
+    - `date_range(start, end, calendar_months = N)` — calendar
+    - `date_range(start, count = N, calendar_months = N)` — calendar count
+    - same with `calendar_years` instead of `calendar_months`.
+
+    `inclusive_end : Bool = true` defaults to true.
+
+    Errors and warnings are emitted on [ctx.diags] and the partial
+    list is returned (compilation continues to collect more diags).
+    Returns a list of `EConst` AST exprs that the caller can splice
+    in-place where a list of constant time expressions is expected. *)
+let expand_date_range_to_consts ctx (args : (string * expr) list) : expr list =
+  let origin_set = ctx.origin <> None in
+  let get_kw k = List.assoc_opt k args in
+  let positional = List.filter_map
+    (fun (k, e) -> if k = "" then Some e else None) args in
+  let err code msg ?hint () =
+    Diagnostics.error ctx.diags ~code ~loc:Diagnostics.no_loc
+      ~message:msg ?hint ()
+  in
+  let warn code msg ?hint () =
+    Diagnostics.warning ctx.diags ~code ~loc:Diagnostics.no_loc
+      ~message:msg ?hint ()
+  in
+  (* Resolve `start` from the first positional arg. *)
+  let start_expr = match positional with
+    | s :: _ -> Some s
+    | [] ->
+      err "E328"
+        "date_range: missing `start` (first positional argument)"
+        ~hint:"example: date_range(date(\"2020-01-01\"), \
+               date(\"2020-12-31\"), every = 7 'days)" ();
+      None
+  in
+  (* `end` is the optional second positional. If absent, `count =`
+     must be supplied. *)
+  let end_expr = match positional with
+    | _ :: e :: _ -> Some e
+    | _ -> None
+  in
+  let count_kw = get_kw "count" in
+  (* Cadence: exactly one of `every`, `calendar_months`,
+     `calendar_years` must be present. *)
+  let every_kw   = get_kw "every"           in
+  let cmonths_kw = get_kw "calendar_months" in
+  let cyears_kw  = get_kw "calendar_years"  in
+  let cadence_present =
+    List.filter Option.is_some [every_kw; cmonths_kw; cyears_kw]
+    |> List.length
+  in
+  if cadence_present = 0 then begin
+    err "E328"
+      "date_range: missing cadence kwarg — supply exactly one of \
+       `every = D`, `calendar_months = N`, or `calendar_years = N`"
+      ~hint:"example: date_range(date(\"2020-01-01\"), \
+             date(\"2020-12-31\"), every = 7 'days)" ();
+    []
+  end
+  else if cadence_present > 1 then begin
+    err "E328"
+      "date_range: only one cadence kwarg allowed — `every`, \
+       `calendar_months`, and `calendar_years` are mutually exclusive"
+      () ;
+    []
+  end
+  else
+  (* end/count: exactly one. *)
+  let _ =
+    match end_expr, count_kw with
+    | Some _, Some _ ->
+      err "E328"
+        "date_range: `end` (second positional) and `count = ...` are \
+         mutually exclusive" ();
+    | None, None ->
+      err "E328"
+        "date_range: needs either an `end` positional argument or a \
+         `count = N` kwarg"
+        ~hint:"example: date_range(date(\"2020-01-01\"), \
+               count = 24, every = 7 'days)" ();
+    | _ -> ()
+  in
+  let inclusive_end =
+    match get_kw "inclusive_end" with
+    | None -> true
+    | Some (EIdent ("true", _))  | Some (EFuncCall ("true", []))  -> true
+    | Some (EIdent ("false", _)) | Some (EFuncCall ("false", [])) -> false
+    | Some _ ->
+      err "E328"
+        "date_range: `inclusive_end = ...` must be `true` or `false`" ();
+      true
+  in
+  let validate_kwargs () =
+    let known = ["count"; "every"; "calendar_months"; "calendar_years";
+                 "inclusive_end"] in
+    List.iter (fun (k, _) ->
+      if k <> "" && not (List.mem k known) then
+        err "E328"
+          (Printf.sprintf "date_range: unknown keyword argument `%s`" k)
+          ~hint:(Printf.sprintf "valid kwargs: %s" (String.concat ", " known))
+          ()
+    ) args
+  in
+  validate_kwargs ();
+  (* Resolve start to (y, m, d). *)
+  let start_ymd = match start_expr with
+    | None -> None
+    | Some e ->
+      (match try_eval_const_instant_ymd ctx e with
+       | Ok ymd -> Some ymd
+       | Error "_unanchored" ->
+         err "E327"
+           "`date_range` with `start = origin` requires an anchored \
+            model"
+           ~hint:"add `origin = date(\"YYYY-MM-DD\")` at the top of \
+                  the file" ();
+         None
+       | Error msg ->
+         err "E328" (Printf.sprintf "date_range: %s" msg)
+           ~hint:"`start` must be a `date(\"...\")` literal, `origin`, \
+                  or an `add_calendar_*` call" ();
+         None)
+  in
+  (* Resolve optional end to (y, m, d). *)
+  let end_ymd = match end_expr with
+    | None -> None
+    | Some e ->
+      (match try_eval_const_instant_ymd ctx e with
+       | Ok ymd -> Some ymd
+       | Error "_unanchored" -> None
+       | Error msg ->
+         err "E328" (Printf.sprintf "date_range: %s" msg) ();
+         None)
+  in
+  (* Resolve count if present, must be positive. *)
+  let count_int = match count_kw with
+    | None -> None
+    | Some e ->
+      (match try_eval_const_int e with
+       | Some n when n >= 1 -> Some n
+       | Some n ->
+         err "E329"
+           (Printf.sprintf
+             "date_range: `count = %d` must be ≥ 1" n) ();
+         None
+       | None ->
+         err "E328"
+           "date_range: `count` must be a compile-time integer" ();
+         None)
+  in
+  (* Convert a (y,m,d) to a model-time-unit float, days-from-origin. *)
+  let ymd_to_float ymd =
+    match ctx.origin with
+    | Some origin_str ->
+      let iso = format_iso_date ymd in
+      (try parse_date_to_float origin_str iso ctx.time_unit
+       with Failure _ -> 0.0)
+    | None ->
+      (* Unanchored: dates are not meaningful relative to origin.
+         We already errored upstream; return 0 defensively. *)
+      0.0
+  in
+  let cmp_ymd (y1, m1, d1) (y2, m2, d2) =
+    compare (y1, m1, d1) (y2, m2, d2)
+  in
+  let leq_ymd a b = cmp_ymd a b <= 0 in
+  let _ = leq_ymd in
+  (* Now branch on cadence flavor. *)
+  match start_ymd with
+  | None -> []
+  | Some s_ymd ->
+    let entries_ymd =
+      if Option.is_some every_kw then begin
+        (* Affine cadence. `every` is a duration expr in 'days or
+           'weeks. We need its value in DAYS (calendar arithmetic
+           lives in days, not in model time units). *)
+        let every_e = Option.get every_kw in
+        let days_per_unit = function
+          | Days | PerDay -> Some 1.0
+          | Weeks | PerWeek -> Some 7.0
+          | _ -> None
+        in
+        let every_days = match every_e with
+          | EUnit (f, u) -> (match days_per_unit u with
+              | Some k -> Some (f *. k)
+              | None ->
+                err "E328"
+                  (Printf.sprintf
+                    "date_range: `every` must be in `'days` or `'weeks` \
+                     (got `'%s`)" (unit_lit_to_string u))
+                  ~hint:"calendar cadences use `calendar_months = N` or \
+                         `calendar_years = N` instead"
+                  ();
+                None)
+          | _ ->
+            err "E328"
+              "date_range: `every` must be a duration literal with \
+               `'days` or `'weeks` (e.g. `every = 7 'days`)" ();
+            None
+        in
+        match every_days with
+        | None -> []
+        | Some d when d <= 0.0 ->
+          err "E329"
+            (Printf.sprintf
+              "date_range: `every` must be positive (got %g)" d) ();
+          []
+        | Some step_days_f ->
+          (* Step the affine cadence in proleptic-Gregorian day
+             indices. Convert start to absolute day-of-epoch via
+             [days_of_date], step, and convert back. We round
+             step_days_f to an integer (sub-day steps are not
+             supported per docs/dates.md). *)
+          let step_days = int_of_float (Float.round step_days_f) in
+          if step_days <= 0 then begin
+            err "E329"
+              "date_range: `every` rounds to zero days — must be ≥ 1 day" ();
+            []
+          end else
+            let (sy, sm, sd) = s_ymd in
+            let start_dn = days_of_date sy sm sd in
+            (* Convert a day-number back to (y,m,d) by linear search
+               anchored at start: incrementally add step_days. We
+               don't need a general inverse — we just step forward
+               from a known (y,m,d). *)
+            let step_ymd ymd k_days =
+              (* Add k_days to (y,m,d) by walking days_in_month. *)
+              let (y, m, d) = ymd in
+              let rec walk y m d k =
+                if k = 0 then (y, m, d)
+                else if k > 0 then
+                  let dim = days_in_month y m in
+                  if d + k <= dim then (y, m, d + k)
+                  else
+                    let remaining = k - (dim - d + 1) in
+                    let y', m' =
+                      if m = 12 then (y + 1, 1) else (y, m + 1)
+                    in
+                    walk y' m' 1 remaining
+                else
+                  (* k < 0 *)
+                  if d + k >= 1 then (y, m, d + k)
+                  else
+                    let y', m' =
+                      if m = 1 then (y - 1, 12) else (y, m - 1)
+                    in
+                    let dim' = days_in_month y' m' in
+                    walk y' m' dim' (k + d)
+              in
+              walk y m d k_days
+            in
+            (* Generate boundaries. *)
+            let entries = ref [s_ymd] in
+            (match end_ymd, count_int with
+             | _, Some n ->
+               (* Count form: produces count + 1 entries. *)
+               let cur = ref s_ymd in
+               for _ = 1 to n do
+                 cur := step_ymd !cur step_days;
+                 entries := !cur :: !entries
+               done;
+               List.rev !entries
+             | Some e_ymd, None ->
+               (* Start–end form. Step until > end. *)
+               let (ey, em, ed) = e_ymd in
+               let end_dn = days_of_date ey em ed in
+               let cur = ref s_ymd in
+               let cur_dn = ref start_dn in
+               let aligned = ref true in
+               while !cur_dn + step_days <= end_dn do
+                 cur := step_ymd !cur step_days;
+                 cur_dn := !cur_dn + step_days;
+                 entries := !cur :: !entries
+               done;
+               if !cur_dn <> end_dn then aligned := false;
+               (* inclusive_end semantics: end is appended ONLY when
+                  it equals a boundary; otherwise W328 fires. *)
+               if (not !aligned) && inclusive_end then begin
+                 warn "W328"
+                   (Printf.sprintf
+                     "date_range: `end = %s` does not land on a cadence \
+                      boundary from `start = %s`; last produced entry \
+                      is %s"
+                     (format_iso_date e_ymd)
+                     (format_iso_date s_ymd)
+                     (format_iso_date !cur))
+                   ~hint:"list `end` explicitly or set \
+                          `inclusive_end = false` to make the \
+                          truncation explicit"
+                   ()
+               end;
+               List.rev !entries
+             | None, None -> [s_ymd])
+      end
+      else begin
+        (* Calendar cadence: months or years. *)
+        if not origin_set then begin
+          let kw = if Option.is_some cmonths_kw
+            then "calendar_months" else "calendar_years" in
+          err "E327"
+            (Printf.sprintf
+              "date_range with `%s` cadence requires an anchored model" kw)
+            ~hint:"add `origin = date(\"YYYY-MM-DD\")` at the top of \
+                   the file, or use `every = N 'days` for an affine \
+                   cadence"
+            ();
+          []
+        end else
+          let n_step, step_fn =
+            if Option.is_some cmonths_kw then
+              (Option.get cmonths_kw, add_calendar_months_ymd)
+            else
+              (Option.get cyears_kw, add_calendar_years_ymd)
+          in
+          let k_step = match try_eval_const_int n_step with
+            | Some n -> n
+            | None ->
+              err "E328"
+                "date_range: calendar cadence must be a \
+                 compile-time integer" ();
+              0
+          in
+          if k_step <= 0 then begin
+            err "E329"
+              (Printf.sprintf
+                "date_range: calendar cadence must be positive (got %d)"
+                k_step) ();
+            []
+          end else
+            let entries = ref [s_ymd] in
+            (match end_ymd, count_int with
+             | _, Some n ->
+               let cur = ref s_ymd in
+               for _ = 1 to n do
+                 cur := step_fn !cur k_step;
+                 entries := !cur :: !entries
+               done;
+               List.rev !entries
+             | Some e_ymd, None ->
+               (* Step until next would exceed end. *)
+               let cur = ref s_ymd in
+               let stop = ref false in
+               while not !stop do
+                 let nxt = step_fn !cur k_step in
+                 if cmp_ymd nxt e_ymd <= 0 then begin
+                   cur := nxt;
+                   entries := nxt :: !entries
+                 end else
+                   stop := true
+               done;
+               if cmp_ymd !cur e_ymd <> 0 && inclusive_end then
+                 warn "W328"
+                   (Printf.sprintf
+                     "date_range: `end = %s` does not land on a cadence \
+                      boundary from `start = %s`; last produced entry \
+                      is %s"
+                     (format_iso_date e_ymd)
+                     (format_iso_date s_ymd)
+                     (format_iso_date !cur))
+                   ~hint:"list `end` explicitly or set \
+                          `inclusive_end = false` to make the \
+                          truncation explicit"
+                   ();
+               List.rev !entries
+             | None, None -> [s_ymd])
+      end
+    in
+    List.map (fun ymd -> EConst (ymd_to_float ymd)) entries_ymd
+
+(** Splice any `date_range(...)` calls in a list of AST exprs
+    in-place, producing a flat list with all date_ranges materialized
+    to their `EConst` entries. Used at list-consuming sites
+    (`at = [...]`, `on = [...]`, table inline values). *)
+let splice_date_ranges ctx (es : expr list) : expr list =
+  List.concat_map (fun e ->
+    match e with
+    | EFuncCall ("date_range", args) -> expand_date_range_to_consts ctx args
+    | _ -> [e]
+  ) es
+
 let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
   match e with
   | EConst f     -> Ir.Const f
@@ -1085,6 +1620,108 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
          ~message:"date() requires a top-level origin declaration, e.g. origin = date(\"2020-01-01\")"
          ();
        Ir.Const 0.0)
+  | EFuncCall (("add_calendar_months" | "add_calendar_years") as fname, args) ->
+    (* Expander-only calendar arithmetic primitives — Phase 2 of the
+       2026-05-22 typed-time proposal §4. Materializes at compile
+       time to `Ir.Const` (days-from-origin in `time_unit` units);
+       has no runtime IR node. *)
+    (match args with
+     | [("", d_expr); ("", n_expr)] ->
+       (* Anchored-mode gate: calendar stepping requires `origin`. *)
+       (match ctx.origin with
+        | None ->
+          Diagnostics.error ctx.diags
+            ~code:"E327" ~loc:Diagnostics.no_loc
+            ~message:(Printf.sprintf
+              "`%s` requires an anchored model (calendar stepping is \
+               only meaningful with a calendar origin)" fname)
+            ~hint:"add `origin = date(\"YYYY-MM-DD\")` at the top of \
+                   the file, or use an exact-day duration like `30 'days`"
+            ();
+          Ir.Const 0.0
+        | Some origin_str ->
+          (* n must be a compile-time integer. *)
+          (match try_eval_const_int n_expr with
+           | None ->
+             Diagnostics.error ctx.diags
+               ~code:"E328" ~loc:Diagnostics.no_loc
+               ~message:(Printf.sprintf
+                 "%s: second argument must be a compile-time integer \
+                  (number of calendar %s to add)" fname
+                 (if fname = "add_calendar_months" then "months" else "years"))
+               ~hint:"example: add_calendar_months(date(\"2020-01-01\"), 6)"
+               ();
+             Ir.Const 0.0
+           | Some n ->
+             (* W327 — literal round-trip composition. Fires before
+                the inner is itself evaluated, so the warning lands
+                even if the inner shape is legal. *)
+             if detect_round_trip ~primitive_name:fname ~outer_n:n ~inner:d_expr
+             then
+               Diagnostics.warning ctx.diags
+                 ~code:"W327" ~loc:Diagnostics.no_loc
+                 ~message:(Printf.sprintf
+                   "%s round-trip composition: %s(%s(d, %d), %d) is \
+                    not in general equal to d — month-end clamping is \
+                    non-invertible"
+                   fname fname fname (-n) n)
+                 ~hint:"month-end clamping is non-invertible: \
+                        add_calendar_months(date(\"2020-01-31\"), 1) \
+                        = date(\"2020-02-29\"), then (..., -1) = \
+                        date(\"2020-01-29\"), not date(\"2020-01-31\")"
+                 ();
+             (* Const-evaluate the date argument. *)
+             (match try_eval_const_instant_ymd ctx d_expr with
+              | Ok ymd ->
+                let ymd' =
+                  if fname = "add_calendar_months"
+                  then add_calendar_months_ymd ymd n
+                  else add_calendar_years_ymd ymd n
+                in
+                let iso = format_iso_date ymd' in
+                (try Ir.Const (parse_date_to_float origin_str iso ctx.time_unit)
+                 with Failure msg ->
+                   Diagnostics.error ctx.diags
+                     ~code:"E328" ~loc:Diagnostics.no_loc
+                     ~message:msg ();
+                   Ir.Const 0.0)
+              | Error "_unanchored" ->
+                (* Inner `origin` reference in unanchored mode. This
+                   path is unreachable in practice — the outer check
+                   above already errored. Defensive. *)
+                Ir.Const 0.0
+              | Error msg ->
+                Diagnostics.error ctx.diags
+                  ~code:"E328" ~loc:Diagnostics.no_loc
+                  ~message:(Printf.sprintf "%s: %s" fname msg)
+                  ~hint:"the first argument must be `date(\"...\")`, \
+                         `origin`, or a nested \
+                         `add_calendar_months`/`add_calendar_years` call"
+                  ();
+                Ir.Const 0.0)))
+     | _ ->
+       Diagnostics.error ctx.diags
+         ~code:"E328" ~loc:Diagnostics.no_loc
+         ~message:(Printf.sprintf
+           "%s expects two positional arguments: a date and an integer" fname)
+         ~hint:(Printf.sprintf "example: %s(date(\"2020-01-01\"), 6)" fname)
+         ();
+       Ir.Const 0.0)
+  | EFuncCall ("date_range", _) ->
+    (* `date_range` produces an `Instant[]`. It is only legal in
+       list-consuming positions (table values, intervention/event
+       `at = [...]`, periodic-forcing `on = [...]`); those sites
+       splice the expansion via [expand_date_range_to_consts]. A
+       call that reaches the scalar `resolve_expr` path is in the
+       wrong context. *)
+    Diagnostics.error ctx.diags
+      ~code:"E270" ~loc:Diagnostics.no_loc
+      ~message:"`date_range(...)` produces a list and is only valid in \
+                a list-consuming position"
+      ~hint:"use date_range inside `at = [...]`, `on = [...]`, or a \
+             table value — not in a scalar expression"
+      ();
+    Ir.Const 0.0
   | EFuncCall ("unchecked_dim", args) ->
     (* Per-expression dimensional escape. Grammar:
          unchecked_dim(<expr>, dim = <name>, reason = "why")
@@ -1256,6 +1893,23 @@ and resolve_ident_name ctx name ~loc =
     Ir.Const Float.pi
   else if name = "e" then
     Ir.Const (Float.exp 1.0)
+  else if name = "origin" then
+    (* `origin` as a referenceable identifier — Phase 2 of the
+       2026-05-22 typed-time proposal §1.1. Resolves to the t=0
+       point in anchored mode (origin IS the zero); errors in
+       unanchored mode pointing the user at adding an `origin =
+       date(...)` declaration. *)
+    (match ctx.origin with
+     | Some _ -> Ir.Const 0.0
+     | None ->
+       Diagnostics.error ctx.diags
+         ~code:"E327"
+         ~loc
+         ~message:"`origin` is not defined — model is unanchored"
+         ~hint:"add `origin = date(\"YYYY-MM-DD\")` at the top of the file, \
+                or use an explicit numeric/duration value here"
+         ();
+       Ir.Const 0.0)
   else begin
     Diagnostics.error ctx.diags
       ~code:"E100"
@@ -2106,7 +2760,16 @@ let extract_path_arg ctx func_name args =
   path_opt
 
 let rec flatten_expr_list ctx (dim_entries : table_dim_entry list) = function
-  | EList es     -> List.concat_map (flatten_expr_list ctx dim_entries) es
+  | EList es     ->
+    (* Splice date_range(...) calls inside list literals before
+       recursing — Phase 2 of the 2026-05-22 typed-time proposal §4. *)
+    let es = splice_date_ranges ctx es in
+    List.concat_map (flatten_expr_list ctx dim_entries) es
+  | EFuncCall ("date_range", args) ->
+    (* date_range at the top of a table value (without an outer
+       []) also splices. *)
+    List.concat_map (flatten_expr_list ctx dim_entries)
+      (expand_date_range_to_consts ctx args)
   | EConst f     -> [Ir.Const f]
   | EUnit (f, u) -> [Ir.Const (unit_to_model_time ctx f u)]
   | other        -> [resolve_expr ctx [] other]
@@ -2780,6 +3443,10 @@ let expand_scheduled_actions ctx decls ~always_active =
       in
       let schedule = match iv.ivschedule with
         | SAtTimes exprs ->
+          (* Splice any `date_range(...)` calls into their expanded
+             list of `EConst` entries before resolving. Phase 2 of the
+             2026-05-22 typed-time proposal §4. *)
+          let exprs = splice_date_ranges ctx exprs in
           Ir.AtTimes (List.map (fun e ->
             let ir = normalize_expr (resolve_expr ctx env e) in
             match ir with Ir.Const f -> f | _ -> 0.0
