@@ -66,7 +66,7 @@ anchored mode. They are the **anchor-only primitives**:
   mode only, unblocks them without any other surface change.
 
   **Referenceability scope (specified):** `origin` is usable wherever
-  a DSL constant-position `Instant` is accepted — `origin + days(N)`,
+  a DSL constant-position `Instant` is accepted — `origin + 90 'days`,
   `add_calendar_months(origin, N)`, `simulate { from = origin }`,
   `at [origin, ...]` schedules, and `let landmark = origin + 90 'days`.
   Not usable inside rate expressions or any compartment-state context,
@@ -94,6 +94,54 @@ What differs across modes is what an `instant`-typed value *means*:
 The clean way to read this: `instant` kind is a *dimension claim*
 (always `[T]`), and the torsor refinement on top of `[T]` activates
 only when origin is declared.
+
+**Decision of record — arithmetic in unanchored mode.** Because the
+torsor refinement is inactive in unanchored mode, `instant + instant`
+is not rejected there; nor is `instant`-vs-`duration` distinguished
+arithmetically. The two parameter kinds are interchangeable in
+unanchored expression arithmetic and carry only documentation intent.
+Anchored mode is where the torsor's `Instant + Instant` rejection
+and the Exact/Calendar split do their work. This is a deliberate
+simplification flagged here so it's a decision of record, not an
+oversight.
+
+### 1.2 `simulate.from`, `simulate.to`, `simulate.dt` are Duration-typed positions
+
+A typing ruling load-bearing for §3's migration hint and for any
+implementer touching the `simulate` block: in both anchored and
+unanchored mode, `simulate.from`, `simulate.to`, and `simulate.dt`
+are **`Duration`-typed positions on the time axis** — offsets from
+`t = 0` (which is `origin` in anchored mode, and a notional zero in
+unanchored mode). They are not `Instant`-typed.
+
+Concrete implications:
+
+- `from = 0 'days`, `to = 5 'years`, `dt = 1.0` — the existing
+  unit-literal and bare-numeric forms — are Durations, valid in both
+  modes.
+- `from = date("2020-01-21")` in anchored mode is compile-time-
+  converted via origin to a Duration (a number of `time_unit`s),
+  per the existing language behaviour.
+- `from = origin` resolves to `Duration::zero()` in the simulate
+  context. The Instant-typed reserved identifier coerces to a
+  Duration here because the field is Duration-typed.
+- `to = 600 'months` in anchored mode is a *one-shot* affine
+  conversion (`600 × 30.4369 ≈ 18260` days from origin), not an
+  iterated calendar-stepping operation. Rule 1 does **not** fire
+  here: the Calendar/Exact distinction matters only where
+  calendar-vs-affine intent is genuinely ambiguous (iteration:
+  recurring-schedule cadences; explicit instant translation:
+  `date(...) + 6 'months`). A single conversion from a unit-literal
+  duration to the axis is unambiguous (the affine length is
+  well-defined, period).
+
+The migration hint in §3 uses this ruling: after switching axes,
+`to = 600 'months` is a legal annotation because `simulate.to` is
+Duration-typed and the one-shot conversion is unambiguous. If
+that's surprising, the resolution is that `simulate.to = X`
+historically means *"set `t_end` to value X on the axis"*, not
+*"step forward from `origin` by X iteratively"* — the existing
+language behaviour we're preserving.
 
 **Distinct from anchor-only primitives: calendar-named affine
 constructs.** These work in both modes because they're scalars in the
@@ -356,14 +404,18 @@ The Exact/Calendar classifier only sees `[T]`-dimensioned operands.)
 
 The "`Instant + duration` requires `Exact`" rule catches the explicit-
 arithmetic case (`date(...) + 6 'months`). It needs to extend to
-recurring schedules on interventions and events
-(`docs/camdl-language-spec.md` §14.2):
+recurring schedules on interventions and events. The grammar from
+`docs/camdl-language-spec.md` §14.2, verified by
 
 ```
+$ sed -n '1968,1990p' docs/camdl-language-spec.md
+### 14.2 Scheduling
+...
+**Block form** (recurring or complex schedules):
 NAME : ACTION {
-  every = DURATION
-  from  = DURATION
-  until = DURATION
+  every = DURATION             recurring interval
+  from  = DURATION             start of recurring (default: t_start)
+  until = DURATION             end of recurring (default: t_end)
 }
 ```
 
@@ -422,43 +474,68 @@ time a user compares a rendered date to a calendar.
 This is the same principle as Rule 1, applied to the axis rather
 than to individual durations.
 
-#### Bare-numeric time positions in anchored mode — W3xx warning
+#### Bare-numeric time positions in anchored mode
 
 Rule 2 keeps `time_unit = 'months/'years` out of anchored mode, but
 it doesn't catch the *companion* trap the migration hint warns about:
-in anchored mode, *every* bare-numeric time position
+in anchored mode, every bare-numeric time position
 (`simulate.from`, `simulate.to`, `simulate.dt`, `at [k, ...]`
 schedules in interventions and events, and `--data` numeric time
 columns) silently means "internal time units from origin" — which
 is correct if the user means it, but is exactly where the
-silent-shift trap lives during migrations.
+silent-shift trap lives during migrations. The proposal addresses
+this at three different severities, calibrated to how often the
+legitimate case actually appears.
 
-The proposal therefore introduces **W3xx**: in anchored mode, any
-bare-numeric value in a time-typed position emits a warning with
-hint:
+**W3xx — warning on bare-numeric `simulate.from/to/dt` and
+`at [k, ...]` schedules.** Most permissive: the language already
+accepts `simulate { to = 18260 }` as a legitimate "internal days
+from origin" idiom (SBC-style fits, regression test fixtures, and
+the seed-timing chapter's COVID-WA data which uses negative day
+offsets from origin). Warning preserves that while making the
+silent-shift trap visible:
 
 > W3xx: `to = 600` is a bare number in a time position, with
 > `origin = date("...")` declared — interpreted as 600 in the
 > model's `time_unit`. To make the intent explicit, write
-> `to = 600 'days` (or `'weeks`/`'months` — converted via
-> `days_per_unit`), or use a date literal like
-> `to = date("1940-12-01")`. To suppress this warning intentionally
-> (legacy/internal-time semantics), pass
-> `--time-format internal-days` for the `--data` time column or
-> annotate the position explicitly.
+> `to = 600 'days` (or another unit literal) or a date literal
+> like `to = date("1940-12-01")`. To suppress this warning
+> intentionally (genuine internal-units semantics), annotate with
+> `'days` or accept the warning as the documented opt-in.
 
-Numeric data columns with `origin` declared remain a *hard* error
-per §4.5 (same family, stricter rule at the I/O boundary because
-data files are the most common silent-shift surface). `on=[...]`
-bare-numeric in periodic forcings with `origin` also remain a hard
-error per §4.4.
+**W3xx — warning on numeric `--data` time column with `origin`
+declared.** Same severity as the `simulate` case, for the same
+reason: the corpus survey (see §2) shows existing data files like
+`covid_wa_daily.tsv` and `covid_wa_growth.tsv` carry both a `date`
+column and a `time` column whose values are explicit day-offsets
+from origin (`-34, -33, ...`). The numeric-time-with-origin pattern
+is in active use as a documented modelling idiom. Warning with the
+explicit opt-in:
 
-The warning-versus-error split: the language already accepts
-`simulate { to = 18260 }` as a legitimate "internal days from
-origin" idiom (the legacy and SBC-style cases). Warning preserves
-that. Numeric data columns and periodic-forcing `on=[]` lists are
-the surfaces where the legitimate case is rare and the trap is
-overwhelming — hard error there.
+> W3xx: `--data cases.tsv` time column is numeric and the model
+> declares `origin = date("...")` — values are interpreted as
+> internal-time units from origin. If that's intentional, pass
+> `--time-format internal-days` to silence this warning; if you
+> meant calendar dates, switch the column to ISO `YYYY-MM-DD` form
+> or use `--time-col` to select a different column.
+
+**E3xx — hard error on bare-numeric `on=[...]` inside periodic
+forcings with `origin` declared.** The corpus survey shows zero
+anchored models use `on=[...]` at all, so this stricter rule
+breaks nothing in practice. The asymmetry vs the warning cases is
+deliberate: a periodic-forcing breakpoint list is a *schedule*
+that must align to a real calendar pattern (school terms, vaccine
+campaign windows), where "day offset from origin" is almost never
+what a user genuinely wants — the legitimate case is rare and the
+trap is overwhelming. Hard error with hint pointing at
+`date_range(...)` or explicit `date(...)` entries.
+
+The split is driven by corpus evidence, not principle: where the
+legitimate case shows up in committed models (`simulate.to`,
+numeric data columns), warning; where it doesn't (anchored
+periodic-forcing `on=[]`), hard error. If a real use case for
+bare-numeric `on=[]` ever shows up, the rule can soften to warning
+at that point.
 
 One precision subtlety worth naming: the date↔t round-trip is
 **bit-exact** for `'days` (integer rata-die difference, divisor of 1)
@@ -715,7 +792,7 @@ non-exhaustive catalog:
 | E3xx | `Calendar`-classified duration in `every`/`from`/`until` of anchored recurring schedule  | "calendar cadence not allowed in anchored recurring schedule"          |
 | E3xx | `time_unit = 'months` (or `'years`) with `origin` declared                               | "constant-day axis required; use `'days`, keep per-month rates"        |
 | E3xx | call to `add_calendar_months` / `add_calendar_years` in an unanchored model              | "calendar stepping requires anchored mode; add `origin = date(...)`"   |
-| E4xx | bare-numeric `--data` time column with `origin` declared                                 | "use ISO dates or `--time-format internal-days`"                       |
+| W3xx | bare-numeric `--data` time column with `origin` declared                                 | "use ISO dates or `--time-format internal-days` to suppress"           |
 | E3xx | bare-numeric entries inside `on=[...]` periodic-forcing list with `origin` declared      | "use `date(...)` entries or `--time-format internal-days` opt-in"      |
 | W3xx | bare-numeric time position in anchored mode (`simulate.from/to/dt`, `at [k, ...]`)       | "annotate with `'days` or use a date literal; or opt-in to legacy"    |
 | W3xx | `date_range(start, end, ...)` where `end` doesn't land on a cadence boundary             | "last entry was X; list `end` explicitly or set `inclusive_end = false`" |
@@ -723,6 +800,12 @@ non-exhaustive catalog:
 
 The retrospective hint-quality audit of *existing* E-codes is
 intentionally out of scope here and deferred to a follow-up proposal.
+
+**Placeholder note:** the `E3xx` and `W3xx` labels above are
+placeholders — each distinct trigger needs its own unique number
+assigned at implementation time. The catalog has five `E3xx`
+triggers and three `W3xx` triggers; they resolve to eight
+individual codes, not two shared ones.
 
 ## 6. The judgment call landed: hard error on `date + N 'months`
 
@@ -761,13 +844,38 @@ changes precede pure structural refactors.
 - Add E3xx for `Instant + CalendarDuration` with hint text.
 - Add E3xx for `time_unit = 'months/'years` with `origin` declared
   with hint text.
+- Add E3xx for bare-numeric `on=[...]` in periodic forcings with
+  `origin` declared.
+- Add W3xx for bare-numeric `simulate.from/to/dt` and
+  `at [k, ...]` schedules in anchored mode.
+- Add W3xx for numeric `--data` time column with `origin`
+  declared, with `--time-format internal-days` as the explicit
+  opt-in suppress.
 - Tests: positive cases (legal `5 'months` table values, legal
-  `0.087 'per_month` rate parameters in anchored mode); negative cases
+  `0.087 'per_month` rate parameters in anchored mode, legal
+  `simulate.to = 600 'months` one-shot conversion); negative cases
   (rejected `date(...) + 6 'months`, rejected `time_unit = 'months`
-  under `origin`).
+  under `origin`, rejected bare-numeric `on=[]` in anchored
+  periodic forcing).
 
-Additive. The dacca SIRS models continue to compile unchanged
-(unanchored, no `Instant`).
+**Corpus impact (verified):**
+
+- Anchored models in the corpus: 5 (the seed-timing chapter set
+  plus one test fixture). All unanchored models — including the
+  five dacca SIRS variants under `'months` axis — are unaffected.
+- Anchored models using periodic-forcing `on=[...]`: zero — the
+  E3xx on bare-numeric `on=[]` breaks no existing model.
+- Anchored models with `time_unit = 'months/'years`: zero — Rule 2
+  breaks no existing model.
+- Anchored models loading numeric-time `--data`: two of the
+  seed-timing data files (`covid_wa_daily.tsv`,
+  `covid_wa_growth.tsv`) include both an ISO `date` column and a
+  numeric `time` column with explicit day-offsets from origin
+  (`-34, -33, ...`). These would fire the new W3xx warning if
+  loaded via the `time` column; passing `--time-format internal-days`
+  suppresses it. **No hard breakage; one warning at the data
+  boundary for the existing legitimate pattern, with documented
+  opt-in.**
 
 ### Phase 2 — calendar-arithmetic primitives and `date_range`
 
@@ -837,10 +945,13 @@ its own proposal.
 
 Per phase:
 
-**Phase 1.** All existing models still compile. Each new diagnostic has
-a test case asserting both that it fires when expected and that the
-emitted message contains the documented hint text. The dacca SIRS
-models compile unchanged.
+**Phase 1.** All existing models still compile (verified by corpus
+survey, §7); the new W3xx on numeric-`--data`-time-column may fire
+on existing seed-timing data fits and is suppressed with
+`--time-format internal-days`, but does not fail the compile. Each
+new diagnostic has a test case asserting both that it fires when
+expected and that the emitted message contains the documented hint
+text. The dacca SIRS models (unanchored) compile unchanged.
 
 **Phase 2.** Documented examples for `add_calendar_months` /
 `add_calendar_years` round-trip identically through the IR and the
