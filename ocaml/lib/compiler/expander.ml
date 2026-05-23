@@ -2941,9 +2941,11 @@ let expand_simulate ctx =
       Ir.time_semantics = "continuous"; Ir.dt = None; Ir.rng_seed = None }
 
 let expand_output ctx =
-  let t_end = match ctx.simulate with
-    | None    -> 100.0
-    | Some sd -> resolve_float_expr ctx sd.sim_to
+  let t_start, t_end = match ctx.simulate with
+    | None    -> (0.0, 100.0)
+    | Some sd ->
+      ( resolve_float_expr ctx sd.sim_from,
+        resolve_float_expr ctx sd.sim_to )
   in
   let step = match ctx.output_decl with
     | Some od -> (match od.out_trajectories with
@@ -2957,7 +2959,17 @@ let expand_output ctx =
       | None    -> "tsv")
     | None    -> "tsv"
   in
-  { Ir.times        = Ir.OutRegular { Ir.start = 0.0; Ir.step = step; Ir.end_ = t_end };
+  (* Default the output schedule's start to cover the full integration
+     window. With anchored models that use `from = date(...)` before
+     `origin`, t_start is negative; an output schedule starting at 0
+     leaves no snapshots in [t_start, 0), and `--obs-only` / any
+     state-at-obs-time path (snap_at) can't find a snapshot for the
+     pre-origin observations and hard-exits. Defaulting to
+     min(0.0, t_start) preserves the existing start=0 behaviour for
+     unanchored models (t_start ≥ 0) and extends it to cover negative
+     t_start without changing the step or output cadence. *)
+  let start = min 0.0 t_start in
+  { Ir.times        = Ir.OutRegular { Ir.start; Ir.step; Ir.end_ = t_end };
     Ir.format       = format;
     Ir.trajectory   = true;
     Ir.observations = true;

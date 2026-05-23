@@ -264,6 +264,63 @@ let test_output_step_default () =
        Alcotest.(check (float 0.01)) "default output step" 1.0 r.Ir.step
      | _ -> Alcotest.fail "expected OutRegular schedule")
 
+(* Regression: the default output schedule must cover the full
+   integration window. With anchored models that resolve `from =
+   date(...)` to a negative t_start, the default `start = 0.0` would
+   leave [t_start, 0) without snapshots and the `--obs-only` writer
+   (and any state-at-obs-time consumer) would hard-exit with
+   "no snapshot at or before t=…" for pre-origin observations.
+   The fix: default `start = min(0.0, t_start)`. *)
+
+let test_output_default_start_unanchored_stays_zero () =
+  (* Unanchored (no origin), positive t_start → output.start = 0.0 (no regression). *)
+  let src = {|
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  match Compiler.compile ~name:"test_output_unanchored_start" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.output.Ir.times with
+     | Ir.OutRegular r ->
+       Alcotest.(check (float 1e-9)) "output.start stays 0.0" 0.0 r.Ir.start
+     | _ -> Alcotest.fail "expected OutRegular schedule")
+
+let test_output_default_start_anchored_negative_t_start () =
+  (* Anchored with `from = date("2020-01-21")` before `origin =
+     date("2020-02-24")` → t_start = -34. The default output schedule
+     must start at -34, not 0, so snapshots cover the full integration
+     window. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-02-24")
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = date("2020-01-21")  to = date("2020-06-22") }
+  |} in
+  match Compiler.compile ~name:"test_output_anchored_neg_start" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    Alcotest.(check (float 1e-9)) "t_start" (-34.0) m.Ir.simulation.Ir.t_start;
+    (match m.Ir.output.Ir.times with
+     | Ir.OutRegular r ->
+       Alcotest.(check (float 1e-9))
+         "output.start covers negative t_start" (-34.0) r.Ir.start
+     | _ -> Alcotest.fail "expected OutRegular schedule")
+
 (* ── BUG-2: Parameterised table values ───────────────────────────────────────
    Compile a model with a table that references a parameter. The compiled
    table values should include Ir.Param "beta_mf", not drop it. ─────────── *)
@@ -4900,6 +4957,10 @@ let () =
     "output_schedule", [
       Alcotest.test_case "format and step when output block present" `Quick test_output_format_from_decl;
       Alcotest.test_case "default step=1.0 with no output block"    `Quick test_output_step_default;
+      Alcotest.test_case "unanchored t_start=0 → output.start=0.0 (no regression)"
+        `Quick test_output_default_start_unanchored_stays_zero;
+      Alcotest.test_case "anchored t_start<0 → output.start covers full integration window"
+        `Quick test_output_default_start_anchored_negative_t_start;
     ];
     "parameterised_tables", [
       Alcotest.test_case "param survives as Ir.Param" `Quick test_parameterised_table;
