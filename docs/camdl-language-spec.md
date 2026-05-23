@@ -87,8 +87,9 @@ Unit literals are distinguished from identifiers by the `'` prefix:
 Supported units: `'days`, `'weeks`, `'months`, `'years`, `'per_day`,
 `'per_week`, `'per_month`, `'per_year`.
 
-Conversions: 1 'week = 7 'days, 1 'month = 30.4375 'days (365.25/12), 1 'year =
-365.25 'days. The compiler uses exact rational arithmetic.
+Conversions: 1 'week = 7 'days, 1 'month = 365.2425/12 'days ≈ 30.4369, 1 'year
+= 365.2425 'days. Proleptic-Gregorian throughout; matches `rata_die` and
+`rust/crates/ir/src/caltime.rs::days_per_unit` (the shared conversion authority).
 
 ### 2.2 Dimensional Type System
 
