@@ -33,25 +33,67 @@ careful counterpart, not the arbiter of scientific judgment.
   construct means, check the compiler, don't guess. A wrong guess
   must surface as a compile error or failing test — never as a
   silent change that looks plausible.
-- **Verify against code, not docs.** Doc text describes an intent
-  that may have drifted from the implementation. Before writing an
-  incident report, a fix section, or a claim about how the system
-  behaves *today*, `grep` the implementation file (or read the
-  function) — that's the source of truth. The doc may say one
-  thing and the code do another; the code is what runs. The cost of
-  the verification is seconds; the cost of writing a long incident
-  report about a bug that doesn't exist is much higher. This
-  specifically applies to claimed constants, formulas, and
-  algorithms — when the spec says `30.4375`, grep
-  `expander.ml`/`caltime.rs` to confirm before building anything on
-  it.
+- **Verify against code, not docs — and paste the verification
+  inline.** Doc text describes intent that may have drifted from the
+  implementation. Before writing an incident report, a fix section,
+  or any normative claim about how the system behaves *today*, run
+  the command that verifies it (grep the file, read the function,
+  run the test) and *paste the command and its output into the
+  artifact alongside the claim*. Not "expander.ml uses Julian
+  `365.25/12`" but "`rg 365 ocaml/lib/compiler/expander.ml` → no
+  matches in the expander; OCaml does not use 365.25." The pattern
+  self-corrects: you can't write a load-bearing claim without first
+  running the command, and the command either confirms or refutes.
+  If the output is too long, paste the command alone with a
+  one-line summary of what it confirmed.
+- **Mark inference vs verified.** "The spec says X" and "the code
+  does X" are different claims. If you've only read the doc, write
+  "the spec says X (not yet confirmed against the implementation)"
+  — one clause surfaces the gap. The failure mode the previous rule
+  prevents is the silent promotion of "the doc implies" to "the
+  code does."
+- **Incident reports require a reproduction.** A concrete input →
+  wrong output, with the command that produced it. "Would be off by
+  ~0.4 days" is a hypothesis, not an incident. If you can't produce
+  a reproduction, the artifact is a *question* filed under
+  `docs/dev/notes/`, not a `docs/dev/incidents/` entry. The
+  reproduction bar is what keeps phantoms out of the incident archive.
+- **Classify discrepancies before proposing fixes.** Three classes,
+  three different fixes:
+  - *doc-vs-doc* — edit a doc.
+  - *doc-vs-code* — verify which side is right, then sync the loser.
+  - *code-vs-code* — fix the code and add a test pinning the
+    agreement.
+  State the class explicitly at the top of any incident or proposal
+  that depends on the answer. Misclassifying inflates a typo into an
+  engineering project (or, the other direction, hides a real bug
+  behind a doc edit).
 - **Ship the fix; don't document the broken interim.** When a bug
   fix is straightforward and the fixed state is the right state,
-  apply the fix and update the doc to describe the *fixed* reality.
-  Long descriptions of the broken interim state belong in incident
-  reports, not in user-facing docs (spec, cheatsheet, user-features).
+  apply the fix and update the user-facing doc to describe the
+  *fixed* reality. Long descriptions of the broken interim state
+  belong in incident reports, not in spec/cheatsheet/user-features.
   Doc-around-the-bug is noise that delays shipping and confuses the
   next reader.
+
+### Self-check tells that you're describing rather than verifying
+
+When you catch any of these in your own draft, stop and run the
+verification before continuing:
+
+- Hedged tense (*would*, *could*, *might*) where *is* belongs to
+  describe current behaviour.
+- A detection story that doesn't name the file you read or the
+  command you ran to confirm the finding.
+- Corroborating detail — specific line numbers, conversion tables,
+  three-decimal constants — too complete for a claim that was
+  trivially checkable.
+- Process-moralising disproportionate to what was actually verified
+  (three "lessons learned" about a bug whose existence was never
+  demonstrated).
+- Self-narrated diligence as a load-bearing claim — "a careful read
+  would have caught this" is itself an unverified claim about your
+  own conduct.
 - **Never lower the bar to make something pass.** No `--no-verify`,
   no weakening an assertion, no skipping a gate, no widening a
   tolerance to get green. If something fails, find the cause.
