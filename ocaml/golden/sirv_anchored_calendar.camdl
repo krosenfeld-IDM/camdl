@@ -1,0 +1,90 @@
+# Anchored SIRV with school-term seasonal forcing + calendar-aligned campaigns.
+#
+# This is the first golden fixture exercising the Phase 1+2 typed-time
+# surface introduced by `docs/dev/proposals/2026-05-22-typed-time-and-dsl-
+# ergonomics.md`. Concretely it round-trips through both the OCaml
+# expander and the Rust runtime to give us cross-language regression
+# coverage for:
+#
+#   - `origin = date("...")`                     (anchored mode)
+#   - `origin` as a reserved Instant identifier  (anchor-only primitive)
+#   - `add_calendar_months(origin, n)`           (Phase 1, list position)
+#   - `add_calendar_years(origin, n)`            (Phase 1, simulate.to)
+#   - `date_range(origin, count = …, calendar_months = …)`  (Phase 2)
+#   - periodic forcing with `'days`-annotated `on=[]` ranges (E323-clean)
+time_unit = 'days
+origin    = date("2020-01-01")
+
+compartments { S, I, R, V }
+
+let N = S + I + R + V
+
+parameters {
+  beta      : rate         in [0.1, 2.0]
+  gamma     : rate         in [0.05, 0.5]
+  vacc_cov  : probability  in [0.0, 1.0]
+  boost_cov : probability  in [0.0, 1.0]
+  N0        : count        in [1000, 1000000]
+  I0        : count        in [1, 1000]
+}
+
+forcing {
+  school : periodic 'ratio {
+    period = 365 'days
+    step   = 1 'days
+    on     = [7 'days : 100 'days, 115 'days : 199 'days, 252 'days : 350 'days]
+  }
+}
+
+interventions {
+  # Two SIA rounds, 12 calendar months apart, starting 6 months after origin.
+  # `add_calendar_months` in list position exercises the Phase 1 primitive.
+  sia : transfer(fraction = vacc_cov, from = S, to = V)
+    at [add_calendar_months(origin, 6), add_calendar_months(origin, 18)]
+
+  # Quarterly booster: 4 entries (start + 3 calendar-month steps).
+  # `date_range` with calendar cadence exercises the Phase 2 generator.
+  booster : transfer(fraction = boost_cov, from = R, to = V)
+    at [date_range(origin, count = 3, calendar_months = 3)]
+}
+
+transitions {
+  infection : S --> I @ beta * school(t) * S * (I / N)
+  recovery  : I --> R @ gamma * I
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+simulate {
+  from = origin
+  to   = add_calendar_years(origin, 2)
+}
+
+scenarios {
+  baseline {
+    label = "no campaigns"
+    set = {
+      beta      = 0.6
+      gamma     = 0.1
+      vacc_cov  = 0.0
+      boost_cov = 0.0
+      N0        = 10000
+      I0        = 10
+    }
+  }
+  campaigns {
+    label = "SIA + quarterly booster"
+    enable = [sia, booster]
+    set = {
+      beta      = 0.6
+      gamma     = 0.1
+      vacc_cov  = 0.5
+      boost_cov = 0.1
+      N0        = 10000
+      I0        = 10
+    }
+  }
+}

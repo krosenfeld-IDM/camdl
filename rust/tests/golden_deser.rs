@@ -57,3 +57,7 @@ fn deser_golden(name: &str) {
 #[test] fn golden_seir_age()          { deser_golden("seir_age"); }
 #[test] fn golden_sir_placebo_ekrng() { deser_golden("sir_placebo_ekrng"); }
 #[test] fn golden_sir_spatial_sum()   { deser_golden("sir_spatial_sum"); }
+// First anchored fixture in the corpus: origin + add_calendar_months/years
+// + date_range. Provides cross-language regression coverage for the typed-
+// time surface in 2026-05-22-typed-time-and-dsl-ergonomics.md (Phase 1+2).
+#[test] fn golden_sirv_anchored_calendar() { deser_golden("sirv_anchored_calendar"); }
