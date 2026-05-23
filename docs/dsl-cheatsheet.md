@@ -218,10 +218,14 @@ them before assuming the language doesn't do something — it usually does.
   and `instant`/`duration` parameter kinds. Before adding a new
   duration / rate / cadence / unit construct, grep this cheatsheet and
   the language spec.
-- **Cross-language constants disagree.** Anything that has to agree
-  across OCaml and Rust either lives in one place or has a test pinning
-  them — never two hand-maintained copies. See
-  `docs/dev/incidents/2026-05-22-dual-month-conversion-constants.md`.
+- **Cross-language constants need a single source of truth.** Anything
+  that has to agree across OCaml and Rust either lives in one place
+  and is read by both, or lives in two places with a test pinning them
+  to match — never two hand-maintained copies. The shared
+  proleptic-Gregorian `rata_die` algorithm (mirrored in
+  `rust/crates/ir/src/caltime.rs` and `ocaml/lib/compiler/expander.ml`,
+  pinned by `days_per_unit` returning identical Gregorian-average
+  constants on both sides) is the model to follow.
 - **Calendar months aren't durations.** "+1 month" depends on its
   input *and* on the year:
   `date("2021-01-31") + 1 month = date("2021-02-28")` but
