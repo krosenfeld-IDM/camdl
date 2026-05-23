@@ -4071,6 +4071,441 @@ let test_origin_absent_no_rata_die () =
   Alcotest.(check (option string)) "no origin" None m.Ir.origin;
   Alcotest.(check (option int)) "no origin_rata_die" None m.Ir.origin_rata_die
 
+(* ── Phase 1 of the 2026-05-22 typed-time proposal ─────────────────────────
+   Rules tested below:
+     E320 — time_unit = 'months/'years under `origin = date(...)`.
+     E321 — Instant + CalendarDuration (literal or `let`-laundered).
+     E322 — Calendar duration in recurring schedule `every`/`from`/`until`.
+     E323 — Bare-numeric entries inside `on=[...]` of a periodic forcing
+            in anchored mode.
+     W324 — Bare-numeric `simulate.from` / `simulate.to` in anchored mode.
+     W325 — Bare-numeric `at [...]` schedule entries in anchored mode.
+
+   The proposal's §8 acceptance criteria for Phase 1 require each new
+   diagnostic to assert both that it fires when expected AND that the
+   emitted message contains the documented hint text. *)
+
+(* Compile a snippet that's expected to succeed, returning the compile
+   detail so we can inspect emitted warnings/info. *)
+let compile_with_diags src =
+  Diagnostics.json_errors_mode := false;
+  let result = Compiler.compile_detail_result ~name:"t" src in
+  match result with
+  | Ok d -> Ok d
+  | Error e -> Error e
+
+let diags_of_detail (d : Compiler.compile_detail) =
+  List.rev d.Compiler.ctx.Expander.diags.Diagnostics.diags
+
+(* Assert that compilation of `src` succeeds AND emits a diagnostic with
+   given code. Returns the matching diagnostic. *)
+let expect_diag ?(severity = Diagnostics.Warning) ~code src =
+  match compile_with_diags src with
+  | Error e -> Alcotest.failf "expected compile success but got: %s" e
+  | Ok d ->
+    let ds = diags_of_detail d in
+    let matches = List.filter (fun (x : Diagnostics.diagnostic) ->
+      x.code = code && x.severity = severity) ds in
+    (match matches with
+     | [] ->
+       let codes = String.concat ", "
+         (List.map (fun (x : Diagnostics.diagnostic) -> x.code) ds) in
+       Alcotest.failf "expected %s diagnostic but only got: [%s]" code codes
+     | d :: _ -> d)
+
+(* Assert that compilation of `src` FAILS with an error code. *)
+let expect_error_code ?(contains = "") ~code src =
+  compile_expect_error_code ~code ~contains src
+
+let assert_hint_contains ~needle (d : Diagnostics.diagnostic) =
+  match d.hint with
+  | None -> Alcotest.failf "expected diagnostic %s to carry a hint" d.code
+  | Some h ->
+    if not (contains_substring ~needle h) then
+      Alcotest.failf "expected hint to contain %S, got: %s" needle h
+
+(* ── Positive cases (must compile) ──────────────────────────────────────── *)
+
+let test_typed_time_pos_5months_table_value () =
+  (* Affine duration literal `5 'months` as a table value compiles —
+     it's just a length, not a step from a date. *)
+  let m = compile_expect_ok {|
+    time_unit = 'days
+    dimensions { age = [child, adult] }
+    compartments { S, I, R }
+    stratify(by = age)
+    tables {
+      delay_by_age : age 'months = [3, 6]
+    }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N[a in age] = S[a] + I[a] + R[a]
+    transitions {
+      infection[a in age] : S[a] --> I[a] @ beta * S[a] * I[a] / N[a]
+      recovery[a in age]  : I[a] --> R[a] @ gamma * I[a]
+    }
+    init { S[a in age] = N0  I[a in age] = I0 }
+    simulate { from = 0 'days  to = 60 'days }
+  |} in
+  ignore m
+
+let test_typed_time_pos_per_month_rate_in_anchored () =
+  (* Per-month rate parameters work in anchored mode — the expander
+     converts at compile time via the affine month constant. *)
+  let m = compile_expect_ok {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, I, R }
+    parameters {
+      beta  : rate
+      gamma : rate
+      N0 : count  I0 : count
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  ignore m
+
+let test_typed_time_pos_simulate_to_months_oneshot () =
+  (* `simulate.to = 600 'months` in anchored mode is a one-shot
+     affine conversion to days — Rule 1 does not fire on this
+     because the position is Duration-typed, not Instant-typed.
+     Proposal §1.2. *)
+  let m = compile_expect_ok {|
+    time_unit = 'days
+    origin = date("1891-01-01")
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 600 'months }
+  |} in
+  ignore m
+
+let test_typed_time_pos_duration_param_bounds_with_months () =
+  (* `delay : duration in [1 'months, 6 'months]` parses and stays
+     Exact — the bound's month-spelling is harmless shorthand,
+     never leaking to uses of `delay`. Proposal §3.3.2 invariant. *)
+  let m = compile_expect_ok {|
+    time_unit = 'days
+    origin = date("2020-02-24")
+    compartments { S, I, R }
+    parameters {
+      beta  : rate
+      gamma : rate
+      tau   : instant  in [0 'days, 120 'days]
+      delay : duration in [1 'months, 6 'months]
+      N0    : count
+      I0    : count
+    }
+    let N = S + I + R
+    let landmark = tau + delay
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+      seed      :    --> I @ if t > landmark then 0.1 else 0.0
+    }
+    init { S = N0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  (* `delay` is recorded as duration kind. *)
+  let kind_of n =
+    (List.find (fun (p : Ir.parameter) -> p.name = n) m.Ir.parameters).param_kind in
+  Alcotest.(check (option string)) "delay is duration" (Some "duration") (kind_of "delay")
+
+let test_typed_time_pos_unanchored_months_axis () =
+  (* dacca shape: unanchored, `time_unit = 'months`, per-month rates,
+     month-span durations. Stays legal — Rule 2 only fires in
+     anchored mode. *)
+  let m = compile_expect_ok {|
+    time_unit = 'months
+    compartments { S, I, R }
+    parameters {
+      beta  : rate
+      gamma : rate
+      N0 : count  I0 : count
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0  to = 600 }
+  |} in
+  Alcotest.(check string) "time_unit stored as months" "months" m.Ir.time_unit
+
+(* ── Negative cases (must error or warn) ───────────────────────────────── *)
+
+let test_typed_time_e321_date_plus_months_rejected () =
+  expect_error_code
+    ~code:"E321"
+    ~contains:"calendar duration"
+    {|
+      time_unit = 'days
+      origin = date("2020-02-24")
+      compartments { S, I, R }
+      parameters {
+        beta : rate  gamma : rate  N0 : count  I0 : count
+      }
+      let landmark = date("2020-02-24") + 6 'months
+      let N = S + I + R
+      transitions {
+        infection : S --> I @ beta * S * I / N
+        recovery  : I --> R @ gamma * I
+      }
+      init { S = N0 - I0  I = I0 }
+      simulate { from = 0 'days  to = 120 'days }
+    |}
+
+let test_typed_time_e321_laundered_through_let () =
+  (* Laundered case: `let d = 6 'months; date(...) - d`. The let-
+     body's classifier (TCalendar) flows through `classify`'s let-
+     lookup. *)
+  expect_error_code
+    ~code:"E321"
+    ~contains:"calendar duration"
+    {|
+      time_unit = 'days
+      origin = date("2020-02-24")
+      compartments { S, I, R }
+      parameters {
+        beta : rate  gamma : rate  N0 : count  I0 : count
+      }
+      let d = 6 'months
+      let landmark = date("2020-02-24") + d
+      let N = S + I + R
+      transitions {
+        infection : S --> I @ beta * S * I / N
+        recovery  : I --> R @ gamma * I
+      }
+      init { S = N0 - I0  I = I0 }
+      simulate { from = 0 'days  to = 120 'days }
+    |}
+
+let test_typed_time_e321_hint_text () =
+  Diagnostics.json_errors_mode := true;
+  let result = Compiler.compile ~name:"t" {|
+    time_unit = 'days
+    origin = date("2020-02-24")
+    compartments { S, I, R }
+    parameters {
+      beta : rate  gamma : rate  N0 : count  I0 : count
+    }
+    let landmark = date("2020-02-24") + 6 'months
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  Diagnostics.json_errors_mode := false;
+  match result with
+  | Ok _ -> Alcotest.fail "expected error"
+  | Error e ->
+    (* Hint text must mention `add_calendar_months` and `'days`. *)
+    Alcotest.(check bool) "hint mentions add_calendar_months"
+      true (contains_substring ~needle:"add_calendar_months" e);
+    Alcotest.(check bool) "hint mentions days affine span"
+      true (contains_substring ~needle:"'days" e)
+
+let test_typed_time_e320_time_unit_months_with_origin_rejected () =
+  expect_error_code
+    ~code:"E320"
+    ~contains:"time_unit"
+    {|
+      time_unit = 'months
+      origin = date("2020-01-01")
+      compartments { S, I, R }
+      parameters {
+        beta : rate  gamma : rate  N0 : count  I0 : count
+      }
+      let N = S + I + R
+      transitions {
+        infection : S --> I @ beta * S * I / N
+        recovery  : I --> R @ gamma * I
+      }
+      init { S = N0 - I0  I = I0 }
+      simulate { from = 0  to = 600 }
+    |}
+
+let test_typed_time_e320_hint_text () =
+  Diagnostics.json_errors_mode := true;
+  let result = Compiler.compile ~name:"t" {|
+    time_unit = 'years
+    origin = date("2020-01-01")
+    compartments { S, I, R }
+    parameters {
+      beta : rate  gamma : rate  N0 : count  I0 : count
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0  to = 5 }
+  |} in
+  Diagnostics.json_errors_mode := false;
+  match result with
+  | Ok _ -> Alcotest.fail "expected error"
+  | Error e ->
+    Alcotest.(check bool) "hint mentions time_unit = 'days suggestion"
+      true (contains_substring ~needle:"'days" e);
+    Alcotest.(check bool) "hint warns about silent-shift trap"
+      true (contains_substring ~needle:"silently" e)
+
+let test_typed_time_e322_calendar_cadence_in_recurring () =
+  (* `every = 1 'months` inside a recurring intervention schedule
+     under origin = date(...) is a calendar cadence and rejected. *)
+  expect_error_code
+    ~code:"E322"
+    ~contains:"calendar"
+    {|
+      time_unit = 'days
+      origin = date("2020-01-01")
+      compartments { S, V }
+      parameters {
+        N0 : count
+      }
+      transitions {
+        leak : S --> V @ 0.0 'per_day * S
+      }
+      interventions {
+        vacc : transfer(from = S, to = V, fraction = 0.1) {
+          every = 1 'months
+        }
+      }
+      init { S = N0 }
+      simulate { from = 0 'days  to = 120 'days }
+    |}
+
+let test_typed_time_e322_unanchored_months_cadence_ok () =
+  (* In unanchored mode the same `every = 1 'months` is fine —
+     Rule 1/7 are vacuous without origin. *)
+  let _m = compile_expect_ok {|
+    time_unit = 'days
+    compartments { S, V }
+    parameters {
+      N0 : count
+    }
+    transitions {
+      leak : S --> V @ 0.0 'per_day * S
+    }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1) {
+        every = 1 'months
+      }
+    }
+    init { S = N0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  ()
+
+let test_typed_time_e323_bare_numeric_on_periodic_anchored () =
+  (* Bare-numeric entries in `on=[7:100]` inside a periodic forcing
+     under an anchored model: hard error. *)
+  expect_error_code
+    ~code:"E323"
+    ~contains:"on="
+    {|
+      time_unit = 'days
+      origin = date("2020-01-01")
+      compartments { S, I, R }
+      parameters {
+        beta0 : rate  gamma : rate
+        N0 : count  I0 : count
+      }
+      forcing {
+        school : periodic 'ratio {
+          period = 365 'days
+          step   = 1 'days
+          on     = [7:100, 115:199, 252:300, 308:356]
+        }
+      }
+      let N = S + I + R
+      transitions {
+        infection : S --> I @ beta0 * school(t) * S * I / N
+        recovery  : I --> R @ gamma * I
+      }
+      init { S = N0 - I0  I = I0 }
+      simulate { from = 0 'days  to = 120 'days }
+    |}
+
+let test_typed_time_w324_bare_numeric_simulate_warning () =
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, I, R }
+    parameters {
+      beta : rate  gamma : rate  N0 : count  I0 : count
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0  to = 120 }
+  |} in
+  let d = expect_diag ~severity:Diagnostics.Warning ~code:"W324" src in
+  assert_hint_contains ~needle:"'days" d
+
+let test_typed_time_w324_unit_annotated_simulate_no_warning () =
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, I, R }
+    parameters {
+      beta : rate  gamma : rate  N0 : count  I0 : count
+    }
+    let N = S + I + R
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  match compile_with_diags src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok d ->
+    let ds = diags_of_detail d in
+    let w324 = List.filter (fun (x : Diagnostics.diagnostic) -> x.code = "W324") ds in
+    Alcotest.(check int) "no W324 when unit-annotated" 0 (List.length w324)
+
+let test_typed_time_w325_bare_numeric_at_schedule_warning () =
+  (* Bare-numeric `at [50, 100]` in an intervention schedule under
+     an anchored model produces W325. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, V }
+    parameters {
+      N0 : count
+    }
+    transitions {
+      leak : S --> V @ 0.0 'per_day * S
+    }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1) at [50, 100]
+    }
+    init { S = N0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |} in
+  let d = expect_diag ~severity:Diagnostics.Warning ~code:"W325" src in
+  assert_hint_contains ~needle:"date(" d
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -4348,5 +4783,45 @@ let () =
     "calendar_time", [
       Alcotest.test_case "origin → string + numeric origin_rata_die"        `Quick test_origin_rata_die_emitted;
       Alcotest.test_case "no origin → no origin_rata_die"                   `Quick test_origin_absent_no_rata_die;
+    ];
+    "typed_time_phase1", [
+      (* Positive cases — must compile without error. *)
+      Alcotest.test_case "5 'months table value (unanchored) is legal"
+        `Quick test_typed_time_pos_5months_table_value;
+      Alcotest.test_case "0.087 'per_month rate in anchored mode is legal"
+        `Quick test_typed_time_pos_per_month_rate_in_anchored;
+      Alcotest.test_case "simulate.to = 600 'months one-shot conversion (anchored)"
+        `Quick test_typed_time_pos_simulate_to_months_oneshot;
+      Alcotest.test_case "duration param bounds with 'months stay Exact"
+        `Quick test_typed_time_pos_duration_param_bounds_with_months;
+      Alcotest.test_case "unanchored 'months axis (dacca shape) compiles"
+        `Quick test_typed_time_pos_unanchored_months_axis;
+      (* Rule 1 (E321): Instant + CalendarDuration. *)
+      Alcotest.test_case "E321 date(...) + 6 'months rejected"
+        `Quick test_typed_time_e321_date_plus_months_rejected;
+      Alcotest.test_case "E321 laundered through let: date(...) + d where d = 6 'months"
+        `Quick test_typed_time_e321_laundered_through_let;
+      Alcotest.test_case "E321 hint mentions add_calendar_months + 'days fallback"
+        `Quick test_typed_time_e321_hint_text;
+      (* Rule 2 (E320): time_unit = 'months/'years with origin. *)
+      Alcotest.test_case "E320 time_unit = 'months with origin rejected"
+        `Quick test_typed_time_e320_time_unit_months_with_origin_rejected;
+      Alcotest.test_case "E320 hint mentions 'days switch + silent-shift trap"
+        `Quick test_typed_time_e320_hint_text;
+      (* Rule 7 (E322): calendar cadence in recurring schedule. *)
+      Alcotest.test_case "E322 every = 1 'months in anchored recurring rejected"
+        `Quick test_typed_time_e322_calendar_cadence_in_recurring;
+      Alcotest.test_case "E322 unanchored every = 1 'months is fine (vacuous rule)"
+        `Quick test_typed_time_e322_unanchored_months_cadence_ok;
+      (* Rule 4 (E323): bare-numeric on=[] in anchored periodic. *)
+      Alcotest.test_case "E323 bare-numeric on=[7:100] in anchored periodic rejected"
+        `Quick test_typed_time_e323_bare_numeric_on_periodic_anchored;
+      (* Rule 5 (W324, W325): bare-numeric in time positions. *)
+      Alcotest.test_case "W324 bare-numeric simulate.from/to warns under origin"
+        `Quick test_typed_time_w324_bare_numeric_simulate_warning;
+      Alcotest.test_case "W324 not fired when simulate fields are unit-annotated"
+        `Quick test_typed_time_w324_unit_annotated_simulate_no_warning;
+      Alcotest.test_case "W325 bare-numeric at-schedule warns under origin"
+        `Quick test_typed_time_w325_bare_numeric_at_schedule_warning;
     ];
   ]

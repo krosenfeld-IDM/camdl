@@ -41,8 +41,16 @@ impl std::str::FromStr for TimeFormat {
             "auto" => Ok(TimeFormat::Auto),
             "numeric" => Ok(TimeFormat::Numeric),
             "date" => Ok(TimeFormat::Date),
+            // `internal-days` is the proposal-named opt-in for the
+            // legitimate "numeric time column under an anchored model,
+            // values are day-offsets from origin" pattern (proposal
+            // §3.6). Behaviourally identical to `numeric` but signals
+            // intent and suppresses the W326 warning. See
+            // docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md.
+            "internal-days" => Ok(TimeFormat::Numeric),
             other => Err(format!(
-                "unknown --time-format '{other}' (expected numeric|date)"
+                "unknown --time-format '{other}' \
+                 (expected numeric|date|internal-days|auto)"
             )),
         }
     }
@@ -148,6 +156,32 @@ pub fn convert_time_column(
         TimeFormat::Date => ColKind::Date,
         TimeFormat::Auto => detect_kind(cells, row_offset)?,
     };
+
+    // W326 (proposal §3.6, Rule 6): warn when an Auto-detected
+    // numeric time column is loaded under an anchored model. The
+    // legitimate idiom (seed-timing fits with `time` column carrying
+    // day-offsets from origin — `covid_wa_daily.tsv`,
+    // `covid_wa_growth.tsv`) opts in with `--time-format
+    // internal-days` (which maps to `TimeFormat::Numeric` and
+    // therefore doesn't take the `Auto` branch). The load proceeds
+    // normally; this is informational, not blocking.
+    if opts.format == TimeFormat::Auto && kind == ColKind::Numeric && opts.origin.is_some()
+    {
+        // Only fire if there's actually at least one non-empty cell —
+        // an empty file shouldn't warn.
+        let any_cell = cells.iter().any(|c| !c.trim().is_empty());
+        if any_cell {
+            eprintln!(
+                "[warn W326] --data time column is numeric and the model \
+                 declares `origin = date(\"{}\")` — values are interpreted \
+                 as internal-time units from origin. \
+                 If that's intentional, pass `--time-format internal-days` \
+                 to suppress this warning; if you meant calendar dates, \
+                 switch the column to ISO YYYY-MM-DD form.",
+                opts.origin.unwrap_or("…"),
+            );
+        }
+    }
 
     match kind {
         ColKind::Numeric => {
@@ -391,5 +425,50 @@ mod tests {
         let rows = [2, 3, 4];
         let o = opts_days(None);
         assert!(check_substeps_and_grid(&times, &rows, &o, false).is_ok());
+    }
+
+    // ── W326 + --time-format internal-days (Phase 1 of typed-time
+    //    proposal 2026-05-22, Rule 6) ──────────────────────────────
+
+    #[test]
+    fn time_format_internal_days_is_an_alias_for_numeric() {
+        // The proposal-named opt-in `--time-format internal-days`
+        // must parse and map to `TimeFormat::Numeric`. This is the
+        // documented suppress-W326 path.
+        let tf: TimeFormat = "internal-days".parse().unwrap();
+        assert_eq!(tf, TimeFormat::Numeric);
+    }
+
+    #[test]
+    fn time_format_internal_days_loads_numeric_column() {
+        // With --time-format internal-days, a numeric time column under
+        // an anchored model loads and DOES NOT emit W326. We can't
+        // directly assert on stderr in this test harness, but we can
+        // assert the load succeeds and gives the expected numeric values.
+        let cells = ["0", "1", "7", "14"];
+        let mut o = opts_days(Some("2020-01-01"));
+        o.format = TimeFormat::Numeric;
+        let t = convert_time_column(&cells, &o, 2).unwrap();
+        assert_eq!(t, vec![0.0, 1.0, 7.0, 14.0]);
+    }
+
+    #[test]
+    fn numeric_with_origin_under_auto_still_loads() {
+        // The W326 warning is informational only; the load still
+        // succeeds. This is the proposal's "no hard breakage; one
+        // warning at the data boundary" contract.
+        let cells = ["-34", "-33", "0", "5"];
+        let o = opts_days(Some("2020-02-28"));
+        let t = convert_time_column(&cells, &o, 2).unwrap();
+        assert_eq!(t, vec![-34.0, -33.0, 0.0, 5.0]);
+    }
+
+    #[test]
+    fn time_format_parse_rejects_unknown() {
+        let r: Result<TimeFormat, _> = "ymd".parse();
+        assert!(r.is_err());
+        let e = r.unwrap_err();
+        // Updated error message mentions internal-days in the alternatives.
+        assert!(e.contains("internal-days"), "got: {e}");
     }
 }

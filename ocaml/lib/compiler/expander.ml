@@ -2525,9 +2525,32 @@ let expand_time_function_one ctx fname (env : (string * string) list) fkind (fun
                 ();
               []
           in
+          (* Rule 4 of the 2026-05-22 typed-time proposal: in
+             anchored mode, bare-numeric entries inside `on=[...]`
+             are a hard error. The legitimate intent — calendar-
+             aligned breakpoints — wants date(...) entries (or
+             unit-annotated offsets); bare numbers under
+             origin = date(...) are almost never what the user
+             means. Corpus survey shows zero anchored models use
+             `on=[...]` today, so this breaks nothing. *)
+          let anchored = ctx.origin <> None in
+          let bare_numeric_on_endpoint (e : expr) : bool =
+            match e with
+            | EConst _ -> true
+            | EUnOp (Neg, EConst _) -> true
+            | _ -> false
+          in
           List.iter (fun range ->
             match range with
             | ERange (lo_e, hi_e) ->
+              if anchored && (bare_numeric_on_endpoint lo_e || bare_numeric_on_endpoint hi_e) then
+                Diagnostics.error ctx.diags ~code:"E323" ~loc:Diagnostics.no_loc
+                  ~message:(Printf.sprintf
+                    "periodic forcing '%s': bare-numeric entries in `on=[...]` \
+                     are not allowed under `origin = date(...)`"
+                    fname)
+                  ~hint:Time_typing.hint_bare_numeric_on_periodic
+                  ();
               let lo = match lo_e with EConst f -> int_of_float f
                 | EUnit (f, u) -> int_of_float (unit_to_model_time ctx f u)
                 | _ ->
@@ -3250,6 +3273,278 @@ let check_shadowing ctx =
         ()
   ) ctx.let_bindings
 
+(* ── Surface time-typing (Phase 1 of typed-time proposal) ────────────────── *)
+
+(** Surface-level time-typing pass. Implements rules from the
+    2026-05-22 typed-time-and-dsl-ergonomics proposal at the AST
+    level — before unit literals get scaled out by `resolve_expr`.
+
+    Rules emitted here:
+      Rule 1: E3xx on `Instant ± CalendarDuration` in DSL constant
+              positions and in let-bindings whose body laundered
+              through this shape.
+      Rule 2: E3xx on `time_unit = 'months/'years` when
+              `origin = date(...)` is declared.
+      Rule 4: E3xx on bare-numeric entries inside `on=[...]` of a
+              periodic forcing in anchored mode. (This rule is
+              applied at the periodic-forcing expansion site, not
+              here — see `expand_time_function_one`.)
+      Rule 5: W3xx on bare-numeric `simulate.from`/`simulate.to`
+              in anchored mode, and on bare-numeric `at [k, ...]`
+              entries in intervention/event schedules.
+      Rule 7: Extension of Rule 1 to recurring-schedule cadences
+              (`every`, `from`, `until`). In anchored mode, a
+              calendar-classified duration in any of those is an
+              E3xx.
+
+    All anchored-mode rules are vacuous when no `origin` is
+    declared (proposal §1.1, decision of record). The unanchored
+    dacca-style configuration — `time_unit = 'months` + per-month
+    rate params — flows through untouched. *)
+let check_surface_time_typing ctx =
+  let anchored = ctx.origin <> None in
+  let env = Time_typing.env_of_ctx
+    ~let_tbl:ctx.let_tbl
+    ~param_decls:ctx.param_decls
+    ~origin_set:anchored
+  in
+
+  (* ── Rule 2: time_unit = 'months/'years with origin declared ──────── *)
+  (if anchored then
+    match ctx.time_unit with
+    | Months | Years ->
+      Diagnostics.error ctx.diags
+        ~code:"E320"
+        ~loc:Diagnostics.no_loc
+        ~message:(Printf.sprintf
+          "`time_unit = '%s` cannot be combined with `origin = date(\"...\")` \
+           — the date/number conversion would drift because a calendar \
+           %s is not a constant number of days"
+          (unit_lit_to_string ctx.time_unit)
+          (match ctx.time_unit with Months -> "month" | Years -> "year" | _ -> ""))
+        ~hint:Time_typing.hint_time_unit_months_with_origin
+        ()
+    | _ -> ());
+
+  (* ── Rule 1 / Rule 7: detect calendar-duration sinks in expressions ── *)
+  (* We walk every relevant AST expression in the model. In
+     anchored mode any `Instant ± Calendar` triggers E321 (Rule 1)
+     and any calendar cadence in `every`/`from`/`until` triggers
+     E322 (Rule 7). In unanchored mode nothing fires.
+
+     We don't recurse into rate expressions (which never carry
+     `Instant`s — the AST disallows them indirectly because
+     compartment refs and rate params can't be Instants). We do
+     descend into all kinds of expressions in the model that have
+     constant-position semantics: bounds, simulate, init values,
+     observation `every`/`at`, scheduled events/interventions,
+     transition rates (just in case a future model puts a date()
+     there), table expressions, ODE derivatives, etc. *)
+
+  let walk_expr_rule1 ~loc ~context e =
+    if anchored then
+      Time_typing.walk_rule1 env e ~on_hit:(fun ~lhs ~rhs ->
+        (* Pick the calendar-classed side for the error message. *)
+        let cl = Time_typing.classify env lhs in
+        let cr = Time_typing.classify env rhs in
+        let bad = match cl, cr with
+          | Time_typing.TCalendar, _ -> lhs
+          | _, Time_typing.TCalendar -> rhs
+          | _ -> rhs  (* shouldn't happen if walk_rule1 fired *)
+        in
+        Diagnostics.error ctx.diags
+          ~code:"E321"
+          ~loc
+          ~message:(Printf.sprintf
+            "calendar duration `%s` cannot translate an instant in %s"
+            (Time_typing.show_short bad) context)
+          ~hint:Time_typing.hint_calendar_plus_instant
+          ())
+  in
+
+  (* Helper: classify a duration-typed expression and fire E322 if
+     it ends up Calendar (used for Rule 7: every/from/until). *)
+  let check_recurring_cadence ~loc ~field e =
+    if anchored then begin
+      match Time_typing.classify env e with
+      | Time_typing.TCalendar ->
+        Diagnostics.error ctx.diags
+          ~code:"E322"
+          ~loc
+          ~message:(Printf.sprintf
+            "calendar duration `%s` in recurring schedule `%s = ...`"
+            (Time_typing.show_short e) field)
+          ~hint:Time_typing.hint_calendar_cadence_in_recurring
+          ()
+      | _ -> ()
+    end
+  in
+
+  (* Helper: warn on bare numeric in a time position (W324 for
+     simulate, W325 for `at [...]` schedules). *)
+  let is_bare_numeric (e : expr) : bool =
+    match e with
+    | EConst _ -> true
+    | EUnOp (Neg, EConst _) -> true
+    | _ -> false
+  in
+  let warn_bare_numeric ~loc ~code ~field ~hint e =
+    if anchored && is_bare_numeric e then
+      Diagnostics.warning ctx.diags
+        ~code
+        ~loc
+        ~message:(Printf.sprintf
+          "`%s = %s` is a bare number in a time position with \
+           `origin = date(...)` declared — interpreted as \
+           internal-time units from origin"
+          field (Time_typing.show_short e))
+        ~hint
+        ()
+  in
+
+  (* ── transition rates ───────────────────────────────────────────────── *)
+  List.iter (fun (tr : transition_decl) ->
+    walk_expr_rule1 ~loc:(diag_loc_of_ast_ctx ctx tr.trloc)
+      ~context:(Printf.sprintf "transition '%s'" tr.trname) tr.trrate
+  ) ctx.transitions;
+
+  (* ── ODE derivatives ────────────────────────────────────────────────── *)
+  List.iter (fun (od : ode_decl) ->
+    walk_expr_rule1 ~loc:Diagnostics.no_loc
+      ~context:(Printf.sprintf "ODE d(%s)/dt" od.ocomp) od.oderiv
+  ) ctx.ode_decls;
+
+  (* ── parameter bounds & priors ──────────────────────────────────────── *)
+  (* Bounds: classify each bound expression. Per the proposal
+     §3.3.2 invariant, a bound's classifier doesn't leak to uses
+     of the parameter — but a bound that itself contains `date(...) +
+     <calendar>` is genuinely malformed and should fire Rule 1. *)
+  List.iter (fun pd ->
+    let ploc = match pd with PScalar s -> s.ploc | PIndexed s -> s.ploc in
+    let loc = diag_loc_of_ast_ctx ctx ploc in
+    let pbounds = match pd with PScalar s -> s.pbounds | PIndexed s -> s.pbounds in
+    (match pbounds with
+     | Some (lo, hi) ->
+       walk_expr_rule1 ~loc ~context:"parameter bound" lo;
+       walk_expr_rule1 ~loc ~context:"parameter bound" hi
+     | None -> ());
+    let pname = match pd with PScalar s -> s.pname | PIndexed s -> s.pname in
+    let pprior = match pd with PScalar s -> s.pprior | PIndexed s -> s.pprior in
+    (match pprior with
+     | Some ps ->
+       List.iter (fun (_, e) ->
+         walk_expr_rule1 ~loc
+           ~context:(Printf.sprintf "prior on '%s'" pname) e
+       ) ps.ps_args
+     | None -> ())
+  ) ctx.param_decls;
+
+  (* ── let bindings: walk their body so a let used in a non-Add
+       context still surfaces an in-body calendar+instant. The
+       laundered case `let d = 6 'months; date(...) + d` is caught
+       at the use site via `classify`'s let-table lookup; this walk
+       catches `let bad = date("2020-02-24") + 6 'months` itself. ── *)
+  List.iter (fun (lb : let_binding) ->
+    walk_expr_rule1 ~loc:Diagnostics.no_loc
+      ~context:(Printf.sprintf "let binding '%s'" lb.lname) lb.lbody
+  ) ctx.let_bindings;
+
+  (* ── init values ────────────────────────────────────────────────────── *)
+  List.iter (fun (ie : init_entry) ->
+    walk_expr_rule1 ~loc:(diag_loc_of_ast_ctx ctx ie.iloc)
+      ~context:(Printf.sprintf "init '%s'" ie.icomp) ie.ivalue
+  ) ctx.init_entries;
+
+  (* ── simulate block: Rule 1 walk + bare-numeric W324 ────────────────── *)
+  (match ctx.simulate with
+   | Some sd ->
+     walk_expr_rule1 ~loc:Diagnostics.no_loc ~context:"simulate.from" sd.sim_from;
+     walk_expr_rule1 ~loc:Diagnostics.no_loc ~context:"simulate.to"   sd.sim_to;
+     warn_bare_numeric ~loc:Diagnostics.no_loc ~code:"W324" ~field:"from"
+       ~hint:Time_typing.hint_bare_numeric_simulate sd.sim_from;
+     warn_bare_numeric ~loc:Diagnostics.no_loc ~code:"W324" ~field:"to"
+       ~hint:Time_typing.hint_bare_numeric_simulate sd.sim_to
+   | None -> ());
+
+  (* ── interventions and events: at-schedules + recurring cadences ────── *)
+  let check_iv_list (ivs : intervention_decl list) ~label =
+    List.iter (fun (iv : intervention_decl) ->
+      let loc = diag_loc_of_ast_ctx ctx iv.ivloc in
+      (* Action expressions can carry exprs too — fraction/count, set, add *)
+      (match iv.ivaction with
+       | ATransfer kws -> List.iter (fun (_, e) ->
+           walk_expr_rule1 ~loc ~context:label e) kws
+       | ASet (_, _, e) -> walk_expr_rule1 ~loc ~context:label e
+       | AAdd (_, _, e) -> walk_expr_rule1 ~loc ~context:label e);
+      (* Schedule expressions: at-list, recurring cadences *)
+      (match iv.ivschedule with
+       | SAtTimes exprs ->
+         List.iter (fun e ->
+           walk_expr_rule1 ~loc ~context:(label ^ " at-time") e;
+           warn_bare_numeric ~loc ~code:"W325" ~field:(label ^ " at[..]")
+             ~hint:Time_typing.hint_bare_numeric_at_schedule e
+         ) exprs
+       | SRecurring (every, from_opt, until_opt) ->
+         walk_expr_rule1 ~loc ~context:(label ^ ".every") every;
+         check_recurring_cadence ~loc ~field:"every" every;
+         (match from_opt with
+          | Some e ->
+            walk_expr_rule1 ~loc ~context:(label ^ ".from") e;
+            check_recurring_cadence ~loc ~field:"from" e;
+            warn_bare_numeric ~loc ~code:"W325" ~field:(label ^ ".from")
+              ~hint:Time_typing.hint_bare_numeric_at_schedule e
+          | None -> ());
+         (match until_opt with
+          | Some e ->
+            walk_expr_rule1 ~loc ~context:(label ^ ".until") e;
+            check_recurring_cadence ~loc ~field:"until" e;
+            warn_bare_numeric ~loc ~code:"W325" ~field:(label ^ ".until")
+              ~hint:Time_typing.hint_bare_numeric_at_schedule e
+          | None -> ())
+       | SEveryAtDay (period, day) ->
+         walk_expr_rule1 ~loc ~context:(label ^ ".every") period;
+         walk_expr_rule1 ~loc ~context:(label ^ ".at_day") day;
+         check_recurring_cadence ~loc ~field:"every" period)
+    ) ivs
+  in
+  check_iv_list ctx.interv_decls ~label:"intervention";
+  check_iv_list ctx.event_decls  ~label:"event";
+
+  (* ── observations: schedule expressions ─────────────────────────────── *)
+  List.iter (fun (od : obs_decl) ->
+    let loc = diag_loc_of_ast_ctx ctx od.oloc in
+    (match od.oschedule with
+     | Some (ObsEvery e) ->
+       walk_expr_rule1 ~loc ~context:("observation '" ^ od.oname ^ "'.every") e;
+       check_recurring_cadence ~loc ~field:"every" e
+     | Some (ObsTimes ts) ->
+       List.iter (fun e ->
+         walk_expr_rule1 ~loc ~context:("observation '" ^ od.oname ^ "'.at") e
+       ) ts
+     | None -> ())
+  ) ctx.obs_decls;
+
+  (* ── forcing functions: kwarg exprs (period, step, on=[...]) ──────────
+     Note: bare-numeric `on=[...]` (Rule 4) is enforced at the
+     existing periodic expansion site in `expand_time_function_one`,
+     because that's where the EList is unwrapped. Here we still
+     Rule-1-walk every kwarg in case a date() + 'months sneaks in. *)
+  List.iter (fun (fd : func_decl) ->
+    List.iter (fun (_, e) ->
+      walk_expr_rule1 ~loc:Diagnostics.no_loc
+        ~context:(Printf.sprintf "forcing '%s'" fd.fname) e
+    ) fd.fargs
+  ) ctx.func_decls;
+
+  (* ── balance, output ────────────────────────────────────────────────── *)
+  (match ctx.balance_decl with
+   | Some bd ->
+     walk_expr_rule1 ~loc:Diagnostics.no_loc
+       ~context:(Printf.sprintf "balance '%s'" bd.bcomp) bd.bexpr
+   | None -> ());
+
+  ()
+
 (* ── Scenarios expansion ─────────────────────────────────────────────────── *)
 
 (** Resolved, pre-IR scenario form. Built in two passes: first collect
@@ -3784,6 +4079,12 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
   check_hierarchical_cycles ctx;
   (* E217: check that guard expressions only reference dim levels / loop vars *)
   check_guards ctx;
+  (* Phase 1 of the 2026-05-22 typed-time proposal:
+     Surface-level time-typing rules (Rule 1: Instant + CalendarDuration;
+     Rule 2: time_unit + origin; Rule 5: bare-numeric in time positions;
+     Rule 7: calendar cadences in recurring schedules). Runs before
+     resolve_expr drops unit-literal provenance from the AST. *)
+  check_surface_time_typing ctx;
   (* Save original transitions before desugaring *)
   ctx.orig_transitions <- ctx.transitions;
   let expanded_comps = expand_compartments ctx in
