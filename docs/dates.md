@@ -126,6 +126,130 @@ number is computed straight from `(Y, M, D)`, with no timezone. So:
   late-night local event to the wrong civil day, that is an upstream concern no
   date policy can recover.
 
+## Migrating an unanchored monthly model to anchored
+
+> Status: this section describes the surface that lands with the
+> typed-time proposal (`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`).
+> Until that proposal's Phase 1 ships, `time_unit = 'months` with
+> `origin` declared is legal but produces calendar-drifting dates;
+> after Phase 1 it's an E3xx hard error with the hint shown below.
+
+If you have an existing model with `time_unit = 'months` (or
+`'years`) and no `origin` — the dacca SIRS shape, for example — and
+you decide you want calendar dates, the migration is a few lines,
+with one trap worth flagging up front.
+
+**The trap.** When you switch `time_unit` from `'months` to
+`'days`, every *bare-numeric* time position in your model silently
+changes meaning to the new axis. `simulate { to = 600 }` was 600
+months; after the switch it's 600 days. `dt = 0.05` was 0.05
+months (≈ 1.5 days); after the switch it's 0.05 days (≈ 72
+minutes). Observation data columns and intervention schedules
+shift the same way.
+
+**What survives unchanged.** Any *typed* position — anything that
+carries its own unit literal — converts correctly.
+`beta : rate 'per_month` keeps working (the expander converts to
+per-axis-unit). `1 'months` as a duration value keeps working
+(it's an affine span of ≈ 30.44 days regardless of axis).
+
+**Before** (unanchored monthly):
+
+```camdl
+time_unit = 'months
+# no origin
+
+parameters {
+  beta  : rate 'per_month
+  gamma : rate 'per_month
+  ...
+}
+
+let latent = 1 'months
+
+simulate {
+  from = 0           # month 0
+  to   = 600         # 600 months
+  dt   = 0.05        # 0.05 months ≈ 1.5 days
+}
+
+interventions {
+  sia : transfer(...) at [180, 540]   # months 180 and 540
+}
+```
+
+**After** (anchored, daily axis, calendar I/O):
+
+```camdl
+time_unit = 'days
+origin    = date("1891-01-01")
+
+parameters {
+  beta  : rate 'per_month     # unchanged — expander converts to per-day
+  gamma : rate 'per_month
+  ...
+}
+
+let latent = 1 'months        # unchanged — affine 30.44 days
+
+simulate {
+  from = date("1891-01-01")   # was 0; now explicit instant
+  to   = date("1940-12-01")   # was 600; now explicit instant
+  dt   = 1.5                  # was 0.05; same physical step in new axis
+                              # (or write `dt = 0.05 'months` to stay unit-aware)
+}
+
+interventions {
+  sia : transfer(...) at [date("1906-01-15"), date("1936-06-30")]
+                              # were 180 and 540; now explicit dates
+}
+```
+
+**Three options for each bare-numeric site.** At each
+`simulate { from/to/dt }`, `at [...]` schedule, and `--data` time
+column, you have a choice:
+
+1. **Annotate with a unit literal**: `to = 600 'months`. The
+   expander converts to the new axis (≈ 18260 days). Smallest diff
+   from the original. Reads as "600 calendar-average months from
+   origin" — affine; for calendar-exact end-of-50-years use a
+   date.
+2. **Use a date literal**: `to = date("1940-12-01")`. Explicit
+   calendar instant. Best for new code and for anything a reader
+   needs to verify against a calendar.
+3. **Manually convert and stay bare-numeric**: `to = 18260`. Legal
+   but the next reader can't see what `18260` means without the
+   conversion context, and `--time-format internal-days` is
+   required on the data file's numeric time column. Acceptable for
+   terse regression-test fixtures; avoid in models meant to be
+   read.
+
+For new models, prefer dates and unit literals. For migrations,
+option 1 (the unit-literal annotation) is the smallest diff.
+
+## Why `'months` is fine in some places and forbidden in others
+
+A natural confusion reading the rules above: `5 'months` works in a
+table value or a parameter bound, `beta : rate 'per_month` works
+everywhere, but `date + 6 'months` is a hard error. That looks
+contradictory. It isn't.
+
+The principle: **a calendar month is unambiguous as a *length* and
+unambiguous as a *rate denominator*. It is ambiguous only as a
+*step from a date*.** A length is "≈ 30.44 days," period — fine as
+a table value, parameter bound, or multiplicand in a rate
+expression. A rate denominator is "per ≈ 30.44 days" — fine, the
+expander converts to per-axis-unit. Neither length nor rate ever
+translates an instant, so neither produces a calendar-vs-affine
+question. Only `date + 6 'months` does — does it mean "the 24th of
+the month six months later" (calendar-exact, clamped) or "182 days
+later" (affine)? — and that's where the rule fires.
+
+Stated in one line: **Rule 1 isn't "calendar units are dangerous,"
+it's "you can't add a calendar duration to a date."** Rates aren't
+durations; bounds and table values don't get added to dates. They
+all stay legal.
+
 ## Not supported (yet)
 
 - **Times of day** (`2020-03-15T13:30`) in dates/data, and **sub-day

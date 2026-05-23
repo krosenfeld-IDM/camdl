@@ -50,36 +50,61 @@ older docs and should be read as synonyms for "anchored" / "unanchored."
 ### 1.1 Anchor-only primitives
 
 The language has a small set of constructs that *only make sense* in
-anchored mode — they require an `Instant`, and the only way to produce
-an `Instant` is via `date(...)`, which in turn requires `origin`. These
-are the **anchor-only primitives**:
+anchored mode. They are the **anchor-only primitives**:
 
 - `date("YYYY-MM-DD")` — already E220 when `origin` is missing
-  (pre-existing rule, see spec §2.3).
+  (pre-existing rule, spec §2.3 at
+  `docs/camdl-language-spec.md` §2.3).
 - `origin` — newly reserved in anchored mode as a referenceable
   read-only identifier of type `Instant`. The spec already reserves
-  `t_start` and `t_end` as referenceable identifiers (§14
-  "Timepoints and Reserved Identifiers"), but not `origin` — which
-  blocks the most natural calendar idioms like
+  `t_start` and `t_end` (`docs/camdl-language-spec.md` §14
+  "Timepoints and Reserved Identifiers" at line 2118 — verified by
+  `grep -n "^## 14" docs/camdl-language-spec.md`), but not `origin`.
+  That blocks the most natural calendar idioms like
   `add_calendar_months(origin, 6)` and `origin + 90 'days`. Adding
   `origin` to the reserved-identifier set, available in anchored
   mode only, unblocks them without any other surface change.
+
+  **Referenceability scope (specified):** `origin` is usable wherever
+  a DSL constant-position `Instant` is accepted — `origin + days(N)`,
+  `add_calendar_months(origin, N)`, `simulate { from = origin }`,
+  `at [origin, ...]` schedules, and `let landmark = origin + 90 'days`.
+  Not usable inside rate expressions or any compartment-state context,
+  since it's a compile-time constant, not a runtime value.
 - `add_calendar_months(d, n)` — new in this proposal.
 - `add_calendar_years(d, n)` — new in this proposal.
-- `instant`-kind parameters, *for the rendering path*. The kind
-  itself is well-defined in both modes (a time-typed value with
-  dimension `[T]`), but `fit summary`'s date-rendering of `instant`
-  estimands requires `origin` (already the case; not new).
 
-**Crucially distinct from "calendar-named affine constructs,"** which
-work in both modes because they're just scalars in the affine arithmetic
-of the model's `time_unit`:
+**On `instant`-kind parameters.** The kind itself is well-defined in
+both modes (a `[T]`-dimensioned value, per the existing spec §4.1).
+What differs across modes is what an `instant`-typed value *means*:
+
+- In **anchored mode**, an `instant` value is a calendar point — it
+  participates in the typed-time torsor (can be added to an
+  `ExactDuration`, can be passed to `add_calendar_*`, renders as a
+  date in `fit summary`).
+- In **unanchored mode**, there's no calendar reference, so an
+  `instant`-typed value is just a `[T]`-dimensioned scalar on the
+  abstract axis — behaviourally equivalent to a `duration`-kind
+  parameter for arithmetic purposes. The torsor's `Instant` /
+  `Duration` distinction collapses because there's no anchor to
+  reference an instant *to*; nothing in the language can ambiguously
+  step or render it. Rule 1 is thereby vacuous in unanchored mode
+  (see §3 for the formal statement).
+
+The clean way to read this: `instant` kind is a *dimension claim*
+(always `[T]`), and the torsor refinement on top of `[T]` activates
+only when origin is declared.
+
+**Distinct from anchor-only primitives: calendar-named affine
+constructs.** These work in both modes because they're scalars in the
+affine arithmetic of the model's `time_unit`:
 
 - `5 'months`, `5 'years` — affine duration literals (≈ 152.18 days,
-  ≈ 1826.21 days under the Gregorian conversion in use). Legal in
-  either mode wherever a duration is acceptable (table entries,
-  parameter bounds, rate-expression arithmetic). Rule 1 forbids them
-  *only* when added to an `Instant`.
+  ≈ 1826.21 days under the Gregorian constant in use; see §2 for the
+  verification command). Legal in either mode wherever a duration is
+  acceptable (table entries, parameter bounds, rate-expression
+  arithmetic). Rule 1 forbids them *only* when added to an `Instant`
+  in anchored mode.
 - `0.087 'per_month`, `0.02 'per_year` — affine rate literals.
   Always legal; compiled to per-axis-unit values via `days_per_unit`.
 - `time_unit = 'months` or `'years` — legal in unanchored mode (Rule
@@ -89,13 +114,15 @@ The distinction matters because the dacca SIRS configuration —
 `time_unit = 'months`, `beta : rate 'per_month`, durations like
 `6 'months` — is entirely composed of calendar-named *affine* constructs
 and works fine in unanchored mode. No anchor-only primitive appears,
-no `Instant` is produced, no rule fires.
+no calendar reference exists, no rule fires.
 
-**The targeted check on the two new primitives:** appearance of the
-identifier `add_calendar_months` or `add_calendar_years` *anywhere in
-the source* of an unanchored model emits one focused error rather than
-the type-cascade through E220. The single error gives the user the
-shortest path to the real fix:
+**The targeted check on the two new primitives:** any *call to*
+`add_calendar_months` or `add_calendar_years` (a use of the
+identifier as a function name in a parse-tree call node — not the
+identifier as a substring inside a comment or string literal) in an
+unanchored model emits one focused error rather than the type-cascade
+through E220. The check fires post-parse on the resolved AST. The
+single error gives the user the shortest path to the real fix:
 
 > E3xx: `add_calendar_months` is a calendar-stepping function and
 > requires the model to be calendar-anchored. Add
@@ -103,8 +130,7 @@ shortest path to the real fix:
 > wanted an affine offset on the abstract time axis — use a duration
 > literal like `30 'days`.
 
-The same check on `add_calendar_years`. The check fires at
-parser/expander time and pre-empts the E220 + type-cascade chain.
+The same check on `add_calendar_years`.
 
 This is the contract the rest of §3–§4 builds on, and it should land
 in the cheatsheet's anchored/unanchored summary so the contract is
@@ -129,9 +155,24 @@ and dimensional checker, and is documented in
   `'ratio`. All defined in `lexer.mll` and dimchecked in
   `dimcheck.ml`. Conversion table: `1 'week = 7 'days`,
   `1 'month = 365.2425/12 'days ≈ 30.4369`,
-  `1 'year = 365.2425 'days`. Proleptic-Gregorian throughout, matching
-  `rust/crates/ir/src/caltime.rs::days_per_unit` and the shared
-  `rata_die`.
+  `1 'year = 365.2425 'days`. Proleptic-Gregorian throughout.
+  Verified by
+
+  ```
+  $ rg -n '365|30\.4' ocaml/lib/compiler/expander.ml rust/crates/ir/src/caltime.rs
+  ocaml/lib/compiler/expander.ml:117:    Use the same Gregorian constant (365.2425) everywhere.
+  ocaml/lib/compiler/expander.ml:121:    | Months | PerMonth -> 365.2425 /. 12.0
+  ocaml/lib/compiler/expander.ml:122:    | Years  | PerYear  -> 365.2425
+  ocaml/lib/compiler/expander.ml:572:    | Months  -> 365.2425 /. 12.0 | PerMonth -> 365.2425 /. 12.0
+  ocaml/lib/compiler/expander.ml:573:    | Years   -> 365.2425         | PerYear  -> 365.2425
+  rust/crates/ir/src/caltime.rs:70: "months" => Ok(365.2425 / 12.0),
+  rust/crates/ir/src/caltime.rs:71: "years"  => Ok(365.2425),
+  ```
+
+  Both sides agree on the Gregorian average. (An earlier version of
+  this proposal claimed an OCaml/Rust disagreement; that claim was
+  unverified and incorrect — the spec text §2.1 had a stale Julian
+  value but the code did not. Spec corrected separately.)
 - **Three tiers of dimensional information** (spec §2.3): kind keywords
   (`rate`, `probability`, `count`, `positive`, `real`, `instant`,
   `duration`), bracket annotations (`[T]`, `[T⁻¹]`, `[P]`, `[P/T]`,
@@ -236,7 +277,7 @@ A `Calendar` duration there is an E3xx hard error. The hint:
 > clamps to day-28 in Feb 2021, and going back gives
 > `date("2021-01-28")`, not Jan 31). For a calendar-exact date use
 > `add_calendar_months(date("..."), 5)`. For an explicit affine span
-> use `152 'days` or `5 * 30.4369 'days`.
+> use `152 'days`.
 
 The laundered case (`let d = 6 'months; date(...) + d`) is caught for
 free by this scheme: `d`'s synthesised type contains a `'months` leaf
@@ -299,22 +340,24 @@ discarded into the numeric range. It does not leak to uses of
 
 **Stated as a one-line invariant:**
 
-> **`Calendar` is a property only literals can have.** Parameter
-> references, instant differences, and bare axis-numbers are *always*
-> `Exact`. There is no `calendar_duration` parameter kind, and there
-> can't be one — "step N calendar months" isn't a scalar to fit, it's
-> the operation `add_calendar_months(d, n)` whose `n` is a discrete
-> count.
+> **`Calendar` is a property only `'months`/`'years` unit literals can
+> originate.** Parameter references with `[T]` dimension and instant
+> differences are *always* `Exact`. There is no `calendar_duration`
+> parameter kind, and there can't be one — "step N calendar months"
+> isn't a scalar to fit, it's the operation `add_calendar_months(d, n)`
+> whose `n` is a discrete count.
 
-#### Rule 1 covers implicit instant translations too
+(Bare numbers — `5.0`, not `5 'months` — never reach this rule at all:
+they're dimensionless `[1]`, and `date + 5.0` is the existing E302
+(time + dimensionless), upstream of the Exact/Calendar classifier.
+The Exact/Calendar classifier only sees `[T]`-dimensioned operands.)
 
-The natural reading of "`Instant + duration` requires `Exact`" catches
-the explicit-arithmetic case (`date(...) + 6 'months`). But there's an
-implicit case in the existing language that needs to be covered by the
-same rule, or a calendar-ambiguous value slips through.
+#### Rule 1 covers recurring schedules too (stated statically)
 
-Recurring schedules on interventions and events (§14.2 of the spec) use
-the syntax:
+The "`Instant + duration` requires `Exact`" rule catches the explicit-
+arithmetic case (`date(...) + 6 'months`). It needs to extend to
+recurring schedules on interventions and events
+(`docs/camdl-language-spec.md` §14.2):
 
 ```
 NAME : ACTION {
@@ -324,42 +367,98 @@ NAME : ACTION {
 }
 ```
 
-Fire times are computed as `anchor + k · every` for integer `k`. In
-anchored mode the anchor is an `Instant` (the model's `t_start` or an
-explicit calendar-anchored origin), so `every = 1 'months` is, under
-the hood, `Instant + CalendarDuration` once `k > 0`. Rule 1 applies
-here too: the duration argument to `every`, `from`, and `until` must
-be `Exact` whenever the schedule's anchor is an `Instant`. Calendar
-`every` is the same E3xx as `date + 6 'months`, with the same hint
-shape (pointing to `every = 30 'days` for affine ~monthly recurrence
-or to an explicit calendar-listed schedule for true month-aligned
-recurrence).
+Stated statically — without reference to runtime fire-time computation
+— the rule is: **in anchored mode, the duration-typed value of
+`every`, `from`, or `until` must be `Exact`.** The dimcheck synthesises
+the classifier of the `DURATION` expression bottom-up and rejects any
+`every`/`from`/`until` whose classifier is `Calendar`. Calendar `every`
+is the same E3xx as `date + 6 'months`, with the same hint shape —
+pointing to `every = 30 'days` for an affine ~monthly recurrence, or
+to an explicit calendar-listed schedule for true month-aligned
+recurrence.
 
-In unanchored mode there's no `Instant` anchor, so `every = 1 'months`
-is fine — same as the rest of Rule 1.
+In unanchored mode there's no calendar reference at all, so Rule 1 is
+vacuous and `every = 1 'months` is fine.
 
 ### Rule 2 — Anchored mode requires a constant-day axis
 
 `time_unit = 'months` or `time_unit = 'years` is forbidden when
-`origin = date(...)` is declared. **E3xx hard error**, with hint:
+`origin = date(...)` is declared. **E3xx hard error**, with the
+following hint (expanded to surface the migration trap that
+accompanies the axis change):
 
 > E3xx: `time_unit = 'months` cannot be combined with
 > `origin = date("...")` — the date↔number conversion would drift
-> because a calendar month is not a constant number of days. Use
-> `time_unit = 'days` (or `time_unit = 'weeks`) and express your
-> month-resolution data either as integer day counts or as ISO dates;
-> rates can stay in `'per_month` if you prefer that scale (e.g.
-> `beta : rate 'per_month`).
+> because a calendar month is not a constant number of days. Switch
+> to `time_unit = 'days` (or `'weeks`).
+>
+> When you switch the axis, every *bare-numeric* time position in
+> your model silently changes meaning to the new axis:
+> `simulate { from/to/dt }`, `at [...]` schedules on interventions
+> and events, and the time column of any `--data` file. Annotate
+> each with a unit literal (e.g. `to = 600 'months`) or a date
+> literal (e.g. `to = date("1940-12-01")`) to preserve intent.
+>
+> Typed positions are unaffected: rate parameters declared with
+> `'per_month` continue to work (the expander converts), and
+> duration values like `1 'months` continue to work as affine spans
+> (≈ 30.44 days).
+>
+> Full migration walkthrough:
+> `docs/dates.md#migrating-an-unanchored-monthly-model-to-anchored`.
 
-The reason has nothing to do with arbitrary policy: it's that the
-date↔number conversion must be *non-drifting* under repeated
-conversion, which requires the divisor to be a constant number of
-days (`'days = 1`, `'weeks = 7`). Months and years use *average*
-day-lengths (30.4369, 365.2425), so each round-trip accumulates ~ULP
-of error per step *and* mis-renders specific calendar boundaries —
-month 12 of `t = 5` lands on Dec 30 of year 5, not Jan 1 of year 6.
+The reason has nothing to do with arbitrary policy: the date↔number
+conversion must be *non-drifting* under repeated conversion, which
+requires the divisor to be a constant number of days (`'days = 1`,
+`'weeks = 7`). Months and years use *average* day-lengths (30.4369,
+365.2425), so a long-running `'years`-axis date renderer mis-aligns
+to the calendar by an accumulating residual: with
+`origin = date("2020-01-01")` and a `'years` axis, `t = 5` is affine
+1826.2125 days, landing 2024-12-31 — not 2025-01-01, which is five
+real calendar years and 1827 days away (two leap years in the
+span). The drift is small per step but real, and visible the first
+time a user compares a rendered date to a calendar.
+
 This is the same principle as Rule 1, applied to the axis rather
 than to individual durations.
+
+#### Bare-numeric time positions in anchored mode — W3xx warning
+
+Rule 2 keeps `time_unit = 'months/'years` out of anchored mode, but
+it doesn't catch the *companion* trap the migration hint warns about:
+in anchored mode, *every* bare-numeric time position
+(`simulate.from`, `simulate.to`, `simulate.dt`, `at [k, ...]`
+schedules in interventions and events, and `--data` numeric time
+columns) silently means "internal time units from origin" — which
+is correct if the user means it, but is exactly where the
+silent-shift trap lives during migrations.
+
+The proposal therefore introduces **W3xx**: in anchored mode, any
+bare-numeric value in a time-typed position emits a warning with
+hint:
+
+> W3xx: `to = 600` is a bare number in a time position, with
+> `origin = date("...")` declared — interpreted as 600 in the
+> model's `time_unit`. To make the intent explicit, write
+> `to = 600 'days` (or `'weeks`/`'months` — converted via
+> `days_per_unit`), or use a date literal like
+> `to = date("1940-12-01")`. To suppress this warning intentionally
+> (legacy/internal-time semantics), pass
+> `--time-format internal-days` for the `--data` time column or
+> annotate the position explicitly.
+
+Numeric data columns with `origin` declared remain a *hard* error
+per §4.5 (same family, stricter rule at the I/O boundary because
+data files are the most common silent-shift surface). `on=[...]`
+bare-numeric in periodic forcings with `origin` also remain a hard
+error per §4.4.
+
+The warning-versus-error split: the language already accepts
+`simulate { to = 18260 }` as a legitimate "internal days from
+origin" idiom (the legacy and SBC-style cases). Warning preserves
+that. Numeric data columns and periodic-forcing `on=[]` lists are
+the surfaces where the legitimate case is rare and the trap is
+overwhelming — hard error there.
 
 One precision subtlety worth naming: the date↔t round-trip is
 **bit-exact** for `'days` (integer rata-die difference, divisor of 1)
@@ -416,25 +515,37 @@ language. Compile-time functions in the expander (DSL constant
 positions only); they do not exist as runtime values that flow through
 the IR.
 
-**Admissible argument forms.** The date argument `d` can be any
-compile-time-constant `Instant`. "Constant positions only" is right
-but reads as "literals only," which would accidentally exclude common
-idioms; what's actually accepted is:
+**Admissible argument forms.** The date argument `d` is any
+compile-time-constant `Instant` expression:
 
 - a `date("YYYY-MM-DD")` literal;
 - the reserved `origin` identifier (in anchored mode, per §1.1);
-- a date-valued **table-lookup** entry (the spec already supports
-  table-driven per-patch scheduling at §14.3, e.g.
-  `sia_day[p, 0]`, where the table's entries are compile-time
-  constants typed as `Instant`);
 - a nested `add_calendar_months` / `add_calendar_years` call (the
   result is itself a compile-time-constant `Instant`).
 
 The `n` argument is a compile-time integer constant.
 
-So `add_calendar_months(origin, 6)`, `add_calendar_months(sia_start[p], 3)`
-(for per-patch calendar-stepped schedules), and
-`add_calendar_months(add_calendar_years(d, 1), 6)` are all legal.
+So `add_calendar_months(origin, 6)`,
+`add_calendar_months(date("2020-02-24"), 3)`, and
+`add_calendar_months(add_calendar_years(origin, 1), 6)` are all legal.
+
+**Not yet admissible: table-lookup entries.** The spec's per-patch
+scheduling form (`docs/camdl-language-spec.md` §14.3 at line 1986)
+uses tables like `sia_day : patch × round = read(...)` — *unitless*,
+numeric. Verified by
+
+```
+$ rg -n 'sia_day|table.*Instant' docs/camdl-language-spec.md ocaml/lib/ir/*.ml | head
+docs/camdl-language-spec.md:2015:  sia_day : patch × round = read("data/sia_schedule.tsv")
+docs/camdl-language-spec.md:2020:    at [sia_day[p, 0], sia_day[p, 1]]
+```
+
+Table entries are not Instant-typed today, so
+`add_calendar_months(sia_day[p, 0], 3)` doesn't typecheck under this
+proposal. Adding date-valued tables (e.g. `sia_day : patch × round 'date = read(...)`)
+is a separate language change; flagged as a probable follow-up once
+this proposal lands and the per-patch calendar-stepping idiom is
+demanded in practice.
 
 **Month-end clamping** is the canonical algorithm:
 
@@ -463,8 +574,13 @@ and calendar arithmetic) don't even share a constant.
 `add_calendar_months(date("2020-01-31"), 1)` then `(date, −1)` is
 *not* in general `date("2020-01-31")` — the day-of-month is lost to
 clamping. The docstring states this explicitly; an optional warning
-W3xx fires on `add_calendar_months(add_calendar_months(d, n), -n)` in
-DSL constant positions to flag the assumption.
+W3xx fires on the literal nested form
+`add_calendar_months(add_calendar_months(d, n), -n)` in DSL constant
+positions to flag the assumption. **Scope note:** the warning matches
+this single syntactic shape only; let-separated or otherwise-spelled
+equivalents will not trigger it. The docstring carries the rest of
+the non-invertibility story; the warning catches the most common
+literal mistake, not all of them.
 
 **No `date_range` function in this proposal.** Three cases cover the
 realistic space:
@@ -493,11 +609,16 @@ Per the CLAUDE.md "errors are a feature" stance, every new diagnostic
 this proposal introduces ships with both an E-code and a fix-hint. The
 non-exhaustive catalog:
 
-| Code | Trigger                                                          | Hint shape                                                       |
-|------|------------------------------------------------------------------|------------------------------------------------------------------|
-| E3xx | `Instant + CalendarDuration` (literal or laundered through `let`)| "calendar months/years aren't invertible; use `add_calendar_*`"   |
-| E3xx | `time_unit = 'months` (or `'years`) with `origin` declared       | "constant-day axis required; use `'days`, keep per-month rates"  |
-| W3xx | `add_calendar_months` composed with negative `n` (round-trip)    | "month-end clamping is non-invertible; result is not the input"  |
+| Code | Trigger                                                                                  | Hint shape                                                            |
+|------|------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| E3xx | `Instant + CalendarDuration` (literal or LUB-propagated through `let`)                   | "calendar months/years aren't invertible; use `add_calendar_*`"        |
+| E3xx | `Calendar`-classified duration in `every`/`from`/`until` of anchored recurring schedule  | "calendar cadence not allowed in anchored recurring schedule"          |
+| E3xx | `time_unit = 'months` (or `'years`) with `origin` declared                               | "constant-day axis required; use `'days`, keep per-month rates"        |
+| E3xx | call to `add_calendar_months` / `add_calendar_years` in an unanchored model              | "calendar stepping requires anchored mode; add `origin = date(...)`"   |
+| E4xx | bare-numeric `--data` time column with `origin` declared                                 | "use ISO dates or `--time-format internal-days`"                       |
+| E3xx | bare-numeric entries inside `on=[...]` periodic-forcing list with `origin` declared      | "use `date(...)` entries or `--time-format internal-days` opt-in"      |
+| W3xx | bare-numeric time position in anchored mode (`simulate.from/to/dt`, `at [k, ...]`)       | "annotate with `'days` or use a date literal; or opt-in to legacy"    |
+| W3xx | `add_calendar_months(add_calendar_months(d, n), -n)` literal nested round-trip           | "month-end clamping is non-invertible; result is not the input"        |
 
 The retrospective hint-quality audit of *existing* E-codes is
 intentionally out of scope here and deferred to a follow-up proposal.
@@ -523,8 +644,8 @@ hard-error or proceed with the affine result and warn?
    including the ones that matter.
 
 This applies symmetrically to the laundered case
-(`let d = 6 'months; date(...) + d`) via the Calendar-taints
-propagation rule.
+(`let d = 6 'months; date(...) + d`) via the Calendar-classifier
+LUB propagation rule in §3.
 
 ## 7. Implementation phasing
 
@@ -535,7 +656,7 @@ changes precede pure structural refactors.
 
 - Refine the `duration` kind in `dimcheck.ml` to distinguish
   `ExactDuration` from `CalendarDuration`.
-- Implement the Calendar-taints propagation rule.
+- Implement the Calendar-classifier LUB propagation rule.
 - Add E3xx for `Instant + CalendarDuration` with hint text.
 - Add E3xx for `time_unit = 'months/'years` with `origin` declared
   with hint text.
@@ -571,7 +692,12 @@ see anything missing.
 - **`docs/dates.md`**: add the anchored / unanchored vocabulary up
   front. Add the duration-kind split (exact vs calendar). Add the
   constant-day rule for anchored mode. Add the
-  `add_calendar_months`/`add_calendar_years` primitives.
+  `add_calendar_months`/`add_calendar_years` primitives. Add the
+  "Migrating an unanchored monthly model to anchored" section
+  (already drafted ahead of Phase 3 — see `docs/dates.md`) and the
+  "Why `'months` is fine in some places and forbidden in others"
+  section. Both are anchor-only-orientation aids and are the
+  user-facing complement to Rule 2's hint text.
 - **`docs/camdl-language-spec.md` §2**: update §2.1 with the
   duration-kind split and the corrected constants. Update §4.1
   (parameter type kinds) to note that `duration` is now the umbrella
