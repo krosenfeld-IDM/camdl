@@ -707,9 +707,9 @@ can't be a `Duration`:
 
 ```camdl
 # Quarterly breakpoints over 5 years, calendar-aligned
-date_range(date("2020-01-01"), date("2024-12-01"), calendar_months = 3)
-# → 21 entries: Jan 1 2020, Apr 1, Jul 1, …, Oct 1 2024, Dec 1 2024 (last
-#   matches `end` exactly only with `inclusive_end = true`)
+date_range(date("2020-01-01"), date("2025-01-01"), calendar_months = 3)
+# → 21 entries: Jan 1 2020, Apr 1, Jul 1, Oct 1, Jan 1 2021, …, Oct 1 2024,
+#   Jan 1 2025. The end lands on a cadence boundary, so no W3xx fires.
 
 # Annual breakpoints, count form
 date_range(date("2020-01-01"), count = 5, calendar_years = 1)
