@@ -582,26 +582,126 @@ equivalents will not trigger it. The docstring carries the rest of
 the non-invertibility story; the warning catches the most common
 literal mistake, not all of them.
 
-**No `date_range` function in this proposal.** Three cases cover the
-realistic space:
+### `date_range` — calendar breakpoint generator
 
-- **Repeating seasonal/school structure**: handled by the existing
-  periodic forcings with `on = [7:100, 115:199]` range syntax and
-  `step`/`period` unit-bearing fields.
-- **Data-driven monthly/yearly covariates** (the "120 breakpoints from
-  a real dataset" case): handled by `interpolated` forcings reading
-  a dated TSV. This is the escape valve — when the cadence list is
-  long because the data is real, the data file is where the cadence
-  belongs, not the source.
-- **Small-N calendar-aligned breakpoints** (e.g. quarterly
-  intervention dates over a couple of years): hand-listed with
-  `add_calendar_months` applications in DSL constant positions —
-  explicit, finite, no engine support needed.
+A small compile-time generator producing an `Instant[]` from a start,
+an end-or-count, and a cadence. Materializes at expand time; the
+runtime sees the same `Instant[]` it would have seen from a hand-written
+list. Designed for the small-N calendar-aligned cases that aren't
+already covered by `[7:100]` range syntax in periodic forcings or by
+`interpolated` forcings reading a dated TSV.
 
-So `date_range` is deferred *conditionally*: if a future audit of
-real models turns up recurring hand-listed monthly breakpoint lists
-beyond what `interpolated` covers, that's the signal to add it. The
-language already has enough surface for the common cases.
+The DSL's existing kwarg convention is `=` (matching
+`transfer(count = N, from = X, to = Y)` and
+`normal(mean = 0.5, sd = 1.0)`); `date_range` follows it.
+
+**Affine cadences** — `every` is a `Duration` value (`'days` or
+`'weeks` literals only; calendar units would be Rule-1 violations
+inside the generator):
+
+```camdl
+# start–end form, affine
+date_range(date("2020-01-01"), date("2020-12-31"), every = 7 'days)
+# → 53 entries: Jan 1, Jan 8, Jan 15, …, Dec 30
+
+# count form
+date_range(date("2020-01-01"), count = 24, every = 7 'days)
+# → 25 entries (start + 24 steps)
+```
+
+Signatures:
+
+```
+date_range(start: Instant,
+           end: Instant,
+           every: Exact-Duration,
+           inclusive_end: Bool = true)
+        → Instant[]
+
+date_range(start: Instant,
+           count: Int,
+           every: Exact-Duration)
+        → Instant[]
+```
+
+**Calendar cadences** — for the "every N calendar months/years"
+case, where the affine-vs-calendar distinction matters and `every`
+can't be a `Duration`:
+
+```camdl
+# Quarterly breakpoints over 5 years, calendar-aligned
+date_range(date("2020-01-01"), date("2024-12-01"), calendar_months = 3)
+# → 21 entries: Jan 1 2020, Apr 1, Jul 1, …, Oct 1 2024, Dec 1 2024 (last
+#   matches `end` exactly only with `inclusive_end = true`)
+
+# Annual breakpoints, count form
+date_range(date("2020-01-01"), count = 5, calendar_years = 1)
+# → 6 entries: Jan 1 of 2020..2025
+```
+
+Signatures (exactly one of `every` / `calendar_months` /
+`calendar_years` must be supplied):
+
+```
+date_range(start: Instant,
+           end: Instant,
+           calendar_months: Int,           # or calendar_years: Int
+           inclusive_end: Bool = true)
+        → Instant[]
+
+date_range(start: Instant,
+           count: Int,
+           calendar_months: Int)           # or calendar_years: Int
+        → Instant[]
+```
+
+Calendar-cadence entries are produced by repeated
+`add_calendar_*` from `start`, inheriting month-end clamping.
+
+**Boundary behavior.**
+
+- `inclusive_end = true` (default for the start–end form) includes
+  `end` iff `end` lands on a cadence boundary from `start`. If `end`
+  doesn't land on a boundary, the last entry is the latest cadence
+  boundary `≤ end`, and a W3xx warning fires: "produced [..., X];
+  `end = Y` doesn't land on a cadence boundary from `start`. List
+  it explicitly or set `inclusive_end = false` to make the
+  truncation explicit."
+- `inclusive_end = false` always stops at the last boundary `<
+  end`.
+- Count form is unambiguous: produces exactly `count + 1` entries
+  starting at `start`.
+
+**Errors.**
+
+- Affine `every` in anchored mode is fine (durations of `'days` /
+  `'weeks` are `Exact`); `every = 1 'months` errors per Rule 1
+  with the standard hint pointing at `calendar_months = 1`.
+- Calendar cadence in unanchored mode is an E3xx (same family as
+  the `add_calendar_*` unanchored check, §1.1).
+- Zero or negative `every` / `calendar_months` / `calendar_years`
+  is a hard error.
+- `count < 1` is a hard error.
+
+**Why the asymmetric API.** `every = N 'days` reads naturally and
+matches the existing unit-literal surface; `calendar_months = N` is
+a *kwarg name*, not a value-producing function, which sidesteps the
+need for a one-off "calendar cadence" type. Exactly one of the
+three must be supplied; the parser dispatches on which kwarg is
+present. This keeps the type system unchanged.
+
+**Coverage relative to other surfaces** (so callers know which tool
+to reach for):
+
+- Repeating seasonal/school *within a period*: the existing
+  `on = [7:100, 115:199]` range syntax in `periodic` forcings —
+  more compact for that shape.
+- Data-driven monthly/yearly covariates with many points: the
+  existing `interpolated` forcing reading a dated TSV — the data
+  file is the right home for long cadence lists.
+- Small-N calendar-aligned breakpoint lists in interventions,
+  events, piecewise forcings, parameter bounds, `let`s: this is
+  what `date_range` is for.
 
 ## 5. Diagnostics — every new error has an E-code and a fix-hint
 
@@ -618,6 +718,7 @@ non-exhaustive catalog:
 | E4xx | bare-numeric `--data` time column with `origin` declared                                 | "use ISO dates or `--time-format internal-days`"                       |
 | E3xx | bare-numeric entries inside `on=[...]` periodic-forcing list with `origin` declared      | "use `date(...)` entries or `--time-format internal-days` opt-in"      |
 | W3xx | bare-numeric time position in anchored mode (`simulate.from/to/dt`, `at [k, ...]`)       | "annotate with `'days` or use a date literal; or opt-in to legacy"    |
+| W3xx | `date_range(start, end, ...)` where `end` doesn't land on a cadence boundary             | "last entry was X; list `end` explicitly or set `inclusive_end = false`" |
 | W3xx | `add_calendar_months(add_calendar_months(d, n), -n)` literal nested round-trip           | "month-end clamping is non-invertible; result is not the input"        |
 
 The retrospective hint-quality audit of *existing* E-codes is
@@ -668,21 +769,29 @@ changes precede pure structural refactors.
 Additive. The dacca SIRS models continue to compile unchanged
 (unanchored, no `Instant`).
 
-### Phase 2 — calendar-arithmetic primitives
+### Phase 2 — calendar-arithmetic primitives and `date_range`
 
 - `add_calendar_months(d, n)` and `add_calendar_years(d, n)` as
   expander functions, in DSL constant positions only.
 - Month-end clamping with proleptic-Gregorian `days_in_month`.
 - W3xx warning on round-trip composition.
-- Tests covering the canonical cases — each with explicit years
-  since the operation is year-dependent:
+- `date_range(...)` generator (§4): start–end and count forms,
+  affine `every = N 'days|'weeks`, calendar-cadence kwargs
+  `calendar_months` / `calendar_years`, `inclusive_end` flag with
+  W3xx on non-aligned-end truncation.
+- Tests covering canonical `add_calendar_*` cases — each with explicit
+  years since the operation is year-dependent:
   - `date("2020-01-31") + 1 month → date("2020-02-29")` (leap)
   - `date("2021-01-31") + 1 month → date("2021-02-28")` (non-leap)
   - `date("2020-02-29") + 1 year → date("2021-02-28")` (leap → non-leap year-end clamp)
   - `date("2020-01-31") + 13 months → date("2021-02-28")` (large `n` crosses year-end)
   - Leap-year transitions in both directions.
+- Tests for `date_range`: affine and calendar cadences in both
+  forms; non-aligned-end W3xx; zero/negative arguments hard-error.
 
-Required because Rule 1 closes the other paths to calendar stepping.
+Required because Rule 1 closes the other paths to calendar stepping,
+and the small-N calendar-breakpoint case for interventions and
+piecewise forcings is a real user-facing need.
 
 ### Phase 3 — documentation refinement
 
@@ -777,7 +886,6 @@ context) and ship as separate small commits after the proposal lands.
 
 - The engine-side `Instant`/`Duration` torsor (deferred per §7, Phase
   4 optional).
-- A `date_range` generator (§4 — not needed; the existing range
   syntax and explicit `add_calendar_*` calls cover the cases we have).
 - Method-style duration syntax (`7.days`, `1.month`) — `5 'days`
   already exists.
