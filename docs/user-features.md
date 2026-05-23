@@ -50,6 +50,55 @@ compile error.
 
 ---
 
+## Anchored vs unanchored, and calendar stepping
+
+A model is **anchored** if it declares `origin = date(...)`; otherwise
+**unanchored**. The split controls how dates and calendar arithmetic
+behave — see [`docs/dates.md`](dates.md) for the full reference.
+
+```camdl
+# (a) Anchored: daily axis, per-month rate parameters
+time_unit = 'days
+origin    = date("2020-02-24")
+
+parameters {
+  beta  : rate 'per_month         # compiler converts to per-day at compile time
+  gamma : rate 'per_month
+  tau   : instant in [date("2020-01-21"), date("2020-04-30")]
+                                   # renders as a date in fit summary
+}
+```
+
+```camdl
+# (b) Unanchored: monthly axis (the dacca SIRS shape)
+time_unit = 'months
+# no origin — t = 0 has no calendar meaning
+
+parameters {
+  beta  : rate 'per_month
+  gamma : rate 'per_month
+}
+
+let latent = 1 'months              # affine 30.44 days as a length
+```
+
+```camdl
+# (c) Calendar stepping (anchored mode only)
+let mid_year       = add_calendar_months(origin, 6)
+let school_quarter = date_range(origin, date("2025-01-01"), calendar_months = 3)
+                                   # 21 quarterly breakpoints, calendar-aligned
+
+simulate { from = origin to = add_calendar_years(origin, 5) }
+```
+
+`add_calendar_months` / `add_calendar_years` are the *only* way to
+step a date by calendar months/years; month-end clamping is canonical
+(`date("2021-01-31") + 1 month = date("2021-02-28")`). Direct
+`date(...) + N 'months` is a hard error (**E321**) — the language
+forbids the silent affine-drift that would produce.
+
+---
+
 ## Calendar-based forcing with range syntax
 
 Specify school terms, work weeks, or campaign windows as day ranges instead of

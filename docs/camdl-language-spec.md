@@ -91,6 +91,42 @@ Conversions: 1 'week = 7 'days, 1 'month = 365.2425/12 'days ≈ 30.4369, 1 'yea
 = 365.2425 'days. Proleptic-Gregorian throughout; matches `rata_die` and
 `rust/crates/ir/src/caltime.rs::days_per_unit` (the shared conversion authority).
 
+#### Exact vs Calendar duration kinds
+
+Duration unit literals split into two kinds, distinguished by whether
+their magnitude is a constant or an affine average over the calendar:
+
+| Unit literal       | Kind      | Why                                          |
+| ------------------ | --------- | -------------------------------------------- |
+| `'days`, `'weeks`  | Exact     | constant day count (1, 7) — invertible       |
+| `'months`, `'years`| Calendar  | average-length (≈ 30.4369, ≈ 365.2425) — affine |
+
+The dimensional checker tracks this as a **one-bit refinement on
+`[T]`** (`Exact <: Calendar` on the subtype lattice). The refinement
+propagates through arithmetic by least upper bound — `Exact ± Exact`
+stays Exact; any expression touching a `'months`/`'years` literal
+becomes Calendar.
+
+The refinement is load-bearing in **anchored mode** (when `origin =
+date(...)` is declared): a `Calendar`-classified duration cannot be
+added to or subtracted from an `Instant` (**E321**), because calendar
+months/years are non-invertible relative to a date. Use
+`add_calendar_months` / `add_calendar_years` (§2.3) for
+calendar-exact stepping, or an explicit `'days` literal for an affine
+offset.
+
+In **unanchored mode** (no `origin`) the refinement is inactive: no
+calendar reference exists, so `5 'months` as an affine span is fine,
+including in rate expressions, table values, and parameter bounds.
+The dacca SIRS configuration (`time_unit = 'months`, `beta : rate
+'per_month`, `6 'months` durations) is entirely composed of
+calendar-named *affine* constructs and works unchanged.
+
+See [`docs/dates.md`](dates.md) and the typed-time proposal
+([`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md))
+§3 for the full statement of the rule, the LUB propagation table, and
+the classifier-from-leaves invariant.
+
 ### 2.2 Dimensional Type System
 
 Durations and rates are **distinct types**. The compiler tracks dimensions
@@ -246,6 +282,43 @@ summary`), and the **`instant` / `duration` parameter kinds** carry dimension
 `[T]`. **See [`docs/dates.md`](dates.md) for the complete, canonical treatment**
 of dates across the DSL, data loading, and output.
 
+#### Calendar-arithmetic primitives and `origin` as a referenceable Instant
+
+In **anchored mode** (when `origin` is declared), two compile-time
+primitives step a date by calendar months or years, available in DSL
+constant positions only:
+
+```camdl
+add_calendar_months(d, n)   # Instant × Int → Instant
+add_calendar_years(d, n)    # Instant × Int → Instant
+```
+
+`d` is any compile-time-constant Instant — a `date(...)` literal,
+the reserved `origin` identifier, or a nested `add_calendar_*`
+call. `n` is a compile-time integer. The algorithm is
+proleptic-Gregorian `(year, month, day)` arithmetic with **month-end
+clamping**:
+`add_calendar_months(date("2020-01-31"), 1) = date("2020-02-29")` (leap),
+`add_calendar_months(date("2021-01-31"), 1) = date("2021-02-28")`.
+These functions never touch the `30.4369` average-month factor —
+they're the only correct way to step a date by calendar months/years.
+In unanchored mode, a call to either primitive is **E327**.
+
+`origin` is **reserved in anchored mode as a referenceable
+compile-time-constant `Instant`**, usable wherever a constant Instant
+is accepted — `simulate { from = origin }`, `at [origin, ...]`
+schedules, `add_calendar_months(origin, 6)`, `origin + 90 'days`,
+`let landmark = origin + 90 'days`. Not usable inside rate
+expressions or any compartment-state context (it's a compile-time
+constant, not a runtime value). In unanchored mode, a reference to
+`origin` is **E327**.
+
+A `date_range(...)` compile-time generator produces a list of
+Instants from a start, an end-or-count, and a cadence — see
+[`docs/dates.md`](dates.md) for the surface and
+[`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
+§4 for the full signature and diagnostics.
+
 ### 2.3 Three tiers of dimensional information
 
 Dimensional information in a model can be declared at three levels of
@@ -378,10 +451,30 @@ probability : ∈ [0, 1], dimensionless. Default transform: logit.
 positive    : > 0, dimensionless. Default transform: log.
 count       : integer ≥ 0.
 real        : unconstrained (default if omitted).
+instant     : dimension [T], absolute time. Renders as a date in anchored
+              mode (requires origin). Negative lower bounds allowed.
+duration    : dimension [T], a span. Renders as a span.
+ivp         : initial-value parameter (PGAS draws stochastic initial
+              states; see §15).
 ```
 
 Types enable: validation of supplied values, default inference transforms,
 and dimensional analysis of rate expressions.
+
+**On `instant` vs `duration` in dimensional checking.** Both carry
+dimension `[T]`. In **anchored mode** (top-level `origin` declared),
+`instant` is the Instant side of the typed-time torsor: it can be
+added to / subtracted from an `Exact` duration (§2.1), and an
+`Instant − Instant` is itself an Exact duration. In **unanchored
+mode** the torsor refinement is inactive — both kinds behave as
+plain `[T]`-dimensioned scalars and are interchangeable in expression
+arithmetic. See the typed-time proposal §1.1 for the formal
+"classification synthesised per occurrence from its leaves" invariant:
+a **reference** to a `duration`-kind parameter is always classified
+`Exact`, even when the parameter's *bound* is spelled in `'months`
+(e.g. `delay : duration in [1 'months, 6 'months]`). The bound's
+month-spelling is a compile-time-evaluable length, not a step-from-a-
+date, and never leaks `Calendar` to uses of the parameter.
 
 ### 4.1.1 Dimension Annotations
 
@@ -872,7 +965,13 @@ The `periodic` type supports two forms:
 - **Range form:** `step = 1 'days` + `on = [7:100, 115:199]` — binary on/off
   with range literals. The compiler generates the values array. Use for
   calendars with known active periods (school terms, work weeks, campaign
-  windows).
+  windows). **In anchored mode** (top-level `origin` declared),
+  bare-numeric entries inside `on=[...]` are **E323** — anchored periodic
+  schedules must use `date(...)` entries (or, for the rare legitimate
+  "day-offset from origin" case, the `--time-format internal-days` opt-in
+  on the data boundary). See
+  [`docs/dates.md`](dates.md) and the typed-time proposal §3
+  (Rule 2 / bare-numeric subsection).
 
 Forcing functions are used in rate expressions by name or with explicit `(t)`:
 
@@ -1983,6 +2082,14 @@ NAME : ACTION {
   until = DURATION             end of recurring (default: t_end)
 }
 ```
+
+**In anchored mode**, `every`, `from`, and `until` must be classified
+`Exact` (§2.1) — a `Calendar`-classified duration (e.g. `every = 1
+'months`) is **E322**, with a hint pointing at `every = 30 'days` for
+an affine ~monthly recurrence or at an explicit calendar-listed
+`at [date(...), date(...), ...]` schedule for true month-aligned
+recurrence. In unanchored mode the classifier is inactive and
+`every = 1 'months` is fine.
 
 ### 14.3 Indexed Interventions
 

@@ -6,6 +6,134 @@ is the single reference for how calendar dates relate to internal time across
 the DSL, the data loader, and output — so you can point camdl at a dated file
 and read results back as dates, without pre-converting anything by hand.
 
+## Anchored vs unanchored models
+
+camdl models come in two modes, distinguished by a single bit: whether
+`origin = date(...)` is declared at the top level.
+
+- **Anchored** — `origin` is declared. Internal time `t` maps to a real
+  calendar date via `time_unit`; `t = 0` is `origin`. Dates flow at I/O
+  (data columns, `--dates` output, `date()` literals in DSL constant
+  positions). Anchored mode is what the seed-timing chapter's COVID-WA
+  and Hagelloch fits use.
+- **Unanchored** — no `origin`. The internal axis is abstract; `t = 0`
+  has no calendar meaning. Time positions are bare numbers in the
+  model's `time_unit`. SBC, synthetic-indexed time, textbook SIR, and
+  the dacca cholera SIRS models (where `t = month-number from 1 Jan
+  1891` is documented as an *informal* anchor but not declared as
+  `origin`) are unanchored.
+
+The two modes share most of the language. Three constructs behave
+differently across them — see the **anchor-only primitives** and the
+**constant-day axis rule** below. The vocabulary mirrors
+[`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
+§1 (also referred to in some older docs as "calendar-anchored" /
+"indexed-time").
+
+## Exact vs Calendar duration kinds
+
+Inside the `[T]` dimension, durations carry a one-bit refinement
+distinguishing two kinds — a static, type-level property tracked by the
+dimensional checker:
+
+- **Exact** — a duration that's a *constant* number of axis units,
+  invertible under translation. Comes from `'days` and `'weeks` unit
+  literals, from `Instant − Instant`, and from references to
+  `duration`-kind parameters or `[T]`-annotated parameters.
+- **Calendar** — a duration whose magnitude is derived from the affine
+  month/year constant (≈ 30.4369 days / month, ≈ 365.2425 days / year)
+  and so *isn't* invertible when applied to a date. Comes only from
+  `'months` and `'years` unit literals (and propagates upward through
+  arithmetic — the LUB on the lattice `Exact <: Calendar`).
+
+**The principle:** `Calendar` arises *only* from `'months`/`'years`
+literals; everything else is `Exact`. A `Calendar`-classified duration
+**cannot translate an `Instant`** in anchored mode — that's a hard
+error (**E321**) with the hint pointing at `add_calendar_months` for
+calendar-exact stepping or an explicit `'days` literal for an affine
+offset. See the proposal's
+[§3](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md#3-the-two-rules)
+for the full statement, including the LUB propagation rule and the
+classifier-from-leaves invariant that keeps a `'months`-spelled
+parameter *bound* from contaminating uses of the parameter.
+
+## Constant-day axis rule (anchored mode)
+
+`time_unit = 'months` and `time_unit = 'years` are **forbidden when
+`origin = date(...)` is declared** — that's **E320**. Average-length
+months and years would make the date↔number conversion drift by an
+accumulating residual under repeated conversion, which silently
+mis-aligns rendered dates from the calendar. Switch to `time_unit =
+'days` (or `'weeks`); per-month rate parameters (`beta : rate
+'per_month`) and affine duration literals (`5 'months` as a length)
+continue to work, because the expander converts them at compile time.
+
+The unanchored case is unaffected: `time_unit = 'months` with no
+`origin` is fine (the dacca configuration). The constant-day rule
+only fires when an `origin` is present, because that's the only
+situation where the axis scale becomes a *conversion factor*.
+
+## Stepping a date by calendar months/years
+
+Two primitive functions, available in DSL constant positions in
+**anchored mode only**:
+
+```camdl
+add_calendar_months(d, n)   # step Instant d by n calendar months
+add_calendar_years(d, n)    # step Instant d by n calendar years
+```
+
+`d` is any compile-time-constant Instant — a `date(...)` literal, the
+reserved `origin` identifier, or a nested `add_calendar_*` call. `n`
+is a compile-time integer (positive or negative).
+
+These are the **only** way to advance a date by calendar months or
+years in the language. They do real `(year, month, day)` arithmetic
+via the proleptic-Gregorian calendar and never touch the `30.4369`
+average-month factor.
+
+**Month-end clamping** is canonical: if the source day-of-month doesn't
+exist in the target month, the result clamps to that month's last day.
+
+```camdl
+add_calendar_months(date("2020-01-31"), 1)   # = date("2020-02-29")  (leap)
+add_calendar_months(date("2021-01-31"), 1)   # = date("2021-02-28")
+add_calendar_years(date("2020-02-29"), 1)    # = date("2021-02-28")
+```
+
+Clamping makes calendar-month stepping **non-invertible**:
+`(d + 1 month) − 1 month` is in general *not* `d`. A W327 warning
+fires on the literal nested round-trip
+`add_calendar_months(add_calendar_months(d, n), -n)` to flag the
+assumption (single syntactic shape; let-separated equivalents don't
+trigger it).
+
+In unanchored mode, a call to `add_calendar_months` or
+`add_calendar_years` is **E327** with a hint pointing at adding
+`origin = date(...)` or — if the user wanted an affine offset on the
+abstract axis — using a duration literal like `30 'days`.
+
+## `origin` as a referenceable identifier
+
+In anchored mode, `origin` is a **reserved read-only identifier** of
+type `Instant`, usable wherever a DSL constant-position Instant is
+accepted:
+
+```camdl
+add_calendar_months(origin, 6)            # 6 calendar months after origin
+origin + 90 'days                          # affine 90-day offset
+simulate { from = origin to = origin + 5 'years }
+at [origin, origin + 30 'days]             # intervention schedule
+let landmark = origin + 90 'days
+```
+
+`origin` is a compile-time constant, not a runtime value, so it
+cannot appear inside rate expressions or any compartment-state
+context — only in DSL constant positions.
+
+In unanchored mode, a reference to `origin` is **E327** (same family
+as `add_calendar_*` in unanchored mode).
+
 ## The one rule
 
 Dates live **only at the I/O boundary**. Two places translate; everything below
@@ -128,11 +256,12 @@ number is computed straight from `(Y, M, D)`, with no timezone. So:
 
 ## Migrating an unanchored monthly model to anchored
 
-> Status: this section describes the surface that lands with the
-> typed-time proposal (`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`).
-> Until that proposal's Phase 1 ships, `time_unit = 'months` with
-> `origin` declared is legal but produces calendar-drifting dates;
-> after Phase 1 it's an E3xx hard error with the hint shown below.
+> Reference: this section describes the surface introduced by the
+> typed-time proposal
+> ([`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)).
+> Phases 1 (rules) and 2 (calendar primitives) have shipped:
+> `time_unit = 'months` with `origin` declared is **E320**; the hint
+> below points at the migration.
 
 If you have an existing model with `time_unit = 'months` (or
 `'years`) and no `origin` — the dacca SIRS shape, for example — and

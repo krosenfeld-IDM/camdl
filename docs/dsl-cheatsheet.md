@@ -9,12 +9,12 @@ contributor working from memory or from a single proposal often misses
 features the language already provides, then reinvents them poorly. Read this
 first when proposing DSL changes.
 
-> **Status conventions.** Things in the language *today* are unmarked. Things
-> coming via the in-flight typed-time proposal
-> (`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`) are
-> tagged **(proposed: typed-time)** — described here so this doc orients you
-> to where the language is going, but flagged so you don't ship code that
-> assumes them before they land. When the proposal lands, drop the tags.
+> **Status conventions.** This cheatsheet reflects the language as of
+> typed-time Phases 1 and 2 (the
+> [`2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
+> proposal): the Exact/Calendar split, `add_calendar_months/_years`,
+> `date_range`, the constant-day axis rule, and the anchored-mode
+> diagnostics (E320–E323, E327–E329, W324–W328) have all shipped.
 
 ## Time and units
 
@@ -120,11 +120,12 @@ simulate {
 
 Without a top-level `origin`, `date(...)` is **E220**.
 
-**Anchored vs unanchored** models (vocabulary introduced by the typed-time
-proposal — see `docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`):
+**Anchored vs unanchored** models — see
+[`docs/dates.md`](dates.md) for the full reference:
 
 - **Anchored**: declares `origin`. Internal axis maps to real calendar
-  dates. Must use `time_unit = 'days` or `'weeks` (constant-day rule).
+  dates. Must use `time_unit = 'days` or `'weeks` (constant-day rule;
+  `time_unit = 'months/'years` with `origin` is **E320**).
 - **Unanchored**: no `origin`. Internal axis is abstract; bare numbers.
   Any `time_unit` is fine including `'months`/`'years`. SBC, synthetic,
   textbook SIR live here; so do the dacca SIRS models.
@@ -133,25 +134,46 @@ proposal — see `docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md
 
 | Construct                       | Anchor-only? | If used unanchored                |
 |---------------------------------|--------------|-----------------------------------|
-| `date("YYYY-MM-DD")`            | yes          | E220 (existing)                   |
-| `add_calendar_months(d, n)`     | yes          | E3xx targeted error (new)         |
-| `add_calendar_years(d, n)`      | yes          | E3xx targeted error (new)         |
+| `date("YYYY-MM-DD")`            | yes          | E220                              |
+| `origin` (identifier)           | yes          | E327                              |
+| `add_calendar_months(d, n)`     | yes          | E327                              |
+| `add_calendar_years(d, n)`      | yes          | E327                              |
+| `date_range(..., calendar_months/_years = N)` | yes | E327                |
 | `instant`-kind param (rendering)| yes          | works as `[T]`; no date rendering |
 | `5 'months`, `5 'years`         | **no**       | legal — affine span               |
 | `0.087 'per_month`              | **no**       | legal — affine rate               |
-| `time_unit = 'months`/`'years`  | **no**       | legal (Rule 2 only fires anchored)|
+| `time_unit = 'months`/`'years`  | **no**       | legal (E320 only fires anchored)  |
 
 The bottom rows are *calendar-named affine constructs*, not anchor-only —
 the dacca SIRS configuration (unanchored, monthly axis, per-month rates,
 month-span durations) is all of those, and it remains fully legal.
 
-**Calendar arithmetic** (proposed; not yet in the language as of this
-writing):
-- `add_calendar_months(d, n)`, `add_calendar_years(d, n)` for stepping
-  dates by calendar (non-affine, with month-end clamping).
-- `Instant + 'months` and `Instant + 'years` are *hard errors* in
-  anchored mode — calendar months/years aren't invertible spans. Use
-  `add_calendar_*` instead.
+**Exact vs Calendar duration kinds.** Duration unit literals carry a
+one-bit refinement on `[T]`: `'days`/`'weeks` are **Exact**;
+`'months`/`'years` are **Calendar**. The refinement propagates by LUB
+through arithmetic. In anchored mode, `Instant ± Calendar`-duration is
+**E321** with a hint at `add_calendar_*` (calendar-exact) or a `'days`
+literal (affine offset). Parameter references with `[T]` dimension are
+always Exact — a `'months`-spelled *bound* on a `duration`-kind
+parameter is a length, not a step-from-a-date, and never contaminates
+uses.
+
+**Calendar arithmetic primitives** (anchored mode, DSL constant
+positions only):
+
+```camdl
+add_calendar_months(d, n)    # Instant × Int → Instant
+add_calendar_years(d, n)     # Instant × Int → Instant
+date_range(start, end, calendar_months = 3)
+                              # calendar-aligned breakpoint list
+date_range(start, end, every = 7 'days)
+                              # affine cadence
+```
+
+`d` is any compile-time-constant Instant (`date(...)`, `origin`, or a
+nested `add_calendar_*` call). Month-end clamping is canonical and
+**non-invertible** — `(d + 1 month) − 1 month ≠ d` in general; a W327
+warns on the literal nested round-trip shape.
 
 ## Periodic forcings — already calendar-friendly
 
@@ -176,8 +198,7 @@ etc.). This is required per GH #8.
 
 ## Common diagnostics
 
-The compiler issues E-codes with source locations and (per the
-typed-time proposal's discipline) fix-hints.
+The compiler issues E-codes with source locations and fix-hints.
 
 | Code | Class | Typical trigger |
 |------|-------|----------------|
@@ -192,7 +213,19 @@ typed-time proposal's discipline) fix-hints.
 | E305 | dim | balance expression must have dimension P |
 | E306 | dim | ODE derivative must have dimension P·T⁻¹ |
 | E308 | dim | overdispersion σ² must be dimensionless |
+| E320 | time | `time_unit = 'months/'years` with `origin` declared |
+| E321 | time | `Instant ± Calendar`-duration (`date(...) + 6 'months`) |
+| E322 | time | calendar cadence in anchored recurring schedule (`every = 1 'months`) |
+| E323 | time | bare-numeric `on=[...]` in anchored periodic forcing |
+| E327 | time | `add_calendar_*` / `origin` / calendar-cadence `date_range` in unanchored model |
+| E328 | time | argument-shape error in `add_calendar_*` / `date_range` |
+| E329 | time | zero/negative cadence or `count < 1` in `date_range` |
 | W301 | forcing | periodic range not aligned to step size |
+| W324 | time | bare-numeric `simulate.from/to/dt` in anchored mode |
+| W325 | time | bare-numeric `at [k, ...]` schedule in anchored mode |
+| W326 | time | numeric `--data` time column under `origin` (use `--time-format internal-days` to silence) |
+| W327 | time | literal nested `add_calendar_*` round-trip (non-invertible) |
+| W328 | time | `date_range` `end` doesn't land on a cadence boundary |
 
 ## Where things live
 
@@ -231,12 +264,13 @@ them before assuming the language doesn't do something — it usually does.
   `date("2021-01-31") + 1 month = date("2021-02-28")` but
   `date("2020-01-31") + 1 month = date("2020-02-29")` (leap). It's an
   instant operation, not a translation. The language enforces this
-  through the ExactDuration/CalendarDuration split. See the typed-time
-  proposal.
+  through the Exact/Calendar refinement on `[T]` (E321), with
+  `add_calendar_months`/`add_calendar_years` as the only correct
+  calendar-stepping path. See [`docs/dates.md`](dates.md).
 - **Hard errors over warnings.** When a construct is silently
   ambiguous, the compiler hard-errors with a fix-hint rather than
   warning. This is CLAUDE.md policy and the typed-time proposal's
-  acceptance criterion.
+  acceptance criterion (now shipped).
 
 ## Recent and incoming changes
 
