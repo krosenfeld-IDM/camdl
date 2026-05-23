@@ -24,9 +24,50 @@ mislead policy. Every implementation must be:
   how mechanical it looks. Read the full function before editing any
   part of it.
 
+## Working on this codebase
+
+AI is leverage; the standards belong to the maintainer. You are the
+careful counterpart, not the arbiter of scientific judgment.
+
+- **The compiler and tests are ground truth.** When unsure what a
+  construct means, check the compiler, don't guess. A wrong guess
+  must surface as a compile error or failing test — never as a
+  silent change that looks plausible.
+- **Never lower the bar to make something pass.** No `--no-verify`,
+  no weakening an assertion, no skipping a gate, no widening a
+  tolerance to get green. If something fails, find the cause.
+- **Surface uncertainty.** If a change touches inference math or
+  numerics and you are not certain it is correct, say so explicitly
+  and propose the test that would settle it. "Plausible" is not
+  "verified" — this software informs public-health decisions.
+- The maintainer welcomes scrutiny over speed: a found bug or a
+  flagged dubious design is more valuable than a fast green diff.
+
+## docs/dev layout and where work gets tracked
+
+- `docs/dev/notes/` — dated design sketches, investigation logs.
+- `docs/dev/incidents/` — serious bugs/outages: cause, fix, what it
+  changes.
+- `docs/dev/reviews/` — audits and PR write-ups. Audit-fix commits
+  cite these via an `Audit ref:` footer.
+- `docs/dev/proposals/` — RFCs for non-trivial changes. Implementation
+  commits cite via a `Proposal:` footer; follow the proposal exactly
+  unless a deviation is documented inline.
+- Stable normative docs live at `docs/dev/` root (e.g.
+  `commit-style.md`, `testing.md`, `warning-catalog.md`).
+
+Now that camdl is alpha:
+- **Small, well-scoped work → a GitHub issue** (`gh issue create`),
+  referenced as `gh#NN` in the commit subject. No proposal needed.
+- **Bigger lifts** (schema/IR changes, new inference methods, anything
+  cross-cutting) → a `docs/dev/proposals/` doc first, then implement
+  against it.
+- Commit/PR conventions: `docs/dev/commit-style.md`. Contributor
+  onboarding: `CONTRIBUTING.md`.
+
 ## Project Overview
 
-`compartmental` is a monorepo for stochastic compartmental epidemic modelling.
+`camdl` is a monorepo for stochastic compartmental epidemic modelling.
 It has two independent subsystems connected by a shared JSON IR (Intermediate
 Representation):
 
@@ -86,7 +127,7 @@ together.
 ```bash
 make sim MODEL=ir/golden/sir_basic.ir.json
 # or directly:
-rust/target/release/compartmental simulate <model.ir.json> --traj /tmp/traj.tsv --obs /tmp/obs.tsv
+rust/target/release/camdl simulate <model.ir.json> --traj /tmp/traj.tsv --obs /tmp/obs.tsv
 ```
 
 ## Debugging a diverging simulation
@@ -123,41 +164,6 @@ Other logging channels worth knowing about:
 
 Before inventing new logging, check the existing paths above. They
 already cover most per-step/per-iteration diagnostics.
-
-## Coordinating with camdl-book after a fit.toml schema change
-
-The Phase 1 ODE-inference work (2026-05-04) replaced the
-`method = "..."` smuggling in fit.toml stages with explicit
-`algorithm = "..."` + `backend = "..."` fields. Every fit.toml under
-`/Users/vsb/projects/work/camdl-book/` was migrated in lock-step on this
-branch's worktree, but the camdl-book agent is independent — when this
-branch lands, the book's working tree must pull the same change set.
-
-To hand off to the camdl-book agent:
-
-1. Confirm the migration is committed here and in the
-   `/Users/vsb/projects/work/camdl-book` worktree (look for the
-   bulk-rewrite commit titled "fit.toml: rename method → algorithm +
-   backend (Phase 1 ODE-inference)").
-2. Tell the book agent: "Phase 1 of the ODE-inference proposal landed
-   in compartmental@<sha>; pull and re-render. Every fit.toml's
-   `method = "X"` line is now `algorithm = "X"\nbackend =
-   "chain_binomial"`; the book's TOMLs already migrated mechanically,
-   but Quarto chunks that hard-code the old syntax inside string
-   literals (Python tutorials, .qmd code blocks rendering fit.toml
-   examples) need eye-balling. Also surface the new
-   `algorithm = "nl-sbplx"` + `backend = "ode"` deterministic-MLE
-   path in the relevant fitting chapter once the typhoid diagnostic
-   experiment confirms the two-likelihoods convergence claim."
-3. Surface the new `camdl fit methods` subcommand as the canonical
-   place to learn what's supported; book chapters should reference it
-   rather than maintaining a parallel matrix.
-
-The diagnostic experiment (typhoid SIRC: nl-sbplx vs if2 MLE on the
-smallest stratum cell, gating Phase 1 merge) lives in camdl-book per
-the proposal — not here. Don't run it from this worktree; the book
-agent owns calibrating the convergence-gate thresholds against the
-observed typhoid spread.
 
 ## Architecture
 
@@ -213,11 +219,14 @@ event-keyed RNG.
 
 ### Implementation phases
 
-| Phase | Status    | Scope                                                      |
-| ----- | --------- | ---------------------------------------------------------- |
-| v0.1  | Complete  | Forward simulation + synthetic data generation             |
-| v0.2  | Complete  | Inference: IF2 (MLE), PGAS+NUTS (Bayesian), particle filter, priors, real data input |
-| v0.3  | In design | Hierarchical priors, reporting pipelines, spatial coupling |
+| Phase | Status      | Scope                                                    |
+| ----- | ----------- | -------------------------------------------------------- |
+| v0.1  | Complete    | Forward simulation + synthetic data generation           |
+| v0.2  | Complete    | Inference: IF2 (MLE), PGAS+NUTS (Bayesian), particle filter, priors, real data input |
+| v0.3  | In progress | Hierarchical priors, reporting pipelines, spatial coupling |
+
+Public **alpha** as of 2026-05 (blog announcement): usable for real
+fits, public surface documented, breaking changes still expected.
 
 ### Inference algorithms
 
@@ -312,12 +321,37 @@ Never use `failwith` or `assert false` for user-facing errors. These produce
 stack traces instead of diagnostics. Use the Diagnostics module with error
 codes, source locations, and hint text.
 
+### Design the DSL for humans first; agents follow
+
+A meaningful fraction of `.camdl` files now come from coding agents, and
+that share will grow. The temptation is to optimize the surface for
+agents directly — explicit verbosity, machine-friendly tags, lots of
+"obvious" guardrails. Resist it. The DSL's value to agents comes from
+the *same* property that makes it value to humans: that a sharp
+non-software-engineer epidemiologist (a health-ministry modeler in an
+under-resourced setting, the recurring target user) can read a model
+and have a chance of being right about what it does. Agents do well on
+this DSL because it is human-readable, not in spite of it. When a
+syntax choice is in tension between "what an agent would tolerate" and
+"what a model author would understand at a glance," the model author's
+gut is the tiebreaker — that is the choice that serves both audiences,
+because it is the one that doesn't ask either of them to carry hidden
+calendar arithmetic, ambiguous units, or implicit conventions in their
+head. Concretely: prefer explicitly named functions over polymorphic
+operators where the semantics differ (`add_calendar_months(d, 1)`
+beats `d + 1.month` when the operation is non-affine), prefer hard
+errors with hint text over warnings (warnings are noise an agent will
+suppress and a non-specialist will skim), and keep the surface small
+enough that the entire grammar fits in a head.
+
 ### Backwards compatibility is a non-goal
 
-This is unreleased software. Do not add backwards-compatibility shims, `alias`
+camdl is alpha: the public surface is documented but breaking changes
+are still expected. Do not add backwards-compatibility shims, `alias`
 attributes, fallback deserialization paths, or deprecated field names. When a
 field is renamed, rename it everywhere atomically. When a format changes, update
-all golden files. Clean design beats legacy support.
+all golden files. Clean design beats legacy support — at alpha a clean
+break with updated golden files is preferred over a compatibility shim.
 
 ### Delete dead code on sight
 
