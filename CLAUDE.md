@@ -33,6 +33,25 @@ careful counterpart, not the arbiter of scientific judgment.
   construct means, check the compiler, don't guess. A wrong guess
   must surface as a compile error or failing test — never as a
   silent change that looks plausible.
+- **Verify against code, not docs.** Doc text describes an intent
+  that may have drifted from the implementation. Before writing an
+  incident report, a fix section, or a claim about how the system
+  behaves *today*, `grep` the implementation file (or read the
+  function) — that's the source of truth. The doc may say one
+  thing and the code do another; the code is what runs. The cost of
+  the verification is seconds; the cost of writing a long incident
+  report about a bug that doesn't exist is much higher. This
+  specifically applies to claimed constants, formulas, and
+  algorithms — when the spec says `30.4375`, grep
+  `expander.ml`/`caltime.rs` to confirm before building anything on
+  it.
+- **Ship the fix; don't document the broken interim.** When a bug
+  fix is straightforward and the fixed state is the right state,
+  apply the fix and update the doc to describe the *fixed* reality.
+  Long descriptions of the broken interim state belong in incident
+  reports, not in user-facing docs (spec, cheatsheet, user-features).
+  Doc-around-the-bug is noise that delays shipping and confuses the
+  next reader.
 - **Never lower the bar to make something pass.** No `--no-verify`,
   no weakening an assertion, no skipping a gate, no widening a
   tolerance to get green. If something fails, find the cause.
@@ -42,6 +61,52 @@ careful counterpart, not the arbiter of scientific judgment.
   "verified" — this software informs public-health decisions.
 - The maintainer welcomes scrutiny over speed: a found bug or a
   flagged dubious design is more valuable than a fast green diff.
+
+### Required reading before structural proposals
+
+Before drafting a `docs/dev/proposals/` document or making
+non-trivial changes to load-bearing surfaces, read the normative docs
+for that area first. Working from a mental model of the language
+rather than from the spec has, in practice, produced proposals that
+reinvent existing surface badly — once is bad luck, twice is a
+pattern, and the pattern is fixed by reading first, not by trying
+harder to remember.
+
+Per area:
+
+- **DSL changes** (lexer, parser, expander, dimcheck, new unit
+  literals, new functions in DSL constant positions): read
+  [`docs/camdl-language-spec.md`](docs/camdl-language-spec.md)
+  end-to-end (especially §2 on units and dimensions, §4 on parameter
+  kinds, §6 on tables, §7 on forcings),
+  [`docs/user-features.md`](docs/user-features.md) for example
+  patterns, and [`docs/dsl-cheatsheet.md`](docs/dsl-cheatsheet.md)
+  for a fast orientation. For the actual grammar:
+  `ocaml/lib/compiler/lexer.mll` (unit literals + tokens),
+  `ocaml/lib/compiler/parser.mly` (the rule for whatever you're
+  changing), `ocaml/lib/compiler/dimcheck.ml` (dimensional behaviour).
+- **IR / schema changes**: read `ir/schema.json` (the OCaml↔Rust
+  contract) and `ir/VERSION`. The atomic update procedure is at
+  "Changing the IR schema" below. Cross-language constants follow the
+  pattern of `rust/crates/ir/src/caltime.rs::rata_die` — single
+  source of truth, mirror only with an equivalence test.
+- **Calendar / time / date changes**:
+  [`docs/dates.md`](docs/dates.md) is the policy document;
+  `docs/camdl-language-spec.md` §2.1 has the unit table;
+  `rust/crates/ir/src/caltime.rs` is the conversion code;
+  `docs/dev/proposals/2026-05-22-calendar-time.md` and
+  `docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md` are
+  in-flight design.
+- **Inference math**: the proposal that introduced the feature
+  (under `docs/dev/proposals/`), the relevant module in
+  `rust/crates/sim/src/inference/`, and any related incident reports
+  in `docs/dev/incidents/`.
+
+When a proposal is the *first* thing you'd read about a topic, that
+proposal needs to either be self-contained (cites all the existing
+surface relevant to its claims) or explicitly state what background
+the reader is assumed to bring. The "read the spec first" rule is for
+the author, not just the reviewer.
 
 ## docs/dev layout and where work gets tracked
 
