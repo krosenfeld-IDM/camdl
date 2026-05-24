@@ -1130,6 +1130,17 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     pmmh_opts.rho = Some(r);
                 }
                 if let Some(m) = cli_init_method { pmmh_opts.init_method = m; }
+                // gh#51 v2: CLI survey-path / survey-top-k flags
+                // override the stage-config values. Same priority chain
+                // as IF2: CLI > stage TOML > default. `pmmh::run_stage`
+                // does the cross-check resolution internally once it
+                // has built the FitRunConfig.
+                if let Some(ref p) = cli_survey_path {
+                    pmmh_opts.survey_path = Some(p.clone());
+                }
+                if let Some(k) = cli_survey_top_k {
+                    pmmh_opts.survey_top_k_n = Some(k);
+                }
 
                 pmmh::run_stage(
                     &sweep_config,

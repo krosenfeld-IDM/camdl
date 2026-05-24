@@ -32,6 +32,16 @@ pub struct PmmhStageOpts {
     pub adapt_start: usize,
     pub rho: Option<f64>,
     pub init_method: super::init::InitMethod,
+    /// Survey CAS directory consumed when
+    /// `init_method = InitMethod::SurveyTopK` (gh#51 v2). `None`
+    /// for other init methods. The dispatcher fills this from the
+    /// stage TOML (`survey_path = "..."` on `[stages.X]`) or the CLI
+    /// override (`--survey-path`).
+    pub survey_path: Option<std::path::PathBuf>,
+    /// Top-K count for `init_method = SurveyTopK`. `None` → defaults
+    /// to `chains`. v2 enforces `top_k == chains` (strict K=chains;
+    /// K > chains with stratified sub-sampling is v3).
+    pub survey_top_k_n: Option<usize>,
 }
 
 const DEFAULT_BURN_IN: usize = 5000;
@@ -45,6 +55,7 @@ impl PmmhStageOpts {
             super::config_v2::Stage::PMMH {
                 chains, particles, iterations, burn_in, thin,
                 adapt, adapt_start, rho, init_method,
+                survey_path, survey_top_k_n,
                 ..
             } => {
                 if let Some(r) = rho {
@@ -64,6 +75,8 @@ impl PmmhStageOpts {
                     adapt_start: *adapt_start,
                     rho: *rho,
                     init_method: *init_method,
+                    survey_path: survey_path.clone(),
+                    survey_top_k_n: *survey_top_k_n,
                 })
             }
             other => Err(format!(
@@ -135,15 +148,66 @@ pub fn run_stage(
         p
     }).unwrap_or_else(|| config.base_params.clone());
 
-    // Per-chain starting parameters (gh#42).
-    // - With --starts-from: every chain at the prior MLE (`base` above).
-    // - Otherwise: dispatch on `init_method`. Default `uniform` matches
-    //   PMMH's prior behaviour of passing the same base to every chain
-    //   (one starting point) — `Single` and `Uniform`-with-n_chains=1
-    //   both return None; we then materialise N copies of `base`. `Lhs`
-    //   gives stratified posterior coverage at low chain counts.
+    // Per-chain starting parameters (gh#42, gh#51 v2).
+    // Precedence:
+    // 1. `--starts-from` — every chain at the prior MLE (`base`).
+    //    Mutually exclusive with `init_method = "survey_top_k"`:
+    //    starts_from already commits every chain to the same point
+    //    (the scout MLE), so any sibling survey_top_k seed would be
+    //    silently overwritten. Refuse early instead.
+    // 2. `init_method = "survey_top_k"` (gh#51 v2) — resolved here
+    //    via the shared helper. Requires `survey_path = "..."` set
+    //    on the stage or via CLI override.
+    // 3. `init_method` dispatch on Lhs / Uniform / Single. Default
+    //    `lhs` gives stratified posterior coverage at low chain counts.
+    //    `Single` and `Uniform`-with-n_chains=1 return None; we then
+    //    materialise N copies of `base`.
+    let mut survey_top_k_result: Option<super::init::SurveyTopKResult> = None;
     let chain_starts: Vec<Vec<f64>> = if prior_state.is_some() {
+        if pmmh_opts.init_method == super::init::InitMethod::SurveyTopK {
+            return Err(format!(
+                "pmmh stage `{}`: --starts-from / `starts_from = \"...\"` and \
+                 `init_method = \"survey_top_k\"` are mutually exclusive — \
+                 the former commits every chain to the prior MLE, so any \
+                 survey-seeded start would be silently overwritten. Pick one: \
+                 drop `starts_from`, or use a non-survey init_method.",
+                stage_name));
+        }
         vec![base.clone(); n_chains]
+    } else if pmmh_opts.init_method == super::init::InitMethod::SurveyTopK {
+        // Compute the fit-level cross-check context. Mirrors what the
+        // IF2 dispatch site does; see gh#51 §"Validation".
+        let model_hash_str = crate::hashing::model_hash(&config.model_ir_json);
+        let data_spec = fit.data_spec()?;
+        let model_obs_names: Vec<String> = config.model.observations.iter()
+            .map(|o| o.name.clone()).collect();
+        let effective_obs = data_spec.effective_observations(&model_obs_names)?;
+        let data_hashes = super::init::compute_data_hashes(&effective_obs)?;
+        let estimate_names: Vec<String> = fit.estimate.keys().cloned().collect();
+        let fixed_for_ctx = fit.fixed.resolve()?;
+        let fixed_hashmap: std::collections::HashMap<String, f64> =
+            fixed_for_ctx.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let ctx = super::init::SurveyFitContext {
+            model_hash: &model_hash_str,
+            data_hashes: &data_hashes,
+            fixed: &fixed_hashmap,
+            estimate_names: &estimate_names,
+        };
+        let (chains_opt, result) =
+            super::init::resolve_per_chain_starts_from_method(
+                pmmh_opts.init_method,
+                pmmh_opts.survey_path.as_deref(),
+                pmmh_opts.survey_top_k_n,
+                stage_name,
+                &config.estimated_params,
+                n_chains,
+                seed,
+                &ctx,
+            ).map_err(|e| format!("pmmh: {}", e))?;
+        let chains_specs = chains_opt
+            .expect("SurveyTopK must yield per-chain starts");
+        survey_top_k_result = result;
+        super::init::chain_starts_to_param_vecs(&chains_specs, &base)
     } else {
         super::init::build_chain_param_vecs(
             pmmh_opts.init_method,
@@ -253,6 +317,31 @@ pub fn run_stage(
 
     std::fs::create_dir_all(stage_dir)
         .map_err(|e| format!("cannot create {}: {}", stage_dir.display(), e))?;
+
+    // Write chain_starts.tsv sidecar for audit (gh#51 v2). Best-effort;
+    // failure logs but does not abort the fit. The `chain_starts`
+    // vector built above is `Vec<Vec<f64>>` (per-chain full param
+    // vectors); the writer accepts the IF2-shaped per-chain
+    // EstimatedParam slice instead, so we rebuild the spec view here.
+    // For non-survey modes, `survey_top_k_result` is `None` and the
+    // writer uses the `<method>:chain-<id>` source convention.
+    let per_chain_specs_for_audit: Vec<Vec<EstimatedParam>> = chain_starts.iter()
+        .map(|params| config.estimated_params.iter()
+            .map(|spec| EstimatedParam {
+                initial: params[spec.index], ..spec.clone()
+            })
+            .collect())
+        .collect();
+    if let Err(e) = super::init::write_chain_starts_tsv(
+        stage_dir,
+        &config.estimated_params,
+        Some(&per_chain_specs_for_audit),
+        n_chains,
+        pmmh_opts.init_method,
+        survey_top_k_result.as_ref(),
+    ) {
+        eprintln!("warning: could not write chain_starts.tsv: {}", e);
+    }
 
     // Resolve priors: fit.toml override → model IR → Flat
     let priors: Vec<Prior> = config.estimated_params.iter()
@@ -592,10 +681,14 @@ pub fn run_stage(
         // Bayesian path — compound gate doesn't apply to PMMH.
         resolved_gate: None,
         resolved_loglik_eval: None,
-        // gh#51: chain init provenance. PMMH SurveyTopK is v2; record
-        // the user-set init_method verbatim. SurveyTopK refuses
-        // upstream in build_chain_param_vecs.
-        chain_init_source: Some(format!("{}", pmmh_opts.init_method)),
+        // gh#51 v2: chain init provenance. When SurveyTopK was used,
+        // emit the full survey hash + top-K via the shared formatter;
+        // otherwise render the in-process sampler name verbatim.
+        // SurveyTopK is dispatched via the shared
+        // `resolve_per_chain_starts_from_method` helper above.
+        chain_init_source: Some(super::init::format_chain_init_source(
+            pmmh_opts.init_method, survey_top_k_result.as_ref(),
+        )),
         // gh#52: Richardson dt-check IF2-only in v1.
         dt_check: None,
     };
