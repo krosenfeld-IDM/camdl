@@ -52,6 +52,20 @@ careful counterpart, not the arbiter of scientific judgment.
   — one clause surfaces the gap. The failure mode the previous rule
   prevents is the silent promotion of "the doc implies" to "the
   code does."
+- **Fix bugs via TDD: red → green → refactor.** When fixing a
+  reported bug, write a test that *asserts the correct behaviour*
+  first, run it and confirm it FAILS against the current code, then
+  apply the fix and confirm the test now PASSES. The failure is the
+  diagnostic — a test that doesn't fail on the buggy code isn't
+  actually exercising the bug, and a "fix" that passes a never-failing
+  test isn't proof of anything. After green: re-run the existing
+  suite to confirm no regressions. This applies even when the fix
+  looks obvious — "I'll write the test after" routinely produces
+  tests that pass for the wrong reason (assert the symptom, not the
+  cause; assert a related fact that was already true; or get the
+  baseline wrong and silently pass). Concretely: paste the
+  red-then-green test output in the commit message as the proof
+  the fix landed where intended.
 - **Incident reports require a reproduction.** A concrete input →
   wrong output, with the command that produced it. "Would be off by
   ~0.4 days" is a hypothesis, not an incident. If you can't produce
