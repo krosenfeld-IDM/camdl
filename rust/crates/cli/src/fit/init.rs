@@ -135,17 +135,19 @@ pub fn build_chain_starts(
 }
 
 /// Resolve `method` to per-chain full parameter vectors, for routines
-/// (PGAS, PMMH) that work with `Vec<f64>` directly rather than the
+/// (NLopt, profile) that work with `Vec<f64>` directly rather than the
 /// IF2-shaped `Vec<EstimatedParam>`. Returns one full param-vector
 /// per chain, with each `EstimatedParam`-listed index overwritten by
 /// the per-chain draw and all other slots taken from `base_params`.
 ///
 /// Returns `Ok(None)` when the caller should treat every chain as
 /// starting from `base_params` directly (i.e. `Single`, or
-/// `n_chains < 2`). Returns `Err` for `InitMethod::SurveyTopK` on
-/// stages that don't yet plumb the survey cross-check context — v1
-/// supports SurveyTopK on `Stage::IF2` only; PGAS/PMMH/NLopt/profile
-/// are deferred to v2 (see proposal §"Stage scope — v1 vs v2").
+/// `n_chains < 2`). Returns `Err` for `InitMethod::SurveyTopK` —
+/// NLopt and profile are deferred to v3 (see gh#51). IF2 / PMMH /
+/// PGAS dispatch survey_top_k via
+/// `resolve_per_chain_starts_from_method` at the stage callsite,
+/// where the fit-level cross-check context (`SurveyFitContext`) is in
+/// scope.
 pub fn build_chain_param_vecs(
     method: InitMethod,
     base_specs: &[EstimatedParam],
@@ -156,18 +158,83 @@ pub fn build_chain_param_vecs(
     if method == InitMethod::SurveyTopK {
         return Err(
             "init_method = \"survey_top_k\" is not yet supported on this \
-             stage type; v1 supports it on IF2 only. PGAS / PMMH / NLopt / \
-             profile support is deferred to v2 (see gh#51 §\"Stage scope \
-             — v1 vs v2\"). Workaround: use init_method = \"lhs\" on this \
-             stage, or run an IF2 scout first and chain via \
+             stage type; v2 ships it on IF2 / PMMH / PGAS. NLopt and \
+             profile support is deferred to v3 (see gh#51). Workaround: \
+             use init_method = \"lhs\" on this stage, or run an IF2 / \
+             PMMH / PGAS scout first and chain via \
              starts_from = \"<scout>\".".to_string());
     }
     let per_chain = build_chain_starts(method, base_specs, n_chains, seed);
-    Ok(per_chain.map(|chains| chains.iter().map(|chain| {
+    Ok(per_chain.map(|chains| chain_starts_to_param_vecs(&chains, base_params)))
+}
+
+/// Convert per-chain `EstimatedParam` specs into per-chain full
+/// parameter vectors. Each chain starts from `base_params`; each
+/// `EstimatedParam`-listed index is overwritten with that chain's
+/// `initial` value. Shared between `build_chain_param_vecs` and the
+/// PMMH/PGAS dispatch sites that consume
+/// `resolve_per_chain_starts_from_method`'s `Vec<Vec<EstimatedParam>>`
+/// output.
+pub fn chain_starts_to_param_vecs(
+    chains: &[Vec<EstimatedParam>],
+    base_params: &[f64],
+) -> Vec<Vec<f64>> {
+    chains.iter().map(|chain| {
         let mut params = base_params.to_vec();
         for spec in chain { params[spec.index] = spec.initial; }
         params
-    }).collect()))
+    }).collect()
+}
+
+/// Resolve per-chain starting points from `init_method`, dispatching
+/// between LHS / Uniform / Single / SurveyTopK. The shared backbone
+/// of IF2 / PMMH / PGAS chain init (gh#51 v2).
+///
+/// Returns `(per_chain_starts, survey_top_k_result)`:
+///
+/// - `per_chain_starts = None` means the caller should treat every
+///   chain as starting from `base_specs` directly (i.e.
+///   `InitMethod::Single`, or `n_chains < 2` for `Lhs` / `Uniform`).
+///   The IF2 path passes `None` into `run_chains_with_per_chain_params`;
+///   PMMH / PGAS materialise N copies of `base_params`.
+/// - `survey_top_k_result = Some(_)` only when `method =
+///   SurveyTopK`. Carries the survey's full content hash so the
+///   caller can populate `fit_state.toml.chain_init_source`
+///   (`survey:<hash>:top-<K>`) and the `chain_starts.tsv` sidecar's
+///   per-row `source` column (`survey:<hash>:rank-<N>`). For non-survey
+///   modes, callers fall back to `format_chain_init_source(method, None)`
+///   which renders `"lhs"` / `"single"` / `"uniform"`.
+///
+/// When `method = SurveyTopK` and `survey_path` is `None`, returns an
+/// error naming the offending stage. Callers handle this with the same
+/// diagnostic surface they use for other survey-config mistakes.
+pub fn resolve_per_chain_starts_from_method(
+    method: InitMethod,
+    survey_path: Option<&std::path::Path>,
+    survey_top_k_n: Option<usize>,
+    stage_name: &str,
+    base_specs: &[EstimatedParam],
+    n_chains: usize,
+    seed: u64,
+    ctx: &SurveyFitContext<'_>,
+) -> Result<(Option<Vec<Vec<EstimatedParam>>>, Option<SurveyTopKResult>), String> {
+    match method {
+        InitMethod::SurveyTopK => {
+            let path = survey_path.ok_or_else(|| format!(
+                "stage `{}`: init_method = \"survey_top_k\" requires \
+                 `survey_path = \"<survey CAS dir>\"` (set on the stage in \
+                 fit.toml or via CLI `--survey-path`). See gh#51.",
+                stage_name))?;
+            let result = build_chain_starts_from_survey(
+                path, survey_top_k_n, n_chains, base_specs, ctx)?;
+            let chains_out = result.chains.clone();
+            Ok((Some(chains_out), Some(result)))
+        }
+        _ => {
+            let per_chain = build_chain_starts(method, base_specs, n_chains, seed);
+            Ok((per_chain, None))
+        }
+    }
 }
 
 /// Per-chain uniform random draw within natural-scale bounds. Chain 0
@@ -1374,5 +1441,187 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
             "v1 strict-K diagnostic should mention v1: {}", err);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── resolve_per_chain_starts_from_method (gh#51 v2) ──────────────
+
+    #[test]
+    fn resolve_per_chain_starts_lhs_path_no_survey() {
+        // Non-survey methods route through build_chain_starts and
+        // return (per_chain, None).
+        let base = vec![
+            ep("a", 0.0, 1.0, Transform::None, 0.5),
+            ep("b", 1e-3, 1.0, Transform::Log { lo: 1e-3, hi: 1.0 }, 0.1),
+        ];
+        let dh: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let fx: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let names: Vec<String> = vec![];
+        let ctx = SurveyFitContext {
+            model_hash: "h", data_hashes: &dh, fixed: &fx,
+            estimate_names: &names,
+        };
+        let (per_chain, survey) = resolve_per_chain_starts_from_method(
+            InitMethod::Lhs, None, None, "scout",
+            &base, 8, 42, &ctx,
+        ).expect("non-survey LHS path must succeed");
+        assert!(per_chain.is_some(), "Lhs with n_chains=8 should produce chains");
+        assert_eq!(per_chain.as_ref().unwrap().len(), 8);
+        assert!(survey.is_none(), "non-survey method must produce no SurveyTopKResult");
+    }
+
+    #[test]
+    fn resolve_per_chain_starts_single_returns_none() {
+        // InitMethod::Single → (None, None): caller uses base_specs.
+        let base = vec![ep("a", 0.0, 1.0, Transform::None, 0.5)];
+        let dh: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let fx: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let names: Vec<String> = vec![];
+        let ctx = SurveyFitContext {
+            model_hash: "h", data_hashes: &dh, fixed: &fx,
+            estimate_names: &names,
+        };
+        let (per_chain, survey) = resolve_per_chain_starts_from_method(
+            InitMethod::Single, None, None, "refine",
+            &base, 4, 42, &ctx,
+        ).unwrap();
+        assert!(per_chain.is_none(), "Single → None (caller uses base directly)");
+        assert!(survey.is_none());
+    }
+
+    #[test]
+    fn resolve_per_chain_starts_survey_top_k_without_path_errors() {
+        // SurveyTopK with survey_path = None → error naming the stage.
+        let base = vec![ep("a", 0.0, 1.0, Transform::None, 0.5)];
+        let dh: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let fx: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let names = vec!["a".to_string()];
+        let ctx = SurveyFitContext {
+            model_hash: "h", data_hashes: &dh, fixed: &fx,
+            estimate_names: &names,
+        };
+        let err = resolve_per_chain_starts_from_method(
+            InitMethod::SurveyTopK, None, None, "scout",
+            &base, 4, 42, &ctx,
+        ).unwrap_err();
+        assert!(err.contains("survey_path"),
+            "diagnostic should name survey_path: {}", err);
+        assert!(err.contains("scout"),
+            "diagnostic should name the offending stage: {}", err);
+        assert!(err.contains("gh#51"),
+            "diagnostic should reference gh#51: {}", err);
+    }
+
+    #[test]
+    fn resolve_per_chain_starts_survey_top_k_end_to_end() {
+        // Happy path: SurveyTopK with a valid survey dir →
+        // returns (Some(chains), Some(result)). Same fixture shape
+        // as the build_chain_starts_from_survey happy-path test.
+        use crate::run_meta::{Run, RunKind, RunStatus, SurveyMeta, SurveyEvalMethod};
+        use std::collections::HashMap;
+
+        let dir = std::env::temp_dir().join(format!(
+            "camdl_resolve_e2e_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let model_hash = "model-hash-aaa";
+        let mut data_hashes = HashMap::new();
+        data_hashes.insert("cases".to_string(), "data-hash-bbb".to_string());
+
+        let run = Run {
+            kind: RunKind::Survey(SurveyMeta {
+                model: "m.camdl".into(),
+                model_hash: model_hash.into(),
+                data_hashes: data_hashes.clone(),
+                bounds: HashMap::new(),
+                n_points: 3,
+                eval_method: SurveyEvalMethod::Pfilter,
+                eval_particles: 100,
+                eval_replicates: 2,
+                seed: 1,
+                fixed: HashMap::new(),
+                scenario: None,
+                estimated: vec!["beta".into()],
+            }),
+            hash: "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234".into(),
+            argv: vec![],
+            status: RunStatus::Completed { wall_time_seconds: 0.0 },
+            version: "test".into(),
+            created_at: "2026-05-07T00:00:00Z".into(),
+            label: None,
+        };
+        run.write(&dir).unwrap();
+        std::fs::write(dir.join("landscape.tsv"),
+            "beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
+             0.3\t-100.0\t1.0\t0.8\t1\t0\n\
+             0.5\t-90.0\t1.0\t0.8\t1\t1\n").unwrap();
+
+        let names = vec!["beta".to_string()];
+        let ctx = SurveyFitContext {
+            model_hash, data_hashes: &data_hashes,
+            fixed: &HashMap::new(), estimate_names: &names,
+        };
+        let base = vec![ep("beta", 0.1, 1.0, Transform::Log { lo: 0.1, hi: 1.0 }, 0.5)];
+
+        let (per_chain, survey) = resolve_per_chain_starts_from_method(
+            InitMethod::SurveyTopK, Some(&dir), Some(2), "scout",
+            &base, 2, 42, &ctx,
+        ).expect("SurveyTopK happy path must succeed");
+        let chains = per_chain.expect("SurveyTopK must produce chains");
+        let result = survey.expect("SurveyTopK must produce a SurveyTopKResult");
+        // rank-1 by loglik is beta=0.5 (loglik=-90); rank-2 is beta=0.3 (-100).
+        assert_eq!(chains.len(), 2);
+        assert!((chains[0][0].initial - 0.5).abs() < 1e-9);
+        assert!((chains[1][0].initial - 0.3).abs() < 1e-9);
+        assert_eq!(result.survey_hash,
+            "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn chain_starts_to_param_vecs_overwrites_estimated_indices() {
+        // Verify the spec→f64 conversion that PMMH/PGAS will perform on
+        // resolve_per_chain_starts_from_method's output.
+        let base_specs = vec![
+            ep_with_idx("beta",  0, 0.0, 1.0, Transform::None, 0.5),
+            ep_with_idx("gamma", 2, 0.0, 1.0, Transform::None, 0.3),
+        ];
+        // Two chains, two estimated indices (0 and 2 of a 4-slot vector).
+        let chains = vec![
+            vec![
+                EstimatedParam { initial: 0.1, ..base_specs[0].clone() },
+                EstimatedParam { initial: 0.2, ..base_specs[1].clone() },
+            ],
+            vec![
+                EstimatedParam { initial: 0.7, ..base_specs[0].clone() },
+                EstimatedParam { initial: 0.8, ..base_specs[1].clone() },
+            ],
+        ];
+        let base_params = vec![999.0, 11.0, 999.0, 22.0];
+        let out = chain_starts_to_param_vecs(&chains, &base_params);
+        assert_eq!(out.len(), 2);
+        // Chain 0: positions 0/2 overwritten, 1/3 untouched.
+        assert_eq!(out[0], vec![0.1, 11.0, 0.2, 22.0]);
+        assert_eq!(out[1], vec![0.7, 11.0, 0.8, 22.0]);
+    }
+
+    fn ep_with_idx(
+        name: &str, index: usize, lower: f64, upper: f64,
+        transform: Transform, initial: f64,
+    ) -> EstimatedParam {
+        EstimatedParam {
+            name: name.into(),
+            index,
+            initial,
+            rw_sd: 0.1,
+            transform,
+            lower,
+            upper,
+            rw_sd_auto: false,
+            ivp: false,
+        }
     }
 }

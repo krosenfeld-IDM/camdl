@@ -822,42 +822,34 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 // chain_init_source / chain_starts.tsv writers can pull
                 // the survey's full hash out of it. Plain Lhs / Uniform
                 // / Single produce no such result.
-                let mut survey_top_k_result: Option<init::SurveyTopKResult> = None;
-                let per_chain_params = if effective_starts.is_some() {
-                    None
-                } else if effective_init == init::InitMethod::SurveyTopK {
-                    let path = effective_survey_path.as_deref().unwrap_or_else(|| {
-                        eprintln!("error: stage `{}`: init_method = \
-                            \"survey_top_k\" requires `survey_path = \
-                            \"<survey CAS dir>\"` (set on the stage in \
-                            fit.toml or via CLI `--survey-path`). See \
-                            gh#51.", stage_name);
-                        std::process::exit(1);
-                    });
-                    let model_hash_str = crate::hashing::model_hash(&model_json);
-                    let data_hashes = init::compute_data_hashes(&effective_obs)
-                        .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
-                    let estimate_names: Vec<String> =
-                        sweep_config.estimate.keys().cloned().collect();
-                    let fixed_hashmap: std::collections::HashMap<String, f64> =
-                        fixed_resolved.iter().map(|(k, v)| (k.clone(), *v)).collect();
-                    let ctx = init::SurveyFitContext {
-                        model_hash: &model_hash_str,
-                        data_hashes: &data_hashes,
-                        fixed: &fixed_hashmap,
-                        estimate_names: &estimate_names,
+                let (per_chain_params, survey_top_k_result) =
+                    if effective_starts.is_some() {
+                        (None, None)
+                    } else {
+                        let model_hash_str = crate::hashing::model_hash(&model_json);
+                        let data_hashes = init::compute_data_hashes(&effective_obs)
+                            .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+                        let estimate_names: Vec<String> =
+                            sweep_config.estimate.keys().cloned().collect();
+                        let fixed_hashmap: std::collections::HashMap<String, f64> =
+                            fixed_resolved.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                        let ctx = init::SurveyFitContext {
+                            model_hash: &model_hash_str,
+                            data_hashes: &data_hashes,
+                            fixed: &fixed_hashmap,
+                            estimate_names: &estimate_names,
+                        };
+                        init::resolve_per_chain_starts_from_method(
+                            effective_init,
+                            effective_survey_path.as_deref(),
+                            effective_survey_top_k_n,
+                            stage_name,
+                            &run_config.estimated_params,
+                            *chains,
+                            seed,
+                            &ctx,
+                        ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
                     };
-                    let result = init::build_chain_starts_from_survey(
-                        path, effective_survey_top_k_n, *chains,
-                        &run_config.estimated_params, &ctx,
-                    ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
-                    let chains_out = result.chains.clone();
-                    survey_top_k_result = Some(result);
-                    Some(chains_out)
-                } else {
-                    init::build_chain_starts(
-                        effective_init, &run_config.estimated_params, *chains, seed)
-                };
 
                 // Write chain_starts.tsv sidecar for audit (gh#51).
                 // Best-effort; failure logs but doesn't abort the fit.
