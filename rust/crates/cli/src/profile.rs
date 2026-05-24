@@ -627,9 +627,9 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // (Single mode; or `--starts 1`).
     if a.init == crate::fit::init::InitMethod::SurveyTopK {
         eprintln!("error: --init survey_top_k is not yet supported on \
-            `camdl profile`; v1 supports it on IF2 fit stages only \
-            (see gh#51 §\"Stage scope — v1 vs v2\"). Workaround: use \
-            --init lhs.");
+            `camdl profile`; v2 supports it on IF2 / PMMH / PGAS \
+            `camdl fit` stages, profile (and NLopt) are deferred to v3 \
+            (see gh#51 §\"Stage scope\"). Workaround: use --init lhs.");
         std::process::exit(1);
     }
     let per_start_params: Option<Arc<Vec<Vec<sim::inference::if2::EstimatedParam>>>> =

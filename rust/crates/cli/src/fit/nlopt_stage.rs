@@ -258,9 +258,10 @@ pub fn run_stage(
         chain_eval_ses: Vec::new(),
         resolved_gate: Some(knobs.gate.clone()),
         resolved_loglik_eval: None,
-        // gh#51: chain init provenance. NLopt SurveyTopK is v2; record
-        // the user-set init_method verbatim. SurveyTopK refuses
-        // upstream in build_chain_param_vecs.
+        // gh#51 v3: NLopt SurveyTopK support is deferred (v2 ships on
+        // IF2 / PMMH / PGAS only). Record the user-set init_method
+        // verbatim; SurveyTopK refuses upstream in
+        // build_chain_param_vecs.
         chain_init_source: Some(format!("{}", knobs.init_method)),
         // gh#52: Richardson dt-check is wired only on IF2 stages in
         // v1. NLopt-on-ODE has dt and would benefit from this check
