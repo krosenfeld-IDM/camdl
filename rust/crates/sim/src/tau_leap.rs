@@ -3,7 +3,7 @@ use crate::{
     config::{SimConfig, TauLeapConfig},
     rng::StatefulRng,
     error::SimError,
-    intervention::{all_intervention_times, apply_interventions_at},
+    intervention::{all_intervention_times, apply_events_at, apply_interventions_at},
     lineage::TransitionObserver,
     ode_integrator::rk4_step,
     output::output_times as get_output_times,
@@ -113,6 +113,8 @@ pub fn run_tau_leap_with_observer(
             // Apply intervention if due
             if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
+                // gh#67: also fire always_active events at this boundary.
+                apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
                 while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
             }
             // Record output if due
@@ -287,6 +289,8 @@ pub fn run_tau_leap_with_observer(
         // Apply intervention if now at that time
         if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
             apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
+            // gh#67: also fire always_active events at this boundary.
+            apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
             while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
         }
 

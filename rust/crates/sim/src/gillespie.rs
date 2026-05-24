@@ -3,7 +3,7 @@ use crate::{
     config::{GillespieConfig, SimConfig},
     rng::StatefulRng,
     error::SimError,
-    intervention::{all_intervention_times, apply_interventions_at},
+    intervention::{all_intervention_times, apply_events_at, apply_interventions_at},
     lineage::TransitionObserver,
     ode_integrator::rk4_step,
     output::output_times as get_output_times,
@@ -159,6 +159,8 @@ pub fn run_gillespie_with_observer(
                 if iv_t <= cfg.t_end {
                     t = iv_t;
                     apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
+                    // gh#67: also fire always_active events at this boundary.
+                    apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
                     while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 {
                         iv_idx += 1;
                     }
@@ -202,6 +204,8 @@ pub fn run_gillespie_with_observer(
             let at_iv = next_iv_t.is_some_and(|iv_t| (iv_t - t).abs() < 1e-10);
             if at_iv {
                 apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
+                // gh#67: also fire always_active events at this boundary.
+                apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
                 while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 {
                     iv_idx += 1;
                 }

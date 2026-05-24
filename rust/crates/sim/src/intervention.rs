@@ -193,6 +193,42 @@ pub fn inject_event_deltas(
     Ok(())
 }
 
+/// Apply always_active event actions directly to `int_s` / `real_s`.
+///
+/// gh#67: ode/tau_leap/gillespie do not have a `pending_deltas` pipeline
+/// (only chain_binomial does, for atomic interleaving with multinomial
+/// draws). They call this helper at each intervention boundary instead of
+/// `inject_event_deltas`. `t_event` is the time the boundary was scheduled
+/// for; `dt` is the same dt used to build `fire_steps` so the step lookup
+/// matches.
+pub fn apply_events_at(
+    t_event: f64,
+    model: &CompiledModel,
+    fire_steps: &[std::collections::BTreeSet<i64>],
+    dt: f64,
+    int_s: &mut IntState,
+    real_s: &mut RealState,
+    params: &[f64],
+) -> Result<bool, SimError> {
+    if !t_event.is_finite() {
+        return Err(SimError::Validation(format!(
+            "apply_events_at: non-finite t = {}", t_event
+        )));
+    }
+    let mut pending: Vec<(usize, i64)> = Vec::new();
+    // `inject_event_deltas` uses `t_end = t + dt` for both the EvalCtx and
+    // the step-index lookup, so pass `t = t_event - dt` to land on
+    // `t_end = t_event`.
+    inject_event_deltas(
+        model, fire_steps, int_s, real_s, params, t_event - dt, dt, &mut pending,
+    )?;
+    let fired = !pending.is_empty();
+    for (local, delta) in pending {
+        int_s.counts[local] += delta;
+    }
+    Ok(fired)
+}
+
 /// Collect sorted, deduplicated intervention times.
 ///
 /// gh#69: takes `params` so any `AtTimesExpr` schedules can be resolved

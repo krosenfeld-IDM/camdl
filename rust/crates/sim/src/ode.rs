@@ -2,7 +2,7 @@ use crate::{
     compiled_model::CompiledModel,
     config::{OdeConfig, SimConfig},
     error::SimError,
-    intervention::{all_intervention_times, apply_interventions_at},
+    intervention::{all_intervention_times, apply_events_at, apply_interventions_at},
     output::output_times as get_output_times,
     propensity::{eval_propensities, EvalCtx},
     resolved_expr::eval_resolved,
@@ -208,6 +208,8 @@ fn run_ode(
             if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 let (mut is, mut rs) = to_states(&int_vals, &real_vals);
                 apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
+                // gh#67: also fire always_active events at this boundary.
+                apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
                 int_vals = is.counts.iter().map(|&c| c as f64).collect();
                 real_vals = rs.values.clone();
                 while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
@@ -244,6 +246,8 @@ fn run_ode(
         if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
             let (mut is, mut rs) = to_states(&int_vals, &real_vals);
             apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
+            // gh#67: also fire always_active events at this boundary.
+            apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
             int_vals = is.counts.iter().map(|&c| c as f64).collect();
             real_vals = rs.values.clone();
             while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
