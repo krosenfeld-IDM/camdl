@@ -34,6 +34,15 @@ pub struct PgasStageOpts {
     pub dense_mass: bool,
     pub use_nuts: bool,
     pub init_method: super::init::InitMethod,
+    /// Survey CAS directory consumed when
+    /// `init_method = InitMethod::SurveyTopK` (gh#51 v2). `None`
+    /// for other init methods. The dispatcher fills this from the
+    /// stage TOML (`survey_path = "..."` on `[stages.X]`) or the CLI
+    /// override (`--survey-path`).
+    pub survey_path: Option<std::path::PathBuf>,
+    /// Top-K count for `init_method = SurveyTopK`. `None` → defaults
+    /// to `chains`. v2 enforces `top_k == chains`.
+    pub survey_top_k_n: Option<usize>,
 }
 
 const DEFAULT_BURN_IN: usize = 2000;
@@ -49,6 +58,7 @@ impl PgasStageOpts {
                 tempering, max_tree_depth, trajectory_warmup,
                 csmc_sweeps_per_nuts, n_trajectories,
                 dense_mass, use_nuts, init_method,
+                survey_path, survey_top_k_n,
                 ..
             } => {
                 if tempering.is_empty() || (tempering[0] - 1.0).abs() > 1e-9 {
@@ -85,6 +95,8 @@ impl PgasStageOpts {
                     dense_mass: *dense_mass,
                     use_nuts: *use_nuts,
                     init_method: *init_method,
+                    survey_path: survey_path.clone(),
+                    survey_top_k_n: *survey_top_k_n,
                 })
             }
             other => Err(format!(
@@ -286,17 +298,61 @@ pub fn run_stage(
         vec![None; n_chains]
     };
 
-    // Generate per-chain starting parameters.
-    // - With --starts-from: use prior stage's start_values for all chains
-    //   (user has already identified the high-posterior region via IF2).
-    // - Otherwise: dispatch on `init_method` (gh#42). Default `uniform`
-    //   matches PGAS's prior behaviour (per-chain uniform random within
-    //   bounds — overdispersed, standard MCMC practice). `lhs` gives
-    //   stratified posterior coverage at low chain counts. `single`
-    //   sends every chain to `base_params` (refine semantics).
+    // Generate per-chain starting parameters (gh#42, gh#51 v2).
+    // Precedence:
+    // 1. `--starts-from` — every chain at the prior MLE; mutually
+    //    exclusive with `init_method = "survey_top_k"` (the former
+    //    pins every chain to one point, so any survey-seeded start
+    //    would be silently overwritten).
+    // 2. `init_method = "survey_top_k"` — resolved here via the
+    //    shared helper. Bayesian seeds are valid because the chain's
+    //    stationary distribution is set by the prior, not the start.
+    // 3. `init_method` dispatch on Lhs / Uniform / Single. Default
+    //    `lhs` gives stratified posterior coverage.
     let has_starts = prior_state.is_some();
+    let mut survey_top_k_result: Option<super::init::SurveyTopKResult> = None;
     let chain_starts: Vec<Vec<f64>> = if has_starts {
+        if pgas_opts.init_method == super::init::InitMethod::SurveyTopK {
+            return Err(format!(
+                "pgas stage `{}`: --starts-from / `starts_from = \"...\"` and \
+                 `init_method = \"survey_top_k\"` are mutually exclusive — \
+                 the former commits every chain to the prior MLE, so any \
+                 survey-seeded start would be silently overwritten. Pick one: \
+                 drop `starts_from`, or use a non-survey init_method.",
+                stage_name));
+        }
         vec![config.base_params.clone(); n_chains]
+    } else if pgas_opts.init_method == super::init::InitMethod::SurveyTopK {
+        // Cross-check context. Same construction as IF2 / PMMH.
+        let model_hash_str = crate::hashing::model_hash(&config.model_ir_json);
+        let model_obs_names: Vec<String> = config.model.observations.iter()
+            .map(|o| o.name.clone()).collect();
+        let effective_obs = data_spec.effective_observations(&model_obs_names)?;
+        let data_hashes = super::init::compute_data_hashes(&effective_obs)?;
+        let estimate_names: Vec<String> = fit.estimate.keys().cloned().collect();
+        let fixed_hashmap: std::collections::HashMap<String, f64> =
+            fixed_resolved.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let ctx = super::init::SurveyFitContext {
+            model_hash: &model_hash_str,
+            data_hashes: &data_hashes,
+            fixed: &fixed_hashmap,
+            estimate_names: &estimate_names,
+        };
+        let (chains_opt, result) =
+            super::init::resolve_per_chain_starts_from_method(
+                pgas_opts.init_method,
+                pgas_opts.survey_path.as_deref(),
+                pgas_opts.survey_top_k_n,
+                stage_name,
+                &config.estimated_params,
+                n_chains,
+                seed,
+                &ctx,
+            ).map_err(|e| format!("pgas: {}", e))?;
+        let chains_specs = chains_opt
+            .expect("SurveyTopK must yield per-chain starts");
+        survey_top_k_result = result;
+        super::init::chain_starts_to_param_vecs(&chains_specs, &config.base_params)
     } else {
         super::init::build_chain_param_vecs(
             pgas_opts.init_method,
@@ -329,6 +385,30 @@ pub fn run_stage(
         let chain_dir = stage_dir.join(format!("chain_{}", chain_id + 1));
         std::fs::create_dir_all(&chain_dir)
             .map_err(|e| format!("cannot create {}: {}", chain_dir.display(), e))?;
+    }
+
+    // Write chain_starts.tsv sidecar for audit (gh#51 v2). Best-effort;
+    // failure logs but does not abort the fit. Rebuild the per-chain
+    // EstimatedParam view from the f64 vectors so the writer (which
+    // expects the IF2 shape) can label each row with the right
+    // `source` (survey:<hash>:rank-N for SurveyTopK, otherwise
+    // <method>:chain-<id>).
+    let per_chain_specs_for_audit: Vec<Vec<EstimatedParam>> = chain_starts.iter()
+        .map(|params| config.estimated_params.iter()
+            .map(|spec| EstimatedParam {
+                initial: params[spec.index], ..spec.clone()
+            })
+            .collect())
+        .collect();
+    if let Err(e) = super::init::write_chain_starts_tsv(
+        stage_dir,
+        &config.estimated_params,
+        Some(&per_chain_specs_for_audit),
+        n_chains,
+        pgas_opts.init_method,
+        survey_top_k_result.as_ref(),
+    ) {
+        eprintln!("warning: could not write chain_starts.tsv: {}", e);
     }
 
     let t0 = std::time::Instant::now();
@@ -712,12 +792,14 @@ pub fn run_stage(
         // Bayesian path — compound gate doesn't apply to PGAS.
         resolved_gate: None,
         resolved_loglik_eval: None,
-        // gh#51: chain init provenance. PGAS doesn't yet plumb the
-        // SurveyTopK reader (deferred to v2 — see proposal §"Stage
-        // scope — v1 vs v2"); record the user-set init_method
-        // verbatim. SurveyTopK on a PGAS stage refuses upstream in
-        // build_chain_param_vecs, so this branch never sees it.
-        chain_init_source: Some(format!("{}", pgas_opts.init_method)),
+        // gh#51 v2: chain init provenance. When SurveyTopK was used,
+        // emit the full survey hash + top-K via the shared formatter;
+        // otherwise render the in-process sampler name verbatim.
+        // SurveyTopK is dispatched via the shared
+        // `resolve_per_chain_starts_from_method` helper above.
+        chain_init_source: Some(super::init::format_chain_init_source(
+            pgas_opts.init_method, survey_top_k_result.as_ref(),
+        )),
         // gh#52: Richardson dt-check is wired only on IF2 stages in
         // v1 (the inference math is shared but the dispatch site
         // refactor across PGAS/PMMH/NLopt is out of scope here).

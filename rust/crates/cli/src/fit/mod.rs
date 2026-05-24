@@ -1097,6 +1097,14 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 if a.diagonal_mass { pgas_opts.dense_mass = false; }
                 if a.no_nuts       { pgas_opts.use_nuts   = false; }
                 if let Some(m) = cli_init_method { pgas_opts.init_method = m; }
+                // gh#51 v2: CLI survey-path / survey-top-k overrides.
+                // Same priority as IF2 / PMMH: CLI > stage TOML.
+                if let Some(ref p) = cli_survey_path {
+                    pgas_opts.survey_path = Some(p.clone());
+                }
+                if let Some(k) = cli_survey_top_k {
+                    pgas_opts.survey_top_k_n = Some(k);
+                }
 
                 pgas::run_stage(
                     &sweep_config,
