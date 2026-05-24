@@ -45,6 +45,7 @@ use sim::{
     compiled_model::CompiledModel,
     inference::{
         if2::{run_if2, IF2Config, Observation},
+        pmmh::{run_pmmh, PMMHConfig, Prior},
         ChainBinomialProcess, MultiStreamObsModel,
         multi_stream_obs::StreamSpec,
     },
@@ -69,13 +70,15 @@ use crate::run_paths::{
 #[derive(Debug, Clone, Copy)]
 enum ProfileAlgo {
     If2,
+    Pmmh,
     Nlopt(sim::inference::deterministic::NloptAlgorithm),
 }
 
 impl ProfileAlgo {
     fn method_kind(self) -> crate::run_meta::MethodKind {
         match self {
-            ProfileAlgo::If2 => crate::run_meta::MethodKind::If2,
+            ProfileAlgo::If2  => crate::run_meta::MethodKind::If2,
+            ProfileAlgo::Pmmh => crate::run_meta::MethodKind::Pmmh,
             ProfileAlgo::Nlopt(sim::inference::deterministic::NloptAlgorithm::Sbplx) =>
                 crate::run_meta::MethodKind::NlSbplx,
             ProfileAlgo::Nlopt(sim::inference::deterministic::NloptAlgorithm::Bobyqa) =>
@@ -84,7 +87,8 @@ impl ProfileAlgo {
     }
     fn backend(self) -> crate::run_meta::Backend {
         match self {
-            ProfileAlgo::If2     => crate::run_meta::Backend::ChainBinomial,
+            ProfileAlgo::If2      => crate::run_meta::Backend::ChainBinomial,
+            ProfileAlgo::Pmmh     => crate::run_meta::Backend::ChainBinomial,
             ProfileAlgo::Nlopt(_) => crate::run_meta::Backend::Ode,
         }
     }
@@ -310,17 +314,31 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     }
     let profile_algo = match algo_name {
         "if2"       => ProfileAlgo::If2,
+        "pmmh"      => ProfileAlgo::Pmmh,
         "nl-sbplx"  => ProfileAlgo::Nlopt(sim::inference::deterministic::NloptAlgorithm::Sbplx),
         "nl-bobyqa" => ProfileAlgo::Nlopt(sim::inference::deterministic::NloptAlgorithm::Bobyqa),
         other => {
             eprintln!(
                 "error: --algorithm = \"{}\" is not yet supported for `camdl profile`. \
-                 Currently supported: if2 (chain_binomial), nl-sbplx (ode), nl-bobyqa (ode).",
+                 Currently supported: if2 (chain_binomial), pmmh (chain_binomial), \
+                 nl-sbplx (ode), nl-bobyqa (ode).",
                 other
             );
             std::process::exit(1);
         }
     };
+    // PMMH on profile defaults to chain_binomial (matches `fit run --algorithm pmmh`).
+    // The `pmmh + ode` combination isn't supported on the profile path; reject early.
+    if matches!(profile_algo, ProfileAlgo::Pmmh) && backend_name == "ode" {
+        eprintln!(
+            "error: --algorithm pmmh requires --backend chain_binomial. \
+             PMMH wraps a particle filter inside an MH step; under the ODE \
+             backend the PF wrapping is degenerate (1-particle, exact) and \
+             the algorithm collapses to vanilla MH. Re-run with \
+             `--backend chain_binomial`."
+        );
+        std::process::exit(1);
+    }
 
     let ir_path = a.model.to_string_lossy().into_owned();
     let data_path = a.data.to_string_lossy().into_owned();
@@ -331,6 +349,23 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let dt = a.inference.dt;
     let seed_base = a.inference.seed;
     let parallel = a.inference.parallel;
+    // PMMH per-cell knobs (ignored when --algorithm is not pmmh).
+    let pmmh_steps = a.pmmh_steps;
+    let pmmh_particles = a.pmmh_particles;
+    // Per spec: `--pmmh-rho 0.0` (or any non-positive) disables CPM.
+    let pmmh_rho_opt: Option<f64> = if a.pmmh_rho > 0.0 {
+        if !(a.pmmh_rho < 1.0) {
+            eprintln!(
+                "error: --pmmh-rho = {} must be in [0, 1). Use 0.0 (or negative) \
+                 to disable CPM and run vanilla PMMH.",
+                a.pmmh_rho
+            );
+            std::process::exit(1);
+        }
+        Some(a.pmmh_rho)
+    } else {
+        None
+    };
     let output_tsv_path: Option<String> = a.output.as_ref().map(|p| p.to_string_lossy().into_owned());
     let scenario_name = a.scenario.scenario.clone();
     let flow_name = a.flow.flow.clone();
@@ -811,9 +846,18 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let dim_str = focal_grids.iter()
         .map(|fg| format!("{}={}", fg.name, fg.values.len()))
         .collect::<Vec<_>>().join(" × ");
+    // Banner shape preserved from the IF2/NLopt era; PMMH lands the
+    // accurate per-cell budget through a second one-line summary
+    // below so we don't reshape this format for callers that grep
+    // "IF2 runs". (PMMH banner is additive.)
     eprintln!("profile: {} grid ({}) × {} starts × {} seeds = {} IF2 runs ({} particles × {} iter each)",
         grid_points.len(), dim_str, n_starts, seeds.len(), total_jobs,
         n_particles, n_iterations);
+    if matches!(profile_algo, ProfileAlgo::Pmmh) {
+        eprintln!("profile: PMMH per cell = {} particles × {} MCMC steps (rho = {})",
+            pmmh_particles, pmmh_steps,
+            pmmh_rho_opt.map(|r| r.to_string()).unwrap_or_else(|| "off".into()));
+    }
 
     // ── Progress + cache scan ─────────────────────────────────────────
     let mp = MultiProgress::with_draw_target(crate::progress::draw_target());
@@ -899,10 +943,13 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 .unwrap_or(if2_params.as_slice());
 
         // Dispatch on algorithm. IF2 keeps the historical PF-driven
-        // per-cell MLE; NLopt branches into the deterministic-MLE path
-        // (gh#47) — same `compute_ode_loglik` closure that fit.toml
-        // stages call, with the focal grid value pinned in `params` and
-        // optimization confined to the non-focal estimated indices.
+        // per-cell MLE; PMMH runs a per-cell MCMC chain and extracts
+        // the MAP as the cell's MLE (the prompt's --algorithm pmmh
+        // path for 2-D seed-timing profiles); NLopt branches into the
+        // deterministic-MLE path (gh#47) — same `compute_ode_loglik`
+        // closure that fit.toml stages call, with the focal grid value
+        // pinned in `params` and optimization confined to the non-focal
+        // estimated indices.
         let (final_loglik, mle_params): (f64, Vec<f64>) = match profile_algo {
             ProfileAlgo::If2 => {
                 let config = IF2Config {
@@ -919,6 +966,125 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     Ok(r) => (r.final_loglik, r.mle),
                     Err(_) => (f64::NEG_INFINITY, params.clone()),
                 }
+            }
+            ProfileAlgo::Pmmh => {
+                // Per-cell PMMH: short MCMC chain over non-focal
+                // estimated params, focal pinned via `params`. The MAP
+                // of the chain is the cell's reported MLE — matches
+                // PMMHResult.map_params, which is the highest-posterior
+                // sample seen (consistent with how fit/pmmh.rs reports
+                // MAP at end of chain).
+                //
+                // Priors: profile has no per-cell user prior surface, so
+                // every estimated param uses `Prior::Flat` (matches the
+                // fall-back in fit/runner::resolve_prior when no
+                // [estimate] override and no model-IR prior is declared).
+                let proposal_sd: Vec<f64> = per_start_specs.iter()
+                    .map(|p| p.transformed_sd(p.rw_sd, p.initial) * 5.0)
+                    .collect();
+                let priors: Vec<Prior> = per_start_specs.iter()
+                    .map(|_| Prior::Flat)
+                    .collect();
+                let pmmh_config = PMMHConfig {
+                    n_steps: pmmh_steps,
+                    n_particles: pmmh_particles,
+                    dt,
+                    proposal_sd,
+                    adapt: true,
+                    adapt_start: 50,
+                    thin: 1,
+                    burn_in: 100,
+                    rho: pmmh_rho_opt,
+                    n_source_groups: compiled.source_groups.len(),
+                };
+
+                // PF process kernel + obs model for this cell. PMMH on
+                // profile is chain_binomial-only (rejected upstream for
+                // --backend ode), so wire ChainBinomialProcess directly.
+                let pf_process = ChainBinomialProcess::new(
+                    compiled.clone(), pmmh_config.dt,
+                );
+                let pf_obs_model = Arc::clone(&obs_model_obj);
+                let smc_cfg = sim::inference::traits::SMCConfig {
+                    n_particles: pmmh_config.n_particles,
+                    dt: pmmh_config.dt,
+                    t_start: compiled.model.simulation.t_start,
+                    skip_first_obs_from_loglik: false,
+                    record_ancestry: false,
+                    record_prequential: false,
+                };
+
+                let eval_loglik = |theta: &[f64], pf_seed: u64| -> f64 {
+                    match sim::inference::bootstrap_filter(
+                        &pf_process, &*pf_obs_model, theta, &smc_cfg, pf_seed,
+                    ) {
+                        Ok(r) => r.log_likelihood,
+                        Err(_) => f64::NEG_INFINITY,
+                    }
+                };
+
+                // Correlated-PF evaluator (only used when rho is set).
+                // Mirrors fit/pmmh.rs's eval_correlated.
+                let eval_correlated: Option<Box<dyn Fn(
+                    &[f64],
+                    &sim::inference::correlated_pf::PFRandomState,
+                ) -> f64>> = if pmmh_config.rho.is_some() {
+                    let pf_process2 = ChainBinomialProcess::new(
+                        compiled.clone(), pmmh_config.dt,
+                    );
+                    let pf_obs_model2 = Arc::clone(&obs_model_obj);
+                    let smc_cfg2 = smc_cfg.clone();
+                    let cell_seed = job_seed;
+                    Some(Box::new(move |theta: &[f64], randoms| -> f64 {
+                        match sim::inference::correlated_pf::bootstrap_filter_correlated(
+                            &pf_process2, &*pf_obs_model2, theta,
+                            &smc_cfg2, randoms, cell_seed,
+                        ) {
+                            Ok(r) => r.log_likelihood,
+                            Err(_) => f64::NEG_INFINITY,
+                        }
+                    }))
+                } else {
+                    None
+                };
+                let eval_corr_ref: Option<&sim::inference::pmmh::CorrelatedEvalFn> =
+                    eval_correlated.as_deref();
+
+                // Profile has no hierarchical prior surface, so
+                // `param_names` can be empty (avoids the
+                // base_params/param_names length check inside run_pmmh
+                // when no Hierarchical priors are present).
+                let result = run_pmmh(
+                    per_start_specs,
+                    &priors,
+                    &params,
+                    &[],
+                    &pmmh_config,
+                    &observations,
+                    &eval_loglik,
+                    eval_corr_ref,
+                    job_seed,
+                    None,
+                    None,
+                    String::new(),
+                );
+                let best_ll = result.steps.iter()
+                    .map(|s| s.log_likelihood)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                // Report the MAP point's loglik for the rollup if it
+                // dominates the per-sample max (typical: map_loglik
+                // is the recorded best). Otherwise fall back to the
+                // per-sample max so the cell still reports a finite
+                // value when MAP tracking missed an early high-ll
+                // sample.
+                let final_ll = if result.map_loglik.is_finite() {
+                    result.map_loglik.max(best_ll)
+                } else if best_ll.is_finite() {
+                    best_ll
+                } else {
+                    f64::NEG_INFINITY
+                };
+                (final_ll, result.map_params)
             }
             ProfileAlgo::Nlopt(nlopt_algo) => {
                 // Per-cell starting point: copy `params` (focal pinned)
@@ -1022,6 +1188,12 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                         "iterations": n_iterations,
                         "cooling":    cooling,
                         "dt":         dt,
+                    }),
+                    ProfileAlgo::Pmmh => serde_json::json!({
+                        "steps":     pmmh_steps,
+                        "particles": pmmh_particles,
+                        "rho":       pmmh_rho_opt,
+                        "dt":        dt,
                     }),
                     ProfileAlgo::Nlopt(_) => serde_json::json!({
                         "tolerance": 1e-4,
