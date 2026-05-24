@@ -963,7 +963,42 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     &*process, &*obs_model_obj, &params, per_start_specs, &config, job_seed,
                 );
                 match result {
-                    Ok(r) => (r.final_loglik, r.mle),
+                    Ok(r) => {
+                        // Clean-eval re-pass at the swarm-mean MLE. IF2's
+                        // `final_loglik` is the perturbed-params loglik
+                        // from the last cooling iteration
+                        // (`if2.rs:540: final_loglik:
+                        // last_iter.if2_perturbed_loglik`), NOT the
+                        // loglik at `r.mle` (the swarm mean). Without
+                        // this re-pass, mle.toml reports a loglik that
+                        // isn't reproducible by `camdl pfilter` at the
+                        // saved MLE — historically a ~40-nat extraction
+                        // bias on noisy PF runs, and finite-vs-(-inf)
+                        // catastrophic on PF-degenerate models (events
+                        // blocks, GH #68). Fit-run already does this via
+                        // `run_quick_pfilter` (cf. runner.rs:1208-1224);
+                        // this mirrors the same pattern for profile's
+                        // per-cell path.
+                        let smc_config = sim::inference::traits::SMCConfig {
+                            n_particles: n_particles.min(500),
+                            dt,
+                            t_start: process.compiled.model.simulation.t_start,
+                            skip_first_obs_from_loglik: false,
+                            record_ancestry: false,
+                            record_prequential: false,
+                        };
+                        // Distinct seed from the IF2 inner run so the
+                        // clean-eval PF doesn't reuse IF2's last
+                        // resample-RNG state. Adding 1 is sufficient —
+                        // ChaCha8 (StatefulRng) produces uncorrelated
+                        // sequences for seeds 1 apart.
+                        let clean_seed = job_seed.wrapping_add(1);
+                        let true_ll = sim::inference::bootstrap_filter(
+                            &*process, &*obs_model_obj, &r.mle, &smc_config, clean_seed,
+                        ).map(|res| res.log_likelihood)
+                          .unwrap_or(f64::NEG_INFINITY);
+                        (true_ll, r.mle)
+                    }
                     Err(_) => (f64::NEG_INFINITY, params.clone()),
                 }
             }
