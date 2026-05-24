@@ -1000,6 +1000,28 @@ pub struct ProfileArgs {
     #[arg(long)]
     pub data: PathBuf,
 
+    /// Optional fit toml supplying priors, bounds, and fixed list for
+    /// the per-cell PMMH (gh#73). Mirrors `camdl survey --fit`'s
+    /// schema (the `[estimate]`, `[fixed]`, `[model]` blocks). When
+    /// supplied, the resolver picks priors via the chain
+    ///   `--fit toml` > model-IR `~` priors > flat (warning).
+    /// `--params` still carries values only; when both are supplied,
+    /// `--params` overrides any starting values from the fit toml but
+    /// the priors and bounds come from `--fit`. The focal swept
+    /// parameter is always removed from the estimated set, even when
+    /// it appears in the fit toml's `[estimate]` block. Without
+    /// `--fit`, the resolver falls back to model-IR priors (or flat
+    /// with a warning when none are declared).
+    #[arg(long, value_name = "PATH")]
+    pub fit: Option<PathBuf>,
+
+    /// Suppress the `profile_flat_prior_fallback` warning when any
+    /// estimated parameter resolves to a flat prior (gh#73). Use only
+    /// when flat priors are intentional — the warning is recorded in
+    /// `run.json` either way so the choice is auditable.
+    #[arg(long)]
+    pub suppress_warnings: bool,
+
     /// Profile grid (repeat for 2D+).
     /// SPEC is `V1,V2,...` | `lin(min,max,n)` | `log10(min,max,n)`.
     #[arg(long, value_name = "NAME=SPEC", required = true)]

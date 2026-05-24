@@ -217,6 +217,22 @@ pub struct ProfileInputs {
     /// Hash of an upstream stage's content this profile starts from.
     /// `None` for standalone profile invocations.
     pub starts_from_lineage: Option<String>,
+    /// SHA-256 of the `--fit <toml>` file's bytes (gh#73). Part of
+    /// the CAS key so re-running with a different fit toml against
+    /// the same model produces a different cache dir.
+    pub fit_toml_hash: Option<String>,
+    /// Per-parameter prior-resolution audit (gh#73). Recorded into
+    /// `run.json` via `ProfileMeta.resolved_priors`; included in the
+    /// hash so that switching the prior source for any parameter
+    /// (e.g. user adds a `~` to the model file) invalidates the
+    /// cached profile.
+    pub resolved_priors: Vec<(String, String)>,
+    /// Diagnostic warnings the user suppressed (gh#73). Recorded but
+    /// NOT part of the CAS hash — suppression is metadata, not a
+    /// content distinction; two otherwise-identical profiles should
+    /// hit the same cache regardless of which one suppressed the
+    /// warning.
+    pub suppressed_warnings: Vec<String>,
     /// Per-seed: the actual seed value. `inner_hash` excludes this;
     /// `content_hash` (trait method) includes it.
     pub seed: u64,
@@ -243,6 +259,16 @@ impl ProfileInputs {
             self.if2_config.n_particles, self.if2_config.n_iterations,
             self.if2_config.cooling, self.if2_config.dt, self.if2_config.n_starts,
         );
+        // gh#73: canonicalize the resolved-prior table for hashing.
+        // Sort by param name so the order the resolver emitted them
+        // (declaration order today) doesn't leak into the cache key —
+        // adding a new estimated parameter is a real change, but
+        // re-ordering an existing list is not.
+        let mut priors_sorted = self.resolved_priors.clone();
+        priors_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        let priors_canonical: String = priors_sorted.iter()
+            .map(|(n, s)| format!("{}={}", n, s))
+            .collect::<Vec<_>>().join(",");
         hash_canonical(&[
             ("model",       &self.model_hash),
             ("base_params", &self.base_params_hash),
@@ -252,6 +278,8 @@ impl ProfileInputs {
             ("if2",         &if2),
             ("starts_from", self.starts_from_lineage.as_deref().unwrap_or("")),
             ("data",        &self.data_hash),
+            ("fit_toml",    self.fit_toml_hash.as_deref().unwrap_or("")),
+            ("priors",      &priors_canonical),
         ])
     }
 }
@@ -300,6 +328,13 @@ impl CasInputs for ProfileInputs {
             base_params_hash: self.base_params_hash.clone(),
             seed_base:        self.seed,
             total_jobs,
+            fit_toml_hash:    self.fit_toml_hash.clone(),
+            resolved_priors:  self.resolved_priors.iter().map(|(n, s)| {
+                crate::run_meta::ResolvedPriorEntry {
+                    param: n.clone(), source: s.clone(),
+                }
+            }).collect(),
+            suppressed_warnings: self.suppressed_warnings.clone(),
         })
     }
 }
@@ -420,6 +455,59 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // Bounds + finite-value check after all override paths resolved (gh#31).
     crate::util::validate_parameter_values(&model)
         .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+
+    // ── Optional --fit toml resolution (gh#73) ──────────────────────
+    //
+    // When `--fit <path.toml>` is supplied, the fit-toml is the source
+    // of truth for priors, bounds, and the default fixed list — same
+    // shape `camdl fit run` reads. The toml's `[fixed]` block is
+    // resolved against the model so scenario-driven fixed values come
+    // through, then merged with the CLI `--fixed` (CLI wins on
+    // collision per gh#73 §2 precedence rules).
+    //
+    // The estimate IndexMap returned here is the canonical prior
+    // source used downstream by `resolve_priors_with_precedence`. When
+    // `--fit` is absent the map is empty and the resolver falls
+    // through to model-IR priors (tier 2) for every parameter.
+    let (fit_estimate, fit_toml_hash, fit_toml_fixed):
+        (indexmap::IndexMap<String, crate::fit::config_v2::EstimateSpecV2>,
+         Option<String>,
+         std::collections::HashMap<String, f64>) = if let Some(fit_path) = a.fit.as_ref() {
+        let fit_path_str = fit_path.to_string_lossy().into_owned();
+        let mut fit_cfg = crate::fit::config_v2::FitConfigV2::load(&fit_path_str)
+            .unwrap_or_else(|e| {
+                eprintln!("error: failed to load --fit toml '{}': {}",
+                    fit_path_str, e);
+                std::process::exit(1);
+            });
+        // Resolve [fixed] (file load, scenario, inline overlay) the
+        // same way `camdl survey --fit` and `camdl fit run` do.
+        fit_cfg.fixed.expand_from_scenario(&model)
+            .unwrap_or_else(|e| {
+                eprintln!("error: --fit toml [fixed].expand_from_scenario: {}", e);
+                std::process::exit(1);
+            });
+        let fixed_resolved = fit_cfg.fixed.resolve_with_model(&model)
+            .unwrap_or_else(|e| {
+                eprintln!("error: --fit toml [fixed].resolve_with_model: {}", e);
+                std::process::exit(1);
+            });
+        // Hash the bytes for provenance. Path-independent — only the
+        // contents participate, matching the `data_hash` convention.
+        let bytes = std::fs::read(fit_path)
+            .unwrap_or_else(|e| {
+                eprintln!("error: cannot read --fit toml '{}': {}",
+                    fit_path_str, e);
+                std::process::exit(1);
+            });
+        let hash = crate::hashing::sha256_hex(&bytes);
+        eprintln!("profile: using --fit '{}' for priors / bounds / [fixed]",
+            fit_path_str);
+        (fit_cfg.estimate, Some(hash),
+         fixed_resolved.into_iter().collect::<std::collections::HashMap<_,_>>())
+    } else {
+        (indexmap::IndexMap::new(), None, std::collections::HashMap::new())
+    };
 
     let compiled = Arc::new(CompiledModel::new(model.clone())
         .unwrap_or_else(|e| { eprintln!("{:?}", e); std::process::exit(1); }));
@@ -588,7 +676,43 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         });
     }
 
-    let fixed_names: std::collections::HashSet<String> = a.fixed.iter().cloned().collect();
+    // Build the resolved fixed set: CLI `--fixed` wins for collisions
+    // with `--fit toml`'s `[fixed]` (per gh#73 §2 precedence). The
+    // toml's `[fixed]` is the *artifact's* default; the CLI flag is
+    // the per-invocation override.
+    let cli_fixed_names: std::collections::HashSet<String> =
+        a.fixed.iter().cloned().collect();
+    let mut fixed_names: std::collections::HashSet<String> = cli_fixed_names.clone();
+    for k in fit_toml_fixed.keys() {
+        fixed_names.insert(k.clone());
+    }
+
+    // Focal-vs-fixed conflict check (gh#73 §2): a parameter cannot
+    // simultaneously be the sweep axis and a fixed value. Surface
+    // *which* source declared the fixed entry so the user knows where
+    // to remove it.
+    for sw in &focal_names {
+        let in_cli = cli_fixed_names.contains(sw);
+        let in_toml = fit_toml_fixed.contains_key(sw);
+        if in_cli || in_toml {
+            let source = match (in_cli, in_toml) {
+                (true, true)  => "both `--fixed` and the fit toml's [fixed] block",
+                (true, false) => "`--fixed`",
+                (false, true) => "the fit toml's [fixed] block",
+                (false, false) => unreachable!(),
+            };
+            eprintln!(
+                "error: parameter '{}' is in both `--sweep` and {}. \
+                 A swept parameter is pinned per cell at the sweep value; \
+                 listing it as fixed is contradictory. Drop it from {}.",
+                sw, source,
+                if in_cli && !in_toml { "`--fixed`" }
+                else if in_toml && !in_cli { "the fit toml's [fixed]" }
+                else { "both" },
+            );
+            std::process::exit(1);
+        }
+    }
     let exclude: std::collections::HashSet<String> = focal_names.iter()
         .chain(fixed_names.iter()).cloned().collect();
 
@@ -605,13 +729,21 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             .collect()
     };
 
+    // Specs honour the fit-toml `[estimate]` block when supplied
+    // (gh#73): bounds, transform, and ivp flow through to
+    // `build_if2_params_from_specs`'s fit-toml-bounds-within-model
+    // resolver. `rw_sd` and `transform` from CLI still win when both
+    // sides declare them (CLI `--rw-sd` is the per-invocation
+    // override; fit toml's `rw_sd` is the artifact default).
     let specs: Vec<crate::fit::runner::ParamSpec> = param_names_to_estimate.iter().map(|name| {
+        let from_fit = fit_estimate.get(name);
         crate::fit::runner::ParamSpec {
             name: name.clone(),
-            rw_sd: rw_sd_map_raw.get(name).and_then(|v| *v),
-            transform: None,
-            ivp: false,
-            bounds: None,
+            rw_sd: rw_sd_map_raw.get(name).and_then(|v| *v)
+                .or_else(|| from_fit.and_then(|e| e.rw_sd)),
+            transform: from_fit.and_then(|e| e.transform.as_ref().map(|t| t.as_str().to_string())),
+            ivp: from_fit.map(|e| e.ivp).unwrap_or(false),
+            bounds: from_fit.and_then(|e| e.bounds),
         }
     }).collect();
 
@@ -619,6 +751,53 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         &model, &compiled, &base_params, &specs,
     ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
     let if2_params = Arc::new(if2_params);
+
+    // ── Prior resolution (gh#73) ─────────────────────────────────────
+    //
+    // Resolve priors once, up front, for two reasons:
+    //   (a) Surface the flat-fallback warning (or its suppression)
+    //       BEFORE the parallel per-cell loop kicks off — the warning
+    //       is a property of the configuration, not of any single
+    //       cell.
+    //   (b) Record the per-parameter source (fit_toml / model_ir /
+    //       flat_fallback) into the per-seed `run.json` so the CAS
+    //       provenance captures which knob controlled each parameter.
+    //
+    // The per-cell PMMH branch *re-resolves* against the same
+    // (fit_estimate, model) inputs to get the typed `Prior` values it
+    // needs; that re-resolution is byte-identical to this one (same
+    // call into `fit::runner::resolve_prior`). Resolving here as well
+    // makes the warning/provenance flow independent of whether the
+    // PMMH branch ever runs — keeps the diagnostic surface uniform
+    // across `--algorithm` choices and supports a future extension to
+    // honour priors on IF2 too (which currently ignores them by
+    // design but should still surface what *would* be ignored).
+    let resolved_priors: Vec<crate::profile_priors::ResolvedPrior> =
+        crate::profile_priors::resolve_priors_with_precedence(
+            &if2_params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            &fit_estimate,
+            &model,
+        );
+    if matches!(profile_algo, ProfileAlgo::Pmmh) && !a.suppress_warnings {
+        if let Some(w) = crate::profile_priors::format_flat_fallback_warning(
+            &resolved_priors, a.fit.is_some(),
+        ) {
+            eprint!("{}", w);
+        }
+    }
+    // Suppression is loud — recorded into provenance even when the
+    // user passed `--suppress-warnings` so reviewers can audit the
+    // waiver. The `suppressed_warnings` field is empty when nothing
+    // was suppressed.
+    let suppressed_warnings: Vec<String> =
+        if a.suppress_warnings
+            && resolved_priors.iter()
+                .any(|r| r.source == crate::profile_priors::PriorSource::FlatFallback)
+        {
+            vec!["profile_flat_prior_fallback".to_string()]
+        } else {
+            Vec::new()
+        };
 
     // Per-start init draws across non-focal estimated params (gh#42).
     // Computed once, reused at every grid cell so start_idx=k means the
@@ -745,6 +924,27 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     });
     let data_hash = crate::hashing::sha256_hex(&data_bytes);
 
+    // gh#73: the per-parameter source list is stored in the same
+    // order the resolver emitted (declaration order of estimated
+    // params). The `inner_hash` sort key normalises this to a
+    // canonical form for caching; we keep the natural order here so
+    // `run.json` is human-friendly.
+    let resolved_priors_kv: Vec<(String, String)> = resolved_priors.iter()
+        .map(|r| {
+            let source_str = match r.source {
+                crate::profile_priors::PriorSource::FitToml      => "fit_toml",
+                crate::profile_priors::PriorSource::ModelIr      => "model_ir",
+                crate::profile_priors::PriorSource::FlatFallback => "flat_fallback",
+            };
+            (r.param.clone(), source_str.to_string())
+        })
+        .collect();
+    // The CLI `--fixed` set is the union of CLI flags + fit-toml's
+    // [fixed] block (CLI wins per spec for collisions, but both
+    // contribute to the canonical fixed list). Sort for stable hashing.
+    let mut fixed_for_cas: Vec<String> = fixed_names.iter().cloned().collect();
+    fixed_for_cas.sort();
+
     let template_inputs = ProfileInputs {
         model_path: ir_path.clone(),
         stem: stem.clone(),
@@ -752,12 +952,15 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         base_params_hash,
         data_hash,
         focal_grid: grid_spec,
-        fixed: a.fixed.clone(),
+        fixed: fixed_for_cas,
         obs_family: obs_family_key,
         if2_config: ProfileIf2Config {
             n_particles, n_iterations, cooling, dt, n_starts,
         },
         starts_from_lineage: None,
+        fit_toml_hash: fit_toml_hash.clone(),
+        resolved_priors: resolved_priors_kv,
+        suppressed_warnings: suppressed_warnings.clone(),
         seed: seeds[0],   // overwritten per-seed below
     };
 
@@ -1010,15 +1213,23 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 // sample seen (consistent with how fit/pmmh.rs reports
                 // MAP at end of chain).
                 //
-                // Priors: profile has no per-cell user prior surface, so
-                // every estimated param uses `Prior::Flat` (matches the
-                // fall-back in fit/runner::resolve_prior when no
-                // [estimate] override and no model-IR prior is declared).
+                // Priors (gh#73): resolved via the precedence chain
+                //   --fit toml > model IR (`~` syntax) > Prior::Flat.
+                // The resolution is shared with `fit/runner::resolve_prior`
+                // so behaviour matches `camdl fit run`. Pre-fix this
+                // path hardcoded Prior::Flat, silently downgrading the
+                // declared posterior semantics to MLE.
                 let proposal_sd: Vec<f64> = per_start_specs.iter()
                     .map(|p| p.transformed_sd(p.rw_sd, p.initial) * 5.0)
                     .collect();
-                let priors: Vec<Prior> = per_start_specs.iter()
-                    .map(|_| Prior::Flat)
+                let cell_names: Vec<String> = per_start_specs.iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                let resolved = crate::profile_priors::resolve_priors_with_precedence(
+                    &cell_names, &fit_estimate, &model,
+                );
+                let priors: Vec<Prior> = resolved.iter()
+                    .map(|r| r.prior.clone())
                     .collect();
                 let pmmh_config = PMMHConfig {
                     n_steps: pmmh_steps,
@@ -1907,6 +2118,9 @@ mod tests {
                 n_particles: 100, n_iterations: 50, cooling: 0.5, dt: 1.0, n_starts: 4,
             },
             starts_from_lineage: None,
+            fit_toml_hash: None,
+            resolved_priors: vec![],
+            suppressed_warnings: vec![],
             seed: 1,
         }
     }

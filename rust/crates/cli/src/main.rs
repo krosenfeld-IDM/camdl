@@ -15,6 +15,7 @@ mod fit;
 mod compare;
 mod if2;
 mod profile;
+mod profile_priors;
 mod progress;
 mod evidence;
 mod survey;

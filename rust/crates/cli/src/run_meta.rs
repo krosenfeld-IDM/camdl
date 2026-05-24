@@ -334,6 +334,42 @@ pub struct ProfileMeta {
     pub seed_base: u64,
     /// Total (grid_size × n_starts). Display only.
     pub total_jobs: usize,
+    /// SHA-256 of the `--fit <toml>` file's bytes (gh#73). `None` when
+    /// `--fit` was not supplied. Recorded for provenance: re-running
+    /// against the same model with a different fit toml produces a
+    /// different CAS hash (different priors / bounds / fixed list →
+    /// different inference run), so reviewers can tell at a glance
+    /// what configuration produced the artifacts on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_toml_hash: Option<String>,
+    /// Per-parameter prior-resolution audit (gh#73). For every
+    /// estimated parameter, names where the prior came from in the
+    /// `--fit toml > model IR > flat` precedence chain. Empty for
+    /// non-PMMH algorithms today (IF2 / NLopt ignore priors by
+    /// design); the field is `default = []` for round-trip
+    /// compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_priors: Vec<ResolvedPriorEntry>,
+    /// Diagnostic warnings the user explicitly suppressed via
+    /// `--suppress-warnings` (or fit toml's `[diagnostics] suppress`).
+    /// Empty when nothing was waived. Recorded loudly so that
+    /// reviewers reading `run.json` can see exactly which checks
+    /// were waived for a given artifact (gh#73).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suppressed_warnings: Vec<String>,
+}
+
+/// One row of the per-parameter prior-resolution audit (gh#73). The
+/// CLI's `profile_priors::ResolvedPrior` does not implement
+/// `Serialize` directly (it carries a `Prior` enum from the `sim`
+/// crate); this lightweight mirror carries the audit-relevant
+/// fields — name and source tag — into `run.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedPriorEntry {
+    pub param:  String,
+    /// `"fit_toml" | "model_ir" | "flat_fallback"` — see
+    /// `profile_priors::PriorSource`.
+    pub source: String,
 }
 
 /// One axis of a profile grid. `values` is the explicit list the
@@ -866,6 +902,9 @@ mod tests {
                 base_params_hash: "d".repeat(64),
                 seed_base: 42,
                 total_jobs: 18,
+                fit_toml_hash: None,
+                resolved_priors: vec![],
+                suppressed_warnings: vec![],
             }),
         };
         let json = serde_json::to_string(&r).unwrap();
