@@ -101,8 +101,9 @@ pub fn run_gillespie_with_observer(
     let output_times = get_output_times(&model.model.output.times);
     let mut output_idx = 0;
 
-    // Sorted intervention times
-    let iv_times = all_intervention_times(model);
+    // Sorted intervention times. gh#69: pass params so parametric
+    // `at [...]` schedules resolve against the run's parameter vector.
+    let iv_times = all_intervention_times(model, params);
     let mut iv_idx = 0;
 
     // gh#53: resolve fire_steps using the model's compile-time dt.
@@ -113,7 +114,7 @@ pub fn run_gillespie_with_observer(
     // the same call signature as the dt-parameterised backends without
     // changing observed semantics.
     let iv_resolution_dt = model.model.simulation.dt.unwrap_or(1.0);
-    let fire_steps = model.resolve_fire_steps(iv_resolution_dt);
+    let fire_steps = model.resolve_fire_steps(iv_resolution_dt, params);
 
     let mut t = cfg.t_start;
     let mut traj = Trajectory::new();

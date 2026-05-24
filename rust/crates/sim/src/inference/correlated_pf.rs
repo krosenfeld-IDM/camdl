@@ -335,10 +335,14 @@ pub fn bootstrap_filter_correlated(
                         }
                     }
 
+                    // Re-resolve per-particle: parametric event
+                    // schedules (gh#69) carry params; each particle
+                    // can have a different schedule.
+                    let fire_steps = process.compiled.resolve_fire_steps(process.dt, params);
                     crate::chain_binomial::step_one(
                         model, &mut state.counts, &mut state.flow_accumulators,
                         params, t_local, step_dt, rng, scratch,
-                        &process.fire_steps,
+                        &fire_steps,
                     )?;
                     t_local += step_dt;
                     substep += 1;

@@ -484,6 +484,10 @@ let intervention_schedule_to_json (s : intervention_schedule) : Yojson.Safe.t =
   match s with
   | AtTimes ts ->
     obj [("at_times", arr (List.map flt ts))]
+  | AtTimesExpr exprs ->
+    (* gh#69: parametric `at [...]`. JSON key is distinct from `at_times`
+       so old IRs without expressions deserialize as AtTimes unchanged. *)
+    obj [("at_times_expr", arr (List.map expr_to_json exprs))]
   | Recurring r ->
     obj [("recurring", obj (
       [("start",  flt r.start);
@@ -498,7 +502,8 @@ let intervention_schedule_of_json j =
   match j with
   | `Assoc [(key, v)] -> (
     match key with
-    | "at_times"  -> AtTimes  (List.map as_float (as_list v))
+    | "at_times"      -> AtTimes     (List.map as_float (as_list v))
+    | "at_times_expr" -> AtTimesExpr (List.map expr_of_json (as_list v))
     | "recurring" ->
       Recurring {
         start  = as_float (member "start"  v);

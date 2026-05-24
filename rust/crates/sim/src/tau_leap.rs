@@ -72,15 +72,16 @@ pub fn run_tau_leap_with_observer(
 
     // gh#53: resolve fire_steps using the runtime cfg.dt, not the
     // compile-time model.simulation.dt. See chain_binomial.rs for the
-    // full explanation.
-    let fire_steps = model.resolve_fire_steps(cfg.dt);
+    // full explanation. gh#69: passes `params` for parametric `at [...]`
+    // schedules.
+    let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
     let mut rng = StatefulRng::new(seed);
     let mut propensities = Vec::with_capacity(n_transitions);
 
     let output_times = get_output_times(&model.model.output.times);
     let mut output_idx = 0;
-    let iv_times = all_intervention_times(model);
+    let iv_times = all_intervention_times(model, params);
     let mut iv_idx = 0;
 
     let mut traj = Trajectory::new();

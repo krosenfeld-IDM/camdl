@@ -674,7 +674,7 @@ pub fn simulate_reference(
     // gh#53: resolve fire_steps once at the runtime dt; passed into
     // step_one rather than read off `model.fire_steps` (which no
     // longer exists — see the field's docstring).
-    let fire_steps = model.resolve_fire_steps(dt);
+    let fire_steps = model.resolve_fire_steps(dt, params);
 
     let mut counts = init_int.counts.clone();
     let mut scratch = StepScratch::new(model);
@@ -743,7 +743,7 @@ pub fn csmc_as(
 
     // gh#53: resolve fire_steps once at the runtime dt for the
     // free-particle propagation step_one calls below.
-    let fire_steps = model.resolve_fire_steps(dt);
+    let fire_steps = model.resolve_fire_steps(dt, params);
 
     // Initialize particles with stochastic initial states for IVP compartments.
     // Each free particle draws S₀ ~ Binom(N₀, s0) independently, giving the

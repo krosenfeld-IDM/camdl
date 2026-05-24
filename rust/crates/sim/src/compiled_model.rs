@@ -386,22 +386,53 @@ pub struct ResolvedModel {
     pub ode_derivatives: Vec<ResolvedExpr>,
     /// Per-intervention, per-action resolved expression (count/fraction/value).
     pub intervention_exprs: Vec<Vec<ResolvedExpr>>,
+    /// gh#69: per-intervention pre-resolved `at [...]` time expressions.
+    /// `Some(exprs)` iff the schedule is `InterventionSchedule::AtTimesExpr`,
+    /// `None` otherwise. Evaluated once per simulation start in
+    /// `CompiledModel::resolve_fire_steps` against the current `params`.
+    pub intervention_at_time_exprs: Vec<Option<Vec<ResolvedExpr>>>,
 }
 
 impl CompiledModel {
+    /// Resolve per-intervention fire **times** for the current
+    /// parameter vector. For constant schedules (`AtTimes`,
+    /// `Recurring`) returns the baked `self.fire_times`; for
+    /// parametric `AtTimesExpr` schedules (gh#69) evaluates the
+    /// resolved expressions against `params`.
+    pub fn resolve_fire_times(&self, params: &[f64]) -> Vec<Vec<f64>> {
+        use crate::intervention::intervention_fire_times;
+        self.model.interventions.iter()
+            .enumerate()
+            .map(|(iv_idx, iv)| {
+                match &iv.schedule {
+                    ir::intervention::InterventionSchedule::AtTimesExpr(_) => {
+                        let resolved = self.resolved.intervention_at_time_exprs[iv_idx]
+                            .as_deref();
+                        intervention_fire_times(&iv.schedule, resolved, self, params)
+                    }
+                    _ => self.fire_times[iv_idx].clone(),
+                }
+            })
+            .collect()
+    }
+
     /// Derive per-intervention sets of step indices for a given
-    /// integrator step `dt`. The returned view is a runtime
-    /// projection of `self.fire_times`; backends call this once at
-    /// sim start with `cfg.dt` and use the local result for the
-    /// duration of the run. See `crate::time::time_to_step` for the
-    /// rounding semantics, and gh#53 for the architectural
-    /// motivation (don't bake dt-dependent indices on the dt-
-    /// invariant CompiledModel).
+    /// integrator step `dt` and parameter vector. The returned view is
+    /// a runtime projection of `self.resolve_fire_times(params)`;
+    /// backends call this once at sim start with `cfg.dt` and `params`
+    /// and use the local result for the duration of the run. See
+    /// `crate::time::time_to_step` for the rounding semantics, and
+    /// gh#53 for the architectural motivation (don't bake dt-dependent
+    /// indices on the dt-invariant CompiledModel). gh#69 added the
+    /// `params` arg so parametric `at [...]` schedules can be resolved
+    /// against the run's parameter vector instead of silently firing
+    /// at t=0.
     pub fn resolve_fire_steps(
         &self,
         dt: f64,
+        params: &[f64],
     ) -> Vec<std::collections::BTreeSet<i64>> {
-        self.fire_times.iter()
+        self.resolve_fire_times(params).iter()
             .map(|times| crate::time::fire_times_to_steps(times, dt))
             .collect()
     }
@@ -650,16 +681,40 @@ impl CompiledModel {
         }
 
         // Precompute fire **times** (continuous, dt-invariant) for all
-        // interventions/events. The runtime view (step indices) is
-        // derived per-simulation via `CompiledModel::resolve_fire_steps`
-        // — see the field docstring and gh#53 for why this split is
-        // load-bearing.
-        let fire_times: Vec<Vec<f64>> = {
-            use crate::intervention::intervention_fire_times;
-            model.interventions.iter()
-                .map(|iv| intervention_fire_times(&iv.schedule))
-                .collect()
-        };
+        // interventions/events with constant schedules. The runtime view
+        // (step indices) is derived per-simulation via
+        // `CompiledModel::resolve_fire_steps` — see the field docstring
+        // and gh#53 for why this split is load-bearing.
+        //
+        // gh#69: parametric `AtTimesExpr` schedules cannot be evaluated
+        // here (we don't have `params` yet). Their slot is left empty
+        // and the per-run resolver fills it from
+        // `resolved.intervention_at_time_exprs`.
+        let fire_times: Vec<Vec<f64>> = model.interventions.iter()
+            .map(|iv| match &iv.schedule {
+                ir::intervention::InterventionSchedule::AtTimes(ts) => ts.clone(),
+                ir::intervention::InterventionSchedule::AtTimesExpr(_) => Vec::new(),
+                ir::intervention::InterventionSchedule::Recurring(rs) => {
+                    let mut times = Vec::new();
+                    if let Some(at_day) = rs.at_day {
+                        let k0 = ((rs.start - at_day) / rs.period).ceil().max(0.0) as u64;
+                        let mut t = at_day + k0 as f64 * rs.period;
+                        while t <= rs.end + rs.period * 1e-9 {
+                            times.push(t);
+                            t += rs.period;
+                        }
+                    } else {
+                        let mut t = rs.start;
+                        while t <= rs.end + rs.period * 1e-9 {
+                            times.push(t);
+                            t += rs.period;
+                        }
+                    }
+                    times
+                }
+                ir::intervention::InterventionSchedule::External(_) => Vec::new(),
+            })
+            .collect();
 
         // ── Pre-resolve all expression trees ─────────────────────────────
         // Build ResolveCtx from the index maps we just constructed.
@@ -771,6 +826,41 @@ impl CompiledModel {
             })
             .collect::<Result<_, _>>()?;
 
+        // gh#69: resolve parametric `at [...]` time expressions for each
+        // intervention/event with an `AtTimesExpr` schedule. We also
+        // reject any expression that references compartment state
+        // (`Pop`/`PopSum`) or projected output — these would silently
+        // evaluate against a zero scratch state in
+        // `intervention_fire_times`, which is wrong. Time and dt are
+        // similarly meaningless at schedule-resolution time, but the IR
+        // expander never emits them in this position; we leave them
+        // allowed so future use-cases (e.g. `t_seed = t_start + 5`) can
+        // be supported without revisiting the validation.
+        let intervention_at_time_exprs: Vec<Option<Vec<ResolvedExpr>>> = model.interventions.iter()
+            .enumerate()
+            .map(|(idx, iv)| match &iv.schedule {
+                ir::intervention::InterventionSchedule::AtTimesExpr(exprs) => {
+                    let resolved: Vec<ResolvedExpr> = exprs.iter()
+                        .map(|e| resolve_expr(e, &resolve_ctx))
+                        .collect::<Result<_, _>>()?;
+                    for r in &resolved {
+                        if crate::resolved_expr::references_state(r) {
+                            return Err(SimError::Validation(format!(
+                                "intervention '{}': `at [...]` schedule \
+                                 expression references compartment state \
+                                 (Pop / PopSum), which is not supported. \
+                                 Schedule times must be a function of \
+                                 parameters and constants only.",
+                                model.interventions[idx].name
+                            )));
+                        }
+                    }
+                    Ok(Some(resolved))
+                }
+                _ => Ok(None),
+            })
+            .collect::<Result<_, SimError>>()?;
+
         let resolved = ResolvedModel {
             rates,
             overdispersion,
@@ -778,6 +868,7 @@ impl CompiledModel {
             rate_grads_indexed,
             ode_derivatives,
             intervention_exprs,
+            intervention_at_time_exprs,
         };
 
         Ok(CompiledModel {

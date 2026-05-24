@@ -164,13 +164,14 @@ fn run_ode(
     let n_transitions = model.model.transitions.len();
     let output_times = get_output_times(&model.model.output.times);
     let mut output_idx = 0;
-    let iv_times = all_intervention_times(model);
+    let iv_times = all_intervention_times(model, params);
     let mut iv_idx = 0;
 
     // gh#53: fire_steps depend on the runtime cfg.dt, not the
     // compile-time model.simulation.dt. See chain_binomial.rs for the
-    // architectural rationale.
-    let fire_steps = model.resolve_fire_steps(cfg.dt);
+    // architectural rationale. gh#69: also threads `params` for
+    // parametric `at [...]` schedules.
+    let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
     let mut traj = Trajectory::new();
     // Accumulated continuous flows (rate × dt); rounded to u64 at each snapshot.

@@ -168,7 +168,15 @@ type table = {
 type recurring_schedule = { start: float; period: float; end_: float; at_day: float option }
 
 type intervention_schedule =
-  | AtTimes   of float list
+  | AtTimes     of float list
+  | AtTimesExpr of expr list
+  (* gh#69: parametric `at [...]` lists. Each element is an arbitrary IR
+     expression — typically `Param "t_seed"` or arithmetic of parameters
+     and constants. The runtime evaluates each expression once per
+     simulation start against the current `params` vector to obtain the
+     concrete fire times. The expander emits the legacy `AtTimes` form
+     when every entry is a compile-time constant so existing golden IRs
+     stay byte-identical. *)
   | Recurring of recurring_schedule
   | External  of string
 

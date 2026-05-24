@@ -377,6 +377,16 @@
           "additionalProperties": false
         },
         {
+          "required": ["at_times_expr"],
+          "properties": {
+            "at_times_expr": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/expr" }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
           "required": ["recurring"],
           "properties": {
             "recurring": {

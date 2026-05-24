@@ -105,7 +105,7 @@ fn simulate_and_count_fires(
     t_end: f64,
     initial_s: i64,
 ) -> i64 {
-    let fire_steps = model.resolve_fire_steps(runtime_dt);
+    let fire_steps = model.resolve_fire_steps(runtime_dt, &[]);
     let mut int_s = IntState::from_vec(vec![initial_s, 0]);
     let mut real_s = RealState::new(0);
 
@@ -225,7 +225,7 @@ fn periodic_intervention_fires_at_absolute_wall_time_independent_of_t_start() {
 
     // Walk from t_start=0 to t=300 at dt=0.5. Cohort fires at t=258
     // → V counter should be 1 by t=300.
-    let fire_steps = model_at_zero.resolve_fire_steps(0.5);
+    let fire_steps = model_at_zero.resolve_fire_steps(0.5, &[]);
     let mut int_s = IntState::from_vec(vec![100, 0]);
     let mut real_s = RealState::new(0);
     let mut t = 0.0;
@@ -325,7 +325,7 @@ fn periodic_intervention_fires_at_correct_wall_time_under_sub_day_dt() {
     // Drive to t = 130.0 at dt = 0.5 — pre-fix, the intervention
     // would have fired at wall time 129 (step 258 × dt 0.5), so by
     // t = 130 the V count would be 1. Post-fix it must be 0.
-    let fire_steps = model.resolve_fire_steps(0.5);
+    let fire_steps = model.resolve_fire_steps(0.5, &[]);
     let mut int_s = IntState::from_vec(vec![100, 0]);
     let mut real_s = RealState::new(0);
     let mut t = 0.0;

@@ -3459,10 +3459,30 @@ let expand_scheduled_actions ctx decls ~always_active =
              list of `EConst` entries before resolving. Phase 2 of the
              2026-05-22 typed-time proposal §4. *)
           let exprs = splice_date_ranges ctx exprs in
-          Ir.AtTimes (List.map (fun e ->
-            let ir = normalize_expr (resolve_expr ctx env e) in
-            match ir with Ir.Const f -> f | _ -> 0.0
-          ) exprs)
+          (* gh#69: parametric `at [...]` lists must reach the runtime
+             with their parameter references intact. Resolve every
+             entry, then: if every entry is a compile-time constant,
+             emit the legacy `Ir.AtTimes` form (existing goldens stay
+             byte-identical); otherwise emit `Ir.AtTimesExpr` with the
+             resolved IR expressions, which the Rust runtime evaluates
+             once per simulation start against the current `params`
+             vector. Mixed constant + parametric lists go through
+             `AtTimesExpr` uniformly — constants become `Ir.Const`
+             entries and the runtime evaluator handles them at zero
+             cost. *)
+          let resolved = List.map (fun e ->
+            normalize_expr (resolve_expr ctx env e)
+          ) exprs in
+          let all_const = List.for_all (fun ir ->
+            match ir with Ir.Const _ -> true | _ -> false
+          ) resolved in
+          if all_const then
+            Ir.AtTimes (List.map (function
+              | Ir.Const f -> f
+              | _ -> assert false (* guarded by all_const *)
+            ) resolved)
+          else
+            Ir.AtTimesExpr resolved
         | SRecurring (every, from_opt, until_opt) ->
           let period = resolve_float_expr ctx every in
           let start  = match from_opt with

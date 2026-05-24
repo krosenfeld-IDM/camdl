@@ -138,7 +138,8 @@ pub fn run_chain_binomial_with_observer(
     // gh#53: fire-step indices depend on the runtime integrator's dt
     // (not the compile-time `model.simulation.dt`). Resolve once per
     // sim run from the dt-invariant `fire_times` on CompiledModel.
-    let fire_steps = model.resolve_fire_steps(cfg.dt);
+    // gh#69: also threads `params` for parametric `at [...]` schedules.
+    let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
     let mut rng = StatefulRng::new(seed);
     let mut scratch = StepScratch::new(model);
@@ -146,7 +147,7 @@ pub fn run_chain_binomial_with_observer(
 
     let output_times = get_output_times(&model.model.output.times);
     let mut output_idx = 0;
-    let iv_times = all_intervention_times(model);
+    let iv_times = all_intervention_times(model, params);
     let mut iv_idx = 0;
 
     let mut traj = Trajectory::new();

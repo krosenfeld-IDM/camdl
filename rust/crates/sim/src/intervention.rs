@@ -2,15 +2,47 @@ use crate::{
     compiled_model::CompiledModel,
     error::SimError,
     propensity::EvalCtx,
-    resolved_expr::eval_resolved,
+    resolved_expr::{eval_resolved, ResolvedExpr},
     state::{IntState, RealState},
 };
 use ir::intervention::{Action, Intervention, InterventionSchedule};
 
 /// Convert an `InterventionSchedule` to a sorted list of fire times.
-pub fn intervention_fire_times(sched: &InterventionSchedule) -> Vec<f64> {
+///
+/// For parametric `at [...]` lists (gh#69, `AtTimesExpr`) the caller
+/// supplies pre-resolved `ResolvedExpr`s for the entries — evaluated
+/// here against the current `params` vector with the rest of `EvalCtx`
+/// (state, time, dt) filled by scratch. Schedule-time expressions are
+/// constrained at compile time to reference only parameters and
+/// constants (see `CompiledModel::new` validation, gh#69), so the
+/// scratch values are never consulted.
+pub fn intervention_fire_times(
+    sched: &InterventionSchedule,
+    resolved_at_times: Option<&[ResolvedExpr]>,
+    model: &CompiledModel,
+    params: &[f64],
+) -> Vec<f64> {
     match sched {
         InterventionSchedule::AtTimes(times) => times.clone(),
+        InterventionSchedule::AtTimesExpr(_) => {
+            let resolved = resolved_at_times
+                .expect("AtTimesExpr schedule must be accompanied by resolved exprs");
+            let n_int = model.int_local_to_global.len();
+            let n_real = model.real_local_to_global.len();
+            let scratch_int = IntState::new(n_int);
+            let scratch_real = RealState::new(n_real);
+            let ctx = EvalCtx {
+                model,
+                int_s: &scratch_int,
+                real_s: &scratch_real,
+                params,
+                t: 0.0,
+                dt: 0.0,
+                projected: None,
+                int_float_override: None,
+            };
+            resolved.iter().map(|e| eval_resolved(e, &ctx)).collect()
+        }
         InterventionSchedule::Recurring(rs) => {
             let mut times = Vec::new();
             if let Some(at_day) = rs.at_day {
@@ -162,9 +194,17 @@ pub fn inject_event_deltas(
 }
 
 /// Collect sorted, deduplicated intervention times.
-pub fn all_intervention_times(model: &CompiledModel) -> Vec<f64> {
+///
+/// gh#69: takes `params` so any `AtTimesExpr` schedules can be resolved
+/// against the current parameter vector. Parametric schedules' resolved
+/// expressions live on `CompiledModel.resolved.intervention_at_time_exprs`.
+pub fn all_intervention_times(model: &CompiledModel, params: &[f64]) -> Vec<f64> {
     let mut times: Vec<f64> = model.model.interventions.iter()
-        .flat_map(|iv| intervention_fire_times(&iv.schedule))
+        .enumerate()
+        .flat_map(|(iv_idx, iv)| {
+            let resolved = model.resolved.intervention_at_time_exprs[iv_idx].as_deref();
+            intervention_fire_times(&iv.schedule, resolved, model, params)
+        })
         .collect();
     times.sort_by(|a, b| a.total_cmp(b));
     times.dedup();

@@ -18,13 +18,13 @@ use super::types::ParticleState;
 /// (for PGAS). The only process backend that supports PGAS.
 pub struct ChainBinomialProcess {
     pub compiled: Arc<CompiledModel>,
-    /// Runtime view of intervention/event fire steps, resolved once
-    /// at construction using the integrator's `dt`. gh#53 — the
-    /// CompiledModel stores dt-invariant `fire_times`; the per-run
-    /// `fire_steps` view depends on the runtime dt and must be
-    /// resolved with that value, not the compile-time
-    /// `model.simulation.dt`.
-    pub(crate) fire_steps: Vec<std::collections::BTreeSet<i64>>,
+    /// Integrator step for this process. gh#53 — the CompiledModel
+    /// stores dt-invariant `fire_times`; the per-run `fire_steps`
+    /// view depends on the runtime dt and must be resolved with that
+    /// value, not the compile-time `model.simulation.dt`. Resolution
+    /// now happens per-step inside `step` (was pre-resolved at
+    /// construction; broken for parametric event schedules per gh#69).
+    pub(crate) dt: f64,
 }
 
 impl ChainBinomialProcess {
@@ -36,8 +36,16 @@ impl ChainBinomialProcess {
     /// dt; the gh#52 Richardson ladder already does this via
     /// `run_quick_pfilter_with_dt`'s per-rung config rebuild.
     pub fn new(compiled: Arc<CompiledModel>, dt: f64) -> Self {
-        let fire_steps = compiled.resolve_fire_steps(dt);
-        ChainBinomialProcess { compiled, fire_steps }
+        // fire_steps used to be pre-resolved here against default
+        // params. That was incorrect for models with parametric event
+        // schedules (`events { ... at [param] }`, gh#69): different
+        // particles / different PMMH proposals carry different values
+        // for `param`, so each `step` call needs fire_steps resolved
+        // against THIS call's `params`. The pre-resolved value is
+        // dropped; `step` re-resolves per call (linear walk over the
+        // intervention list — negligible compared to a chain-binomial
+        // step's propensity eval + multinomial draws).
+        ChainBinomialProcess { compiled, dt }
     }
 }
 
@@ -71,12 +79,22 @@ impl ProcessModel for ChainBinomialProcess {
         rng: &mut StatefulRng,
         scratch: &mut StepScratch,
     ) -> Result<(), SimError> {
+        // Re-resolve fire_steps per call from the caller's params.
+        // For models without parametric event schedules, this is a
+        // pure function of `dt` (and identical across calls); for
+        // models WITH parametric schedules (gh#69), each particle /
+        // PMMH proposal carries its own value of the schedule
+        // parameter and gets its own fire_steps. Cost: linear walk
+        // over the intervention list (typically O(few)) — small
+        // compared to a chain-binomial step's per-transition
+        // propensity eval and multinomial draws.
+        let fire_steps = self.compiled.resolve_fire_steps(self.dt, params);
         step_one(
             &self.compiled,
             &mut state.counts,
             &mut state.flow_accumulators,
             params, t, dt, rng, scratch,
-            &self.fire_steps,
+            &fire_steps,
         )
     }
 

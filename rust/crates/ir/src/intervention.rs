@@ -18,6 +18,13 @@ pub struct RecurringSchedule {
 #[serde(rename_all = "snake_case")]
 pub enum InterventionSchedule {
     AtTimes(Vec<f64>),
+    /// gh#69: parametric `at [...]` lists. Each `Expr` is evaluated
+    /// once per simulation start against the current `params` vector
+    /// to yield a concrete fire time. The OCaml expander emits this
+    /// variant only when at least one entry references a parameter
+    /// (or other non-constant expression); fully-constant lists stay
+    /// in `AtTimes` so existing golden IRs remain byte-identical.
+    AtTimesExpr(Vec<Expr>),
     Recurring(RecurringSchedule),
     External(String),
 }
