@@ -1172,6 +1172,11 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 let result = run_if2(
                     &*process, &*obs_model_obj, &params, per_start_specs, &config, job_seed,
                 );
+                // gh#74 Option B: per-start IF2 diagnostics. Populate
+                // the trace + cooling end-state on success; on Err the
+                // engine returned, leave `diag` at defaults so the
+                // aggregator records "not completed" for this start.
+                diag.algo = Some(crate::profile_diagnostics::DiagAlgo::If2);
                 match result {
                     Ok(r) => {
                         // Clean-eval re-pass at the swarm-mean MLE. IF2's
@@ -1207,9 +1212,51 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                             &*process, &*obs_model_obj, &r.mle, &smc_config, clean_seed,
                         ).map(|res| res.log_likelihood)
                           .unwrap_or(f64::NEG_INFINITY);
+                        // Trace = per-iteration `if2_perturbed_loglik`.
+                        // The `IF2IterResult.loglik` field is NaN here
+                        // (the post-hoc clean-PF re-eval only runs at
+                        // the swarm mean, not per iter — see
+                        // if2.rs:121-129), so we surface the engine's
+                        // own perturbed-loglik trace. It's documented
+                        // as "NOT useful for model assessment" but is
+                        // a valid signal for chain-level agreement
+                        // across the K starts, which is exactly what
+                        // Rhat measures.
+                        let trace: Vec<f64> = r.iterations.iter()
+                            .map(|it| it.if2_perturbed_loglik)
+                            .collect();
+                        let last_iter = r.iterations.last();
+                        diag.completed = true_ll.is_finite();
+                        diag.iterations_used = last_iter.map(|it| it.iteration + 1);
+                        // cooling_final: mean across estimated params
+                        // of the final iter's effective_rw_sd (the
+                        // *actual* ending perturbation SD per
+                        // ParamIterDiag.effective_rw_sd at
+                        // if2.rs:147). Scalar summary of "how cool
+                        // the perturbation got." Mean-across-params
+                        // is fine — a model with a heterogeneous
+                        // rw_sd has each param cooled by the same
+                        // schedule factor, so the spread between
+                        // params is mostly init-dependent and the
+                        // mean is a representative single number.
+                        diag.cooling_final = last_iter.and_then(|it| {
+                            if it.param_diag.is_empty() { None }
+                            else {
+                                let s: f64 = it.param_diag.iter()
+                                    .map(|p| p.effective_rw_sd).sum();
+                                Some(s / it.param_diag.len() as f64)
+                            }
+                        });
+                        diag.loglik_trace = trace;
                         (true_ll, r.mle)
                     }
-                    Err(_) => (f64::NEG_INFINITY, params.clone()),
+                    Err(_) => {
+                        // diag.completed stays false; iterations_used /
+                        // cooling_final / loglik_trace stay at defaults
+                        // — the aggregator records NaN for this start's
+                        // contribution.
+                        (f64::NEG_INFINITY, params.clone())
+                    }
                 }
             }
             ProfileAlgo::Pmmh => {
