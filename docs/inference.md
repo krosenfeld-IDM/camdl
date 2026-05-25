@@ -555,6 +555,59 @@ Shows ridges and correlations between parameters. An elongated contour along the
 alpha-gamma diagonal means those parameters trade off — you can't identify both
 independently.
 
+### Profile and priors
+
+By default the per-cell IF2 path **maximizes the likelihood** at each grid
+point — it ignores any priors the model declares. That's the textbook
+profile-*likelihood*. When you switch to `--algorithm pmmh`, the per-cell
+inner loop is a short MCMC chain and *does* honour priors: the resulting
+per-cell MAP is the profile-*posterior* mode.
+
+Priors are resolved via the same three-tier chain as `camdl fit run`:
+
+1. **`--fit <toml>` priors** (highest). A fit toml mirroring `camdl
+   survey --fit`'s schema; its `[estimate.<param>.prior]` block wins
+   over any other source.
+2. **Model-IR `~` priors** (fallback). When `--fit` doesn't declare a
+   prior for an estimated parameter, the resolver falls through to
+   whatever the `.camdl` file declared via `~` syntax.
+3. **`Prior::Flat`** (last resort). Improper uniform. When this fires
+   for any estimated parameter `camdl profile` emits a structured
+   warning naming the affected parameters and citing the two
+   remedies — declare the prior in the model file, or supply one
+   via `--fit`. Suppress with `--suppress-warnings` (loud — the
+   waiver is recorded into `run.json`'s `suppressed_warnings`).
+
+```bash
+# Profile-posterior sweep: --fit supplies priors and bounds
+camdl profile model.camdl --data cases.tsv \
+    --sweep "tau=lin(-35,-1,30)" \
+    --algorithm pmmh --pmmh-steps 1500 --pmmh-particles 800 \
+    --rw-sd auto --starts 3 \
+    --fit fits/profile_tau.toml \
+    --output results/profile_tau_posterior.tsv
+```
+
+**Precedence rules** when `--params`, `--fit`, `--fixed`, and the fit
+toml's `[fixed]` block overlap:
+
+- `--params` carries values only. When both `--params` and `--fit`
+  supply a starting value for the same parameter, `--params` wins.
+  Priors and bounds always come from `--fit` (or the model IR).
+- The CLI `--fixed` flag wins over the fit toml's `[fixed]` block on
+  collision (the CLI is the per-invocation override; the toml is the
+  artifact's default).
+- The focal swept parameter is always removed from the estimated set,
+  even when it appears in the fit toml's `[estimate]`. Listing the
+  focal parameter in `--fixed` (or in the fit toml's `[fixed]`) is a
+  hard error — a parameter cannot be simultaneously swept and fixed.
+
+The CAS hash includes both `fit_toml_hash` and the resolved per-parameter
+prior sources, so re-running against the same model with a different
+fit toml produces a different cache dir — reviewers can audit which
+configuration produced each artifact via `run.json`'s `resolved_priors`
+array.
+
 ---
 
 ## PGAS (Particle Gibbs with Ancestor Sampling)
