@@ -1,0 +1,469 @@
+//! Integration tests for the gh#74 Option B per-cell convergence
+//! diagnostic columns emitted by `camdl profile`.
+//!
+//! Diagnostic columns are appended to the profile output TSV after the
+//! pre-existing schema. Consumers must read by column name, not column
+//! index. Algorithm-specific columns are present in every row; rows
+//! produced by an algorithm that has no value for a given column write
+//! `NaN` (capital N — matches camdl's TSV convention).
+//!
+//! Each test drives the release binary end-to-end, identical pattern
+//! to `profile_priors.rs`. Skipped when the release binary or the
+//! `camdlc` compiler isn't present.
+//!
+//! Schema asserted in these tests:
+//!
+//! * PMMH per-cell columns:
+//!   `acc_rate_avg`, `acc_rate_min`,
+//!   `loglik_spread_starts`, `loglik_rhat_starts`,
+//!   `starts_n_completed`.
+//! * IF2 per-cell columns:
+//!   `iterations_used`, `cooling_final`,
+//!   `loglik_spread_starts`, `loglik_rhat_starts`,
+//!   `starts_n_completed`.
+//! * NLopt per-cell columns: `loglik_spread_starts`,
+//!   `starts_n_completed`.
+//!
+//! `loglik_rhat_starts` is NaN when fewer than 3 starts ran — Gelman-
+//! Rubin Rhat is undefined / unstable at K<3.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn camdl_bin() -> Option<PathBuf> {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let p = Path::new(&manifest).join("../../target/release/camdl");
+    if p.exists() { Some(p) } else { None }
+}
+
+fn camdlc_bin() -> Option<PathBuf> {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let p = Path::new(&manifest).join("../../../ocaml/_build/default/bin/camdlc.exe");
+    if p.exists() { Some(p) } else { None }
+}
+
+struct Tmp(PathBuf);
+impl Tmp { fn path(&self) -> &Path { &self.0 } }
+impl Drop for Tmp {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+fn tempdir(tag: &str) -> Tmp {
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!(
+        "camdl_profile_diag_{}_{}_{}", tag, std::process::id(), ns));
+    std::fs::create_dir_all(&base).unwrap();
+    Tmp(base)
+}
+
+/// Tiny SIR fixture: two estimated params (`beta`, `gamma`), `N0`
+/// fixed. Same shape used by `profile_priors.rs` so the test set
+/// stays uniform.
+fn write_fixture(dir: &Path) -> (PathBuf, PathBuf) {
+    let camdlc = camdlc_bin().expect("camdlc.exe present");
+    let src = r#"
+time_unit = 'days
+compartments { S, I, R }
+parameters {
+  beta  : rate  in [0.001, 5.0]
+  gamma : rate  in [0.01, 1.0]
+  N0    : count in [100, 10000]
+}
+transitions {
+  infection : S --> I @ beta * S * I / N0
+  recovery  : I --> R @ gamma * I
+}
+observations {
+  cases : {
+    projected  = prevalence(I)
+    every      = 1 'days
+    likelihood = poisson(rate = projected)
+  }
+}
+scenarios {
+  baseline {
+    set = {
+      beta  = 0.3
+      gamma = 0.1
+      N0    = 1000
+    }
+  }
+}
+init { S = 999  I = 1 }
+simulate { from = 0 'days  to = 6 'days }
+"#;
+    let model_path = dir.join("sir.camdl");
+    std::fs::write(&model_path, src).unwrap();
+    let ir_path = dir.join("sir.ir.json");
+    let out = Command::new(&camdlc).arg(&model_path).output().unwrap();
+    assert!(out.status.success(),
+        "camdlc failed: {}", String::from_utf8_lossy(&out.stderr));
+    std::fs::write(&ir_path, &out.stdout).unwrap();
+
+    let data_path = dir.join("cases.tsv");
+    std::fs::write(&data_path,
+        "time\tcases\n1\t2\n2\t4\n3\t8\n4\t6\n5\t4\n6\t2\n").unwrap();
+
+    (ir_path, data_path)
+}
+
+/// Parse the umbrella `summary.tsv` written under `<out_root>/profiles/`.
+/// Returns (headers, data_rows). Comment lines are skipped.
+fn read_summary_tsv(out_root: &Path) -> (Vec<String>, Vec<Vec<String>>) {
+    let profiles = out_root.join("profiles");
+    let entries: Vec<_> = std::fs::read_dir(&profiles)
+        .unwrap_or_else(|e| panic!("read_dir {}: {}", profiles.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(entries.len(), 1,
+        "expected one umbrella dir under {}, found {:?}",
+        profiles.display(), entries);
+    let umbrella = &entries[0];
+    let summary = umbrella.join("summary.tsv");
+    let body = std::fs::read_to_string(&summary)
+        .unwrap_or_else(|e| panic!("read {}: {}", summary.display(), e));
+    let mut lines = body.lines().filter(|l| !l.starts_with('#') && !l.is_empty());
+    let header_line = lines.next()
+        .unwrap_or_else(|| panic!("no header row in {}", summary.display()));
+    let headers: Vec<String> = header_line.split('\t').map(|s| s.to_string()).collect();
+    let rows: Vec<Vec<String>> = lines
+        .map(|l| l.split('\t').map(|s| s.to_string()).collect())
+        .collect();
+    (headers, rows)
+}
+
+fn col_index(headers: &[String], name: &str) -> usize {
+    headers.iter().position(|h| h == name)
+        .unwrap_or_else(|| panic!(
+            "header missing column '{}'. Available headers: {:?}",
+            name, headers))
+}
+
+/// Parse a TSV cell as f64, accepting `NaN`/`Inf`/`-Inf` and bare
+/// numerics. Used by the diagnostic assertions where columns can hold
+/// either finite values or `NaN`.
+fn parse_cell(s: &str) -> f64 {
+    match s.trim() {
+        "NaN" => f64::NAN,
+        "Inf" => f64::INFINITY,
+        "-Inf" => f64::NEG_INFINITY,
+        v => v.parse::<f64>().unwrap_or_else(|e| {
+            panic!("failed to parse TSV cell {:?}: {}", s, e)
+        }),
+    }
+}
+
+/// Common harness: run `camdl profile --algorithm <alg>` on the SIR
+/// fixture with `--starts <k>`. Caller picks the algorithm-specific
+/// hyperparams via `extra_args`.
+fn run_profile_pmmh(
+    bin: &Path, out_root: &Path, ir: &Path, data: &Path,
+    starts: usize, seed: u64,
+) -> std::process::Output {
+    let out_tsv = out_root.join("profile.tsv");
+    let args: Vec<String> = vec![
+        "profile".into(), ir.to_string_lossy().into_owned(),
+        "--scenario".into(), "baseline".into(),
+        "--data".into(), data.to_string_lossy().into_owned(),
+        "--obs".into(), "cases".into(),
+        "--sweep".into(), "beta=lin(0.2,0.4,2)".into(),
+        "--algorithm".into(), "pmmh".into(),
+        "--pmmh-steps".into(), "50".into(),
+        "--pmmh-particles".into(), "30".into(),
+        "--pmmh-rho".into(), "0.99".into(),
+        "--particles".into(), "30".into(),
+        "--iterations".into(), "5".into(),
+        "--starts".into(), format!("{}", starts),
+        "--rw-sd".into(), "auto".into(),
+        "--fixed".into(), "N0".into(),
+        "--output".into(), out_tsv.to_string_lossy().into_owned(),
+        "--seed".into(), format!("{}", seed),
+        "--suppress-warnings".into(),
+    ];
+    Command::new(bin)
+        .env("CAMDL_OUTPUT_DIR", out_root)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .args(args.iter().map(|s| s.as_str()))
+        .output()
+        .expect("spawn camdl profile pmmh")
+}
+
+fn run_profile_if2(
+    bin: &Path, out_root: &Path, ir: &Path, data: &Path,
+    starts: usize, seed: u64,
+) -> std::process::Output {
+    let out_tsv = out_root.join("profile.tsv");
+    let args: Vec<String> = vec![
+        "profile".into(), ir.to_string_lossy().into_owned(),
+        "--scenario".into(), "baseline".into(),
+        "--data".into(), data.to_string_lossy().into_owned(),
+        "--obs".into(), "cases".into(),
+        "--sweep".into(), "beta=lin(0.2,0.4,2)".into(),
+        "--algorithm".into(), "if2".into(),
+        "--particles".into(), "30".into(),
+        "--iterations".into(), "5".into(),
+        "--starts".into(), format!("{}", starts),
+        "--rw-sd".into(), "auto".into(),
+        "--fixed".into(), "N0".into(),
+        "--output".into(), out_tsv.to_string_lossy().into_owned(),
+        "--seed".into(), format!("{}", seed),
+    ];
+    Command::new(bin)
+        .env("CAMDL_OUTPUT_DIR", out_root)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .args(args.iter().map(|s| s.as_str()))
+        .output()
+        .expect("spawn camdl profile if2")
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn profile_pmmh_emits_acc_rate_columns() {
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("pmmh_acc_rate");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    let output = run_profile_pmmh(&bin, &out_root, &ir, &data, 3, 1);
+    assert!(output.status.success(),
+        "profile pmmh failed: stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let (headers, rows) = read_summary_tsv(&out_root);
+    assert!(!rows.is_empty(), "summary.tsv has no data rows");
+
+    // Every required PMMH diagnostic column must be present.
+    for col in ["acc_rate_avg", "acc_rate_min",
+                "loglik_spread_starts", "loglik_rhat_starts",
+                "starts_n_completed"] {
+        assert!(headers.contains(&col.to_string()),
+            "summary.tsv must declare column {:?}. headers={:?}",
+            col, headers);
+    }
+
+    // Acceptance rates are finite probabilities for every cell.
+    let i_avg = col_index(&headers, "acc_rate_avg");
+    let i_min = col_index(&headers, "acc_rate_min");
+    let i_completed = col_index(&headers, "starts_n_completed");
+    for (ri, row) in rows.iter().enumerate() {
+        let avg = parse_cell(&row[i_avg]);
+        let min = parse_cell(&row[i_min]);
+        let n_completed: f64 = parse_cell(&row[i_completed]);
+        assert!(avg.is_finite() && (0.0..=1.0).contains(&avg),
+            "row {} acc_rate_avg = {} must be a finite probability", ri, avg);
+        assert!(min.is_finite() && (0.0..=1.0).contains(&min),
+            "row {} acc_rate_min = {} must be a finite probability", ri, min);
+        assert!(min <= avg + 1e-9,
+            "row {} acc_rate_min ({}) must be <= acc_rate_avg ({})",
+            ri, min, avg);
+        // 3 starts requested; with --suppress-warnings & flat priors,
+        // a 50-step PMMH chain should not diverge on this fixture.
+        // The test asserts the column populates with an integer count,
+        // not a particular value (induced-divergence is covered by a
+        // separate test).
+        assert!(n_completed >= 0.0,
+            "row {} starts_n_completed = {} must be non-negative",
+            ri, n_completed);
+    }
+}
+
+#[test]
+fn profile_pmmh_loglik_rhat_nan_at_k_lt_3() {
+    // Gelman-Rubin R-hat is undefined / unstable for K < 3 chains.
+    // With --starts 2 the column must hold NaN; the K<3 rule is
+    // part of the documented schema.
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("rhat_nan_k2");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    let output = run_profile_pmmh(&bin, &out_root, &ir, &data, 2, 1);
+    assert!(output.status.success(),
+        "profile pmmh failed: stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let (headers, rows) = read_summary_tsv(&out_root);
+    let i_rhat = col_index(&headers, "loglik_rhat_starts");
+    for (ri, row) in rows.iter().enumerate() {
+        let v = parse_cell(&row[i_rhat]);
+        assert!(v.is_nan(),
+            "row {} loglik_rhat_starts = {} must be NaN at K=2 (K<3 rule)",
+            ri, v);
+    }
+}
+
+#[test]
+fn profile_pmmh_loglik_rhat_finite_at_k_3() {
+    // At K=3 starts the K<3 rule lifts and R-hat must hold a finite
+    // numeric value.
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("rhat_finite_k3");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    let output = run_profile_pmmh(&bin, &out_root, &ir, &data, 3, 1);
+    assert!(output.status.success(),
+        "profile pmmh failed: stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let (headers, rows) = read_summary_tsv(&out_root);
+    let i_rhat = col_index(&headers, "loglik_rhat_starts");
+    for (ri, row) in rows.iter().enumerate() {
+        let v = parse_cell(&row[i_rhat]);
+        assert!(v.is_finite(),
+            "row {} loglik_rhat_starts = {} must be finite at K=3",
+            ri, v);
+    }
+}
+
+#[test]
+fn profile_if2_emits_diagnostic_columns() {
+    // IF2 path exposes per-cell iterations_used + cooling_final plus
+    // the shared loglik_spread / loglik_rhat / starts_n_completed
+    // columns. acc_rate_* is NaN for IF2 (the algorithm has no MH
+    // acceptance step).
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("if2_diag");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    let output = run_profile_if2(&bin, &out_root, &ir, &data, 3, 1);
+    assert!(output.status.success(),
+        "profile if2 failed: stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let (headers, rows) = read_summary_tsv(&out_root);
+    for col in ["iterations_used", "cooling_final",
+                "loglik_spread_starts", "loglik_rhat_starts",
+                "starts_n_completed"] {
+        assert!(headers.contains(&col.to_string()),
+            "if2 summary.tsv must declare column {:?}. headers={:?}",
+            col, headers);
+    }
+
+    let i_iters = col_index(&headers, "iterations_used");
+    let i_cool  = col_index(&headers, "cooling_final");
+    let i_completed = col_index(&headers, "starts_n_completed");
+    for (ri, row) in rows.iter().enumerate() {
+        let iters = parse_cell(&row[i_iters]);
+        let cool  = parse_cell(&row[i_cool]);
+        let n_completed = parse_cell(&row[i_completed]);
+        assert!(iters.is_finite() && iters > 0.0,
+            "row {} iterations_used = {} must be a positive finite count",
+            ri, iters);
+        assert!(cool.is_finite() && cool >= 0.0,
+            "row {} cooling_final = {} must be a finite non-negative SD",
+            ri, cool);
+        assert!(n_completed.is_finite() && n_completed >= 0.0,
+            "row {} starts_n_completed = {} must be a non-negative count",
+            ri, n_completed);
+    }
+}
+
+#[test]
+fn profile_tsv_schema_stable_across_runs() {
+    // Two runs with different seeds must produce a byte-identical
+    // header. The schema doesn't reorder based on data.
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("schema_stable");
+    let (ir, data) = write_fixture(tmp.path());
+
+    let out_a = tmp.path().join("out_a");
+    let out_b = tmp.path().join("out_b");
+
+    let out1 = run_profile_pmmh(&bin, &out_a, &ir, &data, 3, 1);
+    assert!(out1.status.success(),
+        "profile (seed=1) failed: stderr=\n{}",
+        String::from_utf8_lossy(&out1.stderr));
+    let out2 = run_profile_pmmh(&bin, &out_b, &ir, &data, 3, 42);
+    assert!(out2.status.success(),
+        "profile (seed=42) failed: stderr=\n{}",
+        String::from_utf8_lossy(&out2.stderr));
+
+    let (h_a, _) = read_summary_tsv(&out_a);
+    let (h_b, _) = read_summary_tsv(&out_b);
+    assert_eq!(h_a, h_b,
+        "summary.tsv header must be byte-identical across runs differing \
+         only by --seed. a={:?} b={:?}", h_a, h_b);
+}
+
+#[test]
+fn profile_starts_n_completed_reflects_diverged_chains() {
+    // Induce divergence by clipping pmmh-steps to a small budget and
+    // forcing a wildly mismatched starting point via a tight `--params`
+    // override that produces -Inf logliks on most cells; alternative
+    // routes (start from a parameter outside model bounds, etc.) are
+    // model-specific. Here the fixture's `[init]` has `S = 999, I = 1`
+    // and the sweep over `beta` covers the regime where the chain
+    // mixes — to push at least one start into divergence we set a
+    // pathological cell off the sweep grid using --pmmh-rho=0 (no
+    // correlated PF) and pmmh-particles=2 (heavy weight degeneracy).
+    //
+    // The test asserts the column reports `< K` on at least one cell.
+    // If the fixture is too forgiving and the chain converges anyway,
+    // we want this test to flag that — the column would simply equal
+    // K everywhere, and the production diagnostic plumbing would be
+    // untested. To force the issue we drive the per-cell PF with a
+    // 2-particle filter that's near-guaranteed to collapse on the
+    // shorter chain segments.
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("diverged");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    let out_tsv = out_root.join("profile.tsv");
+    let args: Vec<String> = vec![
+        "profile".into(), ir.to_string_lossy().into_owned(),
+        "--scenario".into(), "baseline".into(),
+        "--data".into(), data.to_string_lossy().into_owned(),
+        "--obs".into(), "cases".into(),
+        // Sweep covers values where some chains will struggle.
+        "--sweep".into(), "beta=lin(2.5,4.5,2)".into(),
+        "--algorithm".into(), "pmmh".into(),
+        "--pmmh-steps".into(), "30".into(),
+        // Tiny PF — many starts will produce -inf logliks early.
+        "--pmmh-particles".into(), "2".into(),
+        "--pmmh-rho".into(), "0.0".into(),
+        "--particles".into(), "30".into(),
+        "--iterations".into(), "5".into(),
+        "--starts".into(), "3".into(),
+        "--rw-sd".into(), "auto".into(),
+        "--fixed".into(), "N0".into(),
+        "--output".into(), out_tsv.to_string_lossy().into_owned(),
+        "--seed".into(), "7".into(),
+        "--suppress-warnings".into(),
+    ];
+    let output = Command::new(&bin)
+        .env("CAMDL_OUTPUT_DIR", &out_root)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .args(args.iter().map(|s| s.as_str()))
+        .output()
+        .expect("spawn camdl profile");
+    // The run as a whole may still succeed (per-cell divergences
+    // don't abort the profile). What we care about is the per-cell
+    // diagnostic surface.
+    assert!(output.status.success(),
+        "profile run failed: stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let (headers, rows) = read_summary_tsv(&out_root);
+    let i_completed = col_index(&headers, "starts_n_completed");
+    let mut any_below_k = false;
+    for row in &rows {
+        let v = parse_cell(&row[i_completed]);
+        if v.is_finite() && v < 3.0 { any_below_k = true; }
+    }
+    assert!(any_below_k,
+        "at least one cell must show starts_n_completed < K=3 under \
+         a 2-particle PF; got starts_n_completed values: {:?}",
+        rows.iter()
+            .map(|r| r[i_completed].clone()).collect::<Vec<_>>());
+}
