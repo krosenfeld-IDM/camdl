@@ -772,14 +772,14 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // across `--algorithm` choices and supports a future extension to
     // honour priors on IF2 too (which currently ignores them by
     // design but should still surface what *would* be ignored).
-    let resolved_priors: Vec<crate::profile_priors::ResolvedPrior> =
-        crate::profile_priors::resolve_priors_with_precedence(
+    let resolved_priors: Vec<crate::fit::priors_precedence::ResolvedPrior> =
+        crate::fit::priors_precedence::resolve_priors_with_precedence(
             &if2_params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
             &fit_estimate,
             &model,
         );
     if matches!(profile_algo, ProfileAlgo::Pmmh) && !a.suppress_warnings {
-        if let Some(w) = crate::profile_priors::format_flat_fallback_warning(
+        if let Some(w) = crate::fit::priors_precedence::format_flat_fallback_warning(
             &resolved_priors, a.fit.is_some(),
         ) {
             eprint!("{}", w);
@@ -792,7 +792,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let suppressed_warnings: Vec<String> =
         if a.suppress_warnings
             && resolved_priors.iter()
-                .any(|r| r.source == crate::profile_priors::PriorSource::FlatFallback)
+                .any(|r| r.source == crate::fit::priors_precedence::PriorSource::FlatFallback)
         {
             vec!["profile_flat_prior_fallback".to_string()]
         } else {
@@ -932,9 +932,15 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let resolved_priors_kv: Vec<(String, String)> = resolved_priors.iter()
         .map(|r| {
             let source_str = match r.source {
-                crate::profile_priors::PriorSource::FitToml      => "fit_toml",
-                crate::profile_priors::PriorSource::ModelIr      => "model_ir",
-                crate::profile_priors::PriorSource::FlatFallback => "flat_fallback",
+                crate::fit::priors_precedence::PriorSource::FitToml      => "fit_toml",
+                crate::fit::priors_precedence::PriorSource::ModelIr      => "model_ir",
+                crate::fit::priors_precedence::PriorSource::FlatFallback => "flat_fallback",
+                // gh#75: explicit flat-prior opt-in via `prior = { flat = {} }`.
+                // Not reachable on the profile path today (the resolver
+                // gets its fit-toml priors from `--fit`, which doesn't yet
+                // surface explicit flat — but the resolver's output is
+                // shared, so the match must be exhaustive).
+                crate::fit::priors_precedence::PriorSource::FlatExplicit => "flat_explicit",
             };
             (r.param.clone(), source_str.to_string())
         })
@@ -1279,7 +1285,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 let cell_names: Vec<String> = per_start_specs.iter()
                     .map(|p| p.name.clone())
                     .collect();
-                let resolved = crate::profile_priors::resolve_priors_with_precedence(
+                let resolved = crate::fit::priors_precedence::resolve_priors_with_precedence(
                     &cell_names, &fit_estimate, &model,
                 );
                 let priors: Vec<Prior> = resolved.iter()

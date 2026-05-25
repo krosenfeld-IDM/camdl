@@ -1,4 +1,5 @@
-//! Prior resolution for `camdl profile --algorithm pmmh` (gh#73).
+//! Shared prior-resolution chain for `camdl profile --algorithm pmmh`
+//! (gh#73) and `camdl fit run` Bayesian stages (gh#75).
 //!
 //! Background
 //! ----------
@@ -13,41 +14,60 @@
 //! parameter values outside the priors' plausibility support on real
 //! models (see the camdl-book seed-timing chapter incident in gh#73's
 //! body — `t_rep = −40` at a `Normal(4, 5)` prior; `n_seed = 1000`
-//! pinned at the bound). This module is the fix.
+//! pinned at the bound). gh#73 introduced this module to fix the
+//! profile path; gh#75 extended the same resolver to `camdl fit run`
+//! Bayesian stages, with one semantic difference (see below).
 //!
 //! Precedence chain
 //! ----------------
 //!
-//! For each estimated parameter `p` (the focal swept parameter is
-//! removed from the estimated set before this resolution — it's not
-//! estimated, it's fixed at the cell value):
+//! For each estimated parameter `p` (in profile, the focal swept
+//! parameter is removed from the estimated set before this
+//! resolution — it's not estimated, it's fixed at the cell value):
 //!
-//!   1. **`--fit <toml>` priors** (highest). When the user passed
-//!      `--fit`, look up `p` in the fit toml's
-//!      `[estimate.<p>.prior]` block. Behavior matches
-//!      `camdl fit run` byte-identically because this module routes
-//!      through the same [`crate::fit::runner::resolve_prior`] helper.
+//!   1. **fit-toml priors** (highest). When the user passed `--fit`
+//!      (profile) or invoked `fit run` (which always loads a fit
+//!      toml), look up `p` in the toml's `[estimate.<p>.prior]`
+//!      block. Behavior matches `camdl fit run` byte-identically
+//!      because this module routes through the same
+//!      [`crate::fit::runner::resolve_prior`] helper.
 //!
-//!   2. **Model-IR `~` priors** (fallback). If `--fit` didn't supply
-//!      a prior for `p`, fall through to the IR's `parameter.prior`
-//!      (populated from `~` syntax during DSL compilation).
+//!   2. **Model-IR `~` priors** (fallback). If the fit toml didn't
+//!      supply a prior for `p`, fall through to the IR's
+//!      `parameter.prior` (populated from `~` syntax during DSL
+//!      compilation).
 //!
-//!   3. **`Prior::Flat`** (last resort). Used only when neither
-//!      (1) nor (2) supplied a prior.
+//!   3. **`Prior::Flat`** (last resort). Used only when neither (1)
+//!      nor (2) supplied a prior.
 //!
-//! Whenever any parameter falls through to (3) the resolver records
-//! it as a [`PriorSource::FlatFallback`] in the returned vector, and
-//! the caller is expected to surface a warning naming every affected
-//! parameter (see [`format_flat_fallback_warning`]).
+//! Profile vs fit run semantics for tier 3
+//! ---------------------------------------
+//!
+//! `camdl profile`: tier 3 is a *silent fallback* that emits a
+//! warning naming the affected parameters (see
+//! [`format_flat_fallback_warning`]). Per-cell IF2/PMMH with flat
+//! priors is recoverable by spot-checking per-cell parameter values.
+//!
+//! `camdl fit run`: tier 3 is reachable ONLY via an *explicit
+//! opt-in* — `prior = { flat = {} }` in the fit toml. Implicit
+//! fall-through to flat priors is a hard validation error before
+//! the fit starts. The downstream interpretation of a `fit run`
+//! chain (canonical posterior in `fit_summary.json`) is too
+//! authoritative to silently target the unconditioned likelihood,
+//! so users who genuinely want flat priors declare the choice
+//! accountably; the provenance records the source as
+//! [`PriorSource::FlatExplicit`] for each such parameter.
 //!
 //! Why a separate module
 //! ---------------------
 //!
-//! Keeping the resolution logic out of `profile.rs` lets us unit-test
-//! the precedence chain against a synthetic `ir::Model` + fit-toml
-//! `IndexMap` without standing up the full CLI dispatch. The
-//! integration counterparts in `rust/crates/cli/tests/profile_priors.rs`
-//! drive the binary end-to-end and check the wired-through behavior.
+//! Keeping the resolution logic out of `profile.rs` and the fit
+//! validator lets us unit-test the precedence chain against a
+//! synthetic `ir::Model` + fit-toml `IndexMap` without standing up
+//! the full CLI dispatch. The integration counterparts in
+//! `rust/crates/cli/tests/profile_priors.rs` (profile) and
+//! `rust/crates/cli/tests/fit_priors.rs` (fit run) drive the binary
+//! end-to-end and check the wired-through behavior.
 
 use indexmap::IndexMap;
 use sim::inference::pmmh::Prior;
@@ -64,27 +84,41 @@ use crate::fit::runner::resolve_prior;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PriorSource {
-    /// Resolved from the `--fit <toml>` file's `[estimate.<param>.prior]`
-    /// block (precedence tier 1).
+    /// Resolved from the fit toml's `[estimate.<param>.prior]`
+    /// block with a non-flat distribution (precedence tier 1).
     FitToml,
-    /// Resolved from the model IR's `parameter.prior` field (precedence
-    /// tier 2 — populated from DSL `~` syntax during compilation).
+    /// Resolved from the model IR's `parameter.prior` field
+    /// (precedence tier 2 — populated from DSL `~` syntax during
+    /// compilation).
     ModelIr,
-    /// Neither tier 1 nor tier 2 supplied a prior; fell back to
-    /// `Prior::Flat` (improper uniform). Warning-emitting case.
+    /// Reached tier 3 (Prior::Flat) by silent fallback — neither
+    /// the fit toml nor the model IR supplied a prior. Only fires
+    /// in `camdl profile`'s per-cell PMMH path; `camdl fit run`
+    /// treats this case as a hard validation error before the
+    /// fit starts (gh#75). Warning-emitting case in profile.
     FlatFallback,
+    /// User explicitly opted into a flat prior via
+    /// `prior = { flat = {} }` in the fit toml (gh#75). Distinct
+    /// from `FlatFallback`: the choice is accountable
+    /// (serialized into the fit toml the user wrote) and no
+    /// warning fires. Honoured by `camdl fit run` for users who
+    /// genuinely want the chain to target the unconditioned
+    /// likelihood (scaled-likelihood posterior).
+    FlatExplicit,
 }
 
 impl PriorSource {
     /// Map the runner's source string (returned from
     /// [`crate::fit::runner::resolve_prior`]) into a typed
     /// `PriorSource`. The runner's strings are stable: see
-    /// runner.rs:1999/2005/2011/2015.
+    /// runner.rs:1999/2005/2011/2015 plus the gh#75 explicit-flat
+    /// path.
     fn from_runner_source(s: &str) -> Self {
         match s {
             "fit.toml"             => PriorSource::FitToml,
             "model"                => PriorSource::ModelIr,
             "model (hierarchical)" => PriorSource::ModelIr,
+            "flat (explicit)"      => PriorSource::FlatExplicit,
             // Includes "flat (default)" and any future fallback labels.
             _                      => PriorSource::FlatFallback,
         }

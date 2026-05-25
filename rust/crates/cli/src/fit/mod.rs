@@ -9,6 +9,7 @@ pub mod config_v2;
 pub mod state;
 pub mod provenance;
 pub mod runner;
+pub mod priors_precedence;  // gh#75: shared prior-resolution chain for fit run + profile
 pub mod fit_tree;
 pub mod method_result;
 pub mod config_diff;
