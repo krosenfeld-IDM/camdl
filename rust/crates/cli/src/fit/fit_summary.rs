@@ -1977,6 +1977,7 @@ mod tests {
                 fixed: HashMap::new(),
                 stages_declared: vec!["scout".into(), "refine".into(), "validate".into()],
                 ic_free: false,
+                resolved_priors: Vec::new(),
             }),
         };
         r.write(dir).unwrap();

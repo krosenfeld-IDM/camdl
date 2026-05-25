@@ -415,9 +415,18 @@ pub struct EstimateSpecV2 {
     /// Optional for MLE (IF2 ignores priors).
     ///
     /// Wire format is externally-tagged (matches the OCaml IR emission):
-    /// `prior = { log_normal = { mu = 0.0, sigma = 1.0 } }`.
+    ///   `prior = { log_normal = { mu = 0.0, sigma = 1.0 } }`
+    ///
+    /// gh#75: an explicit flat-prior opt-in is also recognized:
+    ///   `prior = { flat = {} }`
+    /// The flat variant is *only* meaningful in fit tomls — there is
+    /// no DSL `~ flat(...)` syntax. Honored by Bayesian stages as
+    /// the "I want flat priors here, on purpose" declaration. The
+    /// runner emits provenance `flat_explicit` for each such param.
+    ///
+    /// See [`EstimatePriorSpec`] for the typed wrapper.
     #[serde(default)]
-    pub prior: Option<PriorDist>,
+    pub prior: Option<EstimatePriorSpec>,
 
     /// Initial value parameter: perturbed only at t=0 in IF2.
     #[serde(default)]
@@ -463,6 +472,72 @@ impl Transform {
 // downstream `use config_v2::PriorDist` imports keep working without
 // touching the `ir` crate dependency directly.
 pub use ir::parameter::PriorDist;
+
+/// gh#75: Marker for explicit flat-prior opt-in in fit tomls.
+///
+/// Deserializes from `{}` (an empty TOML inline table). Used inside
+/// [`EstimatePriorSpec::Flat`] to carry the "I have written this"
+/// opt-in marker while preserving room for future flat-prior fields
+/// (e.g. an explicit `support = [lo, hi]` improper-uniform window)
+/// without breaking the wire format.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct FlatMarker {}
+
+/// gh#75: Fit-toml-side prior specification. Either a regular
+/// distribution from the IR's prior catalogue, or an explicit opt-in
+/// to a flat (improper uniform) prior via `prior = { flat = {} }`.
+///
+/// Flat is a fit-toml-only concept: there is no DSL `~ flat(...)`
+/// syntax in `.camdl` model files (flat means "no prior", so
+/// declaring it inside a parameter block would be a contradiction).
+/// `EstimatePriorSpec::Flat` thus lives only at the fit-toml layer
+/// — the IR `PriorDist` is unchanged.
+///
+/// Why a flat opt-in exists at all: `camdl fit run`'s validator
+/// rejects estimated parameters that lack a resolved prior (per
+/// gh#75's "Flat-fallback fires as an Error" rule). Users who
+/// genuinely want flat priors (because the chain is meant to target
+/// the unconditioned likelihood / scaled-likelihood posterior)
+/// declare the choice accountably — the TOML records the
+/// intent, `run_meta.json` records `flat_explicit` as the resolved
+/// source, no warning fires.
+///
+/// Wire format
+/// -----------
+///
+///   prior = { log_normal = { mu = -0.3, sigma = 0.5 } }   # → Dist(...)
+///   prior = { flat = {} }                                 # → Flat
+///
+/// Deserialization is `untagged`: serde tries `Dist(PriorDist)`
+/// first (matches every `{ uniform / normal / ... = { ... } }`
+/// shape) then falls through to the explicit-flat struct variant.
+/// Because `PriorDist` has no `Flat` variant, the two wire shapes
+/// never collide.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum EstimatePriorSpec {
+    /// A standard distribution declared via the IR's PriorDist wire
+    /// format. Matches everything `~ <dist>(...)` syntax in `.camdl`
+    /// can emit.
+    Dist(PriorDist),
+    /// Explicit flat-prior opt-in. Matches the wire form
+    /// `prior = { flat = {} }`. The struct variant's `flat` field
+    /// is the empty marker; the field name itself is the tag.
+    Flat {
+        flat: FlatMarker,
+    },
+}
+
+impl EstimatePriorSpec {
+    /// `true` iff this is the explicit flat opt-in (gh#75). Used by
+    /// the `--draws prior` path to reject flat priors (no finite
+    /// distribution to sample from) and by `validate_priors_present`
+    /// to distinguish the explicit-flat path from the missing-prior
+    /// path in error messages.
+    pub fn is_flat(&self) -> bool {
+        matches!(self, EstimatePriorSpec::Flat { .. })
+    }
+}
 
 // ─── Fixed ──────────────────────────────────────────────────────────────────
 
@@ -1621,12 +1696,35 @@ impl FitConfigV2 {
     /// `ir_prior_params` is the set of parameter names that have a
     /// `~` prior declared in the model IR — production callers build it
     /// from `model.parameters.iter().filter_map(|p| p.prior.as_ref().map(|_| p.name.as_str())).collect()`.
+    ///
+    /// gh#75 — three-tier resolution rule:
+    ///
+    ///   A parameter's prior is "available" when ANY of:
+    ///     (i)   fit toml declares `[estimate.<param>.prior] = { <dist> = ... }`
+    ///     (ii)  fit toml declares `[estimate.<param>.prior] = { flat = {} }`
+    ///           (explicit opt-in to flat — gh#75)
+    ///     (iii) model IR declares a `~ <dist>(...)` prior for the param
+    ///           (populated into `ir_prior_params`)
+    ///
+    /// If none of (i)/(ii)/(iii) holds, the parameter is "missing". The
+    /// returned error names every missing parameter and lists all three
+    /// remedies so the user can pick whichever fits their workflow.
+    ///
+    /// The error refuses to start the fit, so downstream consumers of
+    /// `fit_summary.json` (which treat the chain as the canonical
+    /// posterior) never see a chain that silently targeted the
+    /// unconditioned likelihood. Profile's per-cell PMMH still warns
+    /// rather than errors on flat fallback because per-cell MLE-as-MAP
+    /// is a recoverable case; `fit run` is the authoritative-posterior
+    /// surface and the bar is higher.
     pub fn validate_priors_present(
         &self,
         ir_prior_params: &BTreeSet<&str>,
     ) -> Result<(), String> {
         for (stage_name, stage) in &self.stages {
             if stage.requires_priors() {
+                // "Missing" = no fit-toml prior of any kind (regular dist
+                // *or* explicit flat) AND no IR `~` prior.
                 let missing_priors: Vec<&str> = self.estimate.iter()
                     .filter(|(name, spec)| {
                         spec.prior.is_none() && !ir_prior_params.contains(name.as_str())
@@ -1634,13 +1732,36 @@ impl FitConfigV2 {
                     .map(|(name, _)| name.as_str())
                     .collect();
                 if !missing_priors.is_empty() {
-                    return Err(format!(
-                        "stage '{}' (method={}) requires priors, but missing for: {}\n  \
-                         Declare a prior either in the model file via `~` syntax \
-                         (recommended — single source of truth) or in this fit toml's \
-                         [estimate.<param>.prior] block (per-fit override).",
-                        stage_name, stage.method_name(), missing_priors.join(", ")
+                    // Two-column reason table: parameter | why it's missing.
+                    // Width derived from the affected set so the output
+                    // stays compact when 1–3 params are missing.
+                    let name_width = missing_priors.iter()
+                        .map(|n| n.len()).max().unwrap_or(0)
+                        .max("parameter".len());
+                    let mut msg = String::new();
+                    msg.push_str(&format!(
+                        "stage '{}' (method={}) has parameters with no resolved prior:\n\n",
+                        stage_name, stage.method_name(),
                     ));
+                    for name in &missing_priors {
+                        msg.push_str(&format!(
+                            "  {:<width$}   no prior in fit toml, no `~` in model file\n",
+                            name, width = name_width,
+                        ));
+                    }
+                    msg.push_str("\nTo proceed, do one of:\n\n");
+                    msg.push_str(
+                        "  (i)   Declare `prior = { <dist> = { ... } }` in the fit toml's\n        \
+                         [estimate.<param>] for each listed parameter.\n");
+                    msg.push_str(
+                        "  (ii)  Declare a `~ <dist>(...)` prior in the model file for\n        \
+                         each listed parameter.\n");
+                    msg.push_str(
+                        "  (iii) Opt into flat priors explicitly via\n        \
+                         `prior = { flat = {} }` in the fit toml — only do this if you\n        \
+                         intentionally want the chain to target the unconditioned\n        \
+                         likelihood (scaled-likelihood posterior).\n");
+                    return Err(msg);
                 }
             }
         }
@@ -2165,9 +2286,18 @@ sweeps = 5000
         // The partition/dag/etc. check passes — priors are not its concern.
         config.validate(&model_params).expect("validate() should not check priors");
         // The new prior-presence check, with empty IR-priors, still fails.
+        // gh#75 reworded the error text to enumerate three remedies
+        // (model `~`, fit-toml `prior`, explicit `prior = { flat = {} }`);
+        // assert on the stable, structural anchors of the new wording.
         let err = config.validate_priors_present(&BTreeSet::new()).unwrap_err();
-        assert!(err.contains("requires priors"));
-        assert!(err.contains("beta"));
+        assert!(err.contains("no resolved prior"),
+            "error must explain the resolution failure; got:\n{}", err);
+        assert!(err.contains("beta"),
+            "error must name the offending parameter; got:\n{}", err);
+        assert!(err.contains("(i)") && err.contains("(ii)") && err.contains("(iii)"),
+            "error must enumerate three remedies (i/ii/iii); got:\n{}", err);
+        assert!(err.contains("flat = {}") || err.contains("flat = { }"),
+            "error must mention the explicit flat opt-in syntax; got:\n{}", err);
     }
 
     #[test]
@@ -2205,6 +2335,101 @@ sweeps = 5000
         ir_priors.insert("beta");
         config.validate_priors_present(&ir_priors)
             .expect("IR-declared prior on beta should satisfy the check");
+    }
+
+    /// gh#75: an explicit `prior = { flat = {} }` in the fit toml
+    /// satisfies the validator without an IR fallback. This is the
+    /// "I really do want flat priors" path; silent fallback to flat
+    /// is still rejected.
+    #[test]
+    fn validate_priors_present_passes_with_explicit_flat() {
+        let config = parse(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+
+[estimate]
+beta = { bounds = [0.01, 2.0], prior = { flat = {} } }
+
+[fixed]
+N0 = 1000000
+
+[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 4
+particles = 50
+sweeps = 5000
+        "#).unwrap();
+
+        // No IR priors at all — the only source of beta's prior is the
+        // explicit-flat opt-in in the fit toml.
+        let ir_priors: BTreeSet<&str> = BTreeSet::new();
+        config.validate_priors_present(&ir_priors)
+            .expect("explicit prior = { flat = {} } should satisfy validation");
+
+        // And the typed spec correctly identifies the variant.
+        let beta_spec = config.estimate.get("beta").expect("beta in estimate");
+        let prior = beta_spec.prior.as_ref().expect("prior is set");
+        assert!(prior.is_flat(),
+            "beta's prior should be the explicit-flat variant, got {:?}", prior);
+    }
+
+    /// gh#75: parse round-trip — `prior = { flat = {} }` deserializes
+    /// to `EstimatePriorSpec::Flat`, and `prior = { log_normal = {...} }`
+    /// deserializes to `EstimatePriorSpec::Dist(LogNormal(...))`. The
+    /// untagged enum must disambiguate the two wire shapes without a
+    /// type hint.
+    #[test]
+    fn estimate_prior_spec_disambiguates_flat_from_dist() {
+        let config = parse(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+
+[estimate]
+beta  = { bounds = [0.01, 2.0], prior = { flat = {} } }
+gamma = { bounds = [0.01, 1.0], prior = { log_normal = { mu = -1.2, sigma = 0.5 } } }
+
+[fixed]
+N0 = 1000000
+
+[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 4
+particles = 50
+sweeps = 5000
+        "#).unwrap();
+
+        let beta_prior = config.estimate.get("beta").unwrap().prior.as_ref().unwrap();
+        assert!(beta_prior.is_flat(),
+            "beta with `prior = {{ flat = {{}} }}` should deserialize to Flat, \
+             got {:?}", beta_prior);
+        let gamma_prior = config.estimate.get("gamma").unwrap().prior.as_ref().unwrap();
+        assert!(!gamma_prior.is_flat(),
+            "gamma with `prior = {{ log_normal = ... }}` should NOT be Flat, \
+             got {:?}", gamma_prior);
+        // gamma's inner PriorDist is LogNormal.
+        match gamma_prior {
+            EstimatePriorSpec::Dist(PriorDist::LogNormal(p)) => {
+                assert!((p.mu - (-1.2)).abs() < 1e-9);
+                assert!((p.sigma - 0.5).abs() < 1e-9);
+            }
+            other => panic!("expected Dist(LogNormal), got {:?}", other),
+        }
     }
 
     #[test]

@@ -183,6 +183,18 @@ pub struct FitMeta {
     /// IC-free inference flag (see 2026-04-18 proposal).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ic_free: bool,
+    /// gh#75: per-parameter prior-resolution audit. For every
+    /// estimated parameter, names where the prior came from in the
+    /// three-tier precedence chain — `fit_toml`, `model_ir`, or
+    /// `flat_explicit`. `flat_fallback` is NOT a valid value here:
+    /// `validate_priors_present` rejects implicit fallback to flat
+    /// before the fit starts, so a fit dir that exists on disk
+    /// always has a resolved (and explicitly accountable) prior
+    /// for each parameter. Empty when the fit has no Bayesian
+    /// stage (IF2-only fits don't consume priors); the field is
+    /// `default = []` so older run.json files round-trip unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_priors: Vec<ResolvedPriorEntry>,
 }
 
 /// Inference algorithm tag — discriminator enum naming the algorithm
@@ -607,6 +619,7 @@ mod tests {
                 },
                 stages_declared: vec!["scout".into(), "refine".into()],
                 ic_free: false,
+                resolved_priors: vec![],
             }),
         }
     }

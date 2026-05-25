@@ -1441,23 +1441,29 @@ fn generate_prior_draws(
     n: usize,
     seed: u64,
 ) -> Result<Vec<HashMap<String, f64>>, String> {
-    use fit::config_v2::FitConfigV2;
+    use fit::config_v2::{FitConfigV2, EstimatePriorSpec};
     use ir::parameter::PriorDist;
 
     let config = FitConfigV2::load(fit_path)?;
     let fixed = config.fixed.resolve()?;
 
-    // Check all estimated params have priors
+    // Check all estimated params have priors. `prior = { flat = {} }`
+    // (gh#75) is not draw-able — an improper uniform has no finite
+    // sampling distribution — so reject it here with the same
+    // remediation hint as the no-prior case.
     let missing: Vec<&str> = config.estimate.iter()
-        .filter(|(_, spec)| spec.prior.is_none())
+        .filter(|(_, spec)| spec.prior.is_none() || spec.prior.as_ref().map_or(false, |s| s.is_flat()))
         .map(|(name, _)| name.as_str())
         .collect();
     if !missing.is_empty() {
         return Err(format!(
-            "--draws prior requires priors for all estimated parameters.\n  \
-             Missing priors: {}\n  \
+            "--draws prior requires a proper (non-flat) prior on every \
+             estimated parameter.\n  \
+             Missing or flat priors: {}\n  \
              Add prior = {{ <dist> = {{ ... }} }} to [estimate.{}] \
-             (e.g. `prior = {{ log_normal = {{ mu = 0, sigma = 1 }} }}`).",
+             (e.g. `prior = {{ log_normal = {{ mu = 0, sigma = 1 }} }}`). \
+             `prior = {{ flat = {{}} }}` is rejected because there is no \
+             finite distribution to sample from.",
             missing.join(", "), missing[0]
         ));
     }
@@ -1468,7 +1474,13 @@ fn generate_prior_draws(
     for _ in 0..n {
         let mut row = HashMap::new();
         for (name, spec) in &config.estimate {
-            let value = match spec.prior.as_ref().unwrap() {
+            // Flat already rejected above; unwrap_or_else is unreachable.
+            let pd = match spec.prior.as_ref().unwrap() {
+                EstimatePriorSpec::Dist(pd) => pd,
+                EstimatePriorSpec::Flat { .. } => unreachable!(
+                    "flat priors rejected by the missing-priors check above"),
+            };
+            let value = match pd {
                 PriorDist::LogNormal(p) => {
                     // z ~ N(mu, sigma), value = exp(z)
                     let z = p.mu + p.sigma * rng.normal();

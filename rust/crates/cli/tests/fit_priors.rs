@@ -427,11 +427,24 @@ fn fit_run_with_explicit_flat_prior_succeeds_without_warning() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     // No "flat priors" warning when the user opted in explicitly.
-    // (We grep `warning:` not the substring "flat" alone — diagnostic
-    //  metadata may legitimately mention "flat" without warning.)
-    assert!(!stderr.contains("warning:") || !stderr.lines().any(|line|
-        line.contains("warning:") && (line.contains("flat") || line.contains("priors"))
-    ), "explicit flat must not emit a flat-priors warning; got:\n{}", stderr);
+    // The pre-gh#73 surface emitted `warning: ... flat priors ...` from
+    // `format_flat_fallback_warning`; that text exact-matches "flat priors"
+    // and is what we must NOT see. (We grep for the precise phrase rather
+    // than "flat" alone because unrelated diagnostics — fit-temp-dir paths
+    // containing `fit_priors`, post-fit warnings about `mle_params.toml` —
+    // legitimately exist in stderr without indicating a prior-warning fire.)
+    assert!(!stderr.contains("flat priors"),
+        "explicit flat opt-in must not trigger the gh#73 \
+         flat-priors warning text; got stderr:\n{}", stderr);
+    // Also defensively check the warning's standard prefix isn't paired
+    // with the "flat" keyword on the same line.
+    for line in stderr.lines() {
+        let is_warning = line.contains("warning:") || line.contains("⚠");
+        let mentions_flat_prior = line.contains("flat prior") || line.contains("flat-prior");
+        assert!(!(is_warning && mentions_flat_prior),
+            "warning line mentioning flat priors must not fire on the \
+             explicit opt-in path; got line:\n  {}", line);
+    }
 
     let fit_dir = find_fit_dir(&tmp.path().join("results"));
     let run = read_fit_run_json(&fit_dir);

@@ -319,6 +319,7 @@ mod tests {
                 fixed: HashMap::new(),
                 stages_declared: vec!["mle".into()],
                 ic_free: false,
+                resolved_priors: Vec::new(),
             }),
         }
     }

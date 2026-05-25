@@ -302,7 +302,7 @@ mod tests {
         EstimateSpecV2 {
             bounds: Some((0.01, 2.0)),
             transform: None,
-            prior,
+            prior: prior.map(crate::fit::config_v2::EstimatePriorSpec::Dist),
             ivp: false,
             rw_sd: None,
             start: None,

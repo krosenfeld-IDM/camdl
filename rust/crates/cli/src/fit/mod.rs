@@ -383,7 +383,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         },
         None => None,
     };
-    let mut run_fit = build_fit_run(&config, &fit_path, validated_label);
+    let mut run_fit = build_fit_run(&config, &fit_path, validated_label, Some(&model));
     let parent_fit_hash = run_fit.hash.clone();
     if let Err(e) = run_fit.write(&fit_dir) {
         eprintln!("warning: cannot write {}/run.json: {}", fit_dir.display(), e);
@@ -1603,10 +1603,17 @@ fn archive_fit_toml(fit_path: &str, fit_dir: &std::path::Path)
 /// end-of-fit by the caller. Silent fallbacks (empty strings / empty
 /// maps) cover the read-error case so a partially-written fit still
 /// produces something `camdl list` can display.
+///
+/// `model_for_priors` is the compiled IR model used to resolve
+/// per-parameter prior provenance (`fit_toml / model_ir /
+/// flat_explicit`); pass `None` when no model is in scope (`fit
+/// where` doesn't load the IR for a path-only resolution) and the
+/// `resolved_priors` audit will be empty in that case.
 fn build_fit_run(
     config: &config_v2::FitConfigV2,
     fit_path: &str,
     label: Option<String>,
+    model_for_priors: Option<&ir::Model>,
 ) -> crate::run_meta::Run {
     let fit_hash = config.fit_content_hash(fit_path).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
@@ -1632,6 +1639,41 @@ fn build_fit_run(
     let fixed: std::collections::HashMap<String, f64> = config.fixed
         .resolve().unwrap_or_default().into_iter().collect();
     let stages_declared: Vec<String> = config.stages.keys().cloned().collect();
+    // gh#75: resolve per-parameter prior provenance. We only emit
+    // entries when the fit has at least one Bayesian stage (IF2-only
+    // fits don't consume priors, and surfacing `model_ir` for a
+    // bunch of params the fit will never read from is misleading
+    // noise — both `camdl fit where` and an IF2-only run can leave
+    // this empty). `validate_priors_present` has already rejected
+    // any silent flat-fallback by the time we get here, so any
+    // entry we emit is one of {fit_toml, model_ir, flat_explicit}.
+    let any_bayesian = config.stages.values().any(config_v2::Stage::requires_priors);
+    let resolved_priors: Vec<crate::run_meta::ResolvedPriorEntry> = match model_for_priors {
+        Some(model) if any_bayesian => {
+            let names: Vec<String> = config.estimate.keys().cloned().collect();
+            crate::fit::priors_precedence::resolve_priors_with_precedence(
+                &names, &config.estimate, model,
+            )
+            .into_iter()
+            .map(|r| {
+                let source = match r.source {
+                    crate::fit::priors_precedence::PriorSource::FitToml      => "fit_toml",
+                    crate::fit::priors_precedence::PriorSource::ModelIr      => "model_ir",
+                    crate::fit::priors_precedence::PriorSource::FlatExplicit => "flat_explicit",
+                    // FlatFallback shouldn't reach here — validate_priors_present
+                    // rejects it. If it does, surface it so reviewers can
+                    // see the contract was broken.
+                    crate::fit::priors_precedence::PriorSource::FlatFallback => "flat_fallback",
+                };
+                crate::run_meta::ResolvedPriorEntry {
+                    param:  r.param,
+                    source: source.to_string(),
+                }
+            })
+            .collect()
+        }
+        _ => Vec::new(),
+    };
     let inputs = crate::cas::fit_inputs::FitInputs {
         fit_content_hash: fit_hash,
         stem: crate::hashing::path_stem_slug(fit_path),
@@ -1645,6 +1687,7 @@ fn build_fit_run(
             fixed,
             stages_declared,
             ic_free: config.ic_free.unwrap_or(false),
+            resolved_priors,
         },
     };
     use crate::cas::typed::CasInputs;
@@ -1656,10 +1699,10 @@ fn build_fit_run(
     run
 }
 
-fn format_prior(p: &Option<config_v2::PriorDist>) -> String {
+fn format_prior(p: &Option<config_v2::EstimatePriorSpec>) -> String {
     match p {
         None => "(none)".to_string(),
-        Some(pd) => crate::fit::config_diff::format_prior(pd),
+        Some(spec) => crate::fit::config_diff::format_prior(spec),
     }
 }
 

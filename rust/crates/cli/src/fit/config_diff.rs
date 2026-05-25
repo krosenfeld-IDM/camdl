@@ -237,27 +237,32 @@ impl ConfigDiff {
 /// terse — `log_normal(mu=..., sigma=...)`, `normal(mean=..., sd=...)`,
 /// `beta(alpha=..., beta=...)`, `uniform(lower=..., upper=...)`,
 /// `half_normal(sigma=...)`, `gamma(shape=..., rate=...)`,
-/// `exponential(rate=...)`, `fixed(...)`.
+/// `exponential(rate=...)`, `fixed(...)`, or `flat()` for the gh#75
+/// explicit flat-prior opt-in.
 /// The format is stable across versions because `priors_changed`
 /// equality compares strings.
-pub fn format_prior(p: &PriorDist) -> String {
-    match p {
-        PriorDist::LogNormal(q) =>
-            format!("log_normal(mu={}, sigma={})", q.mu, q.sigma),
-        PriorDist::Normal(q) =>
-            format!("normal(mean={}, sd={})", q.mean, q.sd),
-        PriorDist::Beta(q) =>
-            format!("beta(alpha={}, beta={})", q.alpha, q.beta),
-        PriorDist::Uniform(q) =>
-            format!("uniform(lower={}, upper={})", q.lower, q.upper),
-        PriorDist::HalfNormal(q) =>
-            format!("half_normal(sigma={})", q.sigma),
-        PriorDist::Gamma(q) =>
-            format!("gamma(shape={}, rate={})", q.shape, q.rate),
-        PriorDist::Exponential(q) =>
-            format!("exponential(rate={})", q.rate),
-        PriorDist::Fixed(v) =>
-            format!("fixed({})", v),
+pub fn format_prior(spec: &crate::fit::config_v2::EstimatePriorSpec) -> String {
+    use crate::fit::config_v2::EstimatePriorSpec;
+    match spec {
+        EstimatePriorSpec::Flat { .. } => "flat()".to_string(),
+        EstimatePriorSpec::Dist(p) => match p {
+            PriorDist::LogNormal(q) =>
+                format!("log_normal(mu={}, sigma={})", q.mu, q.sigma),
+            PriorDist::Normal(q) =>
+                format!("normal(mean={}, sd={})", q.mean, q.sd),
+            PriorDist::Beta(q) =>
+                format!("beta(alpha={}, beta={})", q.alpha, q.beta),
+            PriorDist::Uniform(q) =>
+                format!("uniform(lower={}, upper={})", q.lower, q.upper),
+            PriorDist::HalfNormal(q) =>
+                format!("half_normal(sigma={})", q.sigma),
+            PriorDist::Gamma(q) =>
+                format!("gamma(shape={}, rate={})", q.shape, q.rate),
+            PriorDist::Exponential(q) =>
+                format!("exponential(rate={})", q.rate),
+            PriorDist::Fixed(v) =>
+                format!("fixed({})", v),
+        }
     }
 }
 
@@ -458,6 +463,7 @@ mod tests {
             fixed: HashMap::new(),
             stages_declared: Vec::new(),
             ic_free: false,
+            resolved_priors: Vec::new(),
         }
     }
 

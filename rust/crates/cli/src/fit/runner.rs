@@ -1993,10 +1993,23 @@ pub fn resolve_prior(
     estimate: &indexmap::IndexMap<String, super::config_v2::EstimateSpecV2>,
     model: &ir::Model,
 ) -> (Prior, &'static str) {
-    // 1. fit.toml override.
+    use super::config_v2::EstimatePriorSpec;
+    // 1. fit.toml override — recognised in two shapes (gh#75):
+    //    (a) regular distribution → `Prior::from_ir(pd)`, source = "fit.toml"
+    //    (b) explicit flat opt-in → `Prior::Flat`, source = "flat (explicit)"
+    //    The two flat shapes (b vs the tier-3 silent fallback below) are
+    //    distinguished in provenance so reviewers can audit the user's
+    //    intent — explicit-flat is accountable, silent-flat is a warning.
     if let Some(est) = estimate.get(name) {
-        if let Some(ref pd) = est.prior {
-            return (Prior::from_ir(pd), "fit.toml");
+        if let Some(ref spec) = est.prior {
+            match spec {
+                EstimatePriorSpec::Dist(pd) => {
+                    return (Prior::from_ir(pd), "fit.toml");
+                }
+                EstimatePriorSpec::Flat { .. } => {
+                    return (Prior::Flat, "flat (explicit)");
+                }
+            }
         }
     }
     // 2. model IR
@@ -2011,7 +2024,8 @@ pub fn resolve_prior(
             return (Prior::Hierarchical(hp.clone()), "model (hierarchical)");
         }
     }
-    // 3. fallback
+    // 3. fallback. Reached only on the profile path; `camdl fit run`'s
+    //    `validate_priors_present` rejects before we get here.
     (Prior::Flat, "flat (default)")
 }
 
@@ -2669,7 +2683,8 @@ mod tests {
             let mut m: IndexMap<String, EstimateSpecV2> = IndexMap::new();
             m.insert(name.to_string(), EstimateSpecV2 {
                 bounds: Some((0.01, 2.0)), transform: None,
-                prior: Some(PriorDist::Normal(NormalPrior { mean, sd })),
+                prior: Some(crate::fit::config_v2::EstimatePriorSpec::Dist(
+                    PriorDist::Normal(NormalPrior { mean, sd }))),
                 ivp: false, rw_sd: None, start: None,
             });
             m
@@ -3007,7 +3022,8 @@ dt = 1.0
         let mut estimate: IndexMap<String, EstimateSpecV2> = IndexMap::new();
         estimate.insert("beta".to_string(), EstimateSpecV2 {
             bounds: Some((0.01, 5.0)), transform: None,
-            prior: Some(PriorDist::Normal(NormalPrior { mean: 0.25, sd: 0.05 })),
+            prior: Some(crate::fit::config_v2::EstimatePriorSpec::Dist(
+                PriorDist::Normal(NormalPrior { mean: 0.25, sd: 0.05 }))),
             ivp: false, rw_sd: None, start: None,
         });
 
