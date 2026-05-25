@@ -1001,6 +1001,41 @@ PRIORS (--algorithm pmmh)
 
   IF2 / NLopt paths ignore priors by design (they maximize the
   likelihood). The warning fires only for --algorithm pmmh.
+
+OUTPUT
+
+  The `--output` TSV mirrors the umbrella `summary.tsv`. Schema:
+
+    <focal_1> ... <focal_N>  loglik  [<spread_cols>]  <param_1> ...
+      acc_rate_avg  acc_rate_min  loglik_spread_starts
+      loglik_rhat_starts  starts_n_completed
+      iterations_used  cooling_final
+
+  The trailing seven columns are gh#74 Option B per-cell convergence
+  diagnostics. Read them by column name — order is stable per run
+  but future schema additions land after this block.
+
+  Per-column meaning (algorithm-specific cells render as NaN when
+  the algorithm doesn't supply that value):
+
+    acc_rate_avg / acc_rate_min   PMMH MH acceptance rate, mean / min
+                                  across the K --starts chains.
+    loglik_spread_starts          max - min of per-start MAP
+                                  log-likelihoods. > ~5 nats means
+                                  the starts disagree on the basin.
+    loglik_rhat_starts            Gelman-Rubin R-hat across the K
+                                  per-start log-likelihood traces.
+                                  NaN at K < 3 (R-hat is unstable
+                                  at K=2, undefined at K=1).
+    starts_n_completed            Count of starts that produced a
+                                  finite final loglik. < K when one
+                                  or more starts diverged.
+    iterations_used               IF2: final cooling step index.
+    cooling_final                 IF2: actual ending perturbation
+                                  SD (mean across estimated params),
+                                  not the target.
+
+  Full reference: docs/inference.md, `Per-cell diagnostics` section.
 "))]
 pub struct ProfileArgs {
     /// IR JSON or .camdl model file

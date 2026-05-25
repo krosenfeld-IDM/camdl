@@ -608,6 +608,55 @@ fit toml produces a different cache dir — reviewers can audit which
 configuration produced each artifact via `run.json`'s `resolved_priors`
 array.
 
+### Per-cell diagnostics
+
+Profile output gains a fixed-schema block of per-cell convergence
+columns appended after the existing focal / loglik / parameter
+columns (gh#74 Option B). The columns are written into the umbrella
+`summary.tsv` (the file `--output` mirrors) and into each per-seed
+`profile.tsv`.
+
+**Read by column name, not column index.** The diagnostic columns
+are the API; their order is stable across runs, but defensive
+consumers should look them up by name so future schema additions
+land cleanly.
+
+The full list:
+
+| Column | Algorithm | Meaning |
+|---|---|---|
+| `acc_rate_avg` | PMMH | Mean MH acceptance rate across the K `--starts` chains. Post-burn-in (matches `PMMHResult.acceptance_rate`). |
+| `acc_rate_min` | PMMH | Minimum acceptance rate across the K chains. Surfaces "one chain stalled at 2%" failures the mean would hide. |
+| `loglik_spread_starts` | all | `max − min` of per-start final log-likelihoods. > ~5 nats means the starts disagree on the basin. |
+| `loglik_rhat_starts` | PMMH, IF2 | Gelman–Rubin R̂ on the per-start log-likelihood traces (Gelman & Rubin 1992, *Statist. Sci.* 7(4); Brooks & Gelman 1998 corrected variant). > 1.05 is the conventional "chains haven't agreed yet" threshold. |
+| `starts_n_completed` | all | Count of starts that produced a finite final loglik (didn't diverge). |
+| `iterations_used` | IF2 | Final cooling-step index reached (= `--iterations` on normal completion). |
+| `cooling_final` | IF2 | Mean across estimated parameters of the final iteration's `effective_rw_sd` — the *actual* ending perturbation SD, not the target. |
+
+For algorithms that don't supply a given column (e.g. `acc_rate_avg`
+on an IF2 run, `iterations_used` on a PMMH run), the cell renders
+as `NaN` (capital N — camdl's TSV NaN convention).
+
+**The K<3 rule.** `loglik_rhat_starts` is `NaN` when fewer than
+three of the K starts have a usable trace. Gelman–Rubin R̂ is
+undefined at K=1 and unstable at K=2; the rule prevents a spurious
+diagnostic from a single-chain spike. To get a finite R̂ supply
+`--starts 3` or more, *and* run the per-cell inner loop long enough
+to produce post-burn-in samples (`--pmmh-steps` must exceed the
+hard-coded `burn_in = 100` for PMMH).
+
+The diagnostic R̂ is computed on log-likelihood traces, not on
+per-parameter posteriors, so it is a chain-level "are these starts
+walking the same basin" check rather than a full multivariate
+convergence diagnostic. The column name reflects that: it's
+`loglik_rhat_starts`, not `rhat`.
+
+**Cross-seed aggregation.** For multi-seed profile runs (`--seeds
+1,2,3`), each cell's diagnostic columns are averaged across seeds
+in `summary.tsv` (with `starts_n_completed` summing rather than
+averaging — it's a total count). Per-seed values remain visible in
+each `replicates/seed_<n>/profile.tsv`.
+
 ---
 
 ## PGAS (Particle Gibbs with Ancestor Sampling)
