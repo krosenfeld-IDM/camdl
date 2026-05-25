@@ -179,13 +179,12 @@ pub fn format_flat_fallback_warning(
             r.param, reason_for(r), width = name_width,
         ));
     }
-    s.push_str(
-        "\nA flat prior gives the per-cell PMMH an MLE search, not posterior\n\
-         sampling — even though `--algorithm pmmh` is set. To fix:\n\n\
-           (i)  Declare priors in the model file via `~` syntax for each\n        \
-                  estimated parameter, OR\n  \
-           (ii) Supply a fit toml with `--fit <path.toml>` that has an\n        \
-                  [estimate.<param>.prior] block for each estimated parameter.\n\n");
+    s.push_str("\nA flat prior gives the per-cell PMMH an MLE search, not posterior\n");
+    s.push_str("sampling — even though `--algorithm pmmh` is set. To fix:\n\n");
+    s.push_str("  (i)  Declare priors in the model file via `~` syntax for each\n");
+    s.push_str("       estimated parameter, OR\n");
+    s.push_str("  (ii) Supply a fit toml with `--fit <path.toml>` that has an\n");
+    s.push_str("       [estimate.<param>.prior] block for each estimated parameter.\n\n");
     if fit_toml_supplied {
         s.push_str(
             "If flat priors are intentional, suppress this warning by setting\n\
