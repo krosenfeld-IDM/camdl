@@ -1153,6 +1153,13 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         // closure that fit.toml stages call, with the focal grid value
         // pinned in `params` and optimization confined to the non-focal
         // estimated indices.
+        //
+        // gh#74 Option B: each branch also populates a
+        // `PerStartDiagnostics` carrying the convergence info this
+        // start produced (acceptance rate for PMMH, cooling-end state
+        // for IF2, completion flag for everyone). The rollup phase
+        // aggregates these across K starts → per-cell columns.
+        let mut diag = crate::profile_diagnostics::PerStartDiagnostics::default();
         let (final_loglik, mle_params): (f64, Vec<f64>) = match profile_algo {
             ProfileAlgo::If2 => {
                 let config = IF2Config {
@@ -1314,6 +1321,18 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     None,
                     String::new(),
                 );
+                // gh#74 Option B: PMMH diagnostics from the engine's
+                // returned result. `acceptance_rate` is already
+                // post-burn-in (see pmmh.rs:508-514). Trace carries
+                // the per-step PF loglik — the same value the chain
+                // uses for MH acceptance.
+                diag.algo = Some(crate::profile_diagnostics::DiagAlgo::Pmmh);
+                diag.acc_rate = if result.acceptance_rate.is_finite() {
+                    Some(result.acceptance_rate)
+                } else { None };
+                diag.loglik_trace = result.steps.iter()
+                    .map(|s| s.log_likelihood)
+                    .collect();
                 let best_ll = result.steps.iter()
                     .map(|s| s.log_likelihood)
                     .fold(f64::NEG_INFINITY, f64::max);
@@ -1330,6 +1349,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 } else {
                     f64::NEG_INFINITY
                 };
+                diag.completed = final_ll.is_finite();
                 (final_ll, result.map_params)
             }
             ProfileAlgo::Nlopt(nlopt_algo) => {
@@ -1357,6 +1377,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 // when downstream tuning surfaces a need.
                 let tolerance = 1e-4;
                 let max_evals = 1500;
+                diag.algo = Some(crate::profile_diagnostics::DiagAlgo::Nlopt);
                 match crate::fit::nlopt_stage::optimize_cell(
                     nlopt_algo,
                     &compiled,
@@ -1377,6 +1398,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                         for (slot, &model_idx) in est_indices.iter().enumerate() {
                             mle[model_idx] = r.params[slot];
                         }
+                        diag.completed = r.loglik.is_finite();
                         (r.loglik, mle)
                     }
                     Err(e) => {
@@ -1400,7 +1422,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
 
         let mle_toml = render_mle_toml(&if2_params, &focal_values,
             &focal_grids.iter().map(|fg| fg.name.as_str()).collect::<Vec<_>>(),
-            &mle_params, final_loglik);
+            &mle_params, final_loglik, &diag);
         let _ = std::fs::write(start_dir.join("mle.toml"), mle_toml);
 
         // Per-start run.json. parent_profile_hash references THIS
@@ -1557,12 +1579,20 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
 
 /// Render a per-start MLE TOML file. Human-readable; also the format
 /// `rewrite_rollup` reads back to reconstruct the rollup.
+///
+/// gh#74 Option B: emits a trailing `[diagnostics]` block holding the
+/// per-start convergence record. Older `mle.toml` files (pre-gh#74)
+/// have no `[diagnostics]` block; the rollup tolerates the absence
+/// and renders NaN for that start's contribution to the per-cell
+/// aggregate. Cached CAS dirs from older runs therefore continue to
+/// roll up, just without diagnostics columns populated.
 fn render_mle_toml(
     if2_params: &[sim::inference::if2::EstimatedParam],
     focal_values: &[f64],
     focal_names: &[&str],
     mle: &[f64],
     final_loglik: f64,
+    diag: &crate::profile_diagnostics::PerStartDiagnostics,
 ) -> String {
     let mut body = String::new();
     body.push_str("# Per-start MLE for one profile grid point.\n\n");
@@ -1575,6 +1605,8 @@ fn render_mle_toml(
     for spec in if2_params.iter() {
         body.push_str(&format!("{} = {}\n", spec.name, mle[spec.index]));
     }
+    body.push_str("\n[diagnostics]\n");
+    body.push_str(&diag.to_toml_fragment());
     body
 }
 
@@ -1583,6 +1615,11 @@ fn render_mle_toml(
 /// (max final_loglik) across `n_starts`. Written atomically via
 /// tmp-then-rename so concurrent rollups (from racing threads) never
 /// expose a truncated intermediate.
+///
+/// gh#74 Option B: each row gains seven per-cell diagnostic columns
+/// (`DIAG_COLUMNS`). Aggregated by `CellDiagnostics::aggregate` from
+/// the K per-start `[diagnostics]` blocks parsed back out of each
+/// `mle.toml`.
 fn rewrite_rollup(
     profile_dir: &Path,
     focal_names: &[String],
@@ -1601,6 +1638,14 @@ fn rewrite_rollup(
         let mut best: Option<ParsedMle> = None;
         let mut wall_time_sum: f64 = 0.0;
         let mut best_start: Option<usize> = None;
+        // gh#74 Option B: collect per-start diagnostics + final logliks
+        // so the rollup can aggregate them into per-cell columns. The
+        // vectors are keyed by start_idx via the parallel `(starts,
+        // finals)` arrays — order doesn't matter for the aggregator
+        // (it's symmetric across starts).
+        let mut starts_diag: Vec<crate::profile_diagnostics::PerStartDiagnostics>
+            = Vec::new();
+        let mut starts_final_ll: Vec<f64> = Vec::new();
         for entry in dir_iter.flatten() {
             let fname = entry.file_name();
             let name = fname.to_string_lossy();
@@ -1618,6 +1663,17 @@ fn rewrite_rollup(
             let mle_path = start_dir.join("mle.toml");
             let Ok(mle_text) = std::fs::read_to_string(&mle_path) else { continue; };
             let Some(parsed) = parse_mle_toml(&mle_text, if2_params, focal_names) else { continue; };
+            // Re-parse the same TOML doc for the diagnostics table.
+            // Cheap (the file is small); keeps `parse_mle_toml` focused
+            // on its existing surface.
+            let doc: toml::Value = match toml::from_str(&mle_text) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let diag = crate::profile_diagnostics::PerStartDiagnostics::from_toml(&doc);
+            starts_diag.push(diag);
+            starts_final_ll.push(parsed.final_loglik);
+
             match &best {
                 Some(b) if parsed.final_loglik <= b.final_loglik => {}
                 _ => {
@@ -1629,12 +1685,16 @@ fn rewrite_rollup(
 
         if let (Some(best), Some(best_start)) = (best, best_start) {
             let _ = gi;  // order preserved by outer loop; field elided.
+            let cell_diag = crate::profile_diagnostics::CellDiagnostics::aggregate(
+                &starts_diag, &starts_final_ll,
+            );
             rows.push(RollupRow {
                 focal_values: best.focal_values,
                 best_loglik: best.final_loglik,
                 best_start_idx: best_start,
                 mle: best.mle,
                 wall_time_sum,
+                diag: cell_diag,
             });
         }
     }
@@ -1647,6 +1707,9 @@ fn rewrite_rollup(
     for name in focal_names { body.push_str(&format!("{}\t", name)); }
     body.push_str("best_loglik\tbest_start_idx\twall_time_seconds");
     for spec in if2_params.iter() { body.push_str(&format!("\t{}", spec.name)); }
+    for c in crate::profile_diagnostics::DIAG_COLUMNS {
+        body.push_str(&format!("\t{}", c));
+    }
     body.push('\n');
     for row in &rows {
         for v in &row.focal_values { body.push_str(&format!("{:.4}\t", v)); }
@@ -1655,6 +1718,8 @@ fn rewrite_rollup(
         for spec in if2_params.iter() {
             body.push_str(&format!("\t{:.6}", row.mle[spec.index]));
         }
+        body.push('\t');
+        body.push_str(&row.diag.render_tsv_row());
         body.push('\n');
     }
 
@@ -1672,6 +1737,8 @@ struct RollupRow {
     best_start_idx: usize,
     mle: Vec<f64>,
     wall_time_sum: f64,
+    /// Per-cell aggregate diagnostics (gh#74 Option B).
+    diag: crate::profile_diagnostics::CellDiagnostics,
 }
 
 struct ParsedMle {
@@ -1758,11 +1825,20 @@ fn write_cross_seed_summary(
     if2_params: &[sim::inference::if2::EstimatedParam],
 ) -> std::io::Result<()> {
     use std::collections::BTreeMap;
+    use crate::profile_diagnostics::{CellDiagnostics, DIAG_COLUMNS};
 
-    // Map: focal-values key (as the canonical TSV-column strings, so
-    // grid points with identical floats group together regardless of
-    // formatting) → list of (best_loglik, mle_vec) per seed.
-    let mut by_grid: BTreeMap<Vec<String>, Vec<(f64, Vec<f64>)>> = BTreeMap::new();
+    // Per-cell sample bag. For each focal-key (canonicalised TSV
+    // column string) we accumulate a (best_loglik, mle_vec,
+    // per_seed_diag) tuple per seed. The per-seed diag is parsed out
+    // of the trailing diagnostic columns of each row of the per-seed
+    // profile.tsv (gh#74 Option B); cross-seed averaging happens in
+    // the render loop below via `CellDiagnostics::average_across_seeds`.
+    struct PerSeedSample {
+        loglik:    f64,
+        mle:       Vec<f64>,
+        diag:      CellDiagnostics,
+    }
+    let mut by_grid: BTreeMap<Vec<String>, Vec<PerSeedSample>> = BTreeMap::new();
     let mle_len = if2_params.iter().map(|s| s.index).max().unwrap_or(0) + 1;
 
     for seed_dir in seed_dirs {
@@ -1775,9 +1851,13 @@ fn write_cross_seed_summary(
             if cols.get(focal_names.len()).copied() == Some("best_loglik") {
                 continue;
             }
-            // Layout: focal_1 ... focal_N | best_loglik | best_start_idx |
-            //         wall_time_seconds | mle_param_1 ... mle_param_M
-            if cols.len() < focal_names.len() + 3 + if2_params.len() { continue; }
+            // Layout (gh#74 Option B): focal_1 ... focal_N |
+            //   best_loglik | best_start_idx | wall_time_seconds |
+            //   mle_param_1 ... mle_param_M | acc_rate_avg | acc_rate_min |
+            //   loglik_spread_starts | loglik_rhat_starts |
+            //   starts_n_completed | iterations_used | cooling_final
+            let base_cols = focal_names.len() + 3 + if2_params.len();
+            if cols.len() < base_cols { continue; }
 
             let focal_key: Vec<String> = cols[..focal_names.len()]
                 .iter().map(|s| s.trim().to_string()).collect();
@@ -1794,7 +1874,33 @@ fn write_cross_seed_summary(
                     }
                 }
             }
-            by_grid.entry(focal_key).or_default().push((best_loglik, mle));
+
+            // Diagnostic columns sit at fixed offsets after the MLE
+            // block. Parse them positionally — DIAG_COLUMNS pins the
+            // order. Missing cells (older `profile.tsv` from before
+            // gh#74) parse as NaN / 0, which the aggregator then
+            // surfaces as NaN at the summary level.
+            let diag_start = base_cols;
+            let parse_at = |off: usize| -> f64 {
+                cols.get(diag_start + off)
+                    .map(|s| parse_summary_cell(s)).unwrap_or(f64::NAN)
+            };
+            let starts_n_completed = cols.get(diag_start + 4)
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let diag = CellDiagnostics {
+                acc_rate_avg:        parse_at(0),
+                acc_rate_min:        parse_at(1),
+                loglik_spread_starts: parse_at(2),
+                loglik_rhat_starts:   parse_at(3),
+                starts_n_completed,
+                iterations_used:      parse_at(5),
+                cooling_final:        parse_at(6),
+            };
+
+            by_grid.entry(focal_key).or_default().push(PerSeedSample {
+                loglik: best_loglik, mle, diag,
+            });
         }
     }
 
@@ -1809,6 +1915,9 @@ fn write_cross_seed_summary(
 
     // Header: focal | loglik [| loglik_sd loglik_min loglik_max] |
     //         <param_1> [| <param_1>_sd] | <param_2> [| <param_2>_sd] | ...
+    //         | <diagnostic_1> | <diagnostic_2> | ... (gh#74 Option B,
+    //         always appended; per-algorithm columns NaN where the
+    //         algorithm has no value).
     for name in focal_names { body.push_str(&format!("{}\t", name)); }
     body.push_str("loglik");
     if multi_seed {
@@ -1820,11 +1929,14 @@ fn write_cross_seed_summary(
             body.push_str(&format!("\t{}_sd", spec.name));
         }
     }
+    for c in DIAG_COLUMNS {
+        body.push_str(&format!("\t{}", c));
+    }
     body.push('\n');
 
     for (focal_key, samples) in &by_grid {
         for v in focal_key { body.push_str(&format!("{}\t", v)); }
-        let logliks: Vec<f64> = samples.iter().map(|(ll, _)| *ll)
+        let logliks: Vec<f64> = samples.iter().map(|s| s.loglik)
             .filter(|x| x.is_finite()).collect();
         let (mean_ll, sd_ll, min_ll, max_ll) = summary_stats(&logliks);
         body.push_str(&format!("{:.4}", mean_ll));
@@ -1833,7 +1945,7 @@ fn write_cross_seed_summary(
         }
         for spec in if2_params.iter() {
             let vals: Vec<f64> = samples.iter()
-                .filter_map(|(_, mle)| mle.get(spec.index).copied())
+                .filter_map(|s| s.mle.get(spec.index).copied())
                 .filter(|x| x.is_finite()).collect();
             let (m, s, _, _) = summary_stats(&vals);
             body.push_str(&format!("\t{:.6}", m));
@@ -1841,6 +1953,14 @@ fn write_cross_seed_summary(
                 body.push_str(&format!("\t{:.6}", s));
             }
         }
+        // Cross-seed aggregate of the per-seed diagnostic blocks.
+        // For n_seeds=1 this is a passthrough; for n>1 we average
+        // each diagnostic across seeds (starts_n_completed sums).
+        let per_seed_diags: Vec<CellDiagnostics> =
+            samples.iter().map(|s| s.diag.clone()).collect();
+        let agg = CellDiagnostics::average_across_seeds(&per_seed_diags);
+        body.push('\t');
+        body.push_str(&agg.render_tsv_row());
         body.push('\n');
     }
 
@@ -1849,6 +1969,18 @@ fn write_cross_seed_summary(
     std::fs::write(&tmp_path, body)?;
     std::fs::rename(&tmp_path, &final_path)?;
     Ok(())
+}
+
+/// Parse a per-seed `profile.tsv` diagnostic cell into f64. Accepts
+/// `NaN`/`Inf`/`-Inf` plus standard numerics; everything else falls
+/// through to NaN so a malformed row doesn't poison the rollup.
+fn parse_summary_cell(s: &str) -> f64 {
+    match s.trim() {
+        "NaN"  => f64::NAN,
+        "Inf"  => f64::INFINITY,
+        "-Inf" => f64::NEG_INFINITY,
+        v      => v.parse::<f64>().unwrap_or(f64::NAN),
+    }
 }
 
 /// (mean, sd, min, max) of a slice. Empty input returns NaN/0/inf/-inf;
@@ -1911,9 +2043,10 @@ mod tests {
     #[test]
     fn n1_summary_uses_bare_names_only() {
         // gh#30 option A, n=1 (the common case): the schema is
-        //   <focal>  loglik  <param_1>  <param_2>  ...
+        //   <focal>  loglik  <param_1>  <param_2>  ... | <diag_cols>
         // No `_sd` / `_min` / `_max` — there's no aggregation to
-        // describe.
+        // describe. Diagnostic columns (gh#74 Option B) are appended
+        // after the bare param block in `DIAG_COLUMNS` order.
         let tmp = tempfile::tempdir().unwrap();
         let umbrella = tmp.path();
         let seed_dir = umbrella.join("replicates").join("seed_1");
@@ -1932,10 +2065,15 @@ mod tests {
         let lines = data_lines(&text);
         let header = lines[0];
         let cols: Vec<&str> = header.split('\t').collect();
-        assert_eq!(cols, vec!["s0", "loglik", "R0", "alpha"],
-            "n=1 schema must be focal + bare loglik + bare params; got {:?}", cols);
+        let mut expected = vec!["s0", "loglik", "R0", "alpha"];
+        for c in crate::profile_diagnostics::DIAG_COLUMNS { expected.push(c); }
+        assert_eq!(cols, expected,
+            "n=1 schema must be focal + bare loglik + bare params + diagnostics; got {:?}",
+            cols);
 
-        // No spread columns must leak through.
+        // Cross-seed spread columns must not leak through (gh#30
+        // option A); the diagnostic columns are unrelated and are
+        // expected to be present.
         for forbidden in &["loglik_sd", "loglik_min", "loglik_max",
                            "R0_sd", "alpha_sd", "n_seeds",
                            "mean_loglik", "max_loglik", "R0_mean", "alpha_mean"] {
@@ -1943,17 +2081,18 @@ mod tests {
                 "n=1 header must not contain {:?}: {}", forbidden, header);
         }
 
-        // Two data rows, four columns each, no all-zero `_sd` chaff.
         assert_eq!(lines.len(), 3, "expected header + 2 grid rows: {:?}", lines);
-        assert_eq!(lines[1].split('\t').count(), 4);
-        assert_eq!(lines[2].split('\t').count(), 4);
+        let row_cols = 4 + crate::profile_diagnostics::DIAG_COLUMNS.len();
+        assert_eq!(lines[1].split('\t').count(), row_cols);
+        assert_eq!(lines[2].split('\t').count(), row_cols);
     }
 
     #[test]
     fn multi_seed_summary_appends_spread_columns() {
         // gh#30 option A, n>1: bare names stay, `_sd / _min / _max`
         // are appended additively. Bare loglik = mean across seeds;
-        // bare param = mean across seeds.
+        // bare param = mean across seeds. gh#74 Option B diagnostic
+        // columns are appended after the spread columns.
         let tmp = tempfile::tempdir().unwrap();
         let umbrella = tmp.path();
         let mut seed_dirs = Vec::new();
@@ -1977,12 +2116,12 @@ mod tests {
         let text = std::fs::read_to_string(umbrella.join("summary.tsv")).unwrap();
         let lines = data_lines(&text);
         let cols: Vec<&str> = lines[0].split('\t').collect();
-        // Bare/_sd adjacency for params; `_sd / _min / _max` appended
-        // after the bare loglik.
-        assert_eq!(cols, vec![
+        let mut expected = vec![
             "s0", "loglik", "loglik_sd", "loglik_min", "loglik_max",
             "R0", "R0_sd", "alpha", "alpha_sd",
-        ], "n>1 schema: {:?}", cols);
+        ];
+        for c in crate::profile_diagnostics::DIAG_COLUMNS { expected.push(c); }
+        assert_eq!(cols, expected, "n>1 schema: {:?}", cols);
 
         // Bare `loglik` value is the mean across seeds at the first
         // grid cell: mean(-42.5, -42.0, -43.0) = -42.5
