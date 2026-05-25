@@ -9,6 +9,15 @@ set -euo pipefail
 OCAML_SWITCH_VERSION="${OCAML_SWITCH_VERSION:-5.2.0}"
 NO_SANDBOX="${NO_SANDBOX:-0}"
 
+# gh#77. Install prefix — binaries land at $PREFIX/bin. Default is
+# ~/.local (matches the original hardcoded behaviour). Override for
+# per-branch testing, e.g.:
+#   PREFIX=$HOME/.local-camdl-feat ./install.sh
+#   PATH=$HOME/.local-camdl-feat/bin:$PATH camdl ...   # use the branch build
+#   camdl ...                                          # back to the default install
+PREFIX="${PREFIX:-$HOME/.local}"
+INSTALL_DIR="$PREFIX/bin"
+
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!! \033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[1;31mERR\033[0m %s\n' "$*" >&2; exit 1; }
@@ -194,18 +203,22 @@ install_ocaml_deps() {
 build_project() {
     log "Building camdl (make build)..."
     make build
-    log "Installing binaries to ~/.local/bin (make install)..."
-    make install
+    log "Installing binaries to $INSTALL_DIR (make install)..."
+    INSTALL_DIR="$INSTALL_DIR" make install
 }
 
 verify_install() {
     log "Verifying install..."
-    export PATH="$HOME/.local/bin:$PATH"
+    export PATH="$INSTALL_DIR:$PATH"
     have camdlc || err "camdlc isn't on PATH after install."
     have camdl  || err "camdl isn't on PATH after install."
     camdlc --camdl-version >/dev/null || err "camdlc was installed but won't execute."
     camdl  --version       >/dev/null || err "camdl was installed but won't execute."
     log "Verified: $(camdl --version 2>&1 | head -1)"
+    if [ "$INSTALL_DIR" != "$HOME/.local/bin" ]; then
+        log "Note: installed to non-default prefix $PREFIX. Add to PATH:"
+        log "  export PATH=\"$INSTALL_DIR:\$PATH\""
+    fi
 }
 
 final_notes() {

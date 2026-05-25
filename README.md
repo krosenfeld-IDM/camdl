@@ -54,6 +54,18 @@ manager (apt / dnf / yum / pacman / zypper on Linux, Homebrew on
 macOS, installing brew + Xcode CLT if absent). Override the OCaml
 switch version with `OCAML_SWITCH_VERSION=5.2.1 ./install.sh`.
 
+For per-branch testing (e.g. installing a feature branch alongside
+your default install for comparison), override the install prefix
+with the `PREFIX` env var:
+
+```bash
+PREFIX=$HOME/.local-camdl-feat ./install.sh   # binaries → $PREFIX/bin
+PATH=$HOME/.local-camdl-feat/bin:$PATH camdl ...   # use the feature build
+camdl ...                                          # back to the default install
+```
+
+Default `PREFIX` is `$HOME/.local` (binaries land in `$HOME/.local/bin`).
+
 The script initializes opam with sandboxing enabled (via
 `bubblewrap` on Linux, `sandbox-exec` on macOS). If sandboxed init
 fails — typically because `bubblewrap` isn't installed or your

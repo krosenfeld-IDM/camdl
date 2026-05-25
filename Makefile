@@ -6,7 +6,7 @@ SHELL := bash
 
 CAMDLC  := ocaml/_build/default/bin/camdlc.exe
 CAMDL   := rust/target/release/camdl
-INSTALL_DIR := $(HOME)/.local/bin
+INSTALL_DIR ?= $(HOME)/.local/bin
 
 OCAML_GOLDENS := $(wildcard ocaml/golden/*.camdl)
 
