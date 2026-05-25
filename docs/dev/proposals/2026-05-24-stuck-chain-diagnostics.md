@@ -196,6 +196,58 @@ profiling at a fixed θ, replicating a historical fit).
 message names the legitimate use cases explicitly so the user can
 identify whether the warning applies to them.
 
+### 2.1a Check A' — pre-flight: `lhs` + posterior-sampling stage
+
+**Trigger:** at config-load, when a stage has `algorithm = "pmmh"`
+or `algorithm = "pgas"`, `init_method = "lhs"`, and `chains > 1`.
+
+**Diagnostic kind:** `LhsInitWithPosteriorSamplingStage { stage, n_chains, algorithm }`.
+
+**Severity:** `Warning`.
+
+**Message:**
+
+```
+warning: stage 'posterior' (algorithm = pmmh) is configured with
+init_method = "lhs" and chains = 4. Latin-hypercube initialisation
+is space-filling-random and is NOT scored against the likelihood —
+the K chain starts are drawn from the prior bounds without any
+preliminary evaluation. For PMMH/PGAS (especially PGAS+NUTS), this
+typically produces at least one chain starting in a region with
+pathological geometry: extreme rate-expression values, divergent
+trajectories during NUTS step-size adaptation, or DivByZero in
+the rate evaluator.
+
+Recommended alternative: init_method = "survey_top_k" (gh#51).
+Workflow:
+
+  # Once: build the likelihood landscape (CAS-cached afterwards).
+  camdl survey --fit fits/your_fit.toml --points 2000 \
+      -o results/surveys/your_landscape
+
+  # Then: chain starts come from the top-K landscape rows.
+  [stages.posterior]
+  algorithm      = "pmmh"
+  init_method    = "survey_top_k"
+  survey_path    = "../results/surveys/your_landscape"
+  survey_top_k_n = 4    # defaults to chains
+
+Override with init_method = "lhs" explicitly if you want this for a
+known reason (teaching examples, deliberately-unfocused start
+distributions, small synthetics where data dominates).
+```
+
+**Cost:** zero compute, fires before the fit runs.
+
+**Cry-wolf risk:** moderate. Plain LHS is the camdl default and a
+substantial fraction of fits use it acceptably (small models, strong
+data, IF2 stages — IF2's perturb-and-anneal design tolerates LHS
+init fine and the warning is scoped to PMMH/PGAS only). The message
+names the legitimate use cases explicitly. The cost of *not*
+warning, demonstrated by the gh#81 incident, was hours of
+pathological NUTS adaptation followed by a DivByZero with no upfront
+signal that init_method was the load-bearing issue.
+
 ### 2.2 Check B1 — empirical: R̂–ESS conjunction
 
 **Trigger:** post-fit, when `max_p R̂[p] < 1.1` and there exists a
@@ -471,6 +523,17 @@ pub enum DiagnosticKind {
         parameter: String,
         drift_ratios: Vec<f64>,  // within_chain_sd[c] / rw_sd, per chain
         threshold: f64,
+    },
+
+    /// Check A': pre-flight warning when `init_method = lhs` is used
+    /// on a PMMH or PGAS stage with multiple chains. LHS is
+    /// space-filling-random and unscored; PMMH/PGAS need better
+    /// chain starts to avoid pathological NUTS adaptation
+    /// (gh#81 incident).
+    LhsInitWithPosteriorSamplingStage {
+        stage: String,
+        n_chains: usize,
+        algorithm: String,
     },
 }
 
