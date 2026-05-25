@@ -227,6 +227,16 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
+    // gh#75: prior-presence check honoring the IR fallback. Has to run
+    // after partition/dag validation but with the model IR in scope.
+    let ir_prior_params: std::collections::BTreeSet<&str> = model.parameters.iter()
+        .filter(|p| p.prior.is_some() || p.hierarchical.is_some())
+        .map(|p| p.name.as_str())
+        .collect();
+    config.validate_priors_present(&ir_prior_params).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
     if let Some(msg) = config.dangling_priors_warning() {
         // Warning, not error: a staged Bayesian workflow (scout → pgas)
         // legitimately declares priors that the IF2 stage ignores — so
@@ -1695,6 +1705,16 @@ pub fn cmd_fit_where(a: &crate::args::FitWhereArgs) {
     });
     let model_params: Vec<String> = model.parameters.iter().map(|p| p.name.clone()).collect();
     config.validate(&model_params).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
+    // gh#75: mirror `cmd_fit_run`'s prior-presence check so `where`
+    // doesn't silently accept a toml that `run` would reject.
+    let ir_prior_params: std::collections::BTreeSet<&str> = model.parameters.iter()
+        .filter(|p| p.prior.is_some() || p.hierarchical.is_some())
+        .map(|p| p.name.as_str())
+        .collect();
+    config.validate_priors_present(&ir_prior_params).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });

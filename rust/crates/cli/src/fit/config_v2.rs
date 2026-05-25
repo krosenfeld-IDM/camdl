@@ -1570,23 +1570,11 @@ impl FitConfigV2 {
             }
         }
 
-        // Bayesian stages require priors on all estimated params
-        for (stage_name, stage) in &self.stages {
-            if stage.requires_priors() {
-                let missing_priors: Vec<&str> = self.estimate.iter()
-                    .filter(|(_, spec)| spec.prior.is_none())
-                    .map(|(name, _)| name.as_str())
-                    .collect();
-                if !missing_priors.is_empty() {
-                    return Err(format!(
-                        "stage '{}' (method={}) requires priors, but missing for: {}\n  \
-                         Add prior = {{ <dist> = {{ ... }} }} to each [estimate.*] entry \
-                         (e.g. `prior = {{ log_normal = {{ mu = 0, sigma = 1 }} }}`).",
-                        stage_name, stage.method_name(), missing_priors.join(", ")
-                    ));
-                }
-            }
-        }
+        // Bayesian-stage prior presence is checked separately by
+        // `validate_priors_present(&ir_priors)`, which needs the model IR
+        // in scope to honor the gh#73 precedence fallback. validate()
+        // itself only needs parameter names, so the prior check is
+        // factored out — production callers do both.
 
         // Backend validation is now handled at TOML parse time via the
         // typed `Backend` enum (serde rejects unknown strings).
@@ -1613,6 +1601,49 @@ impl FitConfigV2 {
         // Validate simplex groups
         self.validate_simplex_groups()?;
 
+        Ok(())
+    }
+
+    /// gh#75: Validate that every estimated parameter has a prior available
+    /// from at least one source — either this fit toml's
+    /// `[estimate.<name>.prior]` block, or the model IR's `~` syntax —
+    /// when any stage is Bayesian (PMMH / PGAS).
+    ///
+    /// This mirrors the gh#73 precedence chain used in `camdl profile`,
+    /// extending it to `camdl fit run`. Without the IR fallback, every
+    /// fit toml has to reproduce the model's priors verbatim, defeating
+    /// the model file as the source of truth.
+    ///
+    /// Factored out of `validate()` because it needs the model IR in
+    /// scope (validate() only needs parameter names). Production callers
+    /// invoke both.
+    ///
+    /// `ir_prior_params` is the set of parameter names that have a
+    /// `~` prior declared in the model IR — production callers build it
+    /// from `model.parameters.iter().filter_map(|p| p.prior.as_ref().map(|_| p.name.as_str())).collect()`.
+    pub fn validate_priors_present(
+        &self,
+        ir_prior_params: &BTreeSet<&str>,
+    ) -> Result<(), String> {
+        for (stage_name, stage) in &self.stages {
+            if stage.requires_priors() {
+                let missing_priors: Vec<&str> = self.estimate.iter()
+                    .filter(|(name, spec)| {
+                        spec.prior.is_none() && !ir_prior_params.contains(name.as_str())
+                    })
+                    .map(|(name, _)| name.as_str())
+                    .collect();
+                if !missing_priors.is_empty() {
+                    return Err(format!(
+                        "stage '{}' (method={}) requires priors, but missing for: {}\n  \
+                         Declare a prior either in the model file via `~` syntax \
+                         (recommended — single source of truth) or in this fit toml's \
+                         [estimate.<param>.prior] block (per-fit override).",
+                        stage_name, stage.method_name(), missing_priors.join(", ")
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2100,6 +2131,11 @@ cooling = 0.70
 
     #[test]
     fn validate_pgas_requires_priors() {
+        // gh#75: prior-presence check is now a separate method
+        // `validate_priors_present(&ir_priors)`. validate() no longer
+        // looks at priors at all. When called with an empty
+        // ir_prior_params set (no IR `~` priors), missing toml priors
+        // on Bayesian-stage params still produce the same error.
         let config = parse(r#"
 [model]
 camdl = "models/sir.camdl"
@@ -2126,9 +2162,49 @@ sweeps = 5000
         "#).unwrap();
 
         let model_params = vec!["beta".to_string(), "N0".to_string()];
-        let err = config.validate(&model_params).unwrap_err();
+        // The partition/dag/etc. check passes — priors are not its concern.
+        config.validate(&model_params).expect("validate() should not check priors");
+        // The new prior-presence check, with empty IR-priors, still fails.
+        let err = config.validate_priors_present(&BTreeSet::new()).unwrap_err();
         assert!(err.contains("requires priors"));
         assert!(err.contains("beta"));
+    }
+
+    #[test]
+    fn validate_priors_present_passes_when_ir_supplies_prior() {
+        // gh#75: the fix. When the toml doesn't declare a prior but the
+        // model IR does (via `~` syntax), validate_priors_present must
+        // accept it — resolve_prior in fit/runner.rs falls through to
+        // the IR prior at fit time.
+        let config = parse(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 4
+particles = 50
+sweeps = 5000
+        "#).unwrap();
+
+        let mut ir_priors = BTreeSet::new();
+        ir_priors.insert("beta");
+        config.validate_priors_present(&ir_priors)
+            .expect("IR-declared prior on beta should satisfy the check");
     }
 
     #[test]
