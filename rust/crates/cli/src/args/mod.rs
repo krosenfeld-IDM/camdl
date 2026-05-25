@@ -338,6 +338,27 @@ Notes:
   - PGAS/PMMH fits can resume a partial run with `--resume`.
   - Output goes under `<root>/fits/<stem>-<hash>/`; resolve with
     `camdl fit where fit.toml`.
+
+Priors (Bayesian stages: PGAS, PMMH):
+  Each estimated parameter must have a prior available from one of
+  three sources, resolved in this order:
+
+    1. fit toml: `[estimate.<param>] prior = { <dist> = { ... } }`
+       — per-fit override, wins over the model-IR fallback.
+    2. model file: `~ <dist>(...)` syntax in the `.camdl` parameter
+       block — single source of truth for stable priors across N
+       fit tomls.
+    3. fit toml: explicit `prior = { flat = {} }` — opt-in to flat
+       (improper uniform) priors. Use this if you genuinely want
+       the chain to target the unconditioned likelihood
+       (scaled-likelihood posterior). Implicit fallback to flat is
+       a hard error — `fit run`'s chain is treated authoritatively
+       downstream, so silent demotion is not allowed.
+
+  Per-parameter provenance is recorded in `run.json` under
+  `resolved_priors` (sources: fit_toml, model_ir, flat_explicit).
+  See `docs/inference.md` § \"Priors and precedence\" for the full
+  spec including the asymmetry with `camdl profile`.
 "))]
 pub struct FitRunArgs {
     /// Fit configuration file (v2 TOML)

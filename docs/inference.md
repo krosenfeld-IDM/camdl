@@ -555,28 +555,88 @@ Shows ridges and correlations between parameters. An elongated contour along the
 alpha-gamma diagonal means those parameters trade off — you can't identify both
 independently.
 
-### Profile and priors
+### Priors and precedence
 
-By default the per-cell IF2 path **maximizes the likelihood** at each grid
-point — it ignores any priors the model declares. That's the textbook
-profile-*likelihood*. When you switch to `--algorithm pmmh`, the per-cell
-inner loop is a short MCMC chain and *does* honour priors: the resulting
-per-cell MAP is the profile-*posterior* mode.
+Both `camdl fit run` and `camdl profile --algorithm pmmh` resolve
+priors for each estimated parameter via a three-tier precedence
+chain: fit-toml > model-IR `~` syntax > flat. The behaviour at tier
+3 differs between the two subcommands (warn vs error) — see below.
 
-Priors are resolved via the same three-tier chain as `camdl fit run`:
+**Tier 1 — fit-toml priors (highest).** The fit toml's
+`[estimate.<param>.prior]` block wins over any other source. For
+`fit run` the fit toml is always loaded; for `profile` it's the
+`--fit <toml>` flag.
 
-1. **`--fit <toml>` priors** (highest). A fit toml mirroring `camdl
-   survey --fit`'s schema; its `[estimate.<param>.prior]` block wins
-   over any other source.
-2. **Model-IR `~` priors** (fallback). When `--fit` doesn't declare a
-   prior for an estimated parameter, the resolver falls through to
-   whatever the `.camdl` file declared via `~` syntax.
-3. **`Prior::Flat`** (last resort). Improper uniform. When this fires
-   for any estimated parameter `camdl profile` emits a structured
-   warning naming the affected parameters and citing the two
-   remedies — declare the prior in the model file, or supply one
-   via `--fit`. Suppress with `--suppress-warnings` (loud — the
-   waiver is recorded into `run.json`'s `suppressed_warnings`).
+  ```toml
+  [estimate]
+  beta  = { bounds = [0.01, 5.0], prior = { log_normal = { mu = -0.3, sigma = 0.5 } } }
+  ```
+
+**Tier 2 — model-IR `~` priors (fallback).** When the fit toml
+doesn't declare a prior for an estimated parameter, the resolver
+falls through to whatever the `.camdl` file declared via `~` syntax.
+
+  ```
+  parameters {
+    beta : rate in [0.001, 5.0] ~ log_normal(mu = -0.3, sigma = 0.5)
+  }
+  ```
+
+  This is the recommended source of truth for stable priors: the
+  model file is the single artifact reviewers read for the
+  *structural* priors, and individual fit tomls only override when
+  doing sensitivity analysis. Stripping prior duplicates out of N
+  fit tomls and into one model file is what gh#75 unblocked.
+
+**Tier 3 — `Prior::Flat` (last resort).** Improper uniform. The
+behaviour at this tier is **asymmetric across subcommands**:
+
+- `camdl profile`: tier 3 is a *silent fallback* that emits a
+  structured warning naming the affected parameters and citing the
+  two remedies (declare in the model file or supply via `--fit`).
+  Suppress with `--suppress-warnings` (loud — the waiver is
+  recorded into `run.json`'s `suppressed_warnings`). Per-cell PMMH
+  with flat priors is recoverable by spot-checking per-cell
+  parameter values, so silent-with-warning is the right shape.
+
+- `camdl fit run`: tier 3 is a **hard error** at config-load time
+  (the fit refuses to start). The downstream interpretation of a
+  fit-run chain — canonical posterior in `fit_summary.json`,
+  consumed by tooling that treats those samples authoritatively —
+  is too high-stakes for a silent demotion to "scaled likelihood".
+  Users who genuinely want flat priors declare it explicitly via
+
+    ```toml
+    [estimate.beta]
+    prior = { flat = {} }
+    ```
+
+  This opt-in path is fully accountable: the toml records the
+  intent, `run.json`'s `resolved_priors` records the source as
+  `flat_explicit`, and no warning fires (the user said what they
+  meant). Silent fallback to flat is unreachable.
+
+When all three tiers fail (no fit-toml prior, no model `~`, no
+explicit-flat opt-in), `camdl fit run` errors with a 2-column
+table naming every offending parameter plus all three remedies:
+
+  ```
+  error: stage 'posterior' (method=pmmh) has parameters with no resolved prior:
+
+    beta        no prior in fit toml, no `~` in model file
+    gamma       no prior in fit toml, no `~` in model file
+
+  To proceed, do one of:
+
+    (i)   Declare `prior = { <dist> = { ... } }` in the fit toml's
+          [estimate.<param>] for each listed parameter.
+    (ii)  Declare a `~ <dist>(...)` prior in the model file for
+          each listed parameter.
+    (iii) Opt into flat priors explicitly via
+          `prior = { flat = {} }` in the fit toml — only do this if you
+          intentionally want the chain to target the unconditioned
+          likelihood (scaled-likelihood posterior).
+  ```
 
 ```bash
 # Profile-posterior sweep: --fit supplies priors and bounds
@@ -586,10 +646,13 @@ camdl profile model.camdl --data cases.tsv \
     --rw-sd auto --starts 3 \
     --fit fits/profile_tau.toml \
     --output results/profile_tau_posterior.tsv
+
+# Bayesian fit with priors in the model file (no duplication in N fits)
+camdl fit run fits/synth.toml --seed 0 --stage posterior
 ```
 
 **Precedence rules** when `--params`, `--fit`, `--fixed`, and the fit
-toml's `[fixed]` block overlap:
+toml's `[fixed]` block overlap (profile-specific):
 
 - `--params` carries values only. When both `--params` and `--fit`
   supply a starting value for the same parameter, `--params` wins.
@@ -602,11 +665,30 @@ toml's `[fixed]` block overlap:
   focal parameter in `--fixed` (or in the fit toml's `[fixed]`) is a
   hard error — a parameter cannot be simultaneously swept and fixed.
 
-The CAS hash includes both `fit_toml_hash` and the resolved per-parameter
-prior sources, so re-running against the same model with a different
-fit toml produces a different cache dir — reviewers can audit which
-configuration produced each artifact via `run.json`'s `resolved_priors`
-array.
+**Provenance.** Both subcommands write per-parameter `resolved_priors`
+into `run.json`:
+
+  ```json
+  "resolved_priors": [
+    { "param": "beta",  "source": "fit_toml" },
+    { "param": "gamma", "source": "model_ir" },
+    { "param": "sigma", "source": "flat_explicit" }
+  ]
+  ```
+
+The four wire values are `"fit_toml"`, `"model_ir"`,
+`"flat_explicit"` (gh#75 — fit run only), and `"flat_fallback"`
+(profile only — the silent-fallback case). Reviewers reading a
+fit dir's `run.json` can audit at a glance whether the chain
+targeted a posterior with priors or the unconditioned likelihood.
+
+The CAS hash includes the model IR bytes (`fit_content_hash` in
+`FitConfigV2`), so re-running against the same fit toml after
+editing a `~` prior in the model file produces a different cache
+dir. For profile, the CAS hash additionally keys on
+`fit_toml_hash` + resolved per-parameter prior sources so
+re-running against the same model with a different `--fit` flag
+produces a different umbrella.
 
 ### Per-cell diagnostics
 
