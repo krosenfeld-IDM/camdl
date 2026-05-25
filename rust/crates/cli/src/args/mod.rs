@@ -979,6 +979,28 @@ Examples:
   camdl profile sir.camdl --data cases.tsv \\
       --param R0 --grid 0.5:5:10 \\
       --param sigma --grid 0.1:1.0:10
+
+  # Profile-posterior sweep — PMMH per cell with priors from a fit toml
+  camdl profile sir.camdl --data cases.tsv \\
+      --sweep \"tau=lin(-35,-1,30)\" --algorithm pmmh \\
+      --fit fits/profile_tau.toml --pmmh-steps 1500
+
+PRIORS (--algorithm pmmh)
+
+  The per-cell PMMH path honours priors via a three-tier precedence
+  chain:
+
+    1. --fit <toml>'s [estimate.<param>.prior] block (highest)
+    2. Model-IR `~` priors (fallback; from DSL `~` syntax)
+    3. Prior::Flat (last resort; emits a structured warning naming
+       every estimated parameter that fell through, citing the two
+       remedies)
+
+  Suppress the warning loudly with --suppress-warnings — the waiver
+  is recorded into run.json's suppressed_warnings array.
+
+  IF2 / NLopt paths ignore priors by design (they maximize the
+  likelihood). The warning fires only for --algorithm pmmh.
 "))]
 pub struct ProfileArgs {
     /// IR JSON or .camdl model file
