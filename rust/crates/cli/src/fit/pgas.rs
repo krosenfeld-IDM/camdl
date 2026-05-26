@@ -348,10 +348,36 @@ pub fn run_stage(
                 n_chains,
                 seed,
                 &ctx,
+                // SurveyTopK doesn't need ResolvedParameters; that
+                // branch fires above. The warm-start variants take a
+                // separate dispatch path below (post-step-7).
+                None,
             ).map_err(|e| format!("pgas: {}", e))?;
         let chains_specs = chains_opt
             .expect("SurveyTopK must yield per-chain starts");
         survey_top_k_result = result;
+        super::init::chain_starts_to_param_vecs(&chains_specs, &config.base_params)
+    } else if matches!(pgas_opts.init_method,
+        super::init::InitMethod::FromPrior
+        | super::init::InitMethod::FromPosterior { .. }
+        | super::init::InitMethod::FromMle    { .. }
+        | super::init::InitMethod::FromParams { .. })
+    {
+        // Step 7 warm-start dispatch (gh#83/gh#85). Build a minimal
+        // `ResolvedParameters` view from the fit runner config and
+        // route through `chain_starts::draw_chain_starts`. Provenance
+        // for the resolved value side is already recorded upstream
+        // (params_resolver runs in fit/runner.rs:188); this branch
+        // owns only chain-start provenance, which step 9 already
+        // serializes into `init_provenance.chains[i]`.
+        let resolved_view = super::init::build_resolved_view_for_init(
+            &config.model, &config.base_params, &config.estimated_params,
+        );
+        let starts = crate::fit::chain_starts::draw_chain_starts(
+            &resolved_view, &pgas_opts.init_method, n_chains, seed,
+        ).map_err(|e| format!("pgas: --init {}: {}",
+            pgas_opts.init_method, e))?;
+        let chains_specs = starts.to_estimated_params(&config.estimated_params);
         super::init::chain_starts_to_param_vecs(&chains_specs, &config.base_params)
     } else {
         super::init::build_chain_param_vecs(

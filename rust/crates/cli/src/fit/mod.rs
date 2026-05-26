@@ -906,6 +906,18 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                             fixed: &fixed_hashmap,
                             estimate_names: &estimate_names,
                         };
+                        // Build a `ResolvedParameters` view so the
+                        // step-7 warm-start variants can dispatch
+                        // through `chain_starts::draw_chain_starts`.
+                        // For legacy modes the view is unused; for
+                        // FromPrior/FromPosterior/FromMle/FromParams
+                        // it's the seam that lets us read the model
+                        // priors / bounds / estimate set.
+                        let resolved_view = init::build_resolved_view_for_init(
+                            &run_config.model,
+                            &run_config.base_params,
+                            &run_config.estimated_params,
+                        );
                         init::resolve_per_chain_starts_from_method(
                             &effective_init,
                             effective_survey_path.as_deref(),
@@ -915,6 +927,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                             *chains,
                             seed,
                             &ctx,
+                            Some(&resolved_view),
                         ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
                     };
 

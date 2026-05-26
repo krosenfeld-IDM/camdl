@@ -203,10 +203,28 @@ pub fn run_stage(
                 n_chains,
                 seed,
                 &ctx,
+                None,
             ).map_err(|e| format!("pmmh: {}", e))?;
         let chains_specs = chains_opt
             .expect("SurveyTopK must yield per-chain starts");
         survey_top_k_result = result;
+        super::init::chain_starts_to_param_vecs(&chains_specs, &base)
+    } else if matches!(pmmh_opts.init_method,
+        super::init::InitMethod::FromPrior
+        | super::init::InitMethod::FromPosterior { .. }
+        | super::init::InitMethod::FromMle    { .. }
+        | super::init::InitMethod::FromParams { .. })
+    {
+        // Step 7 warm-start dispatch (gh#83/gh#85). See pgas.rs for
+        // the mirror path; same shape, different stage type.
+        let resolved_view = super::init::build_resolved_view_for_init(
+            &config.model, &base, &config.estimated_params,
+        );
+        let starts = crate::fit::chain_starts::draw_chain_starts(
+            &resolved_view, &pmmh_opts.init_method, n_chains, seed,
+        ).map_err(|e| format!("pmmh: --init {}: {}",
+            pmmh_opts.init_method, e))?;
+        let chains_specs = starts.to_estimated_params(&config.estimated_params);
         super::init::chain_starts_to_param_vecs(&chains_specs, &base)
     } else {
         super::init::build_chain_param_vecs(

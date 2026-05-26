@@ -374,6 +374,64 @@ pub fn chain_starts_to_param_vecs(
 /// When `method = SurveyTopK` and `survey_path` is `None`, returns an
 /// error naming the offending stage. Callers handle this with the same
 /// diagnostic surface they use for other survey-config mistakes.
+/// Build a minimal `ResolvedParameters` view from a fit-runner-style
+/// pair of (model, base_params, estimated_specs). Used by pgas/pmmh
+/// stage dispatch to thread warm-start variants through
+/// `chain_starts::draw_chain_starts` without forcing a full
+/// `ParameterInputs` reconstruction. Provenance from the original
+/// resolve is not preserved here (the fit-runner path already
+/// recorded provenance into run.json upstream); only the fields
+/// `draw_chain_starts` reads — `model`, `estimate_set`, and per-name
+/// `params[i].value` — are populated.
+pub fn build_resolved_view_for_init(
+    model: &ir::Model,
+    base_params: &[f64],
+    estimated_specs: &[EstimatedParam],
+) -> crate::params_resolver::ResolvedParameters {
+    use crate::params_resolver::{
+        FixReason, ParameterRole, ResolvedParameter, ResolvedParameters, ValueSource,
+    };
+    use indexmap::IndexSet;
+    let estimate_set: IndexSet<String> = estimated_specs.iter()
+        .map(|s| s.name.clone()).collect();
+    let mut params: Vec<ResolvedParameter> = Vec::with_capacity(model.parameters.len());
+    for p in &model.parameters {
+        // `base_params` is indexed by compiled-model param index; look
+        // up by name to find the value. Missing names fall back to
+        // p.value (the model default) — should not happen by
+        // construction, but kept defensive.
+        let value = estimated_specs.iter()
+            .find(|s| s.name == p.name)
+            .map(|s| base_params[s.index])
+            .or_else(|| {
+                // Non-estimated param: look up by position in
+                // model.parameters → base_params.
+                model.parameters.iter().position(|q| q.name == p.name)
+                    .and_then(|idx| base_params.get(idx).copied())
+            })
+            .or(p.value)
+            .unwrap_or(f64::NAN);
+        let role = if estimate_set.contains(&p.name) {
+            ParameterRole::Estimated
+        } else {
+            ParameterRole::Fixed { reason: FixReason::NotInEstimate }
+        };
+        params.push(ResolvedParameter {
+            name: p.name.clone(),
+            value,
+            source: ValueSource::ModelDefault,
+            role,
+            overrode_scenario: None,
+        });
+    }
+    ResolvedParameters {
+        params,
+        estimate_set,
+        model: model.clone(),
+        warnings: Vec::new(),
+    }
+}
+
 pub fn resolve_per_chain_starts_from_method(
     method: &InitMethod,
     survey_path: Option<&std::path::Path>,
@@ -383,6 +441,7 @@ pub fn resolve_per_chain_starts_from_method(
     n_chains: usize,
     seed: u64,
     ctx: &SurveyFitContext<'_>,
+    resolved: Option<&crate::params_resolver::ResolvedParameters>,
 ) -> Result<(Option<Vec<Vec<EstimatedParam>>>, Option<SurveyTopKResult>), String> {
     match method {
         InitMethod::SurveyTopK => {
@@ -396,22 +455,31 @@ pub fn resolve_per_chain_starts_from_method(
             let chains_out = result.chains.clone();
             Ok((Some(chains_out), Some(result)))
         }
-        // Step 6 warm-start variants: not yet wired into the fit.toml
-        // stage runner. The fit-stage path drives chain init from
-        // sibling fields (`survey_path`, `init_mle`, etc.); the
-        // step-7 CLI break is what introduces `--init from_prior`
-        // etc. through the runner. Until then a user landing here via
-        // a fit.toml `init = "from_prior"` hits an actionable error.
+        // Step 7 warm-start variants: dispatch through
+        // `chain_starts::draw_chain_starts` when the caller supplied a
+        // `ResolvedParameters` view (CLI-driven IF2 / PGAS / PMMH
+        // stages of `camdl fit run` and the standalone subcommands
+        // build one before dispatch). When `resolved` is None the
+        // legacy `init::build_chain_param_vecs` rejection fires —
+        // that path covers callers that haven't migrated yet.
         InitMethod::FromPrior
         | InitMethod::FromPosterior { .. }
         | InitMethod::FromMle    { .. }
-        | InitMethod::FromParams { .. } => Err(format!(
-            "stage `{}`: init = \"{}\" is a step-6 warm-start \
-             variant that is not yet routable through the fit.toml \
-             stage runner. Use the upcoming `camdl fit run --init \
-             {}` CLI surface (step 7) once it lands, or fall back to \
-             `init = \"lhs\"` for now.",
-            stage_name, method, method)),
+        | InitMethod::FromParams { .. } => {
+            let resolved = resolved.ok_or_else(|| format!(
+                "stage `{}`: init = \"{}\" is a step-7 warm-start \
+                 variant that requires the dispatch to pass \
+                 `ResolvedParameters` into \
+                 `resolve_per_chain_starts_from_method`. This caller \
+                 hasn't been migrated yet.",
+                stage_name, method))?;
+            let starts = crate::fit::chain_starts::draw_chain_starts(
+                resolved, method, n_chains, seed,
+            ).map_err(|e| format!("stage `{}`: --init {}: {}",
+                stage_name, method, e))?;
+            let chains_specs = starts.to_estimated_params(base_specs);
+            Ok((Some(chains_specs), None))
+        }
         _ => {
             let per_chain = build_chain_starts(
                 method.clone(), base_specs, n_chains, seed);
@@ -1657,7 +1725,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         };
         let (per_chain, survey) = resolve_per_chain_starts_from_method(
             &InitMethod::Lhs, None, None, "scout",
-            &base, 8, 42, &ctx,
+            &base, 8, 42, &ctx, None,
         ).expect("non-survey LHS path must succeed");
         assert!(per_chain.is_some(), "Lhs with n_chains=8 should produce chains");
         assert_eq!(per_chain.as_ref().unwrap().len(), 8);
@@ -1677,7 +1745,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         };
         let (per_chain, survey) = resolve_per_chain_starts_from_method(
             &InitMethod::Single, None, None, "refine",
-            &base, 4, 42, &ctx,
+            &base, 4, 42, &ctx, None,
         ).unwrap();
         assert!(per_chain.is_none(), "Single → None (caller uses base directly)");
         assert!(survey.is_none());
@@ -1696,7 +1764,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         };
         let err = resolve_per_chain_starts_from_method(
             &InitMethod::SurveyTopK, None, None, "scout",
-            &base, 4, 42, &ctx,
+            &base, 4, 42, &ctx, None,
         ).unwrap_err();
         assert!(err.contains("survey_path"),
             "diagnostic should name survey_path: {}", err);
@@ -1763,7 +1831,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
 
         let (per_chain, survey) = resolve_per_chain_starts_from_method(
             &InitMethod::SurveyTopK, Some(&dir), Some(2), "scout",
-            &base, 2, 42, &ctx,
+            &base, 2, 42, &ctx, None,
         ).expect("SurveyTopK happy path must succeed");
         let chains = per_chain.expect("SurveyTopK must produce chains");
         let result = survey.expect("SurveyTopK must produce a SurveyTopKResult");
