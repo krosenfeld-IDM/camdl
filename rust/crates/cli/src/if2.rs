@@ -107,7 +107,13 @@ pub fn cmd_if2(a: &crate::args::If2Args) {
     let flow_name = a.flow.flow.clone();
     // M-1 break per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
     // §"Migration": fail loudly on removed flags before any work.
+    // `--param` (singular) is trapped via the shared
+    // `InferenceModelOverrides.check_removed_flags`; `--params`
+    // (plural) is trapped via `_params_trap` because profile/fit-run
+    // have a legitimate `--params` companion to `--init from_params`
+    // and can't share the trap field.
     a.model_overrides.check_removed_flags("if2");
+    a._params_trap.check();
     // Build the resolver inputs from the CLI surface. `--fixed-file`
     // (repeatable) → `fixed_files`; `--fixed NAME=VALUE` (repeatable)
     // → `fixed_cli`. The resolver handles tier ordering (model default

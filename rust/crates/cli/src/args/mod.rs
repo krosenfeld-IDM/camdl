@@ -272,16 +272,21 @@ pub struct InferenceModelOverrides {
 
     // ── Removed-flag traps (M-1 break per proposal §"Migration") ──
     //
-    // These are accepted by clap so the user gets a helpful actionable
-    // error at dispatch time instead of the bare clap "unrecognised
-    // option" error. The dispatch site checks each and aborts with the
-    // replacement spelled out.
+    // `--param` (singular) is trapped here because no inference
+    // subcommand has a legitimate use for that flag name.
+    //
+    // `--params` (plural) is **not** trapped at this level: profile
+    // and fit-run have a legitimate `--params <TOML>` companion to
+    // `--init from_params`. Trapping `--params` here would shadow
+    // that companion (two clap defs with `long = "params"` in the
+    // same Args graph: the trap field wins by definition order, the
+    // companion is silently unreachable). Subcommands without a
+    // companion (currently if2) carry their own `--params` trap
+    // field; see [`If2RemovedParamsTrap`].
     //
     // Per CLAUDE.md alpha posture: no back-compat shims, no aliases —
     // these traps exist purely so the error message is actionable.
     // They have no other effect.
-    #[arg(long = "params", value_name = "FILE", hide = true)]
-    pub _removed_params: Vec<PathBuf>,
     #[arg(long = "param", value_name = "NAME=VALUE", hide = true)]
     pub _removed_param: Vec<ParamOverride>,
 }
@@ -291,20 +296,6 @@ impl InferenceModelOverrides {
     /// Called by every inference-subcommand dispatch function before
     /// any other work. Matches the wording in the proposal §"Migration".
     pub fn check_removed_flags(&self, subcmd: &str) {
-        if !self._removed_params.is_empty() {
-            eprintln!(
-                "error: --params is no longer accepted on `camdl {}`. \
-                 Replacement:\n  \
-                 --fixed NAME=VALUE             (set & freeze specific values)\n  \
-                 --fixed-file <toml>            (load fixed values from a TOML file)\n  \
-                 --init from_params --params <toml>   \
-                     (chain warm-start from a hand-written params TOML)\n  \
-                 --init from_mle --mle <fit-dir>      \
-                     (chain warm-start from a prior fit's MLE)\n\
-                 See `camdl {} --help` (INIT MODES + SET PARAMETER VALUES sections).",
-                subcmd, subcmd);
-            std::process::exit(1);
-        }
         if !self._removed_param.is_empty() {
             eprintln!(
                 "error: --param is no longer accepted on `camdl {}`. \
@@ -313,6 +304,31 @@ impl InferenceModelOverrides {
                  --fixed-file <toml>            (load fixed values from a TOML file)\n\
                  See `camdl {} --help` (SET PARAMETER VALUES section).",
                 subcmd, subcmd);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Subcommand-specific `--params` trap for inference subcommands that
+/// have **no** `--init from_params` companion (currently just `if2`).
+/// Kept separate from [`InferenceModelOverrides`] because profile and
+/// fit-run *do* have a `--params` companion — sharing the trap would
+/// shadow their legitimate companion.
+#[derive(Args, Clone, Default)]
+pub struct If2RemovedParamsTrap {
+    #[arg(long = "params", value_name = "FILE", hide = true)]
+    pub _removed_params: Vec<PathBuf>,
+}
+
+impl If2RemovedParamsTrap {
+    pub fn check(&self) {
+        if !self._removed_params.is_empty() {
+            eprintln!(
+                "error: --params is no longer accepted on `camdl if2`. \
+                 Replacement:\n  \
+                 --fixed NAME=VALUE             (set & freeze specific values)\n  \
+                 --fixed-file <toml>            (load fixed values from a TOML file)\n\
+                 See `camdl if2 --help` (SET PARAMETER VALUES section).");
             std::process::exit(1);
         }
     }
@@ -1267,6 +1283,12 @@ pub struct If2Args {
     #[command(flatten)]
     pub model_overrides: InferenceModelOverrides,
 
+    /// `--params` trap, if2-only. profile/fit-run have a legitimate
+    /// `--params <TOML>` companion to `--init from_params`, so they
+    /// can't share the InferenceModelOverrides-level trap.
+    #[command(flatten)]
+    pub _params_trap: If2RemovedParamsTrap,
+
     #[command(flatten)]
     pub scenario: ScenarioArgs,
 
@@ -2211,11 +2233,16 @@ mod tests {
     //    `tests/cas_integration.rs::starts_from_resolves_short_hash`.
 
     #[test]
-    fn profile_params_flag_is_trapped_at_parse() {
-        // The hidden `_removed_params` trap collects `--params <PATH>`
-        // on profile/if2 so the dispatch's `check_removed_flags` can
-        // emit the actionable error. Pre-step-7 the field would have
-        // resided on `model_overrides.params`.
+    fn profile_params_lands_in_init_params_not_trap() {
+        // Regression: post-fix, `profile --params <PATH>` parses into
+        // ProfileArgs::init_params (the legitimate companion to
+        // `--init from_params`), NOT into a trap field. The earlier
+        // version of this test asserted the opposite — the trap then
+        // shadowed the init-mode companion and made
+        // `profile --init from_params --params start.toml`
+        // unreachable. The actionable error for bare `--params` (no
+        // `--init from_params`) now fires from
+        // `InitModeTag::to_init_method` instead of a parse-time trap.
         let full = ["camdl", "profile", "model.camdl",
                     "--data", "cases.tsv",
                     "--sweep", "R0=lin(0.5,5,5)",
@@ -2223,14 +2250,92 @@ mod tests {
                     "--particles", "100",
                     "--params", "truth.toml"];
         let parsed = Cli::try_parse_from(full)
-            .expect("hidden trap must accept --params <path>");
+            .expect("clap must accept --params on profile (lands in init_params)");
         match parsed.command {
             Command::Profile(a) => {
-                assert_eq!(a.model_overrides._removed_params.len(), 1,
-                    "expected 1 trapped --params, got: {:?}",
-                    a.model_overrides._removed_params);
+                assert_eq!(a.init_params.as_deref().map(|p| p.to_string_lossy().into_owned()),
+                    Some("truth.toml".to_string()),
+                    "expected --params to land in init_params");
                 assert_eq!(a.model_overrides.fixed_cli.len(), 0,
-                    "trapped --params must not pollute fixed_cli");
+                    "--params must not pollute fixed_cli");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// The valid usage: `--init from_params --params <path>` must
+    /// parse AND `to_init_method` must build `InitMethod::FromParams`.
+    /// Pre-fix, the trap field shadowed init_params and the user got
+    /// a rejection error.
+    #[test]
+    fn profile_init_from_params_with_params_companion_parses_and_builds() {
+        let full = ["camdl", "profile", "model.camdl",
+                    "--data", "cases.tsv",
+                    "--sweep", "R0=lin(0.5,5,5)",
+                    "--rw-sd", "auto",
+                    "--particles", "100",
+                    "--init", "from_params",
+                    "--params", "/tmp/start.toml"];
+        let parsed = Cli::try_parse_from(full)
+            .expect("clap must accept --init from_params --params <path>");
+        let Command::Profile(a) = parsed.command else { unreachable!() };
+        assert_eq!(a.init, InitModeTag::FromParams);
+        assert_eq!(a.init_params.as_deref().map(|p| p.to_string_lossy().into_owned()),
+            Some("/tmp/start.toml".to_string()));
+        // Verify to_init_method assembles the typed InitMethod.
+        let im = a.init.to_init_method(
+            a.posterior.as_ref(), a.mle.as_ref(), a.init_params.as_ref(),
+        ).expect("to_init_method must succeed for --init from_params --params <path>");
+        match im {
+            crate::fit::init::InitMethod::FromParams { path } => {
+                assert_eq!(path.to_string_lossy(), "/tmp/start.toml");
+            }
+            other => panic!("expected InitMethod::FromParams, got {:?}", other),
+        }
+    }
+
+    /// `--params <path>` without `--init from_params` must surface the
+    /// actionable "use --fixed-file or --init from_params" error from
+    /// `to_init_method`. This is the migration-friendly version of the
+    /// pre-fix parse-time trap.
+    #[test]
+    fn profile_params_without_init_from_params_errors_from_to_init_method() {
+        let full = ["camdl", "profile", "model.camdl",
+                    "--data", "cases.tsv",
+                    "--sweep", "R0=lin(0.5,5,5)",
+                    "--rw-sd", "auto",
+                    "--particles", "100",
+                    "--params", "truth.toml"];
+        let parsed = Cli::try_parse_from(full).unwrap();
+        let Command::Profile(a) = parsed.command else { unreachable!() };
+        // Default init is Lhs; `--params` without `--init from_params`
+        // must produce a structured error from to_init_method.
+        let err = a.init.to_init_method(
+            a.posterior.as_ref(), a.mle.as_ref(), a.init_params.as_ref(),
+        ).expect_err("to_init_method must reject --params without --init from_params");
+        assert!(err.contains("--params is only valid with --init from_params"),
+            "error must point user at --init from_params: {}", err);
+    }
+
+    /// if2 has no `--init from_params` companion, so `--params` is
+    /// trapped at the parse layer via [`If2RemovedParamsTrap`]. This
+    /// trap is *separate* from the InferenceModelOverrides trap that
+    /// got removed (which would have shadowed profile's init_params).
+    #[test]
+    fn if2_params_flag_is_trapped_at_parse() {
+        let full = ["camdl", "if2", "model.camdl",
+                    "--data", "cases.tsv",
+                    "--rw-sd", "auto",
+                    "--particles", "100",
+                    "--regime", "scout",
+                    "--params", "truth.toml"];
+        let parsed = Cli::try_parse_from(full)
+            .expect("clap must accept --params on if2 (lands in if2-specific trap)");
+        match parsed.command {
+            Command::If2(a) => {
+                assert_eq!(a._params_trap._removed_params.len(), 1,
+                    "expected 1 trapped --params, got: {:?}",
+                    a._params_trap._removed_params);
             }
             _ => unreachable!(),
         }
