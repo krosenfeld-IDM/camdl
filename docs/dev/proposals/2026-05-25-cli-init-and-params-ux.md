@@ -1,351 +1,444 @@
-# CLI UX: unify chain-start semantics under `--init`; disambiguate `--params`
+# CLI UX: unify chain-start under `--init`; unify value-setting under `--fixed`; single resolver
 
 Date: 2026-05-25
 Author: vsb
-Status: draft for review
+Status: draft for review — revision 2 (post-discussion)
 Related: gh#83 (init from_prior / from_posterior), gh#85 (--params split semantics)
 
 ## Class
 
-**doc-vs-code + code-vs-code**. Help text on `--params` claims one
-thing while the code does another (gh#85 §"The trap"); and the
-naming of the chain-start family is inconsistent across subcommands
-in ways that aren't documented anywhere (audit below).
+**doc-vs-code + code-vs-code**:
+
+- Help text on `--params` claims one thing while the code does another (gh#85).
+- Three separate value-resolution code paths exist
+  (`util::resolve_run_model`, `FixedParams::resolve_with_model`,
+  `priors_precedence::resolve_priors_with_precedence`); each is correct
+  for its slice but drift-prone and used inconsistently.
+- Cross-subcommand naming of the same concept is inconsistent
+  (`--init` vs `--init-method`, `--starts` vs `--chains`,
+  `--starts-from` vs nothing).
 
 ## TL;DR
 
-camdl has a single underlying concept — *how to set parameter
-values, with the role (fix vs start) determined by inference
-context* — surfaced through three flags (`--params`, `--init`,
-`--starts-from`) whose names, scopes, and meanings disagree across
-subcommands. A camdl-book chapter author hit the ambiguity in a
-live session (gh#85). The recommended fix is to make `--init` the
-single source of truth for chain starting points across all
-inference subcommands, expand its mode set to cover prior /
-posterior / params-file warm starts (gh#83), and demote `--params`
-to non-inference subcommands only. `--params` on inference
-subcommands becomes an alias for `--init from-params
---params-file <toml>` with a deprecation notice.
+Rev 2 collapses parameter-related flags into two verbs that mean
+the same thing on every subcommand:
 
-## Audit: current state of parameter-related flags
+- **`--fixed`** — *these parameters are set to these values*. On
+  non-inference subcommands all values are effectively fixed
+  (no inference is happening); on inference subcommands the named
+  parameters are pinned out of `[estimate]`.
+- **`--init`** — *where do chains start from* (inference only).
+  The mode family expands to cover prior / posterior / single-file
+  warm starts (gh#83).
 
-Verified by reading `rust/crates/cli/src/args/mod.rs` and
-`rust/crates/cli/src/profile.rs:440-453` /
-`rust/crates/cli/src/util.rs:493-501`.
+`--params` and `--param` are removed everywhere. `--init-method`
+and `--starts-from` (fit run) are renamed for parity.
+
+A single `ParameterResolver` abstraction owns the precedence chain
+and replaces the three half-resolvers in the codebase. Every
+subcommand routes through it. Provenance (where each value came
+from) is recorded into the resolver's output so `run.json` can
+faithfully serialize "this value came from `--fixed`, that one
+from `fit.toml [fixed]`, that one from a scenario preset."
+
+## Audit: current state
+
+Verified by reading `rust/crates/cli/src/args/mod.rs`,
+`rust/crates/cli/src/util.rs:803-1004`,
+`rust/crates/cli/src/fit/config_v2.rs:574-697`,
+`rust/crates/cli/src/fit/priors_precedence.rs`, and the per-subcommand
+`<sub>.rs` files.
+
+### Flag table
 
 | Subcommand     | `--params` | `--param` | `--fixed` | `--fit` | `--init`         | warm-start          |
 |----------------|------------|-----------|-----------|---------|------------------|---------------------|
 | `simulate`     | fix        | fix       | —         | —       | —                | —                   |
 | `pfilter`      | fix        | fix       | —         | —       | —                | —                   |
 | `eval`         | fix        | fix       | —         | —       | —                | —                   |
-| `if2`          | mixed      | mixed     | yes       | —       | — (`--rw-sd`)    | —                   |
-| `profile`      | mixed      | mixed     | yes       | yes     | `--init <mode>`  | (none; gh#74-A WIP) |
-| `survey`       | —          | —         | yes       | yes     | —                | —                   |
+| `if2`          | mixed      | mixed     | names     | —       | — (`--rw-sd`)    | —                   |
+| `profile`      | mixed      | mixed     | names     | yes     | `--init <mode>`  | (gh#74-A WIP)       |
+| `survey`       | —          | —         | NAME=VALUE| yes     | —                | —                   |
 | `fit run`      | —          | —         | (toml)    | (toml)  | `--init-method`  | `--starts-from`     |
 
-Where:
+Three layers of inconsistency:
 
-- **fix** — value is used as the parameter's runtime value, frozen.
-- **mixed** — value is the runtime value, but for parameters in the
-  inference `[estimate]` set the value functions as a *starting
-  point* and is free to move; for parameters not in `[estimate]`
-  it functions as fixed. The user has to look up which mode each
-  parameter is in to predict the flag's effect.
-- The `--init` column entries refer to the four currently-implemented
-  modes: `single`, `lhs`, `uniform`, `survey_top_k`
-  (`rust/crates/cli/src/fit/init.rs:41`).
-- Warm-start: `fit run --starts-from <dir>` uses the prior stage's
-  MLE (a single point). No equivalent exists on `profile`.
+1. `--params` carries `(fix)` semantic on non-inference but
+   `(mixed: start-vs-fix-per-param)` on inference. (gh#85)
+2. `--fixed` itself takes name-only form on `profile`/`if2`
+   but `NAME=VALUE` form on `survey`. (audit-discovered, not yet
+   filed)
+3. Init / warm-start vocabulary differs across commands (`--init`
+   vs `--init-method`; `--starts` vs `--chains`; `--starts-from`
+   vs nothing).
 
-### Concrete inconsistencies, by example
+### Resolver fragmentation
 
-The same concept appears under different names across subcommands:
+| Resolver                                    | Lives in                                   | Used by                                            |
+|---------------------------------------------|--------------------------------------------|----------------------------------------------------|
+| `resolve_run_model`                         | `cli/util.rs:803-1004`                     | `simulate`, `lineage`                              |
+| `FixedParams::resolve_with_model`           | `cli/fit/config_v2.rs:574-697`             | `survey`, `profile` (for fit-toml `[fixed]`)       |
+| `resolve_priors_with_precedence`            | `cli/fit/priors_precedence.rs`             | `profile`, `fit run` (for priors)                  |
+| inline per-subcommand resolution            | `profile.rs:437-453`, `if2.rs:109-168`, `pfilter.rs:47-55` | profile, if2, pfilter                  |
 
-- "init mode" → `--init` (profile), `--init-method` (fit run);
-  `if2` has no direct equivalent (chains start uniformly from
-  bounds when `--rw-sd auto`, no other modes available).
-- "number of independent starting points" → `--starts` (profile,
-  per-cell), `--chains` (if2, top-level), `chains = N` in
-  fit-toml `[stages.<name>]`. Same concept, three names.
-- "warm-start from a prior fit" → `--starts-from <dir>` (fit run
-  only, MLE point). gh#83 asks for `--init from_posterior` to
-  fill the gap for `profile` and to extend `fit run` to draws
-  rather than MLE only.
-
-These were all built incrementally as features grew. They are
-small individually; collectively they oblige the user to learn
-each subcommand's vocabulary separately.
+Each is correct on its own. Together they let small details drift
+silently — the spec-documented precedence in
+`docs/camdl-run-spec.md §1.3` is enforced only in `resolve_run_model`;
+profile and if2 implement a *similar* order inline but the next
+edit might or might not preserve it.
 
 ## Problems, in priority order
 
-### P1. `--params` on `profile` / `if2` is a footgun (gh#85)
+### P1. `--params` on inference subcommands is a footgun (gh#85)
 
-Verified at `rust/crates/cli/src/util.rs:493-501`:
-
-```
-pub fn apply_params_file(model: &mut ir::Model, path: &str) -> Result<(), String> {
-    let vals = load_params_toml(path)?;
-    for p in &mut model.parameters {
-        if let Some(&v) = vals.get(&p.name) {
-            p.value = Some(v);
-        }
-    }
-    ...
-}
-```
-
-`apply_params_file` is a pure value-setter. The resulting role
-(fix vs start) is decided downstream by whether the parameter
-appears in the inference `[estimate]` set (resolved per-subcommand
-from `--fit` toml, `--fixed`, etc.).
-
-Worst case: a user writes `profile model.camdl --params truth.toml`
-expecting to fix `gamma` at its true value while profiling
-`tau`. If `gamma` happens to be in the `[estimate]` block of the
-attached `--fit` toml, it becomes a *starting value* and walks
-off during PMMH. The likelihood landscape looks fine; the user's
-profile is wrong in a way no diagnostic will catch.
-
-The current help text on `profile`'s `--params`
-(`rust/crates/cli/src/args/mod.rs:1086-1097`) is paragraph-form,
-buries the dual semantic mid-sentence, and is the kind of doc the
-user has to read very carefully to extract the actual rule from.
+Verified at `cli/util.rs:493-501`. `apply_params_file` sets
+`p.value = Some(v)` indiscriminately; the role (fix vs start) is
+decided downstream by `[estimate]` membership. User reading
+`--params truth.toml` reasonably expects "fix these"; in profile
+context, parameters that happen to be in `[estimate]` walk off
+during PMMH instead.
 
 ### P2. `--init` is bounds-only (gh#83)
 
-Verified at `rust/crates/cli/src/fit/init.rs:41` (the
-`InitMethod` enum). All four modes — `single`, `lhs`, `uniform`,
-`survey_top_k` — produce starting points by sampling the
-parameter *bounds*, ignoring (a) the prior's shape and (b) any
-posterior information from a previous fit. This leaves two
-important warm-start patterns unsupported:
+`InitMethod` (`cli/fit/init.rs:41`) has four variants — `single`,
+`uniform`, `lhs`, `survey_top_k`. All sample from bounds; none
+sample from prior shape or posterior draws. Important
+warm-start patterns (prior visualisation, posterior → posterior
+handoff between fits, profile cells starting from a wa-fit's
+posterior) are not expressible.
 
-- *From the model's prior.* `LogNormal(log 5, 1.0)` and
-  `Uniform(0.01, 50)` over the same bounds produce wildly
-  different starting-point distributions; current `--init`
-  cannot distinguish them.
-- *From another fit's posterior.* `--starts-from <dir>` covers
-  the MLE-point case for `fit run` but not the posterior-sample
-  case, and isn't implemented for `profile` at all.
+### P3. `--fixed` itself is inconsistent across subcommands
 
-### P3. Cross-subcommand naming inconsistency (filed implicitly by the audit)
+`--fixed` on `profile`/`if2` takes a comma-list of *names*
+(pin at model default value); on `survey` takes `NAME=VALUE`
+pairs (pin at explicit value). The same flag with the same name
+behaves differently. Easy to miss.
 
-Same concept, three names (init mode); same concept, three names
-(start count); same concept, two implementations of warm-start
-(MLE-only via `--starts-from`, nothing via `--init from_posterior`).
+### P4. Resolver fragmentation lets precedence drift
+
+Three half-resolvers plus inline per-subcommand reimplementations
+of the same precedence rules. Provenance ("where did this value
+come from?") is partial — only the priors resolver currently
+records it.
 
 ## Proposal
 
-### Principle: one flag per concept; one name per concept
+### Principle
 
-For inference subcommands (`profile`, `if2`, `fit run`):
+Two verbs, two concepts, one resolver:
 
-- **`--init <mode>`** is the single source of truth for chain
-  starting points. Same name, same semantics, everywhere.
-- **`--params`** is *not accepted* on inference subcommands going
-  forward. The closest replacement is `--init from-params
-  --params-file <toml>` (one explicit mode in the `--init`
-  family).
-- **`--fixed`** keeps its current semantic: pin specific
-  parameters out of the inference set. Orthogonal to `--init`.
+- **`--fixed`** — *these parameters are set to these values*
+- **`--init`** — *where do chains start from* (inference only)
+- One `ParameterResolver` abstraction implements precedence;
+  every subcommand routes through it.
 
-For non-inference subcommands (`simulate`, `pfilter`, `eval`):
+### `--fixed` semantics, defined once
 
-- `--params` remains as today — unambiguous "set values for this
-  run", no inference context to muddy the meaning.
+Universal form, all subcommands:
 
-### The expanded `--init` family
-
-```text
---init single                   # all chains at the seeded base params
---init uniform                  # per-chain U(lo, hi) within bounds
---init lhs                      # Latin-hypercube stratified, scale-aware
---init from-params              #  + --params-file <toml>
-                                # load a single point from TOML; equivalent to
-                                # the old `--params` semantic on inference
---init from-prior               # sample once per chain from each parameter's
-                                # `~ <dist>` declaration; falls back to
-                                # bounds-uniform for parameters without `~`
---init from-posterior           #  + --posterior <draws.tsv | fit-dir>
-                                # sample chain starts as uniform rows from a
-                                # posterior draws TSV
---init from-mle                 #  + --mle-path <mle.toml | fit-dir>
-                                # all chains at a single MLE point (formalises
-                                # the current `--starts-from <dir>` behaviour
-                                # for `fit run`)
---init survey-top-k             #  + --survey-path <dir>
-                                # existing behaviour, kebab-cased for parity
+```
+--fixed NAME=VALUE          # repeatable; explicit value form
+--fixed-file <toml>         # repeatable; layered, later overrides earlier
 ```
 
-`from-posterior` accepts either a raw `draws.tsv` path or a
-fit-results directory; the loader auto-resolves
-`<dir>/draws.tsv` when given a directory. `from-mle` does the
-same with `<dir>/mle.toml`. This is the natural extension of
-`fit run`'s `--starts-from`, generalised across subcommands.
+Both accept the same value vocabulary. Name-only `--fixed NAME`
+form is **removed** — the "pin at model default" case is just
+"don't list the param at all and let the model default flow
+through the precedence chain." Removing the form costs nothing
+and removes a per-subcommand inconsistency.
 
-When the source file is missing parameters that the current
-fit's `[estimate]` set includes, fall back to the current
-`--init` default for those columns. Emit a warning naming the
-missing parameters. When the source file contains parameters
-*not* in `[estimate]`, ignore those columns (they are either
-fixed or not part of the model — neither outcome benefits from
-overriding from the file).
+On non-inference subcommands (`simulate`, `pfilter`, `eval`),
+`--fixed` is the sole flag for setting parameter values. Every
+listed value is used as the parameter's runtime value. (No
+inference is happening; all values are trivially "fixed" in the
+"set and not varying" sense.)
 
-### Cross-subcommand consistency renames
+On inference subcommands (`profile`, `if2`, `fit run`), `--fixed`
+both sets a value *and* removes the parameter from the
+`[estimate]` set if present:
+
+```
+camdl profile model.camdl --fit fit.toml --fixed gamma=0.1 --sweep tau=lin(-35,-1,30)
+```
+
+Resolves as: estimated set = `(fit.toml [estimate]) − {gamma, tau}`;
+`gamma` is pinned at 0.1; `tau` is swept along the grid. The
+likelihood landscape is a slice through `(tau, gamma=0.1)`-space.
+
+This is the natural ergonomic for profile-likelihood slicing —
+"hold gamma at a specific value while sweeping tau" is exactly
+what `--fixed gamma=0.1` should mean. The alternative (error on
+collision with `[estimate]`) is more defensive but obstructs the
+canonical workflow.
+
+### `--init` family
+
+Same name, same modes, every inference subcommand:
+
+```
+--init single                       # all chains at the seeded base params
+--init uniform                      # per-chain U(lo, hi) within bounds
+--init lhs                          # Latin-hypercube stratified, scale-aware
+--init from-prior                   # per-chain draw from each parameter's `~ <dist>`
+--init from-posterior --posterior <path>
+                                    # per-chain draw from a posterior draws TSV
+                                    #   (accepts <draws.tsv> OR a fit-results <dir>)
+--init from-mle --mle <path>        # all chains at the MLE point from a file
+                                    #   (accepts <mle.toml> OR a fit-results <dir>;
+                                    #    formalises `--starts-from` for fit run AND
+                                    #    absorbs what was the `--params`-as-start case)
+--init survey-top-k --survey-path <dir>
+                                    # existing behaviour, kebab-cased
+```
+
+`from-params` and `from-mle` collapse into a single mode
+(`from-mle`). They were operationally identical — load a single
+TOML, all chains start there. "MLE" is a slight misnomer for the
+user-written-TOML case but is the right *operation* and the
+natural language match for the fit-output case it primarily
+serves.
+
+Init applies *only* to parameters in the `[estimate]` set after
+`--fixed` resolution. Parameters in `--fixed` or absent from
+`[estimate]` take their resolved value regardless of init mode.
+
+When a `from-posterior` or `from-mle` source file is missing
+parameters that the current fit's `[estimate]` set includes,
+fall back to the subcommand's default init mode for those
+columns. Emit a startup warning naming the missing parameters.
+When the source file contains parameters not in `[estimate]`,
+ignore those columns silently — they are either fixed or absent
+from the model.
+
+### Cross-subcommand renames
 
 - `fit run`'s `--init-method` → `--init`. Parity with `profile`.
-- `fit run`'s `--starts-from <dir>` → `--init from-mle
-  --mle-path <dir>` (current behaviour preserved exactly; same
-  resolved-file behaviour).
-- `profile`'s `--starts` (per-cell count) stays as is — the name
-  collision with gh#85's Option A (which we are not adopting) is
-  no longer a concern.
-- `if2`'s `--chains` stays as is — established MCMC vocab; renaming
-  to `--starts` would obscure rather than clarify. Both terms now
-  refer to "number of independent chain starting points", and the
-  per-subcommand name reflects the algorithm's idiom.
+- `fit run`'s `--starts-from <dir>` → `--init from-mle --mle <dir>`.
+- `profile`'s `--starts` (per-cell count) stays as is.
+- `if2`'s `--chains` stays as is — established MCMC vocab.
 
-### Help-text rewrite
+### The single resolver — `ParameterResolver`
 
-`--init` gets a single normative help block, shared via a clap
-`#[command(long_about = …)]` between subcommands. The text reads:
+Replaces `resolve_run_model`, `FixedParams::resolve_with_model`,
+the inline resolvers in `profile.rs` / `if2.rs` / `pfilter.rs`,
+and (optionally — separate concern) sits next to
+`resolve_priors_with_precedence`.
 
+#### Shape
+
+```rust
+/// Inputs gathered from the CLI + IR. Every subcommand assembles
+/// one of these before dispatch; the resolver returns a
+/// `ResolvedParameters` carrying the per-parameter outcome plus
+/// provenance.
+pub struct ParameterInputs<'a> {
+    pub model:           &'a ir::Model,
+    pub scenario:        Option<&'a str>,        // model preset name
+    pub fixed_cli:       &'a [(String, f64)],    // --fixed NAME=VALUE
+    pub fixed_files:     &'a [PathBuf],          // --fixed-file <toml>...
+    pub fit_toml_fixed:  &'a IndexMap<String, f64>, // [fixed] block of --fit
+    pub fit_toml_estimate: &'a IndexSet<String>, // names in [estimate]
+    pub table_files:     &'a HashMap<String, PathBuf>, // --table NAME=FILE
+}
+
+#[derive(Debug, Clone)]
+pub enum ValueSource {
+    ModelDefault,
+    Scenario(String),       // preset name
+    FitTomlFixed,
+    FixedFile(PathBuf),
+    FixedCli,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedParameter {
+    pub name:     String,
+    pub value:    f64,
+    pub source:   ValueSource,
+    pub fixed:    bool,    // true if this param is held fixed (out of [estimate])
+}
+
+pub struct ResolvedParameters {
+    pub params:        Vec<ResolvedParameter>,
+    pub estimate_set:  IndexSet<String>,  // names that survived [estimate] after --fixed kick-out
+    pub model:         ir::Model,         // model with .value fields populated
+    pub warnings:      Vec<String>,       // collision / kick-out / unknown-name diagnostics
+}
+
+pub fn resolve_parameters(inputs: ParameterInputs<'_>) -> Result<ResolvedParameters, String> { ... }
 ```
-INIT MODES (where do chain starting points come from?)
 
-  single             every chain starts at the seeded base params
-  uniform            per-chain U(lo, hi) over [estimate] parameter bounds
-  lhs                Latin-hypercube stratified within bounds (scale-aware
-                     via Transform; best basin coverage at low chain counts)
-  from-params        load a single point from a TOML file; pass
-                     --params-file <path>. (Use this where you'd previously
-                     have written `--params <path>` on profile or if2.)
-  from-prior         sample once per chain from each parameter's `~ <dist>`
-                     declaration in the .camdl source
-  from-posterior     sample chain starts uniformly from a posterior draws TSV
-                     (or a fit-results directory containing draws.tsv); pass
-                     --posterior <path>
-  from-mle           all chains at the MLE point from a prior fit; pass
-                     --mle-path <path>
-  survey-top-k       initialise from the top-K best landscape points of a
-                     prior survey; pass --survey-path <dir>
+#### Precedence (last wins)
 
-Init applies only to parameters in the inference `[estimate]` set; parameters
-in `[fixed]` (or absent from `[estimate]`) take their model value or `--fixed`
-override regardless of init mode.
+1. Model parameter default (`p.value` from DSL)
+2. Scenario preset (`preset.params` for the active scenario)
+3. `fit.toml [fixed]` block (when present)
+4. `--fixed-file <toml>` (each file layered in order; later overrides earlier)
+5. `--fixed NAME=VALUE` (highest)
+
+`[estimate]` membership rule:
+
+- Start: `estimate_set = inputs.fit_toml_estimate`
+- Remove every name that appears in (4) or (5) — these are
+  user-explicit "pin this" assertions and take precedence over
+  the toml's `[estimate]` block.
+- Emit a warning (not an error) for each such removal, naming the
+  parameter and the source: `"--fixed gamma=0.1 removes gamma from [estimate]"`.
+- On non-inference subcommands, `inputs.fit_toml_estimate` is
+  empty; the kick-out logic is a no-op.
+
+#### Validation, post-resolution
+
+- Every parameter must end with a finite value. Unset parameters
+  with no model default → error.
+- Bounds checks (`validate_parameter_values`) run on the resolved
+  values, as today.
+- External tables are resolved here too (per
+  `resolve_run_model:977-993`).
+- Names appearing in `--fixed` / `--fixed-file` / `fit.toml`
+  that don't exist in the model are an error with a "did you
+  mean" hint built from the model's parameter list.
+
+#### Provenance into `run.json`
+
+Each `ResolvedParameter` carries its `ValueSource`. The
+subcommand-specific `run.json` writer renders this as a
+`parameters_provenance` block:
+
+```json
+"parameters_provenance": {
+  "beta":  { "value": 0.42, "source": "model_default" },
+  "gamma": { "value": 0.10, "source": "fixed_cli",     "kicked_from_estimate": true },
+  "rho":   { "value": 0.07, "source": "fit_toml_fixed" }
+}
 ```
 
-The line *"Init applies only to parameters in the inference `[estimate]`
-set"* is the clarification gh#85 was asking for, with a clear pointer
-to the right mechanism (`[fixed]` / `--fixed`) for the fixing case.
+This is the gh#73 / gh#75 provenance work, generalised to all
+values (not just priors).
+
+### Why one resolver, not three
+
+The three existing resolvers each cover a slice:
+
+- `resolve_run_model` — values, but no `[estimate]` interaction
+  (it's the simulate path).
+- `FixedParams::resolve_with_model` — fit-toml `[fixed]`, but
+  doesn't see CLI `--fixed`.
+- `resolve_priors_with_precedence` — priors only.
+
+The seam is at "values that come from the model + scenario +
+toml + CLI." That's one operation. Splitting it across three
+codepaths means three places to keep the same precedence in
+sync, and inline reimplementations whenever a new subcommand
+appears. One resolver, one set of tests, one provenance shape.
+
+Priors stay in `priors_precedence.rs` — they have a different
+content type (`Prior`, not `f64`) and a different precedence
+shape (fit_toml > model_ir > flat_fallback, not the 5-tier value
+chain). Two resolvers (values + priors), both rigorous, beats
+five sloppy ones.
 
 ## Migration
 
-camdl is alpha. The default at alpha is clean break with updated
-docs; backwards-compatibility shims accrete and rot. That said,
-the camdl-book chapters and the recently-released blog post both
-use `--params` on inference subcommands. Two reasonable paths:
+camdl is alpha. CLAUDE.md alpha posture: "Backwards compatibility
+is a non-goal." Recommend **M-1 (hard break)** — confirmed by
+the conversation that produced this revision:
 
-### Option M-1: hard break, update docs (recommended)
-
-- Remove `--params` and `--param` from `ProfileArgs` and
-  `If2Args`.
-- Old invocations error with:
+- Remove `--params` and `--param` from all subcommand argument
+  structs (`SimulateArgs`, `PfilterArgs`, `If2Args`, `ProfileArgs`,
+  `EvalArgs`).
+- Remove the name-only form of `--fixed`. Require `NAME=VALUE`.
+- Rename `fit run`'s `--init-method` → `--init`.
+- Remove `--starts-from`; users must write
+  `--init from-mle --mle <dir>`.
+- Old invocations error with an actionable message:
   ```
-  error: --params is no longer accepted on `camdl profile`.
-    Replacement: --init from-params --params-file <toml>
-    See `camdl profile --help` (INIT MODES section).
+  error: --params is no longer accepted. Replacement:
+    --fixed NAME=VALUE             (set & freeze specific values)
+    --fixed-file <toml>            (load fixed values from a TOML file)
+    --init from-mle --mle <path>   (chain warm-start from a single point)
   ```
-- Update camdl-book chapters and blog draft.
-- Single release cycle of acute pain, no long-term carry cost.
-
-### Option M-2: deprecation alias for one release
-
-- Keep `--params` / `--param` on `ProfileArgs` / `If2Args` as
-  aliases for `--init from-params --params-file <toml>`.
-- Emit a one-line stderr deprecation notice on each use:
-  ```
-  [deprecation] --params on inference subcommands is deprecated;
-                use --init from-params --params-file <path> instead.
-                Will be removed in vNEXT.
-  ```
-- Remove after one release.
-
-Option M-1 fits CLAUDE.md's stated alpha posture
-("Backwards compatibility is a non-goal"; "When a field is
-renamed, rename it everywhere atomically") and is what I'd
-recommend. Option M-2 is the courtesy version if the camdl-book
-chapter rendering schedule makes a hard break inconvenient.
+- Update camdl-book chapters, blog draft, examples in
+  `--help` (`after_help` strings in `args/mod.rs`),
+  `docs/user-features.md`, `docs/dsl-cheatsheet.md`.
 
 ## What this proposal does NOT touch
 
-To keep scope bounded:
-
-- The fit-toml schema is unchanged. `[estimate]`, `[fixed]`,
-  `[data]`, and `[model]` continue to do what they do.
-- `--fixed` and `--fit` are unchanged.
-- The `InitMethod` enum gains four variants (`FromParams`,
-  `FromPrior`, `FromPosterior`, `FromMle`); existing variants
-  are unchanged.
-- Non-inference subcommands (`simulate`, `pfilter`, `eval`) are
-  unchanged.
-- Display of which params became "starting values" vs "fixed" in
-  the run log is a separate UX win (the kind the camdl-book agent
-  asked for) and belongs to a follow-up issue, not this proposal.
+- The fit-toml schema (`[estimate]`, `[fixed]`, `[data]`,
+  `[model]`) is unchanged.
+- Priors resolution (`priors_precedence.rs`) is unchanged.
+- `--fit`, `--data`, `--scenario`, `--enable`/`--disable`,
+  `--table` are unchanged.
+- The forward-sim precedence order documented in
+  `docs/camdl-run-spec.md §1.3` is preserved exactly — the
+  resolver is a refactor, not a semantic change to the order.
 
 ## Implementation outline
 
-If approved, the work is:
+1. **Resolver first.** Write `ParameterResolver` in
+   `cli/src/params_resolver.rs` (or `cli/src/resolve.rs`). Port
+   `resolve_run_model`'s logic into it; add the
+   `[estimate]` kick-out and provenance. Cover with unit tests
+   for each precedence layer (model default, scenario,
+   fit-toml-fixed, --fixed-file, --fixed-cli) and
+   collision/kick-out cases.
+2. **Migrate `simulate` / `lineage`** to use it. These two are
+   the simplest — no `[estimate]`. Confirm `resolve_run_model`
+   becomes a thin shim or is deleted.
+3. **Migrate `pfilter` / `eval`.** Same shape as simulate.
+4. **Migrate `survey`.** The `FixedParams::resolve_with_model`
+   path gets folded into the unified resolver via
+   `inputs.fit_toml_fixed`.
+5. **Migrate `if2` / `profile` / `fit run`.** These pick up the
+   `[estimate]` kick-out semantics. Replace inline resolvers
+   with `resolve_parameters` calls.
+6. **Init family.** Implement the four new `InitMethod`
+   variants (`FromPrior`, `FromPosterior`, `FromMle`,
+   `SurveyTopK` already exists) with sampler bodies.
+7. **CLI surface.** Add `--fixed-file`, `--posterior`, `--mle`
+   flags. Remove `--params`, `--param`, name-only `--fixed`,
+   `--starts-from`, `--init-method`.
+8. **Help text.** Single normative `--init` block shared via
+   clap `long_about`. Single normative `--fixed` block.
+   Update all `after_help` examples in `args/mod.rs`.
+9. **Provenance into `run.json`.** Add
+   `parameters_provenance` block; extend
+   `run_meta.rs` / `RunMeta` schema.
+10. **Doc churn.** `user-features.md`, `dsl-cheatsheet.md`,
+    `camdl-run-spec.md §1.3` (the precedence chain stays, the
+    flag names change), camdl-book chapters that reference the
+    old flag form, the alpha blog draft.
 
-1. Extend `InitMethod` (`crates/cli/src/fit/init.rs`) with the
-   four new variants and their sampler implementations.
-2. Add the supporting flags (`--params-file`, `--posterior`,
-   `--mle-path`) to `InferenceCore` or a new
-   `InitSourceArgs` flatten struct, depending on which gives
-   the cleaner help text under clap.
-3. Rename `fit run`'s `--init-method` → `--init`; resolve
-   `--starts-from` → `--init from-mle --mle-path <dir>` at
-   parsing time (or remove `--starts-from` outright per M-1).
-4. Remove `--params` / `--param` from `ProfileArgs` and
-   `If2Args` (M-1) or attach a deprecation parser shim (M-2).
-5. Update `docs/user-features.md`, `docs/dsl-cheatsheet.md`, the
-   profile / fit-run / if2 examples in `--help` (after-help
-   strings in `args/mod.rs`), and any camdl-book chapter that
-   references the old flag form.
-6. Tests: unit tests on the new sampler variants
-   (sampling-respects-prior, posterior-row-sampling-is-uniform,
-   missing-params-warn-and-fallback); integration tests on a
-   small golden fit toml that exercises each `--init` mode end
-   to end.
-
-Rough sizing: ~600–900 lines including tests, mostly in
-`fit/init.rs` and `args/mod.rs`. The doc churn is comparable in
-volume to the code churn.
+Rough sizing: 1000–1500 lines including tests. The resolver
+itself is ~300 lines; the per-subcommand wiring + flag
+plumbing is ~400; tests and doc updates account for the rest.
 
 ## Open questions
 
-- **Posterior subsampling policy** — gh#83 proposes uniform-with-
-  replacement over draws. For chains > 1, sampling without
-  replacement gives uncorrelated starts; with replacement is fine
-  when n_draws ≫ n_chains. Default: with-replacement, simpler and
-  matches the gh#83 pseudocode. Add `--posterior-replacement
-  {true,false}` if users push back.
-- **`from-prior` fallback for params lacking `~`** — bounds-uniform
-  is the safe default; warn at startup naming the parameters that
-  fell through, same shape as the fit-prior fall-through warning
-  in gh#73.
-- **Deprecation horizon** — if Option M-2, one release. If we
-  decide alpha lets us skip the alias, M-1 ships immediately.
+- **`--fixed` collision warning vs error.** Default: warn
+  (kick-out is the useful default). Should `--strict-fixed` exist
+  to escalate to error? Probably not worth a flag — file an
+  issue if the slicing workflow surfaces a confusing case.
+- **Posterior subsampling.** Default: with-replacement
+  (gh#83 pseudocode). Add `--posterior-replacement
+  {true,false}` only if a real use case shows up.
+- **`from-prior` for params with no `~`.** Bounds-uniform
+  fallback with a startup warning naming the parameters, same
+  shape as the fit-prior fall-through warning in gh#73.
+- **Where does `from-mle` look first?** When given a directory:
+  try `<dir>/mle.toml`, then `<dir>/final_params.toml`. Error
+  if neither exists. (These are the two canonical filenames in
+  current fit output.)
 
 ## Acceptance
 
 This proposal is approved when:
 
-- The audit table above is acknowledged as the current state.
-- The `--init` family expansion (gh#83) and the `--params`
-  demotion on inference subcommands (gh#85) are accepted as
-  *coupled* — they share `from-params` as the resolver path, so
-  shipping one without the other leaves a worse state than
-  today.
-- Migration path (M-1 vs M-2) is chosen so the implementer knows
-  whether to write the alias shim.
+- The audit tables above are acknowledged as the current state.
+- The two-flag (`--fixed`, `--init`) unification is accepted as
+  the target API.
+- The single-resolver design (`ParameterResolver` /
+  `resolve_parameters`) is accepted as the implementation
+  vehicle, with provenance into `run.json` as a load-bearing
+  feature.
+- M-1 (hard break) confirmed as the migration path.
