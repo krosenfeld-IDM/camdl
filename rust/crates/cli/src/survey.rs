@@ -668,8 +668,32 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         }
 
         // Load model from fit.toml's `model.camdl` (already path-
-        // resolved by FitConfigV2::load).
-        let (model_pre, model_ir_json) = crate::util::load_model(&config.model.camdl)?;
+        // resolved by FitConfigV2::load). `mut` because the gh#92
+        // [estimate].start fall-back below seeds values into
+        // `model_pre.parameters[i].value` before the resolver call.
+        let (mut model_pre, model_ir_json) = crate::util::load_model(&config.model.camdl)?;
+
+        // gh#92: [estimate].start fall-back for survey, matching the
+        // gh#34 pattern applied to `camdl profile` (commit 796bfbe)
+        // and `camdl fit run` (commit 19ae908). Survey's whole job is
+        // to LHS-sample parameters listed in [estimate], so requiring
+        // them to have a concrete value before LHS would be
+        // self-defeating. We seed `spec.start` into model_pre.value
+        // so the unified resolver's `UnsetRequired` check passes; LHS
+        // sampling then overrides per-point downstream.
+        //
+        // Without this, the canonical workflow `camdl survey --fit
+        // X.toml && camdl fit run X.toml --survey-path ...` errors at
+        // survey even though `fit run` accepts the same toml.
+        for (name, spec) in &config.estimate {
+            if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == *name) {
+                if p.value.is_none() {
+                    if let Some(start) = spec.start {
+                        p.value = Some(start);
+                    }
+                }
+            }
+        }
 
         // Resolve fit.toml [fixed] block via the existing config-side
         // pre-processor (handles `from_file`, `from_scenario`, and
@@ -871,7 +895,22 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
     } else {
         // Inline mode: --estimate flags + --data (already validated).
         let data_path = a.data.as_ref().unwrap().to_string_lossy().into_owned();
-        let (model_pre, model_ir_json) = crate::util::load_model(&model_path)?;
+        let (mut model_pre, model_ir_json) = crate::util::load_model(&model_path)?;
+
+        // gh#92 inline-mode counterpart of the fit-aware fall-back
+        // above: parameters named in `--estimate NAME=LO:HI` flags
+        // are about to be LHS-sampled, so requiring a value before
+        // the resolver is self-defeating. `EstimateBoundsSpec` has
+        // no `start` field (inline only carries bounds), so the
+        // fall-back is the bounds midpoint — a defensible "neutral"
+        // value that downstream LHS overwrites per-point.
+        for est in &a.estimate {
+            if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == est.name) {
+                if p.value.is_none() {
+                    p.value = Some(0.5 * (est.lo + est.hi));
+                }
+            }
+        }
 
         // Inline mode: drive the unified resolver. Inline `--fixed`
         // entries become `fixed_cli`; the scenario flag participates in
