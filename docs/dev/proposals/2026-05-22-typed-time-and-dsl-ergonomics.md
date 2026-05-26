@@ -71,6 +71,40 @@ anchored mode. They are the **anchor-only primitives**:
   `at [origin, ...]` schedules, and `let landmark = origin + 90 'days`.
   Not usable inside rate expressions or any compartment-state context,
   since it's a compile-time constant, not a runtime value.
+
+  **Conflict diagnostic (amendment 2026-05-26).** Pre-existing models
+  may have declared `origin` as a parameter or `let`-binding name; the
+  keyword wasn't reserved before this proposal. Per the alpha-stage
+  "no backwards-compat shims" policy in CLAUDE.md, we don't add an
+  alias; we *do* diagnose clearly. When a parameter, `let`-binding,
+  or `set` target named `origin` is encountered in anchored mode,
+  the compiler emits E3xx:
+
+  ```
+  E3xx [model.camdl:14]: `origin` is a reserved identifier in
+    anchored mode (refers to the model's anchor date). Rename
+    this parameter (e.g. to `t_origin` or `tau`) to disambiguate.
+  ```
+
+  **Mode-switch INFO (amendment 2026-05-26).** When `origin = date(...)`
+  is encountered for the first time during a compile, the compiler
+  emits I3xx noting that anchored-mode validation rules are now
+  active. This makes the "hidden mode" trip-hazard visible — a user
+  adding `origin` to an existing unanchored model sees, at compile
+  time, that they've activated additional checks:
+
+  ```
+  I3xx [model.camdl:3]: `origin = date("2020-01-01")` activates
+    anchored-mode validation. New errors fire on Instant+Instant
+    arithmetic, on calendar-duration translation of dates, and on
+    `'months`/`'years` as the `time_unit` (see spec §2.1, §14).
+  ```
+
+  Closes the relevant clause of gh#103 ("warn on instant-with-no-
+  origin"): same diagnostic surface, opposite trigger direction —
+  one info-marks the mode activation, the other warns when an
+  `instant`-kind parameter is declared without `origin` (so the
+  instant has no anchor).
 - `add_calendar_months(d, n)` — new in this proposal.
 - `add_calendar_years(d, n)` — new in this proposal.
 
@@ -125,6 +159,18 @@ Concrete implications:
 - `from = origin` resolves to `Duration::zero()` in the simulate
   context. The Instant-typed reserved identifier coerces to a
   Duration here because the field is Duration-typed.
+- `from = origin + 30 'days`, `to = origin + 5 'years` (amendment
+  2026-05-26): more generally, `origin + d` for any
+  Exact-classified `d` evaluates to a Duration in Duration-typed
+  positions, with value `d` (the offset from `origin`). The
+  coercion is: anywhere a Duration position evaluates an
+  Instant-typed expression of the form `origin + d`, the result
+  is `d` itself (interpreted as the Duration from origin to that
+  Instant). This is what users mean when they write
+  `to = origin + 5 'years` — "end the simulation 5 years after
+  the anchor." Calendar durations (`origin + 6 'months`) follow
+  the same rule but go through a one-shot affine conversion to
+  `time_unit`, matching the `to = 600 'months` ruling below.
 - `to = 600 'months` in anchored mode is a *one-shot* affine
   conversion (`600 × 30.4369 ≈ 18260` days from origin), not an
   iterated calendar-stepping operation. Rule 1 does **not** fire
@@ -303,7 +349,7 @@ it imports dataflow-analysis baggage that isn't applicable here.
 | `'months`, `'years` literal              | `Calendar`     |
 | `Instant − Instant`                      | `Exact`        |
 | Reference to a `duration`-kind parameter | `Exact`        |
-| Reference to a `[T]`-annotated parameter | `Exact`        |
+| Reference to a `[T]`-annotated parameter (any param whose dim annotation reduces to `[T]` — `duration`-kind, `instant`-kind, and `[T]` ad-hoc dim annotations all qualify) | `Exact`        |
 
 **How it propagates through arithmetic** (the synthesis rule at
 internal nodes — least upper bound on the subtype lattice):
@@ -788,6 +834,8 @@ non-exhaustive catalog:
 
 | Code | Trigger                                                                                  | Hint shape                                                            |
 |------|------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| I3xx | `origin = date(...)` declared (mode-switch info; amendment 2026-05-26)                   | "anchored-mode validation now active; new errors fire on Instant+Instant, calendar-duration translation, and `'months`/`'years` as time_unit" |
+| E3xx | `origin` used as parameter name, `let`-binding, or `set` target (amendment 2026-05-26)   | "`origin` is reserved in anchored mode; rename (e.g. `t_origin`)"     |
 | E3xx | `Instant + CalendarDuration` (literal or LUB-propagated through `let`)                   | "calendar months/years aren't invertible; use `add_calendar_*`"        |
 | E3xx | `Calendar`-classified duration in `every`/`from`/`until` of anchored recurring schedule  | "calendar cadence not allowed in anchored recurring schedule"          |
 | E3xx | `time_unit = 'months` (or `'years`) with `origin` declared                               | "constant-day axis required; use `'days`, keep per-month rates"        |
@@ -801,11 +849,28 @@ non-exhaustive catalog:
 The retrospective hint-quality audit of *existing* E-codes is
 intentionally out of scope here and deferred to a follow-up proposal.
 
-**Placeholder note:** the `E3xx` and `W3xx` labels above are
-placeholders — each distinct trigger needs its own unique number
-assigned at implementation time. The catalog has five `E3xx`
-triggers and three `W3xx` triggers; they resolve to eight
-individual codes, not two shared ones.
+**Placeholder note:** the `E3xx`, `W3xx`, and `I3xx` labels above
+are placeholders — each distinct trigger needs its own unique
+number assigned at implementation time. The catalog has seven
+`E3xx` triggers, three `W3xx` triggers, and one `I3xx` trigger
+(after the 2026-05-26 amendments); they resolve to eleven
+individual codes, not three shared ones.
+
+**Error-text wording policy (amendment 2026-05-26).** The Exact /
+Calendar refinement is type-theory terminology used in this proposal
+to specify the static check precisely. *User-facing diagnostic text*
+must not name "Exact" or "Calendar" as bare nouns without
+explaining the distinction in the same sentence. The right
+shape is "is a calendar duration (its length depends on which
+months/years it lands in) and cannot translate a date" — concrete
+phenomenon first, type-theory name second-or-omitted. Same rule
+for "Exact": prefer "an exact-day-count duration" or just "a
+duration in days/weeks" over the bare jargon. This applies to
+every E3xx/W3xx hint in the table above, and is a hard test gate:
+when the diagnostics are implemented, no error or warning text
+introduced by this proposal contains the word "Exact" or
+"Calendar" in a way that a non-software-engineering modeller
+wouldn't immediately grok.
 
 ## 6. The judgment call landed: hard error on `date + N 'months`
 
