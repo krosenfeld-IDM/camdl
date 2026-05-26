@@ -1153,7 +1153,16 @@ fn prepare_cas_ctx(
         .map_err(|e| format!("IR load error from {}: {}", ir_path_resolved, e))?;
 
     // Apply --params files and --param overrides to collect base_params
-    // (scenario deltas are the other side of the cache key — don't apply here).
+    // (scenario deltas are the other side of the cache key — don't apply
+    // here). This is a deliberate partial-resolution case: the unified
+    // resolver enforces `UnsetRequired` immediately, which would fail
+    // models that declare a parameter without a default but rely on the
+    // scenario half to supply the value. See
+    // `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`
+    // §"prepare_cas_ctx partial resolution" for the discussion.
+    //
+    // The `apply_params_file` helper is kept solely for this call site;
+    // every other subcommand routes through `params_resolver`.
     for path in &run.params_files {
         util::apply_params_file(&mut model, path)?;
     }
@@ -1162,9 +1171,9 @@ fn prepare_cas_ctx(
             p.value = Some(*v);
         }
     }
-    // Bounds + finite-value check after all override paths resolved (gh#31).
-    // Catches violations early — before any CAS-cache work — rather than
-    // letting a downstream `run_simulation` re-validate post-hash.
+    // Bounds + finite-value check on the params that DID resolve;
+    // params relying on the scenario half are filtered out by
+    // validate_parameter_values' "value = None → skip" rule.
     util::validate_parameter_values(&model)?;
     let base_params: HashMap<String, f64> = model.parameters.iter()
         .filter_map(|p| p.value.map(|v| (p.name.clone(), v)))
@@ -1555,6 +1564,17 @@ fn generate_prior_draws_from_ir(
     seed: u64,
     scenarios: &[&str],
 ) -> Result<Vec<HashMap<String, f64>>, String> {
+    // NOTE: this helper takes a LIST of scenarios applied in order,
+    // distinct from the unified resolver's single-scenario semantics.
+    // The legacy contract (`--draws prior --scenarios a,b,c` layers a→b→c)
+    // is preserved here rather than routed through `params_resolver`,
+    // which today supports only one named scenario (with the model's
+    // declared `compose` list). Migrating this helper to the resolver
+    // would either require a multi-scenario API on the resolver or a
+    // refactor of the calling CLI to require a single scenario; both
+    // are out of scope for the 2026-05-25 CLI UX rev 2 migration.
+    // Documented exception, see
+    // `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`.
     let (mut model, _) = util::load_model(ir_path)?;
 
     // Apply each selected scenario's params to the model. Later scenarios

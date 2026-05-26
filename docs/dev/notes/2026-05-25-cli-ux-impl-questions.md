@@ -652,3 +652,99 @@ A maintainer-reviewable sequence, one logical unit per commit:
 
 Each commit independently green-testable; each one a reviewable diff
 of < ~300 lines.
+
+---
+
+## 2026-05-25 — Ambiguity discovered during step 5 migration: `prepare_cas_ctx` partial resolution
+
+**Class**: code-vs-code — proposal §"Special handling for `main.rs`
+partial-resolution helpers" says the resolver "handles this correctly
+— no new mode needed", but in practice the resolver fails the
+`UnsetRequired` check on params that the scenario half (applied later
+by `run_simulation`) would have supplied.
+
+**Reproduction**:
+```
+cargo test --release -p cli --test cas_integration cas_first_run_writes_cache_and_metadata
+```
+fails with:
+```
+error preparing CAS: parameter 'beta' has no value: no model default,
+no scenario, no --fit toml entry, no --fixed-file, no --fixed.
+```
+
+The cas integration test models declare `beta` without a default, then
+pass `--scenario baseline` which supplies it. `prepare_cas_ctx`
+deliberately skips scenario application (per the comment at the top of
+the function: "scenario deltas are the other side of the cache key —
+don't apply here"). With the unified resolver enforcing
+`UnsetRequired` immediately, this partial-resolution case becomes a
+hard error.
+
+**Resolution applied (this commit)**: revert `prepare_cas_ctx` to the
+manual `for path in &run.params_files { apply_params_file(...) }`
+loop. The resolver is not a drop-in for the cas-ctx partial-resolution
+case: it enforces post-resolution completeness across all parameters,
+but cas-ctx by design holds back scenario, leaving params the scenario
+would fill unresolved.
+
+To delete `apply_params_file` cleanly, the resolver would need either:
+- a `partial_ok: bool` flag that skips `UnsetRequired` errors, OR
+- the cas-ctx call site to apply the scenario delta then UNDO it
+  before hashing.
+
+Both feel worse than keeping a small `apply_params_file` helper for
+this one call site. Filed for maintainer triage. Resolver remains the
+sole entry for *full* parameter resolution; cas-ctx is the documented
+exception.
+
+**Audit checkpoint impact**: post-implementation audit item 1
+(`rg 'parameters\[.*\]\.value\s*=' --type rust`) will still hit
+`apply_params_file` once + its single call site in
+`prepare_cas_ctx`. The audit should treat this as a documented
+exception (this note + the inline comment in main.rs) rather than a
+leak.
+
+---
+
+## 2026-05-25 — `generate_prior_draws_from_ir` takes a SCENARIO LIST, not one
+
+**Class**: code-vs-proposal. Proposal §"Special handling for `main.rs`
+partial-resolution helpers" treats the prior-draws helper as a
+single-scenario problem and says "verify with the existing tests that
+this doesn't break anything." The actual signature is:
+
+```rust
+fn generate_prior_draws_from_ir(
+    ir_path: &str, n: usize, seed: u64,
+    scenarios: &[&str],   // ← LIST, applied a→b→c in order
+)
+```
+
+The resolver's `ParameterInputs.scenario: Option<&str>` is a single
+scenario; it does internal `compose` lookup via the preset's
+`compose: Vec<String>` field, but doesn't layer N external scenarios
+on top of each other.
+
+CLI surface today: `camdl simulate ... --scenario a --scenario b`
+(SimulateArgs.scenarios is `Vec<String>`). The current
+`generate_prior_draws_from_ir` honours that. Migrating it to the
+resolver would either:
+
+- Extend `ParameterInputs.scenario` to `Vec<&str>` (touches every
+  call site + the resolver internals), OR
+- Tighten CLI to one scenario per prior-draws invocation (breaking
+  change beyond proposal scope), OR
+- Loop calls to `resolve_parameters` once per scenario, threading the
+  output model into the next call (semantically equivalent but
+  changes the warning/provenance shape).
+
+For step 5, I've left this helper as-is with an inline comment
+documenting the exception. Post-implementation audit item 1
+(`p.value = Some(_)` outside resolver) will hit lines 1581-1582 of
+this helper plus the cas-ctx helper above plus the four resolver-
+internal lines.
+
+Decision needed from maintainer: should `--scenario` be limited to
+one per invocation (so the resolver can absorb this helper), or
+should the resolver gain multi-scenario support?

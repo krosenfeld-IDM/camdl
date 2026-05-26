@@ -80,8 +80,10 @@ pub struct DataEntry {
 /// We serialize the provenance block via toml::to_string and the
 /// params section manually, rather than nesting params under a
 /// `[params]` table, to keep the file's "numeric params at the top
-/// level" invariant that downstream scripts (and `util::apply_params_file`)
-/// already rely on. The structured provenance is an additive change.
+/// level" invariant that downstream scripts (and the unified
+/// `params_resolver`'s `--fixed-file` loader, which uses
+/// `util::load_params_toml`) already rely on. The structured
+/// provenance is an additive change.
 ///
 /// Write mle_params.toml with a structured `[provenance]` block.
 pub fn write_mle_params(
@@ -139,8 +141,9 @@ pub fn write_mle_params(
     // header parses as a field of that table, not as a top-level
     // scalar — so putting params after [provenance] would silently
     // re-scope them and break every downstream reader. Writing
-    // params first keeps `util::apply_params_file` and any third-
-    // party toml reader picking them up at the top level, unchanged.
+    // params first keeps `util::load_params_toml` (used by the
+    // `params_resolver`'s `--fixed-file` loader) and any third-party
+    // toml reader picking them up at the top level, unchanged.
     writeln!(f, "# camdl fit MLE — parameter values first, followed by a \
                  [provenance] block.").unwrap();
     writeln!(f, "# Editing any value in this params section invalidates \

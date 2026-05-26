@@ -482,13 +482,19 @@ pub fn load_params_toml(path: &str) -> Result<HashMap<String, f64>, String> {
 
 /// Load a TOML params file and apply values to the model's parameters.
 ///
+/// **Used only by `main::prepare_cas_ctx`** for partial parameter
+/// resolution — the cas-ctx hashing path deliberately holds back the
+/// scenario half so that scenario and base params hash separately
+/// (per the documented cas cache key). Every other subcommand routes
+/// through `params_resolver::resolve_parameters` instead. See
+/// `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`
+/// §"prepare_cas_ctx partial resolution" for the rationale.
+///
 /// Validates the resulting `model.parameters` after applying — if the
-/// supplied file leaves any parameter with a non-finite value or a
-/// value outside its declared `[bounds: lo, hi]`, returns an error
-/// rather than silently accepting (gh#31). Validation runs against the
-/// full parameter set, not just the keys present in the file, so a
-/// bounds violation already on the model (e.g. from a prior
-/// `apply_params_file` call) still fires.
+/// supplied file leaves any *resolved* parameter with a non-finite
+/// value or out-of-bounds value, returns an error. Params still at
+/// `value = None` (i.e. waiting on the scenario half) are skipped by
+/// `validate_parameter_values`.
 pub fn apply_params_file(model: &mut ir::Model, path: &str) -> Result<(), String> {
     let vals = load_params_toml(path)?;
     for p in &mut model.parameters {
