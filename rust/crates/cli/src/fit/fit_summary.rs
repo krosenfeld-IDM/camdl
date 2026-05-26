@@ -1978,7 +1978,8 @@ mod tests {
                 stages_declared: vec!["scout".into(), "refine".into(), "validate".into()],
                 ic_free: false,
                 resolved_priors: Vec::new(),
-            }),
+                parameters_provenance: Default::default(),
+                        }),
         };
         r.write(dir).unwrap();
     }
@@ -2015,7 +2016,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         r.write(stage_dir).unwrap();
     }

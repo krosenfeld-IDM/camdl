@@ -464,6 +464,7 @@ mod tests {
             stages_declared: Vec::new(),
             ic_free: false,
             resolved_priors: Vec::new(),
+            parameters_provenance: Default::default(),
         }
     }
 

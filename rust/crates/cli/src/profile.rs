@@ -236,6 +236,16 @@ pub struct ProfileInputs {
     /// Per-seed: the actual seed value. `inner_hash` excludes this;
     /// `content_hash` (trait method) includes it.
     pub seed: u64,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance for the
+    /// profile-level run.json. NOT part of the CAS hash — provenance
+    /// is metadata about *how* a run was specified, not what was
+    /// computed; identical content produces identical CAS keys
+    /// regardless of which `--fixed-file` shape the user used.
+    pub parameters_provenance: std::collections::HashMap<
+        String, crate::run_meta::ParameterProvenance>,
+    /// gh#83/gh#85 step 9: per-start init provenance. NOT part of the
+    /// CAS hash; the per-cell `FitStage` children carry their own.
+    pub init_provenance: Option<crate::run_meta::InitProvenance>,
 }
 
 #[derive(Clone, Debug)]
@@ -335,6 +345,11 @@ impl CasInputs for ProfileInputs {
                 }
             }).collect(),
             suppressed_warnings: self.suppressed_warnings.clone(),
+            // gh#83/gh#85 step 9: provenance threaded in post-CAS
+            // by the run-finalization layer (which has the
+            // `ResolvedParameters` / `ChainStarts` in scope).
+            parameters_provenance: self.parameters_provenance.clone(),
+            init_provenance: self.init_provenance.clone(),
         })
     }
 }
@@ -826,26 +841,31 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             (see gh#51 §\"Stage scope\"). Workaround: use --init lhs.");
         std::process::exit(1);
     }
-    // Step 6 warm-start variants (`from-prior`, `from-posterior`,
-    // `from-mle`, `from-params`) are not yet routed through profile's
-    // per-cell init builder; the legacy `build_chain_starts` rejects
-    // them via a debug_assert + None return. Refuse cleanly here so
-    // the user sees an actionable error rather than silent fallback.
-    if matches!(a.init,
-        crate::fit::init::InitMethod::FromPrior
-        | crate::fit::init::InitMethod::FromPosterior { .. }
-        | crate::fit::init::InitMethod::FromMle    { .. }
-        | crate::fit::init::InitMethod::FromParams { .. }) {
-        eprintln!("error: --init {} is a step-6 warm-start variant not \
-            yet wired into `camdl profile` per-cell init. Use --init \
-            lhs / uniform / single for now; profile support arrives \
-            with the step-7 CLI break.", a.init);
-        std::process::exit(1);
-    }
+    // Step 6 warm-start variants: dispatch through the new
+    // `chain_starts::draw_chain_starts` entry point. `FromPrior` is
+    // reachable today via `--init from_prior`; the path-bearing
+    // variants (`FromPosterior`, `FromMle`, `FromParams`) need the
+    // step-7 CLI break to wire `--posterior` / `--mle` / `--params`
+    // flag parsing, so they're rejected at parse time and surfaced
+    // here as defensive-fall-through.
     let per_start_params: Option<Arc<Vec<Vec<sim::inference::if2::EstimatedParam>>>> =
-        crate::fit::init::build_chain_starts(
-            a.init.clone(), &if2_params, n_starts, seed_base,
-        ).map(Arc::new);
+        match &a.init {
+            crate::fit::init::InitMethod::FromPrior
+            | crate::fit::init::InitMethod::FromPosterior { .. }
+            | crate::fit::init::InitMethod::FromMle       { .. }
+            | crate::fit::init::InitMethod::FromParams    { .. } => {
+                let starts = crate::fit::chain_starts::draw_chain_starts(
+                    &resolved, &a.init, n_starts, seed_base,
+                ).unwrap_or_else(|e| {
+                    eprintln!("error: profile --init {}: {}", a.init, e);
+                    std::process::exit(1);
+                });
+                Some(Arc::new(starts.to_estimated_params(&if2_params)))
+            }
+            _ => crate::fit::init::build_chain_starts(
+                    a.init.clone(), &if2_params, n_starts, seed_base,
+                ).map(Arc::new),
+        };
 
     let process = Arc::new(ChainBinomialProcess::new(compiled.clone(), dt));
     // Build one StreamSpec per resolved IR observation. For
@@ -982,6 +1002,77 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let mut fixed_for_cas: Vec<String> = fixed_names.iter().cloned().collect();
     fixed_for_cas.sort();
 
+    // gh#83/gh#85 step 9: build parameters_provenance from the
+    // unified resolver output (populated upstream). Each entry maps a
+    // resolved parameter name to the value + source + role + audit
+    // fields. NOT part of the CAS hash (provenance is metadata).
+    let parameters_provenance: std::collections::HashMap<
+        String, crate::run_meta::ParameterProvenance> =
+        resolved.params.iter()
+            .map(|rp| (rp.name.clone(),
+                 crate::run_meta::ParameterProvenance::from_resolved(rp)))
+            .collect();
+    // Per-start init provenance: ChainStarts uses the `--init` mode
+    // as its method tag. For legacy modes we still emit one entry so
+    // `init_provenance.method` is never absent on a profile run.
+    let init_provenance: Option<crate::run_meta::InitProvenance> =
+        per_start_params.as_ref().map(|psp| {
+            // Build a ChainStarts-shaped view from the existing
+            // `EstimatedParam` per-start vectors, using the
+            // best-available InitSource tag for each chain.
+            let starts: Vec<crate::fit::chain_starts::ChainStart> =
+                psp.iter().enumerate().map(|(chain_id, per_start)| {
+                    let values: std::collections::HashMap<String, f64> =
+                        per_start.iter()
+                            .map(|spec| (spec.name.clone(), spec.initial))
+                            .collect();
+                    let source = match &a.init {
+                        crate::fit::init::InitMethod::FromPrior =>
+                            crate::fit::chain_starts::InitSource::PriorDraw {
+                                seed: crate::util::derive_chain_seed(
+                                    seeds[0], chain_id),
+                            },
+                        crate::fit::init::InitMethod::FromPosterior {
+                            source: crate::fit::init::PosteriorSource::DrawsTsv(p),
+                        } | crate::fit::init::InitMethod::FromPosterior {
+                            source: crate::fit::init::PosteriorSource::FitDir(p),
+                        } => crate::fit::chain_starts::InitSource::PosteriorRow {
+                            row: chain_id, path: p.clone(),
+                        },
+                        crate::fit::init::InitMethod::FromMle {
+                            source: crate::fit::init::MleSource::File(p),
+                        } | crate::fit::init::InitMethod::FromMle {
+                            source: crate::fit::init::MleSource::FitDir(p),
+                        } => crate::fit::chain_starts::InitSource::MlePoint {
+                            path: p.clone(),
+                        },
+                        crate::fit::init::InitMethod::FromParams { path } =>
+                            crate::fit::chain_starts::InitSource::ParamsPoint {
+                                path: path.clone(),
+                            },
+                        crate::fit::init::InitMethod::Lhs =>
+                            crate::fit::chain_starts::InitSource::LhsCell {
+                                row: chain_id,
+                            },
+                        crate::fit::init::InitMethod::Uniform =>
+                            crate::fit::chain_starts::InitSource::UniformDraw {
+                                seed: crate::util::derive_chain_seed(
+                                    seeds[0], chain_id),
+                            },
+                        crate::fit::init::InitMethod::Single |
+                        crate::fit::init::InitMethod::SurveyTopK =>
+                            crate::fit::chain_starts::InitSource::SeededBase,
+                    };
+                    crate::fit::chain_starts::ChainStart {
+                        chain_id, values, source,
+                    }
+                }).collect();
+            let cs = crate::fit::chain_starts::ChainStarts {
+                starts, method: a.init.clone(),
+            };
+            crate::run_meta::InitProvenance::from_chain_starts(&cs)
+        });
+
     let template_inputs = ProfileInputs {
         model_path: ir_path.clone(),
         stem: stem.clone(),
@@ -999,6 +1090,8 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         resolved_priors: resolved_priors_kv,
         suppressed_warnings: suppressed_warnings.clone(),
         seed: seeds[0],   // overwritten per-seed below
+        parameters_provenance,
+        init_provenance,
     };
 
     // ── Layout: every profile is a ReplicateSet umbrella (N=1 trivially).
@@ -1560,6 +1653,11 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 parent_profile_hash: Some(parent_profile_hash.clone()),
                 profile_point_idx:   Some(grid_idx),
                 profile_start_idx:   Some(start_idx),
+                // gh#83/gh#85 step 9: per-cell provenance is the
+                // *parent* profile's responsibility — the cell run
+                // here only carries the grid-point payload.
+                parameters_provenance: Default::default(),
+                init_provenance: None,
             }),
         };
         if let Err(e) = start_run.write(&start_dir) {
@@ -2345,6 +2443,8 @@ mod tests {
             resolved_priors: vec![],
             suppressed_warnings: vec![],
             seed: 1,
+            parameters_provenance: Default::default(),
+            init_provenance: None,
         }
     }
 

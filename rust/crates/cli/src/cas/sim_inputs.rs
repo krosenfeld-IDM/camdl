@@ -102,6 +102,11 @@ impl CasInputs for SimulateInputs {
             dt:           self.dt,
             sweep_point:  self.sweep_point.clone(),
             from_fit_hash: self.from_fit_hash.clone(),
+            // gh#83/gh#85 step 9: provenance is populated by the
+            // run-finalization layer (which has access to the resolver
+            // output); this constructor builds the CAS-hash skeleton
+            // only.
+            parameters_provenance: Default::default(),
         })
     }
 }

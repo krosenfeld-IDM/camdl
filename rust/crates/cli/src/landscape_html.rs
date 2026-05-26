@@ -343,6 +343,7 @@ beta\tloglik\tloglik_se\tn_replicates\tpoint_id
             eval_particles: 100,
             eval_replicates: 1,
             seed: 42,
+            parameters_provenance: std::collections::HashMap::new(),
         };
         let html = build_html("sir", "abc12345", "[]", &inputs);
         assert!(html.contains(r#"<script type="application/json" id="landscape-data">"#));

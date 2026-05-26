@@ -159,6 +159,14 @@ pub struct SimulateMeta {
     /// surface. See `docs/dev/proposals/2026-04-19-backend-provenance-guardrail.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_fit_hash: Option<String>,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance. Records
+    /// where every parameter's value came from (model default,
+    /// scenario, --fixed-file, --fixed-cli), plus the kick-from-
+    /// estimate audit field and scenario-override record. Map key is
+    /// the parameter name; value is the full [`ParameterProvenance`].
+    /// Empty / absent on older run.json files that predate step 9.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub parameters_provenance: HashMap<String, ParameterProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +203,10 @@ pub struct FitMeta {
     /// `default = []` so older run.json files round-trip unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resolved_priors: Vec<ResolvedPriorEntry>,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance — see
+    /// [`SimulateMeta::parameters_provenance`] for the shape.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub parameters_provenance: HashMap<String, ParameterProvenance>,
 }
 
 /// Inference algorithm tag — discriminator enum naming the algorithm
@@ -318,6 +330,16 @@ pub struct FitStageMeta {
     /// Start index within this grid point (0..n_starts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_start_idx: Option<usize>,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance — see
+    /// [`SimulateMeta::parameters_provenance`] for the shape.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub parameters_provenance: HashMap<String, ParameterProvenance>,
+    /// gh#83/gh#85 step 9: per-chain init provenance. Records the
+    /// init method and the per-chain starting value + source for
+    /// every estimated parameter. Absent on stages that don't draw
+    /// per-chain starts (single-chain runs, refine-after-scout, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init_provenance: Option<InitProvenance>,
 }
 
 /// Metadata for a `RunKind::Profile` run. The shape mirrors pomp's
@@ -369,6 +391,16 @@ pub struct ProfileMeta {
     /// were waived for a given artifact (gh#73).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suppressed_warnings: Vec<String>,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance — see
+    /// [`SimulateMeta::parameters_provenance`] for the shape.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub parameters_provenance: HashMap<String, ParameterProvenance>,
+    /// gh#83/gh#85 step 9: per-cell init provenance for the
+    /// non-focal-parameter starts. The init method's `--starts > 1`
+    /// path produces one InitProvenance for the profile-level runs;
+    /// per-grid-cell `FitStage` children carry their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init_provenance: Option<InitProvenance>,
 }
 
 /// One row of the per-parameter prior-resolution audit (gh#73). The
@@ -382,6 +414,161 @@ pub struct ResolvedPriorEntry {
     /// `"fit_toml" | "model_ir" | "flat_fallback"` — see
     /// `profile_priors::PriorSource`.
     pub source: String,
+}
+
+// ── Parameter-value provenance into `run.json` (gh#83/gh#85 step 9) ─────────
+//
+// Mirrors `params_resolver::ResolvedParameter` plus the per-chain
+// `chain_starts::ChainStart` into a JSON-serializable shape. See
+// `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`
+// §"Provenance into run.json" for the design.
+//
+// Every subcommand that writes a `run.json` populates
+// `parameters_provenance`; inference subcommands that initialize
+// chains also populate `init_provenance`. Each entry's `source` field
+// matches a [`ValueSource`] or [`InitSource`] variant tag, so a
+// downstream reader can route on the tag without parsing the rest of
+// the record.
+
+/// One parameter's full provenance: where the resolved value came
+/// from, whether the parameter is fixed or estimated, plus optional
+/// audit fields for the kick-from-estimate and scenario-override
+/// cases. The exact field shape the proposal specifies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterProvenance {
+    /// Resolved value as written into `model.parameters[i].value`.
+    pub value:  f64,
+    /// [`crate::params_resolver::ValueSource::tag`] string
+    /// (`"model_default" | "scenario" | "fit_toml_fixed" |
+    /// "fixed_file" | "fixed_cli"`).
+    pub source: String,
+    /// `"fixed" | "estimated"` — matches
+    /// [`crate::params_resolver::ParameterRole`].
+    pub role:   String,
+    /// Present iff the parameter was kicked from `[estimate]` by a
+    /// user-explicit `--fixed{,-file}` assertion. The `by` field
+    /// records the value source that triggered the kick (e.g.
+    /// `"fixed_cli"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kicked_from_estimate: Option<KickedFromEstimate>,
+    /// Present iff the active scenario set this parameter to a
+    /// different value than the final winner. The proposal calls
+    /// this `overrode_scenario`; the renamed `ScenarioOverrideRecord`
+    /// struct lives here in `run_meta` so it can be `Serialize`d
+    /// without colliding with the unsealed resolver-side
+    /// `ScenarioOverride` (which would force re-exporting all the
+    /// resolver-side `serde` derives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrode_scenario: Option<ScenarioOverrideRecord>,
+}
+
+/// Audit record for [`crate::params_resolver::FixReason::KickedFromEstimate`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KickedFromEstimate {
+    /// The ValueSource tag of the source that kicked the parameter
+    /// out (`"fixed_cli" | "fixed_file"`).
+    pub by: String,
+}
+
+/// Audit record for a silent scenario override. Pairs with
+/// [`crate::params_resolver::ResolverWarning::ScenarioOverridden`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioOverrideRecord {
+    pub scenario:       String,
+    pub scenario_value: f64,
+}
+
+/// Per-chain init provenance. The `method` field echoes the
+/// [`crate::fit::init::InitMethod`] tag; each entry of `chains` is a
+/// map from estimated-parameter name to its per-chain start value +
+/// source. Restricted to the estimate set by construction (see
+/// `ChainStart.values`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InitProvenance {
+    /// [`crate::fit::init::InitMethod`] `Display` tag — matches the
+    /// `Display` impl so a `match` over the impl's possible outputs
+    /// is exhaustive.
+    pub method: String,
+    /// One map per chain; key = estimated-parameter name; value =
+    /// the value + per-chain source tag.
+    pub chains: Vec<HashMap<String, ChainStartProvenance>>,
+}
+
+/// Per-chain per-parameter start value + provenance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainStartProvenance {
+    pub value:  f64,
+    /// [`crate::fit::chain_starts::InitSource`] tag (e.g.
+    /// `"prior_draw" | "posterior_row" | "mle_point" | "params_point"`).
+    pub source: String,
+}
+
+impl ParameterProvenance {
+    /// Build a `ParameterProvenance` entry from a
+    /// [`crate::params_resolver::ResolvedParameter`].
+    pub fn from_resolved(rp: &crate::params_resolver::ResolvedParameter) -> Self {
+        let (role, kicked_from_estimate) = match &rp.role {
+            crate::params_resolver::ParameterRole::Estimated =>
+                ("estimated".to_string(), None),
+            crate::params_resolver::ParameterRole::Fixed { reason } => {
+                let kicked = match reason {
+                    crate::params_resolver::FixReason::KickedFromEstimate { by } =>
+                        Some(KickedFromEstimate { by: by.tag().to_string() }),
+                    crate::params_resolver::FixReason::NotInEstimate => None,
+                };
+                ("fixed".to_string(), kicked)
+            }
+        };
+        let overrode_scenario = rp.overrode_scenario.as_ref().map(|s| {
+            ScenarioOverrideRecord {
+                scenario:       s.scenario.clone(),
+                scenario_value: s.scenario_value,
+            }
+        });
+        ParameterProvenance {
+            value:  rp.value,
+            source: rp.source.tag().to_string(),
+            role,
+            kicked_from_estimate,
+            overrode_scenario,
+        }
+    }
+}
+
+impl InitProvenance {
+    /// Build an `InitProvenance` from a
+    /// [`crate::fit::chain_starts::ChainStarts`]. Each chain's
+    /// `values` HashMap maps directly to `chains[chain_id]`; the
+    /// per-chain source is recorded once (the InitSource tag).
+    ///
+    /// Output is indexed by `ChainStart.chain_id` so the JSON's
+    /// `chains[i]` corresponds to chain i regardless of storage
+    /// order — important for downstream consumers that index by
+    /// chain id rather than draw order.
+    pub fn from_chain_starts(cs: &crate::fit::chain_starts::ChainStarts) -> Self {
+        // Allocate `chains` sized to (max chain_id + 1) so an
+        // out-of-order Vec<ChainStart> still produces a well-formed
+        // index-by-chain_id output. Empty starts yield an empty Vec.
+        let n_chains = cs.starts.iter()
+            .map(|c| c.chain_id + 1).max().unwrap_or(0);
+        let mut chains: Vec<HashMap<String, ChainStartProvenance>> =
+            vec![HashMap::new(); n_chains];
+        for chain in &cs.starts {
+            let source_tag = chain.source.tag().to_string();
+            let entry: HashMap<String, ChainStartProvenance> =
+                chain.values.iter().map(|(name, &value)| {
+                    (name.clone(), ChainStartProvenance {
+                        value,
+                        source: source_tag.clone(),
+                    })
+                }).collect();
+            chains[chain.chain_id] = entry;
+        }
+        InitProvenance {
+            method: cs.method.to_string(),
+            chains,
+        }
+    }
 }
 
 /// One axis of a profile grid. `values` is the explicit list the
@@ -478,6 +665,13 @@ pub struct SurveyMeta {
     /// the column order of `landscape.tsv`. Bounds key + this slice
     /// together fix the LHS layout deterministically.
     pub estimated: Vec<String>,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance — see
+    /// [`SimulateMeta::parameters_provenance`] for the shape. Survey
+    /// is a forward-sim subcommand (no `[estimate]` kick-out), so
+    /// most entries will be `role = "fixed"` (or "estimated" for the
+    /// LHS-swept names).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub parameters_provenance: HashMap<String, ParameterProvenance>,
 }
 
 /// Stable reference to a parent stage. Uses the stage *name* plus its
@@ -589,7 +783,8 @@ mod tests {
                 dt: 1.0,
                 sweep_point: HashMap::new(),
                 from_fit_hash: None,
-            }),
+                parameters_provenance: Default::default(),
+                        }),
         }
     }
 
@@ -620,7 +815,8 @@ mod tests {
                 stages_declared: vec!["scout".into(), "refine".into()],
                 ic_free: false,
                 resolved_priors: vec![],
-            }),
+                parameters_provenance: Default::default(),
+                        }),
         }
     }
 
@@ -651,7 +847,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         }
     }
 
@@ -779,7 +977,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         let json = serde_json::to_string(&stage).unwrap();
         let parsed: Run = serde_json::from_str(&json).unwrap();
@@ -854,7 +1054,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         let json = serde_json::to_string(&r).unwrap();
         // The `stage_hash` key should NOT appear when it's None —
@@ -884,7 +1086,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("best_loglik"));
@@ -918,7 +1122,9 @@ mod tests {
                 fit_toml_hash: None,
                 resolved_priors: vec![],
                 suppressed_warnings: vec![],
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains(r#""kind":"profile""#),
@@ -962,7 +1168,8 @@ mod tests {
                 fixed: HashMap::new(),
                 scenario: None,
                 estimated: vec!["beta".into(), "gamma".into()],
-            }),
+                parameters_provenance: Default::default(),
+                        }),
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains(r#""kind":"survey""#),
@@ -1015,7 +1222,9 @@ mod tests {
                 parent_profile_hash: Some("f".repeat(64)),
                 profile_point_idx: Some(7),
                 profile_start_idx: Some(2),
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("parent_profile_hash"));
@@ -1062,5 +1271,234 @@ mod tests {
         assert!(matches!(parsed.status,
             RunStatus::Completed { wall_time_seconds }
             if (wall_time_seconds - 1.23).abs() < 1e-9));
+    }
+
+    // ─── gh#83/gh#85 step 9: parameter / init provenance round-trip ──
+
+    /// Round-trips `ParameterProvenance` from a resolved parameter
+    /// through `run.json` serialization. Covers audit checklist
+    /// item 4: every entry's `source` matches a `ValueSource`
+    /// variant tag.
+    #[test]
+    fn parameter_provenance_round_trips_via_simulate_meta() {
+        use crate::params_resolver::{
+            FixReason, ParameterRole, ResolvedParameter,
+            ScenarioOverride, ValueSource,
+        };
+        // Build one entry per `ValueSource` variant tag — exercises
+        // every branch of `ValueSource::tag()` through the round-trip.
+        let resolved_entries = vec![
+            ResolvedParameter {
+                name:  "beta".into(),
+                value: 0.42,
+                source: ValueSource::ModelDefault,
+                role: ParameterRole::Estimated,
+                overrode_scenario: None,
+            },
+            ResolvedParameter {
+                name:  "gamma".into(),
+                value: 0.10,
+                source: ValueSource::FitTomlFixed,
+                role: ParameterRole::Fixed {
+                    reason: FixReason::NotInEstimate,
+                },
+                overrode_scenario: None,
+            },
+            ResolvedParameter {
+                name:  "rho".into(),
+                value: 0.50,
+                source: ValueSource::FixedCli,
+                role: ParameterRole::Fixed {
+                    reason: FixReason::KickedFromEstimate {
+                        by: ValueSource::FixedCli,
+                    },
+                },
+                overrode_scenario: Some(ScenarioOverride {
+                    scenario:       "worst_case".into(),
+                    scenario_value: 0.30,
+                }),
+            },
+            ResolvedParameter {
+                name:  "mu".into(),
+                value: 0.05,
+                source: ValueSource::Scenario("worst_case".into()),
+                role: ParameterRole::Fixed {
+                    reason: FixReason::NotInEstimate,
+                },
+                overrode_scenario: None,
+            },
+            ResolvedParameter {
+                name:  "iota".into(),
+                value: 0.01,
+                source: ValueSource::FixedFile {
+                    path: std::path::PathBuf::from("/tmp/fix.toml"),
+                },
+                role: ParameterRole::Fixed {
+                    reason: FixReason::KickedFromEstimate {
+                        by: ValueSource::FixedFile {
+                            path: std::path::PathBuf::from("/tmp/fix.toml"),
+                        },
+                    },
+                },
+                overrode_scenario: None,
+            },
+        ];
+        let parameters_provenance: HashMap<String, ParameterProvenance> =
+            resolved_entries.iter().map(|rp| {
+                (rp.name.clone(), ParameterProvenance::from_resolved(rp))
+            }).collect();
+        // Wrap into a SimulateMeta + Run + serialize + deserialize.
+        let run = Run {
+            hash:    "deadbeef".repeat(8),
+            version: "test".into(),
+            created_at: "2026-05-25T00:00:00Z".into(),
+            argv:    vec![],
+            status:  RunStatus::Completed { wall_time_seconds: 0.0 },
+            label:   None,
+            kind: RunKind::Simulate(SimulateMeta {
+                model: "m.camdl".into(),
+                model_hash: "h".repeat(64),
+                scenario: "worst_case".into(),
+                sim_hash: "s".repeat(64),
+                scen_hash: "c".repeat(64),
+                seed: 0,
+                backend: crate::args::types::Backend::Gillespie,
+                dt: 1.0,
+                sweep_point: HashMap::new(),
+                from_fit_hash: None,
+                parameters_provenance,
+            }),
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let parsed: Run = serde_json::from_str(&json).unwrap();
+        let RunKind::Simulate(meta) = parsed.kind else {
+            panic!("expected Simulate");
+        };
+        // Non-empty, per audit item 4.
+        assert!(!meta.parameters_provenance.is_empty(),
+            "parameters_provenance must be populated");
+        assert_eq!(meta.parameters_provenance.len(), 5);
+        // Every entry's `source` matches a `ValueSource` variant tag.
+        let allowed_source_tags: std::collections::HashSet<&str> = [
+            "model_default", "scenario", "fit_toml_fixed",
+            "fixed_file", "fixed_cli",
+        ].iter().copied().collect();
+        for (name, prov) in &meta.parameters_provenance {
+            assert!(allowed_source_tags.contains(prov.source.as_str()),
+                "{}: source tag {} not in ValueSource variants",
+                name, prov.source);
+            assert!(prov.role == "fixed" || prov.role == "estimated",
+                "role must be fixed|estimated, got {}", prov.role);
+        }
+        // Specific assertions: kick_from_estimate present on rho/iota;
+        // overrode_scenario present on rho only.
+        let rho = &meta.parameters_provenance["rho"];
+        assert!(rho.kicked_from_estimate.is_some());
+        assert_eq!(rho.kicked_from_estimate.as_ref().unwrap().by, "fixed_cli");
+        assert!(rho.overrode_scenario.is_some());
+        assert_eq!(rho.overrode_scenario.as_ref().unwrap().scenario, "worst_case");
+        assert!((rho.overrode_scenario.as_ref().unwrap().scenario_value - 0.30).abs() < 1e-12);
+        let beta = &meta.parameters_provenance["beta"];
+        assert_eq!(beta.role, "estimated");
+        assert!(beta.kicked_from_estimate.is_none());
+    }
+
+    /// Audit checklist item 5: every `InitMethod` variant has at
+    /// least one round-trip producing a `run.json` whose
+    /// `init_provenance.method` equals that variant's tag.
+    #[test]
+    fn init_provenance_method_tag_matches_for_every_variant() {
+        use crate::fit::chain_starts::{
+            ChainStart, ChainStarts, InitSource,
+        };
+        use crate::fit::init::{
+            InitMethod, MleSource, PosteriorSource,
+        };
+        // One ChainStarts per (variant, expected tag) pair.
+        let cases: Vec<(InitMethod, &str)> = vec![
+            (InitMethod::Single,        "single"),
+            (InitMethod::Uniform,       "uniform"),
+            (InitMethod::Lhs,           "lhs"),
+            (InitMethod::SurveyTopK,    "survey_top_k"),
+            (InitMethod::FromPrior,     "from-prior"),
+            (InitMethod::FromPosterior {
+                source: PosteriorSource::DrawsTsv("/tmp/draws.tsv".into()),
+            }, "from-posterior"),
+            (InitMethod::FromMle {
+                source: MleSource::File("/tmp/mle.toml".into()),
+            }, "from-mle"),
+            (InitMethod::FromParams {
+                path: "/tmp/params.toml".into(),
+            }, "from-params"),
+        ];
+        for (method, expected_tag) in &cases {
+            // Single-chain ChainStarts → InitProvenance → JSON.
+            let cs = ChainStarts {
+                starts: vec![ChainStart {
+                    chain_id: 0,
+                    values: HashMap::from([("beta".into(), 0.5_f64)]),
+                    source: InitSource::SeededBase,
+                }],
+                method: method.clone(),
+            };
+            let prov = InitProvenance::from_chain_starts(&cs);
+            assert_eq!(prov.method, *expected_tag,
+                "InitProvenance.method tag mismatch for variant {:?}", method);
+            // JSON round-trip preserves the tag.
+            let json = serde_json::to_string(&prov).unwrap();
+            let parsed: InitProvenance = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.method, *expected_tag);
+            assert_eq!(parsed.chains.len(), 1);
+            assert!(parsed.chains[0].contains_key("beta"));
+        }
+    }
+
+    /// Init-source per-chain provenance round-trips through JSON
+    /// preserving the InitSource tag. Pairs with the above method-tag
+    /// test to cover audit item 5 at the per-chain level.
+    #[test]
+    fn init_source_per_chain_tags_round_trip() {
+        use crate::fit::chain_starts::{
+            ChainStart, ChainStarts, InitSource,
+        };
+        use crate::fit::init::InitMethod;
+        let starts = vec![
+            ChainStart {
+                chain_id: 0,
+                values: HashMap::from([("beta".into(), 0.1_f64)]),
+                source: InitSource::PriorDraw { seed: 42 },
+            },
+            ChainStart {
+                chain_id: 1,
+                values: HashMap::from([("beta".into(), 0.2_f64)]),
+                source: InitSource::PosteriorRow {
+                    row: 7, path: "/tmp/draws.tsv".into(),
+                },
+            },
+            ChainStart {
+                chain_id: 2,
+                values: HashMap::from([("beta".into(), 0.3_f64)]),
+                source: InitSource::MlePoint { path: "/tmp/mle.toml".into() },
+            },
+            ChainStart {
+                chain_id: 3,
+                values: HashMap::from([("beta".into(), 0.4_f64)]),
+                source: InitSource::ParamsPoint {
+                    path: "/tmp/params.toml".into(),
+                },
+            },
+        ];
+        let cs = ChainStarts { starts, method: InitMethod::FromPrior };
+        let prov = InitProvenance::from_chain_starts(&cs);
+        // Each chain's per-parameter source matches the InitSource tag.
+        assert_eq!(prov.chains[0]["beta"].source, "prior_draw");
+        assert_eq!(prov.chains[1]["beta"].source, "posterior_row");
+        assert_eq!(prov.chains[2]["beta"].source, "mle_point");
+        assert_eq!(prov.chains[3]["beta"].source, "params_point");
+        // JSON round-trip preserves the tags.
+        let json = serde_json::to_string(&prov).unwrap();
+        let parsed: InitProvenance = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.chains[0]["beta"].source, "prior_draw");
+        assert_eq!(parsed.chains[3]["beta"].source, "params_point");
     }
 }

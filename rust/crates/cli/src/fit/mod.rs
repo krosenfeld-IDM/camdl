@@ -26,6 +26,7 @@ pub mod synthetic;
 pub mod gating;
 pub mod dt_check;
 pub mod init;
+pub mod chain_starts;
 pub mod loglik_eval;
 pub mod methods;
 #[cfg(feature = "ode")]
@@ -1426,6 +1427,13 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
+                // gh#83/gh#85 step 9: stage-level provenance is
+                // populated by the inference algorithm runner (which
+                // has the per-stage `ResolvedParameters` /
+                // `ChainStarts` in scope); the CAS-hash skeleton
+                // constructed here leaves them empty.
+                parameters_provenance: Default::default(),
+                init_provenance: None,
             },
         };
         use crate::cas::typed::CasInputs;
@@ -1689,6 +1697,10 @@ fn build_fit_run(
             stages_declared,
             ic_free: config.ic_free.unwrap_or(false),
             resolved_priors,
+            // gh#83/gh#85 step 9: top-level fit-meta provenance is
+            // populated by the fit-finalization layer that owns the
+            // resolved-params view.
+            parameters_provenance: Default::default(),
         },
     };
     use crate::cas::typed::CasInputs;

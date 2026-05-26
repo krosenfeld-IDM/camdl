@@ -771,7 +771,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         };
         run.write(dir).unwrap();
     }

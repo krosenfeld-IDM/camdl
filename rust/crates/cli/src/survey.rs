@@ -76,6 +76,10 @@ pub struct SurveyInputs {
     pub eval_particles: usize,
     pub eval_replicates: usize,
     pub seed: u64,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance. NOT
+    /// part of the CAS hash — provenance is metadata about how a
+    /// run was specified, not what was computed.
+    pub parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance>,
 }
 
 impl SurveyInputs {
@@ -189,6 +193,9 @@ impl CasInputs for SurveyInputs {
             fixed:           self.fixed.clone(),
             scenario:        self.scenario.clone(),
             estimated:       self.estimated.clone(),
+            // gh#83/gh#85 step 9: provenance threaded post-CAS by the
+            // run-finalization layer.
+            parameters_provenance: self.parameters_provenance.clone(),
         })
     }
 }
@@ -227,6 +234,11 @@ struct ResolvedSurveyInputs {
     /// the start-rank diagnostic to flag when the user's seeded
     /// best-guess falls in a low-loglik region of the LHS landscape.
     estimate_starts: Option<HashMap<String, f64>>,
+    /// gh#83/gh#85 step 9: per-parameter resolver provenance. Built
+    /// from `resolve_parameters` output in both fit-aware and inline
+    /// modes; threaded into `SurveyMeta.parameters_provenance` so
+    /// `run.json` records the full value-source audit.
+    parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance>,
 }
 
 // ─── cmd_survey entry point ──────────────────────────────────────────────────
@@ -413,6 +425,7 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
         eval_particles:  a.eval_particles,
         eval_replicates: a.eval_replicates,
         seed:            a.seed,
+        parameters_provenance: resolved.parameters_provenance.clone(),
     };
 
     let output_root = crate::run_paths::output_root(
@@ -830,6 +843,14 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         let estimate_starts: HashMap<String, f64> = config.estimate.iter()
             .filter_map(|(name, spec)| spec.start.map(|v| (name.clone(), v)))
             .collect();
+        // gh#83/gh#85 step 9: per-parameter provenance from the
+        // resolver's `ResolvedParameter` output. Cheap to clone
+        // (a few dozen entries at most).
+        let parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance> =
+            resolved.params.iter()
+                .map(|rp| (rp.name.clone(),
+                     crate::run_meta::ParameterProvenance::from_resolved(rp)))
+                .collect();
         Ok(ResolvedSurveyInputs {
             model_ir_json,
             compiled,
@@ -845,6 +866,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             } else {
                 Some(estimate_starts)
             },
+            parameters_provenance,
         })
     } else {
         // Inline mode: --estimate flags + --data (already validated).
@@ -944,6 +966,13 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             per_stream_obs.push(observations);
         }
 
+        // gh#83/gh#85 step 9: per-parameter provenance from the
+        // inline-mode resolver call.
+        let parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance> =
+            resolved.params.iter()
+                .map(|rp| (rp.name.clone(),
+                     crate::run_meta::ParameterProvenance::from_resolved(rp)))
+                .collect();
         Ok(ResolvedSurveyInputs {
             model_ir_json,
             compiled,
@@ -956,6 +985,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             scenario: a.scenario.clone(),
             // Inline mode has no fit.toml [estimate].start values.
             estimate_starts: None,
+            parameters_provenance,
         })
     }
 }
@@ -1440,6 +1470,7 @@ mod tests {
             eval_particles:  200,
             eval_replicates: 3,
             seed:            42,
+            parameters_provenance: HashMap::new(),
         }
     }
 

@@ -320,7 +320,8 @@ mod tests {
                 stages_declared: vec!["mle".into()],
                 ic_free: false,
                 resolved_priors: Vec::new(),
-            }),
+                parameters_provenance: Default::default(),
+                        }),
         }
     }
 
@@ -351,7 +352,9 @@ mod tests {
                 parent_profile_hash: None,
                 profile_point_idx: None,
                 profile_start_idx: None,
-            }),
+                parameters_provenance: Default::default(),
+                init_provenance: None,
+                        }),
         }
     }
 
@@ -567,7 +570,8 @@ mod tests {
                 dt: 1.0,
                 sweep_point: HashMap::new(),
                 from_fit_hash: None,
-            }),
+                parameters_provenance: Default::default(),
+                        }),
         };
         sim_run.write(&intruder).unwrap();
 

@@ -1476,6 +1476,7 @@ mod tests {
             backend: crate::args::types::Backend::Gillespie, dt: 1.0,
             sweep_point: HashMap::new(),
             from_fit_hash: None,
+            parameters_provenance: Default::default(),
         }
     }
 
@@ -1522,7 +1523,8 @@ mod tests {
                 backend: crate::args::types::Backend::Gillespie,
                 dt: 1.0,
                 sweep_point: HashMap::new(),
-            from_fit_hash: None,
+                from_fit_hash: None,
+                parameters_provenance: Default::default(),
             }),
         };
         record.write(&run_dir).unwrap();
@@ -1576,6 +1578,7 @@ mod tests {
                 dt: 1.0,
                 sweep_point: HashMap::new(),
                 from_fit_hash: None,
+                parameters_provenance: Default::default(),
             }),
         };
         run_a.write(&dir_a).unwrap();
@@ -1601,6 +1604,7 @@ mod tests {
                 dt: 1.0,
                 sweep_point: HashMap::new(),
                 from_fit_hash: None,
+                parameters_provenance: Default::default(),
             }),
         };
         run_b.write(&dir_b).unwrap();
