@@ -2033,17 +2033,38 @@ camdl simulate models/sir.camdl \
     --replicates 5 --obs prior_pred.tsv
 ```
 
-Samples 500 parameter vectors from the joint prior declared in fit.toml's
-`[estimate]` block. Fixed parameters are filled in from `[fixed]`. Runs 5
-stochastic replicates per draw. Generates synthetic observations.
-
-**Requires priors.** If any estimated parameter lacks a `prior` field:
+Samples 500 parameter vectors from the joint prior for every estimated
+parameter, resolved through the precedence chain:
 
 ```
-error: --draws prior requires priors for all estimated parameters.
-  Missing priors: beta, k
-  Add prior = { dist = "...", ... } to [estimate.beta] and [estimate.k]
+fit.toml [estimate.<p>.prior]   (sensitivity-analysis override)
+  ↓ if absent
+model IR  parameter.prior        (from `~ <dist>(...)` in .camdl)
+  ↓ if absent
+ERROR — `--draws prior` cannot sample from a flat/improper prior
 ```
+
+Fixed parameters are filled in from `[fixed]`. Runs 5 stochastic
+replicates per draw. Generates synthetic observations.
+
+**Requires a proper prior on every estimated parameter.** If any
+parameter has no prior in either source — or has `prior = { flat = {} }`
+in the fit toml — the error names the offending parameters and lists
+both remediation paths:
+
+```
+error: --draws prior requires a proper (non-flat) prior on every estimated parameter.
+  Missing or flat priors: beta, k
+  To fix, either:
+    (i)  add `prior = { <dist> = { ... } }` to `[estimate.beta]` in your fit.toml
+         (e.g. `prior = { log_normal = { mu = 0, sigma = 1 } }`), OR
+    (ii) add a `~ <dist>(...)` declaration to parameter `beta` in your .camdl model file.
+```
+
+Fit toml priors are optional — they're useful for sensitivity analysis
+("what if I widen the prior on beta?") without editing the model. When
+the fit toml is silent, the model file's `~` priors are the source of
+truth (gh#86; sibling of the `fit run` precedence chain landed in gh#75).
 
 ### 11.2 Posterior Predictive Check
 
