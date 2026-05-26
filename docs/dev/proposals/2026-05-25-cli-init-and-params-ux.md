@@ -183,32 +183,53 @@ Same name, same modes, every inference subcommand:
 --init from-posterior --posterior <path>
                                     # per-chain draw from a posterior draws TSV
                                     #   (accepts <draws.tsv> OR a fit-results <dir>)
---init from-point --point <path>    # all chains at a single point loaded from a file
-                                    #   (accepts <truth.toml> | <mle.toml> | a fit-results
-                                    #    <dir> auto-resolving to <dir>/mle.toml then
-                                    #    <dir>/final_params.toml). Formalises
-                                    #    `--starts-from` for fit run AND absorbs the
-                                    #    `--params`-as-start case from inference subcommands.
-                                    #    Name chosen over `from-mle` because the file need
-                                    #    not be an MLE — any point in the right schema
-                                    #    works (a truth value, a hand-tuned warm start,
-                                    #    a posterior median, …).
+--init from-params --params <toml>  # all chains at the point given by a flat params TOML
+                                    # (e.g. a hand-written truth.toml or a warm-start file
+                                    # the user maintains). Top-level keys are parameter
+                                    # names → values. Replaces the inference-context
+                                    # `--params` use case explicitly.
+--init from-mle --mle <path>        # all chains at the MLE point from a prior fit;
+                                    # accepts a fit-results <dir> (auto-resolving the
+                                    # canonical `mle.toml` or `final_params.toml`) OR a
+                                    # specific MLE-shape TOML file. Knows about the
+                                    # fit-output schema: skips `[provenance]`,
+                                    # `[focal]`, `final_loglik`, etc., and reads the
+                                    # parameter values from the section that holds them.
+                                    # Formalises today's `--starts-from <fit-dir>` for
+                                    # fit run.
 --init survey-top-k --survey-path <dir>
                                     # existing behaviour, kebab-cased
 ```
 
-`from-params` and `from-point` collapse into a single mode
-(`from-point`). They were operationally identical — load a single
-TOML, all chains start there. "MLE" is a slight misnomer for the
-user-written-TOML case but is the right *operation* and the
-natural language match for the fit-output case it primarily
-serves.
+`from-params` and `from-mle` are kept as **distinct verbs**, not
+collapsed into a generic `from-point`. They look operationally
+similar ("load one point from a file"), but the *file contracts*
+differ:
+
+- `from-params` expects a **flat** TOML where top-level keys are
+  parameter names. This is the schema a model author writes by
+  hand for a truth value, a hand-tuned warm start, or a posterior
+  median exported from another tool.
+- `from-mle` expects a **structured** TOML produced by a camdl
+  fit. The `[focal]`, `[mle]`, `[provenance]`, `final_loglik`
+  fields are not bureaucracy — they encode which parameter was
+  swept, what the loglik at convergence was, and which camdl
+  version produced the file. A loader that flattens these into
+  one bag either silently corrupts the data (turning
+  `[mle] R0 = 25` into `mle_R0`) or forces fit output to drop
+  its structure to fit a general loader. Both are bad.
+
+Verb-per-source means each loader knows its specific shape and
+dispatches on the user's stated intent. This is also the right
+posture for adding new sources later (e.g. `from-stan-fit
+<csv>`, `from-arviz <netcdf>`) without retrofitting a generic
+"point loader" to accommodate every schema we'd ever support.
 
 Init applies *only* to parameters in the `[estimate]` set after
 `--fixed` resolution. Parameters in `--fixed` or absent from
 `[estimate]` take their resolved value regardless of init mode.
 
-When a `from-posterior` or `from-point` source file is missing
+When a `from-posterior`, `from-mle`, or `from-params` source file is missing
 parameters that the current fit's `[estimate]` set includes,
 fall back to the subcommand's default init mode for those
 columns. Emit a startup warning naming the missing parameters.
@@ -219,7 +240,9 @@ from the model.
 ### Cross-subcommand renames
 
 - `fit run`'s `--init-method` → `--init`. Parity with `profile`.
-- `fit run`'s `--starts-from <dir>` → `--init from-point --point <dir>`.
+- `fit run`'s `--starts-from <dir>` → `--init from-mle --mle <dir>`
+  (the existing behaviour is exactly MLE warm-start from a fit
+  output dir; the new verb names this correctly).
 - `profile`'s `--starts` (per-cell count) stays as is.
 - `if2`'s `--chains` stays as is — established MCMC vocab.
 
@@ -232,7 +255,7 @@ the source of the audit's `--init` vs `--init-method` confusion.
 | Today (toml)                          | Rev 2 (toml)                                | Note                          |
 |---------------------------------------|---------------------------------------------|-------------------------------|
 | `[stages.<n>] init_method = "lhs"`    | `[stages.<n>] init = "lhs"`                 | matches CLI `--init`          |
-| `[stages.<n>] starts_from = "<stage>"`| `[stages.<n>] init = "from-point"` + `init_point = "<stage>"` | one key per concept          |
+| `[stages.<n>] starts_from = "<stage>"`| `[stages.<n>] init = "from-mle"` + `init_mle = "<stage>"` | one key per concept          |
 | `[fixed] foo = 1.0`                   | unchanged                                   | already correct semantics     |
 | `[estimate] foo = { ... }`            | unchanged                                   | already correct semantics     |
 
@@ -379,13 +402,15 @@ the conversation that produced this revision:
 - Remove the name-only form of `--fixed`. Require `NAME=VALUE`.
 - Rename `fit run`'s `--init-method` → `--init`.
 - Remove `--starts-from`; users must write
-  `--init from-point --point <dir>`.
+  `--init from-mle --mle <dir>` (or `from-params --params <toml>`
+  for a hand-written warm-start file).
 - Old invocations error with an actionable message:
   ```
   error: --params is no longer accepted. Replacement:
     --fixed NAME=VALUE             (set & freeze specific values)
     --fixed-file <toml>            (load fixed values from a TOML file)
-    --init from-point --point <path>   (chain warm-start from a single point)
+    --init from-params --params <toml>   (warm-start from a hand-written params TOML)
+    --init from-mle --mle <fit-dir>      (warm-start from a prior fit's MLE)
   ```
 - Update camdl-book chapters, blog draft, examples in
   `--help` (`after_help` strings in `args/mod.rs`),
@@ -415,7 +440,8 @@ rewritten under the new model:
    to evaluate the likelihood at truth without leakage; do *not*
    use `profile --params` because the value walks." Under rev 2
    this becomes "`pfilter --fixed-file` for evaluation;
-   `profile --init from-point --point` for inference warm-start"
+   `profile --init from-params --params` (hand-written) or
+   `profile --init from-mle --mle` (prior fit) for inference warm-start"
    — same teaching point, completely different flag pair.
 2. **`camdl/docs/camdl-language-spec.md:2960-3001`
    (and the book mirror at
@@ -490,8 +516,13 @@ Otherwise M-1 stays as the recommended path.
    `[estimate]` kick-out semantics. Replace inline resolvers
    with `resolve_parameters` calls.
 6. **Init family.** Implement the four new `InitMethod`
-   variants (`FromPrior`, `FromPosterior`, `FromMle`,
-   `SurveyTopK` already exists) with sampler bodies.
+   variants — `FromPrior`, `FromPosterior`, `FromMle`, and
+   `FromParams` — each with its own loader/sampler that knows
+   the file shape it expects. `SurveyTopK` already exists.
+   `FromPosterior` ships in this series (gh#83 explicitly
+   couples prior + posterior — splitting would leave a worse
+   state than today, where neither warm-start mode is cleanly
+   supported across subcommands).
 7. **CLI surface.** Add `--fixed-file`, `--posterior`, `--mle`
    flags. Remove `--params`, `--param`, name-only `--fixed`,
    `--starts-from`, `--init-method`.
@@ -519,9 +550,9 @@ Otherwise M-1 stays as the recommended path.
       the canonical pattern for many-fixed-param vignettes)
 12. **fit.toml fixture migration.** ~70 files with
     `init_method = "..."` / `starts_from = "..."` keys; rename
-    atomically to `init = "..."` / (`init = "from-point"` +
-    `init_point = "..."`). Old keys produce an actionable error
-    at config-load.
+    atomically to `init = "..."` / (`init = "from-mle"` +
+    `init_mle = "<stage>"` for the `starts_from` case). Old keys
+    produce an actionable error at config-load.
 
 Rough sizing: 1000–1500 lines including tests. The resolver
 itself is ~300 lines; the per-subcommand wiring + flag
@@ -539,7 +570,7 @@ plumbing is ~400; tests and doc updates account for the rest.
 - **`from-prior` for params with no `~`.** Bounds-uniform
   fallback with a startup warning naming the parameters, same
   shape as the fit-prior fall-through warning in gh#73.
-- **Where does `from-point` look first?** When given a directory:
+- **Where does `from-mle` look first?** When given a directory:
   try `<dir>/mle.toml`, then `<dir>/final_params.toml`. Error
   if neither exists. (These are the two canonical filenames in
   current fit output.)
