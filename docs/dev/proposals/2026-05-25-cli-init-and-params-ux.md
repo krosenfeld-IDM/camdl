@@ -600,6 +600,68 @@ update, M-2 (one-release deprecation alias) buys time at the cost
 of carrying a `--params` shim through the next minor release.
 Otherwise M-1 stays as the recommended path.
 
+## Addendum (post-step-5 implementation discovery): partial resolution
+
+The proposal's §"Special handling for main.rs partial-resolution
+helpers" claimed `prepare_cas_ctx` (the CAS cache-key builder)
+could route through the unified resolver "with the right slots set
+to empty — the resolver handles this correctly." That turned out
+to be wrong, and surfaced a real architectural shape worth
+documenting.
+
+`prepare_cas_ctx` deliberately applies `--params` + `--param`
+**but withholds the scenario** because scenario is the other half
+of the CAS cache key (the hash is computed *over* base params,
+then scenario is applied separately to produce the final
+simulation context). The unified resolver, by design, validates
+`UnsetRequired` immediately — a parameter with no resolved value
+at the end of the precedence chain is an error. This is the
+correct default for normal subcommand flow but is incompatible
+with partial-resolution callers like `prepare_cas_ctx`, because
+those callers know that *some* parameters will be filled in
+later (by the scenario half) and don't want the resolver to
+reject the model before that happens.
+
+The reproduction was caught by
+`cas_integration::cas_first_run_writes_cache_and_metadata`: the
+test model declares parameters whose values come from the
+scenario only (no DSL default, no `--params`); migrating
+`prepare_cas_ctx` to call `resolve_parameters` made the test fail
+with `parameter 'beta' has no value: ...`.
+
+**Resolution (shipped in commit `2b419bd`):** `prepare_cas_ctx`
+keeps `util::apply_params_file` as its value loader and is
+documented as the *only* legitimate non-resolver writer of
+`model.parameters[i].value`. The audit checklist's item 1 (sole
+writer) is amended: the resolver is the sole writer *on the
+normal subcommand flow*; `prepare_cas_ctx` is an explicit
+exception with an inline comment naming the test that pins it.
+
+**Future direction (not in this proposal's scope):** A clean
+long-term fix is to give the resolver a `ResolveValidation` mode
+on `ParameterInputs`:
+
+```rust
+pub enum ResolveValidation {
+    Strict,              // current default — UnsetRequired errors
+    PartialAllowed,      // params without a value are allowed; reported but not errors
+}
+```
+
+`prepare_cas_ctx` would pass `PartialAllowed` and get the
+provenance benefits of the resolver without the strict-validation
+incompatibility. This is a follow-up RFC, not a blocker for the
+rest of the rev 2 migration.
+
+A second case discovered alongside this one:
+`generate_prior_draws_from_ir` accepts a `&[&str]` list of
+scenarios applied left-to-right, distinct from the resolver's
+`Option<&str>` single-scenario API. Multi-scenario composition
+is a separate semantic from compose-block scenarios and would
+require either a new resolver entry point
+(`resolve_parameters_multi_scenario`) or a CLI restriction to
+single-scenario. Deferred for maintainer triage.
+
 ## What this proposal does NOT touch
 
 - The fit-toml schema (`[estimate]`, `[fixed]`, `[data]`,
