@@ -321,12 +321,12 @@ workflows.
 
 ```bash
 # Explicit rw_sd — the list IS the partition
-camdl if2 MODEL --params P.toml --data cases.tsv \
+camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
     --rw-sd "R0=5,sigma=0.01" --regime refine --flow recovery
 
-# Auto rw_sd from parameter bounds
-camdl if2 MODEL --params P.toml --data cases.tsv \
-    --rw-sd auto --fixed "N0,mu,k" --regime scout
+# Auto rw_sd from parameter bounds; pin extras at explicit values
+camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
+    --rw-sd auto --fixed N0=1000 --fixed mu=0.0 --fixed k=10 --regime scout
 ```
 
 Multi-chain IF2 with per-chain indicatif progress bars, Rhat convergence
@@ -336,7 +336,7 @@ diagnostics, and regime presets (scout/refine/validate). Auto rw_sd computes
 ### Profile likelihood
 
 ```bash
-camdl profile MODEL --params P.toml --data cases.tsv \
+camdl profile MODEL --init from_params --params P.toml --data cases.tsv \
     --focal R0 --grid "20,30,40,50,60,70,80" \
     --rw-sd "sigma=0.01,gamma=0.01" \
     --output profile_R0.tsv --parallel 8
@@ -364,12 +364,13 @@ Stage entries declare `algorithm` + `backend` explicitly:
 [stages.scout]
 algorithm   = "if2"            # iterated filtering MLE
 backend     = "chain_binomial"
-init_method = "lhs"            # Latin-hypercube starts (scale-aware)
+init        = "lhs"            # Latin-hypercube starts (scale-aware)
 
 [stages.refine]
 algorithm   = "pgas"           # Bayesian posterior via PGAS+NUTS
 backend     = "chain_binomial"
-starts_from = "scout"
+init        = "from_mle"       # warm-start from a prior MLE-shape fit dir
+init_mle    = "scout"          # the stage to chain off of
 
 [stages.validate]
 algorithm  = "pfilter"         # held-out predictive log-likelihood

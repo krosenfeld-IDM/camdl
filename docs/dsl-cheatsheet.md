@@ -81,7 +81,7 @@ For full background see `docs/camdl-language-spec.md` §2.3.
 | 3. Unit literal | `'days`, `'per_day`, `'count`, `'ratio`, … | dimension *and* scale | concrete numeric values with a real-world scale |
 
 Tiers are complementary, not redundant — tier 3 carries *scale*, the others
-don't. A parameter from a prior or `--params` file lives at tier 1 or 2
+don't. A parameter from a prior or a `--fixed-file` / `--params` TOML lives at tier 1 or 2
 (scale is implicit in the model's `time_unit`); a literal like `5 'years`
 lives at tier 3.
 

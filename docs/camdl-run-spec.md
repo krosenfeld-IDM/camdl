@@ -1253,8 +1253,9 @@ impl FixedParams {
 
 Stages are the verbs of inference: optimize (find the MLE), sample (draw from
 the posterior), evaluate (assess fit quality). Each stage runs a specific
-algorithm. Stages execute in declaration order; the `starts_from` field
-creates dependency edges between them.
+algorithm. Stages execute in declaration order; the `init = "from_mle"` +
+`init_mle = "<stage>"` pair creates dependency edges between them
+(see §6.6).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1266,7 +1267,15 @@ pub enum Stage {
         particles: usize,
         iterations: usize,
         cooling: CoolingSpec,
-        #[serde(default)]
+        /// Init mode. Toml key: `init = "lhs" | "single" | "uniform" |
+        /// "from_mle" | "from_prior" | "from_posterior" | "from_params" |
+        /// "survey_top_k"` (Rust field name preserved as `init_method`).
+        #[serde(default, rename = "init")]
+        init_method: InitMethod,
+        /// Companion for `init = "from_mle"`: stage name in this fit.toml,
+        /// or a path to an external results dir. Toml key: `init_mle`
+        /// (Rust field name preserved as `starts_from`).
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
     },
 
@@ -1275,7 +1284,9 @@ pub enum Stage {
         chains: usize,
         particles: usize,
         sweeps: usize,
-        #[serde(default)]
+        #[serde(default, rename = "init")]
+        init_method: InitMethod,
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
         #[serde(default)]
         skip_chains: Vec<usize>,
@@ -1286,7 +1297,9 @@ pub enum Stage {
         chains: usize,
         particles: usize,
         iterations: usize,
-        #[serde(default)]
+        #[serde(default, rename = "init")]
+        init_method: InitMethod,
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
         #[serde(default)]
         skip_chains: Vec<usize>,
@@ -1296,7 +1309,7 @@ pub enum Stage {
     PFilter {
         particles: usize,
         replicates: Option<usize>,
-        #[serde(default)]
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
     },
 }
@@ -1317,9 +1330,11 @@ impl Stage {
 }
 ```
 
-### 6.6 StartsFrom — dependency edges
+### 6.6 init_mle — dependency edges
 
 ```rust
+/// The companion path for `init = "from_mle"`. Toml-side key is
+/// `init_mle`; this enum is the deserialized representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StartsFrom {
@@ -1329,7 +1344,8 @@ pub enum StartsFrom {
     /// Path to an external results directory
     Directory(PathBuf),
 
-    /// Random starts from parameter bounds (default)
+    /// No prior fit to chain from; chain starts come from the
+    /// stage's `init` mode (lhs / from_prior / etc.).
     #[serde(rename = "random")]
     Random,
 }
@@ -1486,8 +1502,12 @@ impl FitConfig {
 ```bash
 camdl fit run fits/01_all_free.toml
 camdl fit run fits/01_all_free.toml --stage mle
-camdl fit run fits/02_fix_beta.toml --stage posterior \
-    --starts-from results/fits/01_all_free/mle
+# Chaining a posterior stage onto a prior fit's MLE is now expressed by
+# editing the stage's init/init_mle in the toml, not via a CLI flag.
+# The legacy `--starts-from <dir>` was removed in the 2026-05-25 CLI UX
+# revision (it is a hidden trap that errors with the replacement spelled
+# out). Use `[stages.posterior] init = "from_mle"` +
+# `init_mle = "results/fits/01_all_free/mle"`.
 camdl fit run fits/base.toml --sweep "rho=0.5,0.1,0.02,0.005"
 camdl fit run fits/base.toml --sweep "rho=0.5,0.1" --sweep "k=5,10,20"
 camdl fit run fits/01.toml --stage posterior --skip-chains 2,4
@@ -1507,8 +1527,9 @@ pub struct FitRunCli {
     #[arg(long)]
     pub stage: Option<String>,
 
-    #[arg(long)]
-    pub starts_from: Option<PathBuf>,
+    // `--starts-from` was removed per the 2026-05-25 CLI UX revision.
+    // Chain-start sources are declared in the fit.toml via
+    // `init = "from_mle"` + `init_mle = "<stage-or-dir>"`.
 
     #[arg(long)]
     pub seed: Option<u64>,
@@ -1637,7 +1658,8 @@ chains = 4
 particles = 2000
 iterations = 60
 cooling = 0.95
-starts_from = "results/fits/01_all_free/mle"
+init      = "from_mle"
+init_mle  = "results/fits/01_all_free/mle"
 
 [stages.posterior]
 algorithm = "pgas"
@@ -1645,14 +1667,15 @@ backend = "chain_binomial"
 chains = 4
 particles = 50
 sweeps = 5000
-starts_from = "mle"
+init      = "from_mle"
+init_mle  = "mle"
 
 [stages.evaluate]
 algorithm = "pfilter"
 backend = "chain_binomial"
 particles = 10000
 replicates = 100
-starts_from = "mle"
+init_mle  = "mle"
 ```
 
 ### 8.3 Large Model with from_file
@@ -1695,7 +1718,8 @@ backend = "chain_binomial"
 chains = 6
 particles = 100
 sweeps = 10000
-starts_from = "mle"
+init      = "from_mle"
+init_mle  = "mle"
 ```
 
 ---
@@ -1846,7 +1870,7 @@ impl ConfigHasher {
     "particles": 50,
     "sweeps": 5000
   },
-  "starts_from": {
+  "init_mle": {
     "source": "results/fits/02_fix_beta/mle",
     "source_hash": "e8f1a2b3..."
   },
@@ -2172,7 +2196,7 @@ $ camdl fit new --from fits/01_all_free.toml fits/02_fix_beta.toml
 
 Created fits/02_fix_beta.toml
   [provenance] derived_from = "fits/01_all_free.toml"
-  [stages.mle] starts_from = "results/fits/01_all_free/mle"
+  [stages.mle] init = "from_mle", init_mle = "results/fits/01_all_free/mle"
 ```
 
 ### 13.4 `camdl summarize`
@@ -2325,8 +2349,11 @@ camdl simulate status FILE     Print status of a batch TOML's output tree
 
 camdl fit run CONFIG [OPTIONS]
   --stage NAME              Run specific stage only
-  --starts-from DIR         Override starts_from for target stage
   --seed N                  RNG seed override
+  # `--starts-from` was removed in the 2026-05-25 CLI UX revision; declare
+  # cross-stage chaining in the toml as `init = "from_mle"` +
+  # `init_mle = "<stage-or-dir>"`. The old flag remains as a hidden trap
+  # that errors with the replacement spelled out.
   --sweep "NAME=V1,V2,..."  Sweep over fixed params (repeatable; Cartesian product)
   --skip-chains N[,N]       Skip specific chain indices
   --resume                  Resume partially completed sampling stage

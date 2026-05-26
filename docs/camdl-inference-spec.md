@@ -477,15 +477,17 @@ combine = "log_mean_exp"
 ```
 fit.toml
   │
-  ├─ camdl fit scout fit.toml
+  ├─ camdl fit run fit.toml --stage scout
   │    reads: fit.toml (config + rw_sd)
   │    writes: <fit_dir>/real/fit_<seed>/scout/fit_state.toml
   │
-  ├─ camdl fit refine fit.toml --starts-from <fit_dir>/real/fit_<seed>/scout/
+  ├─ camdl fit run fit.toml --stage refine
+  │    [stages.refine] init = "from_mle", init_mle = "scout"
   │    reads: fit.toml (config) + scout/fit_state.toml (start_values, rw_sd)
   │    writes: <fit_dir>/real/fit_<seed>/refine/{fit_state.toml, mle_params.toml}
   │
-  └─ camdl fit validate fit.toml --starts-from <fit_dir>/real/fit_<seed>/refine/
+  └─ camdl fit run fit.toml --stage validate
+       [stages.validate] init = "from_mle", init_mle = "refine"
        reads: fit.toml (config) + refine/fit_state.toml (start_values, rw_sd)
        writes: <fit_dir>/real/fit_<seed>/validate/{fit_state.toml, mle_params.toml,
                profiles/, fit_record.json}
@@ -499,14 +501,14 @@ fit.toml
 > are pre-v2 and no fit produced by `cmd_fit_run_v2` writes that
 > shape.
 
-When `--starts-from` is given:
-- Starting values come from `fit_state.toml [start_values]`
+When the stage declares `init = "from_mle"` + `init_mle = "<prior-stage-or-dir>"`:
+- Starting values come from the prior stage's `fit_state.toml [start_values]`
   (overrides model defaults and fit.toml `start` fields)
-- rw_sd comes from `fit_state.toml [rw_sd]`
+- rw_sd comes from that `fit_state.toml [rw_sd]`
   (overrides fit.toml rw_sd values)
 - Explicit `--rw-sd` CLI flags override everything
 
-When `--starts-from` is NOT given:
+When no `init_mle` is declared (default `init = "lhs"`, etc.):
 - Starting values come from model defaults + fit.toml `start` fields
 - rw_sd comes from fit.toml `[estimate]` rw_sd values
 
@@ -757,13 +759,15 @@ se  <param₁>  …`) and the run-root winner to `<stage>/final_params.toml`.
 ### 6.2 Refine
 
 ```bash
-camdl fit refine fit.toml --starts-from <fit_dir>/real/fit_<seed>/scout/ [--seed 1]
+# In fit.toml: [stages.refine] init = "from_mle", init_mle = "scout"
+camdl fit run fit.toml --stage refine [--seed 1]
 ```
 
 **Defaults:** 4 chains, 1000 particles, 50 iterations,
 cooling_fraction=0.95 over 50 iterations.
 
-**Reads:** `scout/fit_state.toml` for start values and rw_sd.
+**Reads:** `scout/fit_state.toml` for start values and rw_sd (resolved
+from the `init_mle` toml key).
 
 **Writes:** same shape as scout (above). Use
 `camdl fit summary --format json` for the interpretation surface
@@ -772,7 +776,8 @@ cooling_fraction=0.95 over 50 iterations.
 ### 6.3 Validate
 
 ```bash
-camdl fit validate fit.toml --starts-from <fit_dir>/real/fit_<seed>/refine/ [--seed 1]
+# In fit.toml: [stages.validate] init = "from_mle", init_mle = "refine"
+camdl fit run fit.toml --stage validate [--seed 1]
 ```
 
 **Defaults:** 4 chains, 5000 particles, 100 iterations,
@@ -1176,7 +1181,8 @@ mle_params.toml: ⚠ MODIFIED (content hash mismatch)
   All other parameters: unchanged
   
   This file has been hand-tuned. Inference provenance no longer applies.
-  To restore: camdl fit validate fit.toml --starts-from refine/
+  To restore: camdl fit run fit.toml --stage validate
+              ([stages.validate] init = "from_mle", init_mle = "refine")
 ```
 
 The modified file still works as a params.toml everywhere. The
