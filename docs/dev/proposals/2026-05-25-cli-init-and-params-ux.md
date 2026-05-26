@@ -183,16 +183,22 @@ Same name, same modes, every inference subcommand:
 --init from-posterior --posterior <path>
                                     # per-chain draw from a posterior draws TSV
                                     #   (accepts <draws.tsv> OR a fit-results <dir>)
---init from-mle --mle <path>        # all chains at the MLE point from a file
-                                    #   (accepts <mle.toml> OR a fit-results <dir>;
-                                    #    formalises `--starts-from` for fit run AND
-                                    #    absorbs what was the `--params`-as-start case)
+--init from-point --point <path>    # all chains at a single point loaded from a file
+                                    #   (accepts <truth.toml> | <mle.toml> | a fit-results
+                                    #    <dir> auto-resolving to <dir>/mle.toml then
+                                    #    <dir>/final_params.toml). Formalises
+                                    #    `--starts-from` for fit run AND absorbs the
+                                    #    `--params`-as-start case from inference subcommands.
+                                    #    Name chosen over `from-mle` because the file need
+                                    #    not be an MLE — any point in the right schema
+                                    #    works (a truth value, a hand-tuned warm start,
+                                    #    a posterior median, …).
 --init survey-top-k --survey-path <dir>
                                     # existing behaviour, kebab-cased
 ```
 
-`from-params` and `from-mle` collapse into a single mode
-(`from-mle`). They were operationally identical — load a single
+`from-params` and `from-point` collapse into a single mode
+(`from-point`). They were operationally identical — load a single
 TOML, all chains start there. "MLE" is a slight misnomer for the
 user-written-TOML case but is the right *operation* and the
 natural language match for the fit-output case it primarily
@@ -202,7 +208,7 @@ Init applies *only* to parameters in the `[estimate]` set after
 `--fixed` resolution. Parameters in `--fixed` or absent from
 `[estimate]` take their resolved value regardless of init mode.
 
-When a `from-posterior` or `from-mle` source file is missing
+When a `from-posterior` or `from-point` source file is missing
 parameters that the current fit's `[estimate]` set includes,
 fall back to the subcommand's default init mode for those
 columns. Emit a startup warning naming the missing parameters.
@@ -213,9 +219,32 @@ from the model.
 ### Cross-subcommand renames
 
 - `fit run`'s `--init-method` → `--init`. Parity with `profile`.
-- `fit run`'s `--starts-from <dir>` → `--init from-mle --mle <dir>`.
+- `fit run`'s `--starts-from <dir>` → `--init from-point --point <dir>`.
 - `profile`'s `--starts` (per-cell count) stays as is.
 - `if2`'s `--chains` stays as is — established MCMC vocab.
+
+### fit.toml schema (paired toml renames)
+
+The CLI changes have toml-side counterparts. The principle is
+that toml keys and CLI flags share names — divergence here was
+the source of the audit's `--init` vs `--init-method` confusion.
+
+| Today (toml)                          | Rev 2 (toml)                                | Note                          |
+|---------------------------------------|---------------------------------------------|-------------------------------|
+| `[stages.<n>] init_method = "lhs"`    | `[stages.<n>] init = "lhs"`                 | matches CLI `--init`          |
+| `[stages.<n>] starts_from = "<stage>"`| `[stages.<n>] init = "from-point"` + `init_point = "<stage>"` | one key per concept          |
+| `[fixed] foo = 1.0`                   | unchanged                                   | already correct semantics     |
+| `[estimate] foo = { ... }`            | unchanged                                   | already correct semantics     |
+
+Every fit.toml in the repo gets the two keys renamed atomically;
+this is ~70 files (vignettes/, golden fixtures, tests). Old keys
+produce a clap-style error at config-load with the replacement
+spelled out.
+
+The toml-key rename is what the audit's P3 ("naming drift") is
+really about — CLI and toml drifted because they were edited
+separately. Going forward, any new CLI flag in this family
+requires a matching toml key with the same kebab-cased name.
 
 ### The single resolver — `ParameterResolver`
 
@@ -350,17 +379,85 @@ the conversation that produced this revision:
 - Remove the name-only form of `--fixed`. Require `NAME=VALUE`.
 - Rename `fit run`'s `--init-method` → `--init`.
 - Remove `--starts-from`; users must write
-  `--init from-mle --mle <dir>`.
+  `--init from-point --point <dir>`.
 - Old invocations error with an actionable message:
   ```
   error: --params is no longer accepted. Replacement:
     --fixed NAME=VALUE             (set & freeze specific values)
     --fixed-file <toml>            (load fixed values from a TOML file)
-    --init from-mle --mle <path>   (chain warm-start from a single point)
+    --init from-point --point <path>   (chain warm-start from a single point)
   ```
 - Update camdl-book chapters, blog draft, examples in
   `--help` (`after_help` strings in `args/mod.rs`),
   `docs/user-features.md`, `docs/dsl-cheatsheet.md`.
+
+## Blast radius
+
+Estimate from a downstream doc-agent audit pass over both `camdl`
+and `camdl-book` repositories, in addition to fit-toml fixtures and
+vignettes:
+
+| metric                                                          | total                                       |
+|-----------------------------------------------------------------|---------------------------------------------|
+| Mechanical renames (just sed)                                   | ~200 sites across both repos                |
+| Semantic re-reads (profile/if2 with `--params`)                 | ~10 sites                                   |
+| Multi-paragraph prose rewrites (load-bearing — see below)       | 4 sections                                  |
+| TOML field renames (`init_method`, `starts_from`)               | ~70 files                                   |
+| Name-only `--fixed name1,name2` → explicit (needs value lookup) | ~15 sites                                   |
+| Effort estimate                                                 | > 2h; real prose work, not pure sed         |
+
+The 4 load-bearing prose sections cannot be renamed in place —
+their pedagogy depends on the old flag shape and has to be
+rewritten under the new model:
+
+1. **`camdl-book/CLAUDE.md:642-661` — the synthetic-recovery
+   rule.** Current text reads, in essence: "use `pfilter --params`
+   to evaluate the likelihood at truth without leakage; do *not*
+   use `profile --params` because the value walks." Under rev 2
+   this becomes "`pfilter --fixed-file` for evaluation;
+   `profile --init from-point --point` for inference warm-start"
+   — same teaching point, completely different flag pair.
+2. **`camdl/docs/camdl-language-spec.md:2960-3001`
+   (and the book mirror at
+   `language/spec.qmd:2849-2890`).** A multi-paragraph block
+   explaining that name-only `--fixed "N0,mu,k"` is the
+   documented surface. Removing the name-only form is a
+   *feature removal* dressed as a naming cleanup; the
+   replacement pattern (`--fixed-file` for many params, explicit
+   `NAME=VALUE` for few) needs an explicit "the equivalent is
+   now …" callout.
+3. **`camdl/docs/inference.md:654-665` — the four-way
+   precedence list.** Currently enumerates `--params`, `--fit`,
+   `--fixed`, fit-toml `[fixed]`. Under rev 2, `--params`
+   disappears entirely; the list collapses to three sources
+   (CLI `--fixed{,-file}`, `--fit` toml `[fixed]`, scenario)
+   plus the model default. Full rewrite, not a search-and-replace.
+4. **`vignettes/he2010*/Makefile FIXED_PARAMS`.** Current value:
+   `FIXED_PARAMS=mu,iota,sigma_se,cohort,rho,psi,e0,i0,N0` — nine
+   names, no values. This is precisely the name-only-`--fixed`
+   pattern. Migration requires either looking up each value (and
+   committing them to the Makefile) or extracting them into a
+   `vignettes/he2010/fixed.toml` and passing `--fixed-file`. The
+   latter is cleaner; standardise on it as the recommended
+   pattern for vignettes that fix many parameters.
+
+These four sections together are ~1–2 hours of careful writing on
+top of the mechanical work. The implementation outline below
+calls them out as deliverables, not as line items in a generic
+"update docs" bullet.
+
+### camdl-book coordination
+
+The seed-timing/draft.qmd chapter has 3 `--params` hits
+(lines 304, 935, 938). Line 935 is the `profile`-tau command in
+the WA-weak section, which is actively being rendered. Under
+M-1, the chapter command examples must be updated in lockstep
+with the camdl release — render after rewrite, not before.
+
+If the chapter render schedule cannot tolerate a coordinated
+update, M-2 (one-release deprecation alias) buys time at the cost
+of carrying a `--params` shim through the next minor release.
+Otherwise M-1 stays as the recommended path.
 
 ## What this proposal does NOT touch
 
@@ -404,10 +501,27 @@ the conversation that produced this revision:
 9. **Provenance into `run.json`.** Add
    `parameters_provenance` block; extend
    `run_meta.rs` / `RunMeta` schema.
-10. **Doc churn.** `user-features.md`, `dsl-cheatsheet.md`,
-    `camdl-run-spec.md §1.3` (the precedence chain stays, the
-    flag names change), camdl-book chapters that reference the
-    old flag form, the alpha blog draft.
+10. **Doc churn — mechanical.** `user-features.md`,
+    `dsl-cheatsheet.md`, `camdl-run-spec.md §1.3` (precedence
+    chain stays, flag names change), the alpha blog draft, and
+    ~200 sed-equivalent rename sites across both repositories
+    per the Blast radius table.
+11. **Doc churn — load-bearing prose rewrites.** Four named
+    sections from the Blast radius audit must be hand-rewritten,
+    not renamed:
+    - `camdl-book/CLAUDE.md:642-661` (synthetic-recovery rule)
+    - `camdl/docs/camdl-language-spec.md:2960-3001` (name-only
+      `--fixed` removal — feature-removal callout)
+    - `camdl/docs/inference.md:654-665` (4-way precedence list →
+      3-source restructure)
+    - `vignettes/he2010*/Makefile` `FIXED_PARAMS` migration
+      (recommend extracting to `fixed.toml` + `--fixed-file` as
+      the canonical pattern for many-fixed-param vignettes)
+12. **fit.toml fixture migration.** ~70 files with
+    `init_method = "..."` / `starts_from = "..."` keys; rename
+    atomically to `init = "..."` / (`init = "from-point"` +
+    `init_point = "..."`). Old keys produce an actionable error
+    at config-load.
 
 Rough sizing: 1000–1500 lines including tests. The resolver
 itself is ~300 lines; the per-subcommand wiring + flag
@@ -425,7 +539,7 @@ plumbing is ~400; tests and doc updates account for the rest.
 - **`from-prior` for params with no `~`.** Bounds-uniform
   fallback with a startup warning naming the parameters, same
   shape as the fit-prior fall-through warning in gh#73.
-- **Where does `from-mle` look first?** When given a directory:
+- **Where does `from-point` look first?** When given a directory:
   try `<dir>/mle.toml`, then `<dir>/final_params.toml`. Error
   if neither exists. (These are the two canonical filenames in
   current fit output.)
