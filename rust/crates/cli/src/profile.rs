@@ -530,6 +530,18 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         (indexmap::IndexMap::new(), None, indexmap::IndexMap::new())
     };
 
+    // Init-mode → resolver bridge: `--init from_params --params <toml>`
+    // and `--init from_mle --mle <path>` both load a single-point
+    // parameter file. The user's mental model is that the file's
+    // values are authoritative for the parameters named in it — both
+    // as the resolver's base AND as the chain starting point.
+    // Without this seeding, the resolver fires `UnsetRequired` on any
+    // parameter that has no DSL default + no `[fixed]` entry, even
+    // when the user has explicitly named a file containing the value.
+    // See `seed_params_from_init_method` for the design rationale.
+    seed_params_from_init_method(&mut model_pre.parameters, &init_method)
+        .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+
     // gh#34 [estimate].start fall-back. Apply BEFORE the resolver so
     // that params listed in fit-toml `[estimate]` with an explicit
     // `start = ...` carry that value past the resolver's
@@ -1805,6 +1817,77 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
 /// Render a per-start MLE TOML file. Human-readable; also the format
 /// `rewrite_rollup` reads back to reconstruct the rollup.
 ///
+/// Seed `model.parameters[i].value` from an init-mode companion file
+/// **before** the resolver runs, so single-point init modes
+/// (`--init from_params --params <toml>` and `--init from_mle --mle
+/// <path>`) deliver their values to Phase 2 (resolver) in addition
+/// to Phase 3 (chain init). Without this bridge, the resolver fires
+/// `UnsetRequired` for any parameter that has no DSL default + no
+/// `[fixed]` entry, even when the user has explicitly named a file
+/// containing the value.
+///
+/// **File wins (aggressive)**: if the user typed
+/// `--init from_params --params start.toml` with `beta = 0.5`, and the
+/// model's DSL also declares `beta = 0.3` as a default, beta resolves
+/// to 0.5. The user explicitly named the file as authoritative;
+/// silently preferring the DSL default would be a footgun.
+///
+/// **Per-chain-varying init modes** (`from_prior`, `from_posterior`)
+/// don't seed model_pre because there's no single value to seed.
+/// Users of those modes need to also supply a base-value source
+/// (`--fit` with `[estimate].start`, or `--fixed-file`). Documented
+/// behaviour, not a hidden constraint.
+///
+/// Returns `Ok(())` for init modes that don't seed (single, uniform,
+/// lhs, from_prior, from_posterior, survey_top_k) — the caller can
+/// blindly call this and let the resolver handle errors downstream.
+///
+/// Takes `&mut Vec<Parameter>` rather than `&mut Model` because the
+/// helper only ever touches `model.parameters[i].value`. Narrower
+/// surface = simpler tests + less coupling to the rest of the IR.
+fn seed_params_from_init_method(
+    params: &mut Vec<ir::parameter::Parameter>,
+    init_method: &crate::fit::init::InitMethod,
+) -> Result<(), String> {
+    use crate::fit::init::{InitMethod, MleSource};
+    let file_values: HashMap<String, f64> = match init_method {
+        InitMethod::FromParams { path } => {
+            crate::util::load_params_toml(&path.to_string_lossy())
+                .map_err(|e| format!(
+                    "loading --params for --init from_params: {}", e))?
+        }
+        InitMethod::FromMle { source } => {
+            let path = match source {
+                MleSource::File(p) => p.clone(),
+                MleSource::FitDir(dir) => {
+                    let mle = dir.join("mle.toml");
+                    if mle.is_file() { mle }
+                    else {
+                        let final_p = dir.join("final_params.toml");
+                        if final_p.is_file() { final_p }
+                        else {
+                            return Err(format!(
+                                "--init from_mle: neither {}/mle.toml nor \
+                                 {}/final_params.toml exists",
+                                dir.display(), dir.display()));
+                        }
+                    }
+                }
+            };
+            crate::fit::chain_starts::load_mle_toml(&path)
+                .map_err(|e| format!(
+                    "loading --mle for --init from_mle: {:?}", e))?
+        }
+        _ => return Ok(()),
+    };
+    for p in params.iter_mut() {
+        if let Some(&v) = file_values.get(&p.name) {
+            p.value = Some(v);
+        }
+    }
+    Ok(())
+}
+
 /// gh#74 Option B: emits a trailing `[diagnostics]` block holding the
 /// per-start convergence record. Older `mle.toml` files (pre-gh#74)
 /// have no `[diagnostics]` block; the rollup tolerates the absence
@@ -2556,6 +2639,126 @@ mod tests {
         let b = fixture_inputs(&"b".repeat(64));
         assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
             "data_hash must be wired into inner_hash's canonical keys");
+    }
+
+    // ── seed_params_from_init_method: Phase 3 → Phase 2 bridge ────────
+    //
+    // Bug 3 from the post-CLI-UX-rev-2 regression report: the unified
+    // resolver fires `UnsetRequired` when a parameter has no DSL
+    // default + no `[fixed]` entry, even when the user has
+    // explicitly named a single-point init file (`--init from_params
+    // --params <toml>` or `--init from_mle --mle <path>`).
+    //
+    // These tests pin the fix: the helper loads the file BEFORE the
+    // resolver runs and seeds matching parameters' values. File wins
+    // over DSL default (aggressive — user explicitly named the file).
+
+    fn build_params(specs: &[(&str, Option<f64>)]) -> Vec<ir::parameter::Parameter> {
+        // Use serde so we don't track every Parameter field as the IR
+        // schema evolves. Each entry is a minimal {name, value} JSON
+        // object; serde_json fills the rest from
+        // `#[serde(default)]` on the Parameter struct.
+        specs.iter().map(|(name, value)| {
+            let body = match value {
+                Some(v) => format!(r#"{{"name":"{}","value":{}}}"#, name, v),
+                None    => format!(r#"{{"name":"{}","value":null}}"#, name),
+            };
+            serde_json::from_str::<ir::parameter::Parameter>(&body)
+                .expect("Parameter fixture must parse")
+        }).collect()
+    }
+
+    fn write_toml(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn seed_from_params_populates_unset_params() {
+        // Bug 3 minimal repro: model has no DSL default for beta;
+        // --init from_params --params start.toml supplies beta=0.5;
+        // the helper seeds model.parameters[beta].value = 0.5 so the
+        // resolver doesn't fire UnsetRequired.
+        let tmp = tempfile::tempdir().unwrap();
+        let toml_path = write_toml(tmp.path(), "start.toml",
+            "beta = 0.5\ngamma = 0.1\n");
+        let mut params = build_params(&[
+            ("beta",  None),  // no DSL default
+            ("gamma", None),
+        ]);
+        let init = crate::fit::init::InitMethod::FromParams { path: toml_path };
+        seed_params_from_init_method(&mut params, &init).unwrap();
+        let beta_val  = params.iter()
+            .find(|p| p.name == "beta").unwrap().value;
+        let gamma_val = params.iter()
+            .find(|p| p.name == "gamma").unwrap().value;
+        assert_eq!(beta_val,  Some(0.5));
+        assert_eq!(gamma_val, Some(0.1));
+    }
+
+    #[test]
+    fn seed_from_params_overrides_dsl_default_file_wins() {
+        // Aggressive seeding: if the model has `beta = 0.3` and the
+        // user passes --init from_params --params with `beta = 0.5`,
+        // the file wins. User explicitly named the file as the
+        // authoritative source.
+        let tmp = tempfile::tempdir().unwrap();
+        let toml_path = write_toml(tmp.path(), "start.toml", "beta = 0.5\n");
+        let mut params = build_params(&[
+            ("beta", Some(0.3)),  // DSL default that the file should override
+        ]);
+        let init = crate::fit::init::InitMethod::FromParams { path: toml_path };
+        seed_params_from_init_method(&mut params, &init).unwrap();
+        let beta_val = params.iter()
+            .find(|p| p.name == "beta").unwrap().value;
+        assert_eq!(beta_val, Some(0.5),
+            "file value must win over DSL default — user named the file");
+    }
+
+    #[test]
+    fn seed_from_mle_resolves_fitdir_to_mle_toml() {
+        // --init from_mle --mle <fit-dir>: helper auto-resolves to
+        // <dir>/mle.toml. Verifies the [mle] section is parsed
+        // (mle.toml shape, distinct from flat params.toml).
+        let tmp = tempfile::tempdir().unwrap();
+        let mle_dir = tmp.path().join("fit_results");
+        std::fs::create_dir_all(&mle_dir).unwrap();
+        write_toml(&mle_dir, "mle.toml",
+            "final_loglik = -311.13\n\n[focal]\nR0 = 25\n\n[mle]\nbeta = 0.5\n");
+        let mut params = build_params(&[
+            ("beta", None),
+        ]);
+        let source = crate::fit::init::MleSource::FitDir(mle_dir);
+        let init = crate::fit::init::InitMethod::FromMle { source };
+        seed_params_from_init_method(&mut params, &init).unwrap();
+        let beta_val = params.iter()
+            .find(|p| p.name == "beta").unwrap().value;
+        assert_eq!(beta_val, Some(0.5));
+    }
+
+    #[test]
+    fn seed_noop_for_per_chain_varying_init_modes() {
+        // from_prior / from_posterior have per-chain-varying values
+        // — there's no single value to seed into model_pre. The
+        // helper must be a no-op for these modes (users are expected
+        // to supply a separate base-value source).
+        let mut params = build_params(&[
+            ("beta", Some(0.3)),
+        ]);
+        let original_beta = params.iter()
+            .find(|p| p.name == "beta").unwrap().value;
+        let init_prior = crate::fit::init::InitMethod::FromPrior;
+        seed_params_from_init_method(&mut params, &init_prior).unwrap();
+        assert_eq!(params.iter()
+            .find(|p| p.name == "beta").unwrap().value, original_beta,
+            "from_prior must NOT seed model_pre — values are per-chain");
+
+        let init_lhs = crate::fit::init::InitMethod::Lhs;
+        seed_params_from_init_method(&mut params, &init_lhs).unwrap();
+        assert_eq!(params.iter()
+            .find(|p| p.name == "beta").unwrap().value, original_beta,
+            "Lhs must NOT seed model_pre");
     }
 }
 

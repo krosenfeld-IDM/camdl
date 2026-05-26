@@ -755,7 +755,7 @@ where F: Fn(PathBuf) -> InitSource,
 /// either top-level scalars or an `[mle]` section. Mirrors what the
 /// `from-mle` documentation promises and what current fit-output
 /// emits.
-fn load_mle_toml(path: &Path) -> Result<HashMap<String, f64>, InitError> {
+pub fn load_mle_toml(path: &Path) -> Result<HashMap<String, f64>, InitError> {
     let path_buf: PathBuf = path.to_path_buf();
     let raw = std::fs::read_to_string(path).map_err(|e| InitError::Io {
         path: path_buf.clone(), msg: e.to_string(),
@@ -771,7 +771,11 @@ fn load_mle_toml(path: &Path) -> Result<HashMap<String, f64>, InitError> {
     // First: top-level scalar entries (final_params.toml uses this
     // shape; `[provenance]`, `[focal]` are sections that get skipped).
     for (key, val) in &table {
-        if key == "provenance" || key == "focal" || key == "mle" { continue; }
+        // Skip section names (handled below) + metadata scalars like
+        // `final_loglik` that share the top-level namespace but
+        // aren't parameters.
+        if key == "provenance" || key == "focal" || key == "mle"
+            || key == "final_loglik" { continue; }
         match val {
             toml::Value::Float(f)   => { out.insert(key.clone(), *f); }
             toml::Value::Integer(i) => { out.insert(key.clone(), *i as f64); }
