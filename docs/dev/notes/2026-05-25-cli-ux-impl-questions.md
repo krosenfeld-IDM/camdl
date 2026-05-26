@@ -16,7 +16,7 @@ coordination call-outs in the proposal?"
 
 ## What shipped this session
 
-Single commit on `worktree-agent-a0d854c5fd1d64f12`:
+Three commits on `worktree-agent-a0d854c5fd1d64f12`:
 
   - `gh#83/gh#85: params_resolver — unified value-resolution chain (rev 2)`
     - `rust/crates/cli/src/params_resolver.rs` (new, ~660 lines with
@@ -34,6 +34,16 @@ Single commit on `worktree-agent-a0d854c5fd1d64f12`:
       subcommand; no inference / no [estimate] semantics; exercises
       every resolver code path including bounds validation).
     - `main.rs` registers the new module.
+
+  - `docs(notes): gh#83/gh#85 — CLI UX rev 2 implementation status`
+    (this file).
+
+  - `gh#83/gh#85: migrate pfilter to params_resolver`
+    - `pfilter.rs:42-92` inline block (load_model + apply_params_file
+      loop + scenario lookup + filter + CLI overrides + validate)
+      collapses to a single `resolve_parameters()` call.
+    - Behaviour-identical surface; `pfilter_trajectories` integration
+      tests pass.
 
   - Test posture:
     - `cargo test --release -p cli --bin camdl params_resolver` →
@@ -95,12 +105,8 @@ behaviour surfaces as a TSV diff under `ir/expected/`.
 
 ### Step 3 — migrate `pfilter` / `eval`
 
-`eval.rs` shipped. `pfilter.rs:47-79` has the inline scenario +
-overrides block; same shape as `eval.rs`'s pre-migration form.
-
-Risk: low. `pfilter` integration tests exist; a regression would
-surface as a loglik-spread mismatch in
-`crates/cli/tests/pfilter_*.rs`.
+**Done this session.** Both shipped — `eval.rs` in the resolver
+foundation commit, `pfilter.rs` in commit 3.
 
 ### Step 4 — migrate `survey`
 
@@ -334,39 +340,28 @@ intervention"), the resolver doesn't need to change.
 
 ## Audit checklist results (proposal §"Post-implementation audit")
 
-Run on the post-commit tree:
+Run on the post-commit tree after eval + pfilter migrations:
 
 ```
 $ rg 'parameters\[.*\]\.value\s*=' --type rust rust/crates/cli/src/
 # (no hits)
 
 $ rg '\.value\s*=\s*Some' --type rust rust/crates/cli/src/
-rust/crates/cli/src/util.rs:497    p.value = Some(v);           # apply_params_file
-rust/crates/cli/src/util.rs:905    p.value = Some(v);           # resolve_run_model tier-3 [pre-migration]
-rust/crates/cli/src/util.rs:927    if p.name == full_name { p.value = Some(val); }   # --param-vec
-rust/crates/cli/src/util.rs:939    if p.name == *k { p.value = Some(*v); }           # scenario params
-rust/crates/cli/src/util.rs:946    p.value = Some(v * factor);  # scenario scale
-rust/crates/cli/src/util.rs:973    p.value = Some(v);           # CLI overrides
-rust/crates/cli/src/profile.rs:447   if let Some(&v) = preset.params.get(&p.name) { p.value = Some(v); }
-rust/crates/cli/src/profile.rs:452   if let Some(&v) = overrides.get(&p.name) { p.value = Some(v); }
-rust/crates/cli/src/survey.rs:665   ...
-rust/crates/cli/src/survey.rs:704   ...
-rust/crates/cli/src/survey.rs:711   ...
-rust/crates/cli/src/survey.rs:831   ...
-rust/crates/cli/src/survey.rs:843   ...
-rust/crates/cli/src/pfilter.rs:69   ...
-rust/crates/cli/src/pfilter.rs:83   ...
-rust/crates/cli/src/if2.rs:176      ...
-rust/crates/cli/src/if2.rs:182      ...
-rust/crates/cli/src/main.rs:1161    p.value = Some(*v);          # main.rs scenario apply
-rust/crates/cli/src/main.rs:1571    p.value = Some(*v);          # main.rs --param apply
-rust/crates/cli/src/fit/runner.rs:147   ...
-rust/crates/cli/src/fit/runner.rs:197   ...
-rust/crates/cli/src/fit/runner.rs:204   ...
+# params_resolver.rs writes (the sole resolver — these are CORRECT):
+rust/crates/cli/src/params_resolver.rs   (5 hits — scenario params, scale, fit-toml fixed, --fixed-file, --fixed CLI)
+
+# Pre-migration legacy paths (Steps 2/4/5):
+rust/crates/cli/src/util.rs              (6 hits — resolve_run_model + apply_params_file + --param-vec)
+rust/crates/cli/src/main.rs              (2 hits — simulate scenario apply + --param apply)
+rust/crates/cli/src/profile.rs           (2 hits — scenario + overrides)
+rust/crates/cli/src/survey.rs            (5 hits — fit-toml [fixed] + scenario + CLI fixed)
+rust/crates/cli/src/if2.rs               (2 hits — scenario + overrides)
+rust/crates/cli/src/fit/runner.rs        (3 hits — scenario + apply_params_file + bound starts fill)
 ```
 
-The eval.rs migration eliminated its own hits. The remaining hits
-are exactly the migration targets enumerated in Step 2..5 above.
+The eval.rs and pfilter.rs migrations eliminated their entries. The
+remaining hits are exactly the migration targets enumerated in
+Step 2 / Step 4 / Step 5 above.
 Audit item (1) passes for `params_resolver.rs` (it is the sole
 resolver writer; the other hits are the unmigrated legacy paths
 that will be removed as their subcommands migrate).
