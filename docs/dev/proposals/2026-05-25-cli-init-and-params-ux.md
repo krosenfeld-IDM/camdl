@@ -298,27 +298,66 @@ pub enum ValueSource {
     ModelDefault,
     Scenario(String),       // preset name
     FitTomlFixed,
-    FixedFile(PathBuf),
+    FixedFile { path: PathBuf },        // carries the file that won (under layering)
     FixedCli,
 }
 
-#[derive(Debug, Clone)]
+/// Resolver-decided role for a parameter. ADT-shaped rather than
+/// a `bool fixed` field so the *reason* a parameter ended up
+/// fixed is first-class — the run.json provenance distinguishes
+/// "never in [estimate]" from "was in [estimate], --fixed kicked it
+/// out", which matters for auditing whether a profile-likelihood
+/// slice did what the user intended.
+pub enum ParameterRole {
+    Fixed { reason: FixReason },
+    Estimated,
+}
+
+pub enum FixReason {
+    NotInEstimate,                                  // never was in [estimate]
+    KickedFromEstimate { by: ValueSource },         // was in [estimate]; --fixed kicked it
+}
+
 pub struct ResolvedParameter {
-    pub name:     String,
-    pub value:    f64,
-    pub source:   ValueSource,
-    pub fixed:    bool,    // true if this param is held fixed (out of [estimate])
+    pub name:   String,
+    pub value:  f64,
+    pub source: ValueSource,
+    pub role:   ParameterRole,
 }
 
 pub struct ResolvedParameters {
-    pub params:        Vec<ResolvedParameter>,
-    pub estimate_set:  IndexSet<String>,  // names that survived [estimate] after --fixed kick-out
-    pub model:         ir::Model,         // model with .value fields populated
-    pub warnings:      Vec<String>,       // collision / kick-out / unknown-name diagnostics
+    pub params:       Vec<ResolvedParameter>,
+    pub estimate_set: IndexSet<String>,  // names with role=Estimated, in declaration order
+    pub model:        ir::Model,         // mutated to carry the resolved .value fields
+    pub warnings:     Vec<ResolverWarning>,
 }
 
-pub fn resolve_parameters(inputs: ParameterInputs<'_>) -> Result<ResolvedParameters, String> { ... }
+pub enum ResolverWarning {
+    KickedFromEstimate { name: String, by: ValueSource },
+    UnknownParam       { name: String, source: ValueSource, did_you_mean: Vec<String> },
+    BoundsViolation    { name: String, value: f64, lo: f64, hi: f64 },
+}
+
+pub enum ResolveError {
+    UnknownParameter     { name: String, source: ValueSource, candidates: Vec<String> },
+    NonFiniteValue       { name: String, value: f64, source: ValueSource },
+    UnsetRequired        { name: String },           // no model default, no override
+    SchemaMismatch       { path: PathBuf, msg: String },
+    ScenarioNotFound     { name: String, available: Vec<String> },
+    ExternalTableMissing { table: String },
+}
+
+pub fn resolve_parameters<'a>(
+    inputs: ParameterInputs<'a>,
+) -> Result<ResolvedParameters, ResolveError>;
 ```
+
+`ParameterRole` is the load-bearing ADT: a parameter is either
+`Fixed { reason: ... }` or `Estimated`, never both, never neither.
+Downstream consumers can pattern-match exhaustively rather than
+encoding the same logic as `if param.fixed && param.was_in_estimate
+{ ... }` branches scattered across the codebase. The compiler
+enforces that every new code path handles both cases.
 
 #### Precedence (last wins)
 
@@ -557,6 +596,193 @@ Otherwise M-1 stays as the recommended path.
 Rough sizing: 1000–1500 lines including tests. The resolver
 itself is ~300 lines; the per-subcommand wiring + flag
 plumbing is ~400; tests and doc updates account for the rest.
+
+## Init phase types
+
+The init phase runs only on inference subcommands and produces
+chain starting points for parameters in the resolver's
+`estimate_set`. Fixed parameters take their resolved value
+regardless of init mode — they are not in the domain of the init
+draw.
+
+```rust
+pub enum InitMethod {
+    Single,
+    Uniform,
+    Lhs,
+    FromPrior,
+    FromPosterior { source: PosteriorSource },
+    FromMle       { source: MleSource },
+    FromParams    { path: PathBuf },
+    SurveyTopK    { source: SurveySource, k: usize },
+}
+
+pub enum PosteriorSource {
+    DrawsTsv(PathBuf),
+    FitDir(PathBuf),     // auto-resolves to <dir>/draws.tsv
+}
+
+pub enum MleSource {
+    File(PathBuf),       // an mle.toml or final_params.toml directly
+    FitDir(PathBuf),     // auto-resolves: <dir>/mle.toml → <dir>/final_params.toml
+}
+
+pub enum SurveySource {
+    Dir(PathBuf),
+}
+
+/// One chain's starting point. Only contains params in
+/// `estimate_set`; fixed params are not in this map.
+pub struct ChainStart {
+    pub chain_id: usize,
+    pub values:   HashMap<String, f64>,
+    pub source:   InitSource,
+}
+
+pub enum InitSource {
+    SeededBase,
+    UniformDraw  { seed: u64 },
+    LhsCell      { row: usize },
+    PriorDraw    { seed: u64 },
+    PosteriorRow { row: usize, path: PathBuf },
+    MlePoint     { path: PathBuf },
+    ParamsPoint  { path: PathBuf },
+    SurveyRank   { rank: usize, path: PathBuf },
+}
+
+pub struct ChainStarts {
+    pub starts: Vec<ChainStart>,    // length = n_chains
+    pub method: InitMethod,         // echoed for run.json
+}
+
+pub enum InitError {
+    MissingParam   { name: String, source: PathBuf, suggested_fallback: InitMethod },
+    UnknownSource  { path: PathBuf },
+    SchemaMismatch { path: PathBuf, expected: &'static str, msg: String },
+    NoPrior        { params: Vec<String> },  // from-prior asked, no `~` declared
+}
+
+pub fn draw_chain_starts(
+    resolved: &ResolvedParameters,
+    method:   &InitMethod,
+    n_chains: usize,
+    seed:     u64,
+) -> Result<ChainStarts, InitError>;
+```
+
+The Phase 2 → Phase 3 seam is the key invariant:
+`draw_chain_starts` only writes values for names in
+`resolved.estimate_set`. The compiler doesn't enforce this
+directly (it's a HashMap, not a typed key set), but every code
+path that builds a `ChainStart` constructs the HashMap by
+iterating `resolved.estimate_set` — there is no public way to
+ask "what's the starting value for `gamma`?" when `gamma` is in
+`Fixed`. This is what guarantees `--fixed` always wins over
+`--init`.
+
+## Provenance into `run.json`
+
+The resolver's outputs flow into `run.json` via two new blocks
+that mirror the type design:
+
+```rust
+// run_meta.rs / RunMeta
+pub struct ParameterProvenance {
+    pub value:                f64,
+    pub source:               String,                  // ValueSource tag
+    pub role:                 String,                  // "fixed" | "estimated"
+    pub kicked_from_estimate: Option<KickReason>,      // present iff Fixed{KickedFromEstimate}
+}
+
+pub struct InitProvenance {
+    pub method: String,                                // InitMethod tag
+    pub chains: Vec<HashMap<String, ChainStartProvenance>>,
+}
+
+pub struct ChainStartProvenance {
+    pub value:  f64,
+    pub source: String,                                // InitSource tag
+}
+```
+
+Rendered:
+
+```json
+"parameters_provenance": {
+  "beta":  { "value": 0.42, "source": "model_default", "role": "estimated" },
+  "gamma": { "value": 0.10, "source": "fixed_cli",     "role": "fixed",
+             "kicked_from_estimate": { "by": "fixed_cli" } },
+  "rho":   { "value": 0.07, "source": "fit_toml_fixed", "role": "fixed" }
+},
+"init_provenance": {
+  "method": "from-posterior",
+  "chains": [
+    { "beta": { "value": 0.38, "source": "PosteriorRow{row=42}" } },
+    ...
+  ]
+}
+```
+
+A user re-reading a fit six months later can see exactly which
+flag set each value and which method drew each chain start —
+no archaeology required.
+
+## Post-implementation audit
+
+After the implementing agents finish, a pass-through verifies
+that no parameter-value resolution escaped the single resolver.
+This is itself a deliverable; the migration isn't complete
+until the audit passes.
+
+### Audit checklist
+
+1. **Sole writer of `model.parameters[i].value`.** Outside
+   `params_resolver.rs`, no code mutates the field. Grep:
+   ```
+   rg 'parameters\[.*\]\.value\s*=' --type rust
+   rg '\.value\s*=\s*Some' --type rust
+   ```
+   Any hit outside `params_resolver.rs` (or its tests) is a
+   leak; fix before merge.
+
+2. **Old resolvers fully removed.** `apply_params_file`,
+   `FixedParams::resolve_with_model`, and the inline resolution
+   blocks in `profile.rs` / `if2.rs` / `pfilter.rs` are gone:
+   ```
+   rg 'apply_params_file' --type rust
+   rg 'fn resolve_with_model' --type rust
+   ```
+   Zero non-test hits.
+
+3. **Sole entry point per subcommand.** Every command function
+   takes `ResolvedParameters` (and `ChainStarts` for inference)
+   from `params_resolver` and `init` calls, never builds its own
+   value map.
+
+4. **Provenance round-trip.** `run.json` for every subcommand
+   carries a non-empty `parameters_provenance` block; every
+   entry's `source` matches a `ValueSource` variant. Test by
+   parsing a `run.json` from each subcommand and asserting
+   structure.
+
+5. **Init-source coverage.** Every `InitMethod` variant has at
+   least one integration test producing a `run.json` whose
+   `init_provenance.method` equals that variant's tag. No
+   silent fall-throughs.
+
+6. **No alias shims.** Per M-1 (hard break), no
+   `--params`/`--param`/name-only-`--fixed`/`--starts-from`/
+   `--init-method` definitions survive in `args/mod.rs`. Grep
+   confirms.
+
+### What the audit catches
+
+The failure mode this checklist prevents is *partial migration*
+— code that compiles and tests green but still has one path
+that side-steps the resolver and silently produces a wrong
+provenance record (or worse, a wrong runtime value). Items
+(1) and (2) are the structural checks; (3)–(5) are the runtime
+behaviour checks; (6) is the surface-area check.
 
 ## Open questions
 
