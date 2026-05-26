@@ -211,7 +211,7 @@ impl FitRunConfig {
         // from `base_params`, not from `EstimatedParam::initial`. If
         // prior_state is applied before est.start (as was the case
         // before 2026-04-18), the est.start write silently overwrites
-        // the scout-best values, and `starts_from = "scout"` becomes a
+        // the scout-best values, and `init_mle = "scout"` becomes a
         // no-op for refine's iter-0 parameters. See
         // docs/dev/incidents/2026-04-18-starts-from-scout-ignored.md.
 
@@ -230,7 +230,7 @@ impl FitRunConfig {
             }
         }
         // 3. Apply prior_state last so it wins over config start/fixed.
-        //    This is what makes `starts_from = "scout"` actually seed
+        //    This is what makes `init_mle = "scout"` actually seed
         //    the IF2 search from scout's best MLE.
         if let Some(state) = prior_state {
             for (name, &value) in &state.start_values {
@@ -2741,7 +2741,7 @@ mod tests {
     /// Regression guard for the asymmetry bug where fit.toml could only override
     /// 4 of the 7 IR distributions.
     /// End-to-end: priors declared in a .camdl file survive compilation to
-    /// Regression for the `starts_from = "scout"` bug: when a FitState
+    /// Regression for the `init_mle = "scout"` bug: when a FitState
     /// (scout's output) is supplied to `FitRunConfig::build`, the
     /// resulting `base_params` must reflect the scout-best values —
     /// NOT the fit.toml `[estimate].*.start` values. The fix for this

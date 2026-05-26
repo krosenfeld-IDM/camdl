@@ -151,26 +151,26 @@ pub fn run_stage(
     // Per-chain starting parameters (gh#42, gh#51 v2).
     // Precedence:
     // 1. `--starts-from` — every chain at the prior MLE (`base`).
-    //    Mutually exclusive with `init_method = "survey_top_k"`:
-    //    starts_from already commits every chain to the same point
-    //    (the scout MLE), so any sibling survey_top_k seed would be
-    //    silently overwritten. Refuse early instead.
-    // 2. `init_method = "survey_top_k"` (gh#51 v2) — resolved here
-    //    via the shared helper. Requires `survey_path = "..."` set
-    //    on the stage or via CLI override.
-    // 3. `init_method` dispatch on Lhs / Uniform / Single. Default
-    //    `lhs` gives stratified posterior coverage at low chain counts.
-    //    `Single` and `Uniform`-with-n_chains=1 return None; we then
-    //    materialise N copies of `base`.
+    //    Mutually exclusive with `init = "survey_top_k"`: `init_mle`
+    //    already commits every chain to the same point (the scout MLE),
+    //    so any sibling survey_top_k seed would be silently overwritten.
+    //    Refuse early instead.
+    // 2. `init = "survey_top_k"` (gh#51 v2) — resolved here via the
+    //    shared helper. Requires `survey_path = "..."` set on the
+    //    stage or via CLI override.
+    // 3. `init` dispatch on Lhs / Uniform / Single. Default `lhs` gives
+    //    stratified posterior coverage at low chain counts. `Single`
+    //    and `Uniform`-with-n_chains=1 return None; we then materialise
+    //    N copies of `base`.
     let mut survey_top_k_result: Option<super::init::SurveyTopKResult> = None;
     let chain_starts: Vec<Vec<f64>> = if prior_state.is_some() {
         if pmmh_opts.init_method == super::init::InitMethod::SurveyTopK {
             return Err(format!(
-                "pmmh stage `{}`: --starts-from / `starts_from = \"...\"` and \
-                 `init_method = \"survey_top_k\"` are mutually exclusive — \
+                "pmmh stage `{}`: --starts-from / `init_mle = \"...\"` and \
+                 `init = \"survey_top_k\"` are mutually exclusive — \
                  the former commits every chain to the prior MLE, so any \
                  survey-seeded start would be silently overwritten. Pick one: \
-                 drop `starts_from`, or use a non-survey init_method.",
+                 drop `init_mle`, or use a non-survey `init`.",
                 stage_name));
         }
         vec![base.clone(); n_chains]
@@ -777,9 +777,9 @@ pub fn run_stage(
 ///
 /// v1's [pmmh] section let users point at a separate `proposal_from`
 /// directory (independent from `starts_from`); v2's Stage::PMMH carries
-/// only `starts_from`. So we use `starts_from` for both — if the user
-/// wants empirical covariance from scout, they wire that via
-/// `starts_from = "scout"` on the PMMH stage.
+/// only `starts_from` (toml key `init_mle`). So we use it for both — if
+/// the user wants empirical covariance from scout, they wire that via
+/// `init_mle = "scout"` on the PMMH stage.
 fn build_proposal_sd(
     config: &FitRunConfig,
     starts_from: Option<&str>,

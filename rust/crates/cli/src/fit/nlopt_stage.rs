@@ -107,14 +107,14 @@ pub fn run_stage(
         .map(|p| p.name.clone())
         .collect();
 
-    // Honour `init_method` as written. Default for NLopt stages is
-    // `single` (every chain starts at the user's seeded values) so the
-    // runs land in a finite-likelihood region by construction. For
-    // models with tight bounds the user can set `init_method = "lhs"`
-    // to get spread starts; the chain-agreement gate then becomes
-    // informative. With Single + chains > 1, every chain's outcome is
-    // identical (Sbplx/BOBYQA are deterministic), so we run just one
-    // chain and skip the wasted compute.
+    // Honour the `init` toml key (rust field: `init_method`) as written.
+    // Default for NLopt stages is `single` (every chain starts at the
+    // user's seeded values) so the runs land in a finite-likelihood
+    // region by construction. For models with tight bounds the user can
+    // set `init = "lhs"` to get spread starts; the chain-agreement gate
+    // then becomes informative. With Single + chains > 1, every chain's
+    // outcome is identical (Sbplx/BOBYQA are deterministic), so we run
+    // just one chain and skip the wasted compute.
     let effective_chains = if knobs.init_method == InitMethod::Single {
         1
     } else {
@@ -122,9 +122,9 @@ pub fn run_stage(
     };
     if effective_chains < n_chains {
         eprintln!(
-            "  init_method=single with chains={}: collapsing to 1 chain \
+            "  init=single with chains={}: collapsing to 1 chain \
              (Sbplx/BOBYQA are deterministic, redundant chains would \
-             produce identical output). Set `init_method = \"lhs\"` for \
+             produce identical output). Set `init = \"lhs\"` for \
              multi-start basin exploration.",
             n_chains
         );

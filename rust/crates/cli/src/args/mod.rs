@@ -427,7 +427,7 @@ pub struct FitRunArgs {
     /// (Latin-hypercube stratified, scale-aware via Transform — best
     /// basin coverage at low chain counts). Requires --stage so scout
     /// and refine can be set independently. Has no effect when the
-    /// stage uses `starts_from = "<prior_stage>"` — those chains start
+    /// stage uses `init_mle = "<prior_stage>"` — those chains start
     /// from the prior MLE regardless.
     #[arg(long, value_name = "MODE", requires = "stage")]
     pub init_method: Option<crate::fit::init::InitMethod>,

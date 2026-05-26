@@ -303,12 +303,12 @@ pub fn build_chain_param_vecs(
     match method {
         InitMethod::SurveyTopK => {
             return Err(
-                "init_method = \"survey_top_k\" is not yet supported on this \
+                "init = \"survey_top_k\" is not yet supported on this \
                  stage type; v2 ships it on IF2 / PMMH / PGAS. NLopt and \
                  profile support is deferred to v3 (see gh#51). Workaround: \
-                 use init_method = \"lhs\" on this stage, or run an IF2 / \
+                 use init = \"lhs\" on this stage, or run an IF2 / \
                  PMMH / PGAS scout first and chain via \
-                 starts_from = \"<scout>\".".to_string());
+                 init_mle = \"<scout>\".".to_string());
         }
         // Step 6 warm-start variants — not yet routed through the
         // legacy NLopt / profile `build_chain_param_vecs` surface.
@@ -321,10 +321,10 @@ pub fn build_chain_param_vecs(
         | InitMethod::FromMle    { .. }
         | InitMethod::FromParams { .. } => {
             return Err(format!(
-                "init_method = \"{}\" is not yet supported on this stage \
-                 type (NLopt / profile). Use init_method = \"lhs\" or \
-                 \"single\" for now; warm-start `from-prior` / \
-                 `from-posterior` / `from-mle` / `from-params` ship on \
+                "init = \"{}\" is not yet supported on this stage \
+                 type (NLopt / profile). Use init = \"lhs\" or \
+                 \"single\" for now; warm-start `from_prior` / \
+                 `from_posterior` / `from_mle` / `from_params` ship on \
                  IF2 / PGAS / PMMH stages via the step-7 CLI surface.",
                 method));
         }
@@ -387,7 +387,7 @@ pub fn resolve_per_chain_starts_from_method(
     match method {
         InitMethod::SurveyTopK => {
             let path = survey_path.ok_or_else(|| format!(
-                "stage `{}`: init_method = \"survey_top_k\" requires \
+                "stage `{}`: init = \"survey_top_k\" requires \
                  `survey_path = \"<survey CAS dir>\"` (set on the stage in \
                  fit.toml or via CLI `--survey-path`). See gh#51.",
                 stage_name))?;
@@ -398,15 +398,15 @@ pub fn resolve_per_chain_starts_from_method(
         }
         // Step 6 warm-start variants: not yet wired into the fit.toml
         // stage runner. The fit-stage path drives chain init from
-        // sibling fields (`survey_path`, `starts_from`, etc.); the
-        // step-7 CLI break is what introduces `--init from-prior`
+        // sibling fields (`survey_path`, `init_mle`, etc.); the
+        // step-7 CLI break is what introduces `--init from_prior`
         // etc. through the runner. Until then a user landing here via
         // a fit.toml `init = "from_prior"` hits an actionable error.
         InitMethod::FromPrior
         | InitMethod::FromPosterior { .. }
         | InitMethod::FromMle    { .. }
         | InitMethod::FromParams { .. } => Err(format!(
-            "stage `{}`: init_method = \"{}\" is a step-6 warm-start \
+            "stage `{}`: init = \"{}\" is a step-6 warm-start \
              variant that is not yet routable through the fit.toml \
              stage runner. Use the upcoming `camdl fit run --init \
              {}` CLI surface (step 7) once it lands, or fall back to \
@@ -641,7 +641,7 @@ pub fn build_chain_starts_from_survey(
     let top_k = top_k_n.unwrap_or(n_chains);
     if top_k != n_chains {
         return Err(format!(
-            "init_method = \"survey_top_k\": v1 requires \
+            "init = \"survey_top_k\": v1 requires \
              survey_top_k_n == chains (got top_k_n = {}, chains = {}). \
              K > chains with stratified sub-sampling is deferred to v2 \
              — see gh#51 §\"Out of scope for v1\".",
@@ -650,12 +650,12 @@ pub fn build_chain_starts_from_survey(
 
     // Step 1: load run.json.
     let run = Run::read(survey_path).map_err(|e| format!(
-        "init_method = \"survey_top_k\": cannot read run.json from {:?}: {}",
+        "init = \"survey_top_k\": cannot read run.json from {:?}: {}",
         survey_path, e))?;
     let survey_meta = match &run.kind {
         RunKind::Survey(m) => m,
         other => return Err(format!(
-            "init_method = \"survey_top_k\": {:?} is a {:?} run, not a Survey run. \
+            "init = \"survey_top_k\": {:?} is a {:?} run, not a Survey run. \
              survey_path must point at a `camdl survey` CAS directory.",
             survey_path, std::mem::discriminant(other))),
     };
@@ -666,10 +666,10 @@ pub fn build_chain_starts_from_survey(
     // Step 3: read + parse landscape.tsv.
     let landscape_path = survey_path.join("landscape.tsv");
     let raw = std::fs::read_to_string(&landscape_path).map_err(|e| format!(
-        "init_method = \"survey_top_k\": cannot read {:?}: {}",
+        "init = \"survey_top_k\": cannot read {:?}: {}",
         landscape_path, e))?;
     let rows = parse_landscape_tsv(&raw, &survey_meta.estimated)
-        .map_err(|e| format!("init_method = \"survey_top_k\": {}", e))?;
+        .map_err(|e| format!("init = \"survey_top_k\": {}", e))?;
     let total_rows = rows.len();
 
     // Step 4: filter by fit bounds.
@@ -686,14 +686,14 @@ pub fn build_chain_starts_from_survey(
 
     if filtered.len() < n_chains {
         return Err(format!(
-            "init_method = \"survey_top_k\": survey has {} rows but only {} \
+            "init = \"survey_top_k\": survey has {} rows but only {} \
              fall within fit bounds, and chains = {}. Either widen fit's \
              bounds toward the surveyed region, or re-run the survey on \
              the narrower box.",
             total_rows, filtered.len(), n_chains));
     }
     if (filtered.len() as f64) < 0.5 * (total_rows as f64) {
-        eprintln!("\x1b[33mwarning:\x1b[0m init_method = \"survey_top_k\" \
+        eprintln!("\x1b[33mwarning:\x1b[0m init = \"survey_top_k\" \
             discards {} of {} survey rows as outside fit bounds. The \
             fit will use the top-{} of the {} that remain, but most of \
             the survey's measurement budget is being thrown away. \
@@ -795,7 +795,7 @@ fn cross_check_survey(
 ) -> Result<(), String> {
     if meta.model_hash != ctx.model_hash {
         return Err(format!(
-            "init_method = \"survey_top_k\": model_hash mismatch.\n  \
+            "init = \"survey_top_k\": model_hash mismatch.\n  \
              survey: {}\n     fit: {}\nA model edit between survey and \
              fit invalidates the cross-check; re-run the survey on the \
              current model.",
@@ -805,11 +805,11 @@ fn cross_check_survey(
         match meta.data_hashes.get(stream) {
             Some(survey_hash) if survey_hash == fit_hash => {}
             Some(survey_hash) => return Err(format!(
-                "init_method = \"survey_top_k\": data_hashes mismatch on \
+                "init = \"survey_top_k\": data_hashes mismatch on \
                  stream `{}`.\n  survey: {}\n     fit: {}",
                 stream, survey_hash, fit_hash)),
             None => return Err(format!(
-                "init_method = \"survey_top_k\": fit consumes data stream \
+                "init = \"survey_top_k\": fit consumes data stream \
                  `{}` which the survey did not score against. Re-run the \
                  survey with this stream included.", stream)),
         }
@@ -818,12 +818,12 @@ fn cross_check_survey(
         match meta.fixed.get(name) {
             Some(&survey_value) if (survey_value - fit_value).abs() < 1e-12 => {}
             Some(&survey_value) => return Err(format!(
-                "init_method = \"survey_top_k\": [fixed].{} disagrees.\n  \
+                "init = \"survey_top_k\": [fixed].{} disagrees.\n  \
                  survey: {}\n     fit: {}\nFixed-value drift between \
                  survey and fit invalidates the seeded starts.",
                 name, survey_value, fit_value)),
             None => return Err(format!(
-                "init_method = \"survey_top_k\": fit's [fixed] must be a \
+                "init = \"survey_top_k\": fit's [fixed] must be a \
                  subset of survey's [fixed]; survey did not pin `{}` (the \
                  survey estimated it or left it free). Pin it in the \
                  survey, or remove it from fit's [fixed].", name)),
@@ -862,7 +862,7 @@ fn emit_top_k_se_warning(top_k: &[&LandscapeRow]) {
     // 30 dB matches `GateConfig::default().decibans_thresh`.
     let threshold_db = (30.0_f64).max(8.0 * sigma_max * NATS_TO_DB);
     if delta_db < threshold_db {
-        eprintln!("\x1b[33mwarning:\x1b[0m init_method = \"survey_top_k\": \
+        eprintln!("\x1b[33mwarning:\x1b[0m init = \"survey_top_k\": \
             top-{} loglik spread = {:.1} dB is below the SE-aware threshold \
             ({:.1} dB; σ_max = {:.2} nats). Rank ordering is uncertain at \
             this measurement budget — chains seeded from rank-1 vs rank-{} \

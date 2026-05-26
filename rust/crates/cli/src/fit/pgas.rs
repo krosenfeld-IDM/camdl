@@ -301,24 +301,24 @@ pub fn run_stage(
     // Generate per-chain starting parameters (gh#42, gh#51 v2).
     // Precedence:
     // 1. `--starts-from` — every chain at the prior MLE; mutually
-    //    exclusive with `init_method = "survey_top_k"` (the former
-    //    pins every chain to one point, so any survey-seeded start
-    //    would be silently overwritten).
-    // 2. `init_method = "survey_top_k"` — resolved here via the
-    //    shared helper. Bayesian seeds are valid because the chain's
-    //    stationary distribution is set by the prior, not the start.
-    // 3. `init_method` dispatch on Lhs / Uniform / Single. Default
-    //    `lhs` gives stratified posterior coverage.
+    //    exclusive with `init = "survey_top_k"` (the former pins every
+    //    chain to one point, so any survey-seeded start would be
+    //    silently overwritten).
+    // 2. `init = "survey_top_k"` — resolved here via the shared helper.
+    //    Bayesian seeds are valid because the chain's stationary
+    //    distribution is set by the prior, not the start.
+    // 3. `init` dispatch on Lhs / Uniform / Single. Default `lhs` gives
+    //    stratified posterior coverage.
     let has_starts = prior_state.is_some();
     let mut survey_top_k_result: Option<super::init::SurveyTopKResult> = None;
     let chain_starts: Vec<Vec<f64>> = if has_starts {
         if pgas_opts.init_method == super::init::InitMethod::SurveyTopK {
             return Err(format!(
-                "pgas stage `{}`: --starts-from / `starts_from = \"...\"` and \
-                 `init_method = \"survey_top_k\"` are mutually exclusive — \
+                "pgas stage `{}`: --starts-from / `init_mle = \"...\"` and \
+                 `init = \"survey_top_k\"` are mutually exclusive — \
                  the former commits every chain to the prior MLE, so any \
                  survey-seeded start would be silently overwritten. Pick one: \
-                 drop `starts_from`, or use a non-survey init_method.",
+                 drop `init_mle`, or use a non-survey `init`.",
                 stage_name));
         }
         vec![config.base_params.clone(); n_chains]

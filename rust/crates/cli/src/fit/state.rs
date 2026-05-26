@@ -103,7 +103,7 @@ pub struct FitState {
 
     /// Provenance of this stage's chain starts (gh#51). One of:
     /// `single`, `uniform`, `lhs`, or `survey:<full-hash>:top-<K>`
-    /// when `init_method = "survey_top_k"`. Surfaced as a one-line
+    /// when `init = "survey_top_k"`. Surfaced as a one-line
     /// header in `camdl fit summary` ("seeded from: <source>") so
     /// the survey → fit linkage is visible without parsing
     /// `chain_starts.tsv`.
