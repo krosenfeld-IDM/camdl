@@ -333,9 +333,23 @@ pub struct ResolvedParameters {
 }
 
 pub enum ResolverWarning {
-    KickedFromEstimate { name: String, by: ValueSource },
-    UnknownParam       { name: String, source: ValueSource, did_you_mean: Vec<String> },
-    BoundsViolation    { name: String, value: f64, lo: f64, hi: f64 },
+    KickedFromEstimate    { name: String, by: ValueSource },
+    UnknownParam          { name: String, source: ValueSource, did_you_mean: Vec<String> },
+    BoundsViolation       { name: String, value: f64, lo: f64, hi: f64 },
+    /// Scenario set `name` to `scenario_value`, but `by`
+    /// (a higher-precedence source) overrode it to `new_value`.
+    /// Surfaced on stderr at resolve time and into run.json's
+    /// `overrode_scenario` field. Not an error — CLI override
+    /// of a scenario value is a legitimate quick-test workflow;
+    /// the warning is so the override is never silent.
+    ScenarioOverridden    { name: String, scenario: String,
+                            scenario_value: f64, by: ValueSource, new_value: f64 },
+    /// fit-toml `[fixed]` and `[estimate]` both name the same
+    /// parameter. The resolver treats `[fixed]` as winning (a
+    /// parameter that is both fixed and estimated is a config
+    /// bug, but the conservative interpretation is "the user
+    /// meant fixed"). Surfaced so the user fixes their toml.
+    FixedEstimateOverlap  { name: String },
 }
 
 pub enum ResolveError {
@@ -361,22 +375,84 @@ enforces that every new code path handles both cases.
 
 #### Precedence (last wins)
 
+The order is **the documented spec** in
+[`docs/camdl-run-spec.md §1.3`](../../camdl-run-spec.md):
+
 1. Model parameter default (`p.value` from DSL)
-2. Scenario preset (`preset.params` for the active scenario)
-3. `fit.toml [fixed]` block (when present)
-4. `--fixed-file <toml>` (each file layered in order; later overrides earlier)
+2. `fit.toml [fixed]` block (when present)
+3. `--fixed-file <toml>` (each file layered in order; later overrides earlier)
+4. Scenario preset (`preset.params` for the active scenario)
 5. `--fixed NAME=VALUE` (highest)
+
+The key non-obvious point — and the one that an earlier draft of
+this proposal got wrong — is **scenario beats `--fixed-file`**
+(and beats fit-toml `[fixed]`). The rationale is that scenarios
+travel with the model: they are named, audited configurations
+declared inside the `.camdl` file, and choosing a scenario is a
+deliberate "use this whole bundle." A user-supplied params file
+is a *base of values to start from*; the scenario then refines
+them per the model author's intent. CLI `--fixed` remains the
+highest precedence so a "quick test" override is always
+expressible (`--scenario worst_case --fixed beta=0.5` works
+exactly as expected — worst_case applies, then `beta=0.5` wins).
+
+This order is enforced by the test
+`scenario_runtime_application::scenario_set_replaces_mu_value`
+and is the order the existing `resolve_run_model` already
+implements (lines 932-950 of `cli/src/util.rs`). The new
+resolver preserves it byte-for-byte.
 
 `[estimate]` membership rule:
 
 - Start: `estimate_set = inputs.fit_toml_estimate`
-- Remove every name that appears in (4) or (5) — these are
+- Remove every name that appears in (3) or (5) — these are
   user-explicit "pin this" assertions and take precedence over
   the toml's `[estimate]` block.
 - Emit a warning (not an error) for each such removal, naming the
   parameter and the source: `"--fixed gamma=0.1 removes gamma from [estimate]"`.
 - On non-inference subcommands, `inputs.fit_toml_estimate` is
   empty; the kick-out logic is a no-op.
+
+#### Scenario-override visibility
+
+CLI `--fixed` overriding a scenario's value is a legitimate
+quick-test workflow, but it should never be *silent*. Six months
+later when re-reading a run, the user needs to know whether the
+scenario's value was actually applied or quietly overridden.
+
+The resolver emits a `ScenarioOverridden` warning at resolve time
+whenever the final winning source is `--fixed-file` or
+`--fixed-cli` AND the active scenario also set the same parameter
+to a different value:
+
+```
+[info] --fixed beta=0.5 overrides scenario 'worst_case'
+       which would have set beta=0.3
+```
+
+Run-time provenance records both values:
+
+```json
+"beta": {
+  "value": 0.5,
+  "source": "fixed_cli",
+  "role": "fixed",
+  "overrode_scenario": {
+    "scenario": "worst_case",
+    "scenario_value": 0.3
+  }
+}
+```
+
+Cost in the resolver: comparison against the scenario's intended
+value (already iterated by the resolver) before writing the final
+winner. ~20 lines.
+
+A `--strict-scenario` mode that escalates this warning to a hard
+error is deferred — file a follow-up gh# if the slicing workflow
+surfaces a confusing case. The warning + provenance combination
+is the right default; turning it into an error is a one-line
+policy on top.
 
 #### Validation, post-resolution
 
@@ -692,6 +768,18 @@ pub struct ParameterProvenance {
     pub source:               String,                  // ValueSource tag
     pub role:                 String,                  // "fixed" | "estimated"
     pub kicked_from_estimate: Option<KickReason>,      // present iff Fixed{KickedFromEstimate}
+    /// Present iff the active scenario set this parameter to a
+    /// different value than the final winner. Lets a future
+    /// reader see "the scenario said X but `--fixed` overrode
+    /// it to Y" without having to cross-reference the scenario
+    /// preset by hand. Pairs with the `ScenarioOverridden`
+    /// resolver warning.
+    pub overrode_scenario:    Option<ScenarioOverride>,
+}
+
+pub struct ScenarioOverride {
+    pub scenario:       String,    // preset name
+    pub scenario_value: f64,
 }
 
 pub struct InitProvenance {
@@ -712,6 +800,9 @@ Rendered:
   "beta":  { "value": 0.42, "source": "model_default", "role": "estimated" },
   "gamma": { "value": 0.10, "source": "fixed_cli",     "role": "fixed",
              "kicked_from_estimate": { "by": "fixed_cli" } },
+  "mu":    { "value": 0.50, "source": "fixed_cli",     "role": "fixed",
+             "overrode_scenario": { "scenario": "worst_case",
+                                    "scenario_value": 0.30 } },
   "rho":   { "value": 0.07, "source": "fit_toml_fixed", "role": "fixed" }
 },
 "init_provenance": {
@@ -724,8 +815,9 @@ Rendered:
 ```
 
 A user re-reading a fit six months later can see exactly which
-flag set each value and which method drew each chain start —
-no archaeology required.
+flag set each value, which scenario value (if any) was
+overridden, and which method drew each chain start — no
+archaeology required.
 
 ## Post-implementation audit
 
@@ -784,6 +876,38 @@ provenance record (or worse, a wrong runtime value). Items
 (1) and (2) are the structural checks; (3)–(5) are the runtime
 behaviour checks; (6) is the surface-area check.
 
+## Resolved decisions (from PI discussion)
+
+These were flagged as open in earlier revisions; recorded here as
+the resolution that the implementing agents should follow.
+
+- **D — Precedence tier list (highest priority).** The proposal's
+  earlier draft listed scenario at tier 2 (below `--fixed-file` /
+  fit-toml `[fixed]`), which contradicts the documented spec at
+  `docs/camdl-run-spec.md §1.3` and the locked-in integration
+  test `scenario_runtime_application::scenario_set_replaces_mu_value`.
+  **Resolution: scenario beats `--fixed-file` and `[fixed]`,
+  per spec.** The §"Precedence (last wins)" section above is the
+  fixed tier list. Scenarios travel with the model; choosing a
+  scenario is choosing a documented bundle, and the bundle's
+  param sets should win over a user-supplied params file. CLI
+  `--fixed` remains highest so quick-test overrides work.
+- **A — `from-prior` for params with no `~` declared.** Fallback
+  to bounds-uniform with a startup warning naming the parameters,
+  same shape as the fit-prior fall-through warning in gh#73.
+  Matches the existing "warn, don't punish well-specified-but-
+  incomplete models" posture.
+- **B — Warn on fit-toml `[fixed] ∩ [estimate]` overlap.** Yes —
+  `[fixed]` wins, `ResolverWarning::FixedEstimateOverlap`
+  emitted. Same provenance shape as `ScenarioOverridden`. Costs
+  almost nothing and catches a config-file bug class that would
+  otherwise be silent.
+- **C — Resolver accepts `scenario` + adhoc `enable`/`disable`
+  independently; CLI keeps the mutex.** The CLI mutex
+  (`conflicts_with` in clap) is a UX guardrail, not a resolver
+  invariant. The resolver doesn't need to enforce it; the
+  argument parser already does.
+
 ## Open questions
 
 - **`--fixed` collision warning vs error.** Default: warn
@@ -793,9 +917,6 @@ behaviour checks; (6) is the surface-area check.
 - **Posterior subsampling.** Default: with-replacement
   (gh#83 pseudocode). Add `--posterior-replacement
   {true,false}` only if a real use case shows up.
-- **`from-prior` for params with no `~`.** Bounds-uniform
-  fallback with a startup warning naming the parameters, same
-  shape as the fit-prior fall-through warning in gh#73.
 - **Where does `from-mle` look first?** When given a directory:
   try `<dir>/mle.toml`, then `<dir>/final_params.toml`. Error
   if neither exists. (These are the two canonical filenames in
