@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use indexmap::{IndexMap, IndexSet};
 use rayon::prelude::*;
 use sim::{
     compiled_model::CompiledModel,
@@ -644,7 +645,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         // Fit-aware mode: load fit.toml; pull bounds from [estimate],
         // data from [data], fixed from [fixed], scenario from top.
         let fit_path_str = fit_path.to_string_lossy().into_owned();
-        let mut config = FitConfigV2::load(&fit_path_str)?;
+        let config = FitConfigV2::load(&fit_path_str)?;
         // Make scenario+enable+disable mutual exclusion explicit
         // (matches fit::runner::FitRunConfig::build).
         if config.scenario.is_some() && (!config.enable.is_empty() || !config.disable.is_empty()) {
@@ -655,39 +656,63 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
 
         // Load model from fit.toml's `model.camdl` (already path-
         // resolved by FitConfigV2::load).
-        let (mut model, model_ir_json) = crate::util::load_model(&config.model.camdl)?;
+        let (model_pre, model_ir_json) = crate::util::load_model(&config.model.camdl)?;
 
-        // Apply scenario.
-        let (enable_list, disable_list) = if let Some(ref name) = config.scenario {
-            let preset = model.presets.iter().find(|p| p.name == *name).cloned()
-                .ok_or_else(|| format!("scenario '{}' not found in model", name))?;
-            for p in &mut model.parameters {
-                if let Some(&v) = preset.params.get(&p.name) { p.value = Some(v); }
-            }
-            (preset.enable, preset.disable)
-        } else {
-            (config.enable.clone(), config.disable.clone())
-        };
-        crate::util::apply_scenario_filter(&mut model, &enable_list, &disable_list)?;
+        // Resolve fit.toml [fixed] block via the existing config-side
+        // pre-processor (handles `from_file`, `from_scenario`, and
+        // inline-`values` shapes). The output is the IndexMap fed into
+        // the unified resolver as `fit_toml_fixed`.
+        //
+        // `expand_from_scenario` + `resolve_with_model` are kept as the
+        // fit-toml-side pre-processor (per 2026-05-25 CLI UX rev 2
+        // proposal §"Step 4 — Migrate survey"); they no longer act as
+        // a value writer on `model.parameters[*].value`. The unified
+        // resolver writes those values.
+        let mut fixed_cfg = config.fixed.clone();
+        fixed_cfg.expand_from_scenario(&model_pre)?;
+        let fixed_resolved_indexmap: IndexMap<String, f64> =
+            fixed_cfg.resolve_with_model(&model_pre)?;
 
-        // Resolve [fixed] (file load, scenario lookup, inline overlay).
-        config.fixed.expand_from_scenario(&model)?;
-        let fixed_resolved = config.fixed.resolve_with_model(&model)?;
+        // Build the inputs for the unified resolver. Scenario
+        // (or enable/disable) routing matches the previous behaviour.
+        let scenario_opt: Option<String> = config.scenario.clone();
+        let adhoc_enable: Vec<String> = config.enable.clone();
+        let adhoc_disable: Vec<String> = config.disable.clone();
+        // No `--fixed` on the survey-fit path; the inline `--fixed`
+        // flag is mutually exclusive with `--fit` per SurveyArgs.
+        let fixed_cli: Vec<(String, f64)> = Vec::new();
+        let fixed_files: Vec<std::path::PathBuf> = Vec::new();
+        let fit_toml_estimate: IndexSet<String> = config.estimate.keys().cloned().collect();
+        let table_files: HashMap<String, std::path::PathBuf> = HashMap::new();
 
-        // Apply estimate.start and fixed values to model so the
-        // base_params built from compiled.default_params has the right
-        // numbers in the non-LHS slots.
+        let resolved = crate::params_resolver::resolve_parameters(
+            crate::params_resolver::ParameterInputs {
+                model: &model_pre,
+                scenario: scenario_opt.as_deref(),
+                adhoc_enable: &adhoc_enable,
+                adhoc_disable: &adhoc_disable,
+                fixed_cli: &fixed_cli,
+                fixed_files: &fixed_files,
+                fit_toml_fixed: &fixed_resolved_indexmap,
+                fit_toml_estimate: &fit_toml_estimate,
+                table_files: &table_files,
+            },
+        ).map_err(|e| e.to_string())?;
+        crate::params_resolver::print_warnings(&resolved);
+        let mut model = resolved.model.clone();
+
+        // Apply [estimate].start as a starting-point hint for params
+        // that survived the resolver without an inferred value (this is
+        // a survey-specific helper for the LHS draw, not a value
+        // override — see proposal §"Step 4").
+        //
+        // For params that don't have a resolved value yet (i.e. the
+        // resolver returned them in the estimate set without a model
+        // default), fall through to fit.toml [estimate].start, then to
+        // a bounds-based draw.
         for (name, spec) in &config.estimate {
             if let Some(p) = model.parameters.iter_mut().find(|p| p.name == *name) {
                 if p.value.is_none() {
-                    // Same fit.toml > model > skip resolution as in
-                    // FitRunConfig::build (gh#34 + bounds-optional fix):
-                    // fall back to model bounds if fit.toml omits, leave
-                    // the model param's value unset if neither has bounds
-                    // so downstream validation surfaces a clearer error.
-                    // Transform-aware uniform draw replaces the legacy
-                    // bounds-midpoint heuristic — see fit::runner for
-                    // the rationale.
                     let resolved_bounds = spec.bounds.or(p.bounds);
                     let v = spec.start.or_else(|| resolved_bounds.map(|(lo, hi)| {
                         let transform = crate::fit::runner::derive_transform_with_bounds(
@@ -706,12 +731,17 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
                 }
             }
         }
-        for (name, &v) in &fixed_resolved {
-            if let Some(p) = model.parameters.iter_mut().find(|p| p.name == *name) {
-                if p.value.is_none() { p.value = Some(v); }
-            }
-        }
+        // After the [estimate].start fill-in, re-validate; the resolver
+        // already validated tier-resolved values, but the [estimate]
+        // fall-back can introduce new ones for params that were
+        // previously valueless. Without this, downstream compile
+        // failures lose the parameter-bounds-validation diagnostic
+        // shape.
         crate::util::validate_parameter_values(&model)?;
+
+        // Re-export the same IndexMap-shape map that the old code path
+        // produced, for ResolvedSurveyInputs.fixed.
+        let fixed_resolved: IndexMap<String, f64> = fixed_resolved_indexmap.clone();
 
         let compiled = Arc::new(CompiledModel::new(model.clone())
             .map_err(|e| format!("compile error: {:?}", e))?);
@@ -819,31 +849,34 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
     } else {
         // Inline mode: --estimate flags + --data (already validated).
         let data_path = a.data.as_ref().unwrap().to_string_lossy().into_owned();
-        let (mut model, model_ir_json) = crate::util::load_model(&model_path)?;
+        let (model_pre, model_ir_json) = crate::util::load_model(&model_path)?;
 
-        // Apply scenario if specified.
-        let mut enable_list = Vec::new();
-        let mut disable_list = Vec::new();
-        if let Some(ref name) = a.scenario {
-            let preset = model.presets.iter().find(|p| p.name == *name).cloned()
-                .ok_or_else(|| format!("scenario '{}' not found in model", name))?;
-            for p in &mut model.parameters {
-                if let Some(&v) = preset.params.get(&p.name) { p.value = Some(v); }
-            }
-            enable_list = preset.enable;
-            disable_list = preset.disable;
-        }
-        crate::util::apply_scenario_filter(&mut model, &enable_list, &disable_list)?;
-
-        // Apply --fixed overrides to model parameter values.
-        let fixed_map: HashMap<String, f64> = a.fixed.iter()
+        // Inline mode: drive the unified resolver. Inline `--fixed`
+        // entries become `fixed_cli`; the scenario flag participates in
+        // tier-4 resolution. There is no fit.toml [fixed] / [estimate]
+        // in inline mode.
+        let fixed_cli_vec: Vec<(String, f64)> = a.fixed.iter()
             .map(|p| (p.name.clone(), p.value)).collect();
-        for (name, &v) in &fixed_map {
-            if let Some(p) = model.parameters.iter_mut().find(|p| p.name == *name) {
-                p.value = Some(v);
-            }
-        }
-        crate::util::validate_parameter_values(&model)?;
+        let fixed_files: Vec<std::path::PathBuf> = Vec::new();
+        let ftf: IndexMap<String, f64> = IndexMap::new();
+        let fte: IndexSet<String> = IndexSet::new();
+        let table_files: HashMap<String, std::path::PathBuf> = HashMap::new();
+        let resolved = crate::params_resolver::resolve_parameters(
+            crate::params_resolver::ParameterInputs {
+                model: &model_pre,
+                scenario: a.scenario.as_deref(),
+                adhoc_enable: &[],
+                adhoc_disable: &[],
+                fixed_cli: &fixed_cli_vec,
+                fixed_files: &fixed_files,
+                fit_toml_fixed: &ftf,
+                fit_toml_estimate: &fte,
+                table_files: &table_files,
+            },
+        ).map_err(|e| e.to_string())?;
+        crate::params_resolver::print_warnings(&resolved);
+        let model = resolved.model.clone();
+        let fixed_map: HashMap<String, f64> = fixed_cli_vec.iter().cloned().collect();
 
         let compiled = Arc::new(CompiledModel::new(model.clone())
             .map_err(|e| format!("compile error: {:?}", e))?);
