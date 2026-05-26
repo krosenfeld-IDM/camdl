@@ -2362,4 +2362,202 @@ mod tests {
         let obs1 = s1 ^ SEED_MIX_OBS;
         assert_ne!(s1, obs1);
     }
+
+    // ─── gh#86: --draws prior must honor model-IR ~ priors as a fallback
+    // when the fit toml doesn't declare priors. Sibling of gh#75
+    // (which did this for `camdl fit run`). ──────────────────────────
+
+    /// Write a minimal fit.toml that exercises `generate_prior_draws`.
+    ///
+    /// Only the surface that the function actually reads is filled in
+    /// (model, estimate, fixed). `FitConfigV2::load` parses the toml
+    /// without running validate(), so a stage table is unnecessary for
+    /// the prior-draws code path.
+    fn write_fit_toml_for_prior_draws(
+        dir: &std::path::Path,
+        model_ir_path: &str,
+        estimate_block: &str,
+        fixed_block: &str,
+    ) -> String {
+        let toml = format!(r#"
+[model]
+camdl = "{model}"
+
+[estimate]
+{estimate}
+
+[fixed]
+{fixed}
+
+[stages.draw]
+algorithm = "if2"
+"#,
+            model = model_ir_path,
+            estimate = estimate_block,
+            fixed = fixed_block,
+        );
+        let p = dir.join("fit.toml");
+        std::fs::write(&p, toml).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    /// gh#86 RED test 1: fit.toml lists every estimated param but
+    /// supplies NO `prior = { ... }` blocks. The model IR (sir_priors
+    /// golden) has `~ <dist>` declarations for every param. After the
+    /// fix, the IR's priors satisfy the requirement and N draws come
+    /// back with the sampled values clamped to bounds.
+    #[test]
+    fn prior_draws_with_fit_toml_falls_back_to_ir_priors_when_missing() {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let ir_path = format!("{}/../../../ocaml/golden/sir_priors.ir.json", manifest);
+        let (model, _) = util::load_model(&ir_path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Every param in [estimate] but no `prior = { ... }` block.
+        // sir_priors has 5 params: beta, gamma, rho, N0, I0. Fit-toml
+        // bounds match the model's declared bounds.
+        let estimate = "\
+beta  = { bounds = [0.01, 2.0] }
+gamma = { bounds = [0.05, 1.0] }
+rho   = { bounds = [0.001, 1.0] }
+N0    = { bounds = [100, 1000000] }
+I0    = { bounds = [1, 1000] }
+";
+        // No [fixed] entries (the table itself is required but can be empty).
+        let fit_path = write_fit_toml_for_prior_draws(
+            dir.path(), &ir_path, estimate, "");
+
+        let draws = generate_prior_draws(&fit_path, 7, 42, &model)
+            .expect("after gh#86: should fall back to IR priors");
+        assert_eq!(draws.len(), 7);
+        for row in &draws {
+            for name in ["beta", "gamma", "rho", "N0", "I0"] {
+                let v = row.get(name).unwrap_or_else(|| panic!("missing {}", name));
+                assert!(v.is_finite(), "{} must be finite, got {}", name, v);
+                assert!(*v >= 0.0, "{} must be non-negative, got {}", name, v);
+            }
+            assert!(row["beta"] >= 0.01 && row["beta"] <= 2.0,
+                "beta out of fit-toml bounds: {}", row["beta"]);
+            assert!(row["rho"] >= 0.001 && row["rho"] <= 1.0,
+                "rho out of fit-toml bounds: {}", row["rho"]);
+        }
+    }
+
+    /// gh#86 RED test 2: only error when NEITHER the fit toml NOR the
+    /// model IR supplies a prior for an estimated param. Build a model
+    /// with one estimable param missing a `~` prior; the fit toml also
+    /// omits priors. The error must name THAT one param.
+    #[test]
+    fn prior_draws_errors_only_when_neither_fit_toml_nor_ir_has_a_prior() {
+        // Hand-rolled IR: `beta` has a log_normal prior, `gamma` has none.
+        let ir_json = r#"{
+          "ir_version": "0.6",
+          "validated_by": "test-fixture",
+          "model": {
+            "name": "t", "version": "0.3", "time_unit": "days",
+            "description": null, "origin": null,
+            "compartments": [{ "name": "S", "kind": "integer" }],
+            "transitions": [], "ode_equations": [], "time_functions": [],
+            "tables": [], "interventions": [], "observations": [],
+            "parameters": [
+              { "name": "beta", "value": null, "bounds": [0.01, 2.0],
+                "prior": { "log_normal": { "mu": -1.0, "sigma": 0.3 } },
+                "transform": null, "initial_value": null,
+                "param_kind": "rate", "param_dim": null },
+              { "name": "gamma", "value": null, "bounds": [0.05, 1.0],
+                "prior": null, "transform": null, "initial_value": null,
+                "param_kind": "rate", "param_dim": null }
+            ],
+            "initial_conditions": { "explicit": { "S": 1.0 } },
+            "output": { "times": { "at_times": [0.0, 1.0] },
+                        "format": "tsv", "trajectory": true, "observations": false },
+            "simulation": { "t_start": 0.0, "t_end": 1.0,
+                            "time_semantics": "continuous", "dt": null, "rng_seed": null },
+            "presets": [], "model_structure": null, "balance": null
+          }
+        }"#;
+        let (_ir_dir, ir_path) = write_ir_fixture(ir_json);
+        let (model, _) = util::load_model(&ir_path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Both beta and gamma declared, neither has a prior.
+        let estimate = "\
+beta  = { bounds = [0.01, 2.0] }
+gamma = { bounds = [0.05, 1.0] }
+";
+        let fit_path = write_fit_toml_for_prior_draws(
+            dir.path(), &ir_path, estimate, "");
+
+        let err = generate_prior_draws(&fit_path, 3, 1, &model).unwrap_err();
+        // After fix: only gamma is missing (beta resolves via IR ~).
+        assert!(err.contains("gamma"),
+            "error must name gamma (no prior in either source). Got:\n{}", err);
+        assert!(!err.contains("beta,") && !err.contains(": beta") && !err.contains(" beta "),
+            "error must NOT name beta (resolves via IR `~` prior). Got:\n{}", err);
+    }
+
+    /// gh#86 RED test 3: when both sources declare a prior, the fit
+    /// toml's prior wins (tier 1 > tier 2). Model declares
+    /// `~ normal(0, 1)`; fit toml declares
+    /// `prior = { log_normal = { mu = 5, sigma = 0.01 } }`.
+    /// Draws must cluster around exp(5) ≈ 148, not around 0.
+    #[test]
+    fn prior_draws_fit_toml_prior_wins_over_ir_prior() {
+        // beta declared with normal(0, 1) — very narrow around 0.
+        let ir_json = r#"{
+          "ir_version": "0.6",
+          "validated_by": "test-fixture",
+          "model": {
+            "name": "t", "version": "0.3", "time_unit": "days",
+            "description": null, "origin": null,
+            "compartments": [{ "name": "S", "kind": "integer" }],
+            "transitions": [], "ode_equations": [], "time_functions": [],
+            "tables": [], "interventions": [], "observations": [],
+            "parameters": [
+              { "name": "beta", "value": null, "bounds": [-1000.0, 1000.0],
+                "prior": { "normal": { "mean": 0.0, "sd": 1.0 } },
+                "transform": null, "initial_value": null,
+                "param_kind": "rate", "param_dim": null }
+            ],
+            "initial_conditions": { "explicit": { "S": 1.0 } },
+            "output": { "times": { "at_times": [0.0, 1.0] },
+                        "format": "tsv", "trajectory": true, "observations": false },
+            "simulation": { "t_start": 0.0, "t_end": 1.0,
+                            "time_semantics": "continuous", "dt": null, "rng_seed": null },
+            "presets": [], "model_structure": null, "balance": null
+          }
+        }"#;
+        let (_ir_dir, ir_path) = write_ir_fixture(ir_json);
+        let (model, _) = util::load_model(&ir_path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        // Fit-toml says log_normal(mu=5, sigma=0.01) → exp(5) ≈ 148.41.
+        let estimate = "\
+beta = { bounds = [-1000.0, 1000.0], \
+         prior = { log_normal = { mu = 5.0, sigma = 0.01 } } }
+";
+        let fit_path = write_fit_toml_for_prior_draws(
+            dir.path(), &ir_path, estimate, "");
+
+        // N=200 draws gives a tight sample mean: log_normal(5, 0.01)
+        // has E[X] = exp(mu + sigma^2/2) ≈ exp(5.00005) ≈ 148.42 and
+        // SD ≈ E[X] * sigma ≈ 1.48. With N=200 the SE on the mean is
+        // ~0.1, so a tolerance of 1.0 is well outside chance.
+        let draws = generate_prior_draws(&fit_path, 200, 42, &model)
+            .expect("fit-toml prior should sample successfully");
+        let mean: f64 = draws.iter().map(|r| r["beta"]).sum::<f64>()
+            / (draws.len() as f64);
+        let expected = (5.0_f64 + 0.01_f64.powi(2) / 2.0).exp();
+        assert!((mean - expected).abs() < 1.0,
+            "fit-toml log_normal(5, 0.01) prior must win; sample mean {} \
+             should be near {} (not 0 from the IR's normal(0, 1)). \
+             gh#86 regression guard.",
+            mean, expected);
+        // Sanity: no draw near 0 — at this concentration, samples are
+        // all > 100.
+        for row in &draws {
+            assert!(row["beta"] > 100.0,
+                "every draw should be near exp(5), got {}", row["beta"]);
+        }
+    }
 }
