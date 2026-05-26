@@ -214,6 +214,25 @@ pub struct ProfileInputs {
     pub obs_family: String,
     /// IF2 hyperparameter set.
     pub if2_config: ProfileIf2Config,
+    /// gh#89: per-cell algorithm name (`if2`, `pmmh`, `nl-sbplx`, …).
+    /// Resolved against the methods registry at dispatch time. Part of
+    /// the cache key because switching algorithms with otherwise
+    /// identical inputs (same particles, iterations, etc.) is a real
+    /// content change — re-running `--algorithm if2 → pmmh` MUST
+    /// produce a fresh cache entry, not return the IF2 result.
+    pub algorithm: String,
+    /// gh#89: PMMH steps per cell (`--pmmh-steps`). Bumping this is
+    /// the canonical "give it more budget" knob — must invalidate the
+    /// cache so the higher-budget run actually computes.
+    pub pmmh_steps: usize,
+    /// gh#89: PMMH particles per PF evaluation (`--pmmh-particles`).
+    /// Same rationale as `pmmh_steps`.
+    pub pmmh_particles: usize,
+    /// gh#89: Crank-Nicolson correlation for CPM-MCMC (`--pmmh-rho`).
+    /// `None` = vanilla PMMH (rho ≤ 0 at the CLI); `Some(r)` for
+    /// 0 < r < 1. Affects MCMC mixing dynamics, so toggling on/off
+    /// or changing the value is a content distinction.
+    pub pmmh_rho: Option<f64>,
     /// Hash of an upstream stage's content this profile starts from.
     /// `None` for standalone profile invocations.
     pub starts_from_lineage: Option<String>,
@@ -269,6 +288,15 @@ impl ProfileInputs {
             self.if2_config.n_particles, self.if2_config.n_iterations,
             self.if2_config.cooling, self.if2_config.dt, self.if2_config.n_starts,
         );
+        // gh#89: the PMMH-specific budget knobs. Encoded as a single
+        // canonical string so the canonical-keys vec stays flat. `rho`
+        // is serialised as either `off` (None) or its f64 repr so
+        // toggling the CPM mode invalidates the cache.
+        let pmmh = format!(
+            "steps={};particles={};rho={}",
+            self.pmmh_steps, self.pmmh_particles,
+            self.pmmh_rho.map(|r| r.to_string()).unwrap_or_else(|| "off".into()),
+        );
         // gh#73: canonicalize the resolved-prior table for hashing.
         // Sort by param name so the order the resolver emitted them
         // (declaration order today) doesn't leak into the cache key —
@@ -285,7 +313,9 @@ impl ProfileInputs {
             ("focal_grid",  &grid_canonical),
             ("fixed",       &fixed_sorted.join(",")),
             ("obs_family",  &self.obs_family),
+            ("algorithm",   &self.algorithm),
             ("if2",         &if2),
+            ("pmmh",        &pmmh),
             ("starts_from", self.starts_from_lineage.as_deref().unwrap_or("")),
             ("data",        &self.data_hash),
             ("fit_toml",    self.fit_toml_hash.as_deref().unwrap_or("")),
@@ -1140,6 +1170,11 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         if2_config: ProfileIf2Config {
             n_particles, n_iterations, cooling, dt, n_starts,
         },
+        // gh#89: cache-key inputs for non-IF2 algorithms.
+        algorithm: format!("{:?}", profile_algo).to_lowercase(),
+        pmmh_steps,
+        pmmh_particles,
+        pmmh_rho: pmmh_rho_opt,
         starts_from_lineage: None,
         fit_toml_hash: fit_toml_hash.clone(),
         resolved_priors: resolved_priors_kv,
@@ -2564,6 +2599,12 @@ mod tests {
             if2_config: ProfileIf2Config {
                 n_particles: 100, n_iterations: 50, cooling: 0.5, dt: 1.0, n_starts: 4,
             },
+            // gh#89: stable defaults so fixture-based tests for the
+            // *other* fields don't accidentally vary on these.
+            algorithm: "if2".into(),
+            pmmh_steps: 500,
+            pmmh_particles: 500,
+            pmmh_rho: Some(0.99),
             starts_from_lineage: None,
             fit_toml_hash: None,
             resolved_priors: vec![],
@@ -2626,6 +2667,75 @@ mod tests {
             "two profiles with identical content but different --data \
              paths must share a cache entry (path is not part of the \
              hash, only bytes are)");
+    }
+
+    // ── gh#89: pmmh-* knobs AND --algorithm must be in the cache key ──
+    //
+    // Symptom that triggered this: a user re-runs `camdl profile` with
+    // `--pmmh-steps 5000` after a first run at `--pmmh-steps 1000`
+    // (everything else identical, including seed). The CAS layer sees
+    // the existing cached results and "resumes" them — silently
+    // returning the lower-steps results instead of computing fresh.
+    //
+    // Project-stakes consideration: silently returning stale samples
+    // when the user explicitly bumped the MCMC budget is a
+    // public-health-grade footgun. The user thinks they got tighter
+    // posterior coverage and got the old run instead. These tests
+    // pin the invariants.
+
+    #[test]
+    fn inner_hash_changes_when_pmmh_steps_changes() {
+        // The gh#89 minimal repro. Two ProfileInputs differing ONLY in
+        // pmmh_steps must hash to different CAS keys.
+        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
+        let a = fixture_inputs(&h_data);
+        let b = ProfileInputs { pmmh_steps: a.pmmh_steps * 5, ..a.clone() };
+        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
+            "bumping --pmmh-steps MUST invalidate the cache (gh#89); \
+             otherwise the user silently gets the lower-steps results");
+    }
+
+    #[test]
+    fn inner_hash_changes_when_pmmh_particles_changes() {
+        // Same shape as --pmmh-steps: this is a budget knob that
+        // materially affects PF noise and thus MCMC mixing.
+        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
+        let a = fixture_inputs(&h_data);
+        let b = ProfileInputs { pmmh_particles: a.pmmh_particles * 2, ..a.clone() };
+        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
+            "bumping --pmmh-particles MUST invalidate the cache");
+    }
+
+    #[test]
+    fn inner_hash_changes_when_pmmh_rho_changes() {
+        // Crank-Nicolson correlation; affects MCMC mixing dynamics.
+        // Off (None) vs on (Some(0.99)) is a content change.
+        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
+        let a = ProfileInputs { pmmh_rho: None,        ..fixture_inputs(&h_data) };
+        let b = ProfileInputs { pmmh_rho: Some(0.99),  ..fixture_inputs(&h_data) };
+        let c = ProfileInputs { pmmh_rho: Some(0.50),  ..fixture_inputs(&h_data) };
+        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
+            "toggling --pmmh-rho on/off MUST invalidate the cache");
+        assert_ne!(b.inner_hash().full(), c.inner_hash().full(),
+            "changing --pmmh-rho value MUST invalidate the cache");
+    }
+
+    #[test]
+    fn inner_hash_changes_when_algorithm_changes() {
+        // Same-class bug, surfaced while writing gh#89: --algorithm
+        // selects between IF2, PMMH, NL-Sbplx, etc. A user who runs
+        // `--algorithm if2` then re-runs `--algorithm pmmh` with the
+        // same particle/iter counts would silently hit the if2 cache
+        // (or the pmmh cache, depending on which ran first). The
+        // resolved algorithm string must be in the canonical key.
+        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
+        let a = ProfileInputs { algorithm: "if2".into(),       ..fixture_inputs(&h_data) };
+        let b = ProfileInputs { algorithm: "pmmh".into(),      ..fixture_inputs(&h_data) };
+        let c = ProfileInputs { algorithm: "nl-sbplx".into(),  ..fixture_inputs(&h_data) };
+        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
+            "switching --algorithm if2 → pmmh MUST invalidate the cache");
+        assert_ne!(b.inner_hash().full(), c.inner_hash().full(),
+            "switching --algorithm pmmh → nl-sbplx MUST invalidate the cache");
     }
 
     #[test]
