@@ -754,7 +754,12 @@ pub enum Stage {
         /// lets you cool fast then continue at the noise floor.
         #[serde(default = "default_cooling_target_iters")]
         cooling_target_iters: usize,
-        #[serde(default)]
+        /// Toml-side spelling of the "where does this stage's base point
+        /// come from?" key. Renamed from the legacy `starts_from` per
+        /// proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema".
+        /// The Rust field name stays `starts_from` for now (Step 7 will
+        /// rename across the codebase); only the wire key moves.
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
         /// How per-chain starting points are drawn. Default `"lhs"`
         /// (Latin-hypercube stratified, scale-aware via Transform).
@@ -763,10 +768,14 @@ pub enum Stage {
         /// from top-K rows of a `camdl survey` landscape — requires
         /// `survey_path` + optional `survey_top_k_n` siblings; see
         /// gh#51).
-        #[serde(default)]
+        ///
+        /// Toml-side spelling renamed from `init_method` to `init` per
+        /// proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema"
+        /// (matches the CLI `--init` flag). Rust field name unchanged.
+        #[serde(default, rename = "init")]
         init_method: super::init::InitMethod,
-        /// Survey CAS directory consumed when `init_method =
-        /// "survey_top_k"`. Must contain `run.json` (RunKind::Survey)
+        /// Survey CAS directory consumed when `init = "survey_top_k"`.
+        /// Must contain `run.json` (RunKind::Survey)
         /// and `landscape.tsv`. Ignored otherwise.
         #[serde(default)]
         survey_path: Option<std::path::PathBuf>,
@@ -801,21 +810,26 @@ pub enum Stage {
         chains: usize,
         particles: usize,
         sweeps: usize,
-        #[serde(default)]
+        /// Toml-side spelling renamed from `starts_from` to `init_mle`
+        /// per proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema".
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
-        /// Per-chain init draws. See `Stage::IF2::init_method` for the
-        /// full enum description. Default `lhs`. PGAS also supports
-        /// `survey_top_k` (sibling fields `survey_path` /
-        /// `survey_top_k_n`); survey rows are usable as MCMC chain
-        /// seeds because the seed sets only the chain's starting state,
-        /// not its stationary distribution (which the prior governs).
-        #[serde(default)]
+        /// Per-chain init draws. See `Stage::IF2` for the full enum
+        /// description. Default `lhs`. PGAS also supports `survey_top_k`
+        /// (sibling fields `survey_path` / `survey_top_k_n`); survey rows
+        /// are usable as MCMC chain seeds because the seed sets only the
+        /// chain's starting state, not its stationary distribution
+        /// (which the prior governs).
+        ///
+        /// Toml-side spelling renamed from `init_method` to `init` per
+        /// proposal 2026-05-25-cli-init-and-params-ux.
+        #[serde(default, rename = "init")]
         init_method: super::init::InitMethod,
-        /// Survey CAS directory for `init_method = "survey_top_k"`.
+        /// Survey CAS directory for `init = "survey_top_k"`.
         /// See `Stage::IF2::survey_path`.
         #[serde(default)]
         survey_path: Option<std::path::PathBuf>,
-        /// Top-K count for `init_method = "survey_top_k"`. See
+        /// Top-K count for `init = "survey_top_k"`. See
         /// `Stage::IF2::survey_top_k_n`.
         #[serde(default)]
         survey_top_k_n: Option<usize>,
@@ -872,19 +886,23 @@ pub enum Stage {
         chains: usize,
         particles: usize,
         iterations: usize,
-        #[serde(default)]
+        /// Toml-side spelling renamed from `starts_from` to `init_mle`
+        /// per proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema".
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
-        /// Per-chain init draws. See `Stage::IF2::init_method` for the
-        /// full enum description. Default `lhs`. PMMH also supports
-        /// `survey_top_k` (sibling fields `survey_path` /
-        /// `survey_top_k_n`).
-        #[serde(default)]
+        /// Per-chain init draws. See `Stage::IF2` for the full enum
+        /// description. Default `lhs`. PMMH also supports `survey_top_k`
+        /// (sibling fields `survey_path` / `survey_top_k_n`).
+        ///
+        /// Toml-side spelling renamed from `init_method` to `init` per
+        /// proposal 2026-05-25-cli-init-and-params-ux.
+        #[serde(default, rename = "init")]
         init_method: super::init::InitMethod,
-        /// Survey CAS directory for `init_method = "survey_top_k"`.
+        /// Survey CAS directory for `init = "survey_top_k"`.
         /// See `Stage::IF2::survey_path`.
         #[serde(default)]
         survey_path: Option<std::path::PathBuf>,
-        /// Top-K count for `init_method = "survey_top_k"`. See
+        /// Top-K count for `init = "survey_top_k"`. See
         /// `Stage::IF2::survey_top_k_n`.
         #[serde(default)]
         survey_top_k_n: Option<usize>,
@@ -917,7 +935,9 @@ pub enum Stage {
         particles: usize,
         #[serde(default)]
         replicates: Option<usize>,
-        #[serde(default)]
+        /// Toml-side spelling renamed from `starts_from` to `init_mle`
+        /// per proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema".
+        #[serde(default, rename = "init_mle")]
         starts_from: StartsFrom,
 
         /// Record per-step ancestor indices for smoothing-path
@@ -967,7 +987,9 @@ pub struct NloptStageConfig {
     /// `Success | XtolReached | FtolReached`.
     #[serde(default = "default_nlopt_max_evals")]
     pub max_evals: usize,
-    #[serde(default)]
+    /// Toml-side spelling renamed from `starts_from` to `init_mle`
+    /// per proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema".
+    #[serde(default, rename = "init_mle")]
     pub starts_from: StartsFrom,
     /// Per-chain init draws. Default `lhs` — Latin-hypercube
     /// stratified sampling, scale-aware via the parameter's
@@ -975,7 +997,7 @@ pub struct NloptStageConfig {
     /// `chains > 1` is only meaningful when chains start from
     /// different points; LHS gives the right coverage for that.
     ///
-    /// `init_method = "single"` defeats multi-start (every chain at
+    /// `init = "single"` defeats multi-start (every chain at
     /// the seeded values converges to the same MLE); use it only for
     /// `chains = 1` runs or when you want pure reproducibility from a
     /// known starting point.
@@ -987,13 +1009,16 @@ pub struct NloptStageConfig {
     /// signal can lie there (every neighbouring point also -inf).
     /// For such models, narrow the bounds or pre-validate the LHS
     /// points with a quick `camdl pfilter` loglik check.
-    #[serde(default)]
+    ///
+    /// Toml-side spelling renamed from `init_method` to `init` per
+    /// proposal 2026-05-25-cli-init-and-params-ux.
+    #[serde(default, rename = "init")]
     pub init_method: super::init::InitMethod,
-    /// Survey CAS directory for `init_method = "survey_top_k"` (gh#51).
+    /// Survey CAS directory for `init = "survey_top_k"` (gh#51).
     /// See `Stage::IF2::survey_path` for the cross-check rules.
     #[serde(default)]
     pub survey_path: Option<std::path::PathBuf>,
-    /// Top-K count for `init_method = "survey_top_k"`. Defaults to
+    /// Top-K count for `init = "survey_top_k"`. Defaults to
     /// `chains` when omitted.
     #[serde(default)]
     pub survey_top_k_n: Option<usize>,
@@ -1371,12 +1396,112 @@ pub struct FitProvenance {
 
 // ─── Loading + Validation ───────────────────────────────────────────────────
 
+/// Pre-parse scan for the two legacy fit.toml keys that were renamed in
+/// proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema":
+///
+/// - `[stages.<n>] init_method = "..."` → `[stages.<n>] init = "..."`
+/// - `[stages.<n>] starts_from = "..."` → `[stages.<n>] init_mle = "..."`
+///
+/// After the rename, the old keys would otherwise be silently ignored
+/// (serde tolerates unknown fields by default for these structs), which
+/// is the silent-wrong-answer failure mode the proposal Step 12 calls
+/// out as the migration's primary risk. This detector turns each old
+/// key into an actionable load-time error naming the stage, the old
+/// key, the replacement, and the proposal that authorises the rename.
+///
+/// Returns `Ok(())` when no legacy keys are present; `Err(msg)` with
+/// the actionable diagnostic when at least one stage carries one.
+/// Multiple offending stages are bundled into a single error message
+/// rather than failing on the first hit, so the user can fix all of
+/// them in one pass.
+fn detect_legacy_init_keys(contents: &str) -> Result<(), String> {
+    // Parse as a generic toml::Value so the walker doesn't depend on the
+    // `FitConfigV2` schema (which has already renamed the fields).
+    let value: toml::Value = match toml::from_str(contents) {
+        Ok(v) => v,
+        // Don't pre-empt the strongly-typed parser's error reporting on
+        // generally-malformed toml; let the typed parse fail downstream
+        // with its own message. Pre-scan only catches the rename case.
+        Err(_) => return Ok(()),
+    };
+
+    let stages = match value.get("stages").and_then(|v| v.as_table()) {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    let mut hits_init_method: Vec<&str> = Vec::new();
+    let mut hits_starts_from: Vec<&str> = Vec::new();
+
+    for (stage_name, stage_val) in stages {
+        let table = match stage_val.as_table() {
+            Some(t) => t,
+            None => continue,
+        };
+        if table.contains_key("init_method") {
+            hits_init_method.push(stage_name.as_str());
+        }
+        if table.contains_key("starts_from") {
+            hits_starts_from.push(stage_name.as_str());
+        }
+    }
+
+    if hits_init_method.is_empty() && hits_starts_from.is_empty() {
+        return Ok(());
+    }
+
+    let mut msg = String::from(
+        "fit.toml uses legacy stage keys removed in CLI UX rev 2 \
+         (proposal 2026-05-25-cli-init-and-params-ux §\"fit.toml schema\").\n"
+    );
+    if !hits_init_method.is_empty() {
+        msg.push_str(&format!(
+            "\n  error: legacy key `init_method` on stage(s): {}\n  \
+             replacement: rename to `init` (matches CLI `--init`).\n  \
+             example: `[stages.{}]\\n  init = \"lhs\"` (was: `init_method = \"lhs\"`).\n",
+            hits_init_method.iter()
+                .map(|s| format!("`{}`", s))
+                .collect::<Vec<_>>()
+                .join(", "),
+            hits_init_method[0],
+        ));
+    }
+    if !hits_starts_from.is_empty() {
+        msg.push_str(&format!(
+            "\n  error: legacy key `starts_from` on stage(s): {}\n  \
+             replacement: rename to `init_mle` (one toml key per concept).\n  \
+             example: `[stages.{}]\\n  init_mle = \"<prior-stage>\"` \
+             (was: `starts_from = \"<prior-stage>\"`).\n",
+            hits_starts_from.iter()
+                .map(|s| format!("`{}`", s))
+                .collect::<Vec<_>>()
+                .join(", "),
+            hits_starts_from[0],
+        ));
+    }
+    msg.push_str(
+        "\n  See docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md \
+         §\"fit.toml schema\" for the full rename table.\n"
+    );
+    Err(msg)
+}
+
 impl FitConfigV2 {
+    /// Parse a fit.toml string. Performs the Step-12 legacy-key
+    /// detection pass (turning the old `init_method` / `starts_from`
+    /// keys into actionable errors) before handing the string to the
+    /// strongly-typed deserializer.
+    pub fn from_toml_str(contents: &str) -> Result<Self, String> {
+        detect_legacy_init_keys(contents)?;
+        toml::from_str(contents)
+            .map_err(|e| format!("parse error: {}", e))
+    }
+
     pub fn load(path: &str) -> Result<Self, String> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {}", path, e))?;
-        let mut config: FitConfigV2 = toml::from_str(&contents)
-            .map_err(|e| format!("parse error in {}: {}", path, e))?;
+        let mut config = FitConfigV2::from_toml_str(&contents)
+            .map_err(|e| format!("error in {}:\n{}", path, e))?;
 
         // Resolve toml-relative paths against the toml's directory
         // (Cargo / pyproject convention). Closes GH #22: pre-fix, paths
@@ -1905,8 +2030,14 @@ mod tests {
     use std::path::Path;
 
     fn parse(toml_str: &str) -> Result<FitConfigV2, String> {
-        toml::from_str(toml_str)
-            .map_err(|e| format!("parse error: {}", e))
+        // Route every test fixture through the same legacy-key detector
+        // the production `load` path uses — so an in-source fixture that
+        // accidentally still uses the legacy `init_method` / `starts_from`
+        // keys fails loudly here rather than silently parsing as a
+        // default-stages config under the new schema. This is the
+        // protection that keeps the Step-12 rename from regressing
+        // through a stale inline fixture.
+        FitConfigV2::from_toml_str(toml_str)
     }
 
     #[test]
@@ -1991,7 +2122,7 @@ chains = 4
 particles = 2000
 iterations = 60
 cooling = 0.95
-starts_from = "output/fits/01_all_free/mle"
+init_mle = "output/fits/01_all_free/mle"
 
 [stages.posterior]
 algorithm = "pgas"
@@ -1999,14 +2130,14 @@ backend = "chain_binomial"
 chains = 4
 particles = 50
 sweeps = 5000
-starts_from = "mle"
+init_mle = "mle"
 
 [stages.evaluate]
 algorithm = "pfilter"
 backend = "chain_binomial"
 particles = 10000
 replicates = 100
-starts_from = "mle"
+init_mle = "mle"
         "#).unwrap();
 
         assert_eq!(config.stages.len(), 3);
@@ -2458,7 +2589,7 @@ chains = 4
 particles = 2000
 iterations = 50
 cooling = 0.95
-starts_from = "mle"
+init_mle = "mle"
 
 [stages.mle]
 algorithm = "if2"
@@ -2500,7 +2631,7 @@ chains = 4
 particles = 1000
 iterations = 50
 cooling = 0.70
-starts_from = "nonexistent"
+init_mle = "nonexistent"
         "#).unwrap();
 
         let model_params = vec!["beta".to_string(), "N0".to_string()];
@@ -3319,7 +3450,7 @@ chains = 4
 particles = 1000
 iterations = 50
 cooling = 0.70
-starts_from = "output/fits/01/mle"
+init_mle = "output/fits/01/mle"
         "#).unwrap();
 
         match config.stages["mle"].starts_from() {
@@ -3358,7 +3489,7 @@ chains = 2
 particles = 2000
 iterations = 30
 cooling = 0.95
-starts_from = "mle"
+init_mle = "mle"
         "#).unwrap();
 
         match config.stages["refine"].starts_from() {
@@ -3648,7 +3779,7 @@ chains = 4
 particles = 1000
 iterations = 50
 cooling = 0.9
-starts_from = "scout"
+init_mle = "scout"
 "#
     }
 
@@ -3677,7 +3808,7 @@ backend = "chain_binomial"
 chains = 4
 particles = 1000
 sweeps = 1000
-starts_from = "refine"
+init_mle = "refine"
 "#);
         let config = parse(&src).unwrap();
         assert!(config.dangling_priors_warning().is_none(),
@@ -4333,5 +4464,237 @@ cooling = 0.7
             .expect_err("inverted explicit bounds must error");
         assert!(err.contains("are empty") || err.contains("lo must be < hi"),
             "error must name the lo/hi violation; got: {err}");
+    }
+
+    // ─── Step 12: legacy-key rejection (CLI UX rev 2) ───────────────────────
+    //
+    // The TOML keys `init_method` and `starts_from` were renamed to `init`
+    // and `init_mle` respectively (proposal 2026-05-25-cli-init-and-params-ux,
+    // §"fit.toml schema"). The new spelling matches the CLI flag names
+    // (`--init`); the old spelling now produces an actionable load-time
+    // error pointing at the rename.
+
+    #[test]
+    fn parse_with_renamed_init_key() {
+        // `init = "lhs"` (the new toml spelling) must deserialize identically
+        // to the legacy `init_method = "lhs"`.
+        let config = FitConfigV2::from_toml_str(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 500
+iterations = 30
+cooling = 0.7
+init = "lhs"
+        "#).expect("init = \"lhs\" (renamed key) must parse cleanly");
+
+        match &config.stages["mle"] {
+            Stage::IF2 { init_method, .. } => {
+                assert_eq!(init_method.clone(), crate::fit::init::InitMethod::Lhs);
+            }
+            _ => panic!("expected IF2 stage"),
+        }
+    }
+
+    #[test]
+    fn parse_with_renamed_init_mle_key_stage_ref() {
+        // `init_mle = "<stage>"` (the new toml spelling) must deserialize
+        // identically to the legacy `starts_from = "<stage>"` and produce
+        // a StartsFrom::Stage reference.
+        let config = FitConfigV2::from_toml_str(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 500
+iterations = 30
+cooling = 0.7
+
+[stages.refine]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 2
+particles = 1000
+iterations = 20
+cooling = 0.95
+init_mle = "mle"
+        "#).expect("init_mle = \"mle\" (renamed key) must parse cleanly");
+
+        match config.stages["refine"].starts_from() {
+            StartsFrom::Stage(s) => assert_eq!(s, "mle"),
+            other => panic!("expected Stage(\"mle\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_with_renamed_init_mle_key_directory() {
+        // `init_mle = "<dir/path>"` (containing path separators) must
+        // deserialize to StartsFrom::Directory, matching the legacy
+        // `starts_from`'s dispatch on path separators.
+        let config = FitConfigV2::from_toml_str(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 500
+iterations = 30
+cooling = 0.7
+init_mle = "output/fits/01/mle"
+        "#).expect("init_mle = \"<dir>\" must parse cleanly");
+
+        match config.stages["mle"].starts_from() {
+            StartsFrom::Directory(p) => assert_eq!(p, Path::new("output/fits/01/mle")),
+            other => panic!("expected Directory, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_init_method_key_rejected_with_actionable_error() {
+        // The legacy spelling `init_method = "lhs"` must fail loading with
+        // an error that names the rename, gives the replacement spelling,
+        // and cites the proposal so the user can self-serve.
+        let err = FitConfigV2::from_toml_str(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 500
+iterations = 30
+cooling = 0.7
+init_method = "lhs"
+        "#).expect_err("legacy init_method key must produce a load error");
+
+        assert!(err.contains("init_method"),
+            "error must name the legacy key; got: {err}");
+        assert!(err.contains("init"),
+            "error must point at the replacement key `init`; got: {err}");
+        assert!(err.contains("stages.mle") || err.contains("stage `mle`")
+                || err.contains("stage 'mle'"),
+            "error must locate the offending stage by name; got: {err}");
+        assert!(err.contains("2026-05-25-cli-init-and-params-ux"),
+            "error must cite the proposal for context; got: {err}");
+    }
+
+    #[test]
+    fn legacy_starts_from_key_rejected_with_actionable_error() {
+        // The legacy spelling `starts_from = "<stage>"` must fail loading
+        // with an error that names the rename and gives the replacement.
+        let err = FitConfigV2::from_toml_str(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 500
+iterations = 30
+cooling = 0.7
+
+[stages.refine]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 2
+particles = 1000
+iterations = 20
+cooling = 0.95
+starts_from = "mle"
+        "#).expect_err("legacy starts_from key must produce a load error");
+
+        assert!(err.contains("starts_from"),
+            "error must name the legacy key; got: {err}");
+        assert!(err.contains("init_mle"),
+            "error must point at the replacement key `init_mle`; got: {err}");
+        assert!(err.contains("stages.refine") || err.contains("stage `refine`")
+                || err.contains("stage 'refine'"),
+            "error must locate the offending stage by name; got: {err}");
+        assert!(err.contains("2026-05-25-cli-init-and-params-ux"),
+            "error must cite the proposal for context; got: {err}");
+    }
+
+    #[test]
+    fn legacy_init_method_in_nlopt_stage_also_rejected() {
+        // Legacy-key detection must cover the NLopt stage variants too
+        // (they share the same toml-key shape via NloptStageConfig).
+        let err = FitConfigV2::from_toml_str(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "nl-sbplx"
+backend = "ode"
+chains = 4
+init_method = "lhs"
+        "#).expect_err("legacy init_method on an nl-sbplx stage must error");
+
+        assert!(err.contains("init_method") && err.contains("init"),
+            "nlopt-stage legacy-key error must mirror the IF2/PGAS shape; got: {err}");
     }
 }
