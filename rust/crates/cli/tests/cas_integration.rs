@@ -272,7 +272,7 @@ chains = 2
 particles = 50
 iterations = 3
 cooling = 0.7
-starts_from = "{{use CLI}}"
+init_mle = "{{use CLI}}"
 "#, ir.display(), data.display())).unwrap();
 
     let out = Command::new(&bin)

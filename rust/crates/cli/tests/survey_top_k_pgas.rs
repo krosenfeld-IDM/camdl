@@ -1,14 +1,14 @@
-//! Integration test for `init_method = "survey_top_k"` on a PGAS stage
+//! Integration test for `init = "survey_top_k"` on a PGAS stage
 //! (gh#51 v2). Mirrors `survey_top_k_pmmh.rs`.
 //!
-//! Verifies that PGAS dispatch accepts `init_method = "survey_top_k"`
+//! Verifies that PGAS dispatch accepts `init = "survey_top_k"`
 //! and that the top-K landscape rows reach per-chain starts plus the
 //! `chain_starts.tsv` audit sidecar. v1 (the IF2 path) shipped with
 //! gh#51; this test pins the v2 extension to PGAS.
 //!
 //! Assertions:
 //!
-//! 1. The fit run succeeds (exit 0) with `init_method = "survey_top_k"`
+//! 1. The fit run succeeds (exit 0) with `init = "survey_top_k"`
 //!    on a PGAS stage.
 //! 2. The stage dir carries a `chain_starts.tsv` file whose two chain
 //!    rows have `source` columns of the form
@@ -210,7 +210,7 @@ particles      = 30
 sweeps         = 20
 burn_in        = 2
 thin           = 1
-init_method    = "survey_top_k"
+init           = "survey_top_k"
 survey_path    = "{survey}"
 "#,
         out    = dir.join("results").display(),
@@ -258,7 +258,7 @@ fn pgas_survey_top_k_writes_chain_starts_with_survey_ranks() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(),
-        "pgas fit must succeed with init_method=survey_top_k.\n\
+        "pgas fit must succeed with init=survey_top_k.\n\
          stdout:\n{}\nstderr:\n{}", stdout, stderr);
 
     let fits_dir = tmp.path().join("results/fits");
