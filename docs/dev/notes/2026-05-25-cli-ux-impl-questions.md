@@ -129,6 +129,65 @@ Test posture after Step 2:
 - Workspace: 28 of 29 test groups green; only the pre-existing
   `time::tests::*_panics_in_debug` failures remain.
 
+## Audit-checklist snapshot at end of this session
+
+Per the proposal's §"Post-implementation audit" — partial because
+Steps 4/5/6 aren't done yet.
+
+1. **Sole writer of `model.parameters[i].value`.**
+   `rg 'p\.value\s*=\s*Some' --type rust crates/cli/src/` → 20 hits.
+   Of those, 5 are inside `params_resolver.rs` itself (the resolver,
+   as expected). The remaining 15 live in `if2.rs` (Step 5),
+   `main.rs` (the CAS-cache helper — parallel migration target),
+   `profile.rs` (Step 5), and a few legitimate test-setup sites
+   under `crates/sim/tests/`.
+2. **Old resolvers fully removed.** Not yet.
+   - `apply_params_file`: 3 active CLI callers (if2.rs, main.rs,
+     profile.rs).
+   - `FixedParams::resolve_with_model`: 2 active callers (survey.rs,
+     profile.rs).
+3. **Sole entry point per subcommand.** Done for `eval`, `pfilter`,
+   `simulate`, `lineage`. Pending for `survey`, `if2`, `profile`,
+   `fit run`, and the CAS helper in main.rs.
+4. **Provenance round-trip.** Not yet — Step 9 introduces
+   `parameters_provenance` block in `run.json`. The resolver now
+   carries `overrode_scenario`, ready to thread into Step 9.
+5. **Init-source coverage.** Not yet — Step 6.
+6. **No alias shims.** Not yet — Step 7 (M-1 CLI break).
+
+## Remaining work for next session
+
+In priority order:
+
+- **Step 4: survey migration.** Tricky because `survey` interleaves
+  `estimate.start` bounds-drawing with `fixed` resolution and has
+  its own `expand_from_scenario` helper. Read the survey body
+  carefully before touching; the resolver may need a new tier for
+  `[estimate].start` or the caller needs to layer fit-toml start
+  values onto the resolver result.
+- **Step 5: if2 + profile + fit run.** High inference-risk per
+  CLAUDE.md. The `if2.rs:109-168` block has its own scenario-aware
+  parameter pinning. Migration needs an LSE (load → resolve →
+  scenarize → re-resolve?) re-read or a resolver extension to
+  expose the post-scenario-pre-CLI value snapshot.
+- **Step 6: InitMethod ADT.** `FromPrior`, `FromPosterior`,
+  `FromMle`, `FromParams` variants + per-loader file schemas. The
+  resolved-decision A (from-prior falls back to bounds-uniform)
+  belongs here.
+- **Step 9: run.json provenance.** `parameters_provenance` block
+  using the existing `ResolvedParameter` / `ScenarioOverride`
+  shapes. Should be straightforward — the data is already in the
+  resolver output, just needs a serialization layer.
+- **Step 7: M-1 CLI break.** After all subcommands are migrated.
+- **Steps 8, 10, 11, 12: docs.** Mechanical.
+
+The `--param-vec` precedence deviation (now tier 5) is the one
+inconsistency that should be confirmed with the maintainer. No
+integration tests pinned the old between-tiers position, but a
+user relying on `scenario > --param-vec` semantics would see a
+behaviour change. Recorded in commit `1de2cd2`'s message; flag
+for review.
+
 ## What shipped this session
 
 Three commits on `worktree-agent-a0d854c5fd1d64f12`:
