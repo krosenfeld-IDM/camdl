@@ -42,9 +42,15 @@ This proposal adds Robbins-Monro (Andrieu & Thoms 2008 §3.2; Roberts
   *settles* (Roberts & Rosenthal 2009 §3 — without vanishing γ the
   adaptation never converges and breaks the diminishing-adaptation
   ergodicity guarantee of Roberts & Rosenthal 2007)
-- adapts during a user-tunable adaptation window then locks for the
-  reported chain (preserving MH stationarity by exiting the adaptive
-  regime before recording samples)
+- adapts during a user-tunable adaptation window
+  (`[adapt_start, adapt_start + adapt_n)`) then **locks both** the
+  RM scalar and the covariance learner past that window — the
+  reported chain is drawn from a fixed kernel `λ_final · K_final`,
+  matching the Stan / PyMC convention so standard MCMC diagnostics
+  on the recorded sample are interpretable. The diminishing-γ
+  argument (Roberts-Rosenthal 2007) would *also* justify continued
+  adaptation past `adapt_n`, but we prefer the explicit lock for
+  user-facing clarity (see §"D5")
 
 Cost: ~50–80 LOC in `pmmh.rs`, mostly additive (new fields on
 `PMMHConfig` and `AdaptiveProposal`, one new method, a few lines in
@@ -138,25 +144,61 @@ The standard recipe (Andrieu-Thoms 2008 §2.1; Roberts-Rosenthal 2009
 ```
 
 with `η ∈ (1/2, 1]` and constants `c > 0`, `t₀ ≥ 0` tuned for the
-problem. **The vanishing property `γ_t → 0` is required**, not
-optional: a constant step size would make the adaptation oscillate
-around the target indefinitely and would break the
-diminishing-adaptation ergodicity theorem of Roberts & Rosenthal 2007
-(Theorem 1, "containment + diminishing adaptation"). Without it, the
-adaptive chain does not target the right stationary distribution
-asymptotically.
+problem. **Two separate constraints stack here**, attributed to
+different theorems:
+
+1. **Robbins-Monro stochastic-approximation conditions** govern
+   whether `λ` converges to its target. Robbins-Monro 1951 requires
+   `Σ_t γ_t = ∞` (the step sizes must let λ travel an arbitrary
+   distance) and `Σ_t γ_t² < ∞` (noise must be summable). Together
+   these force `η ∈ (1/2, 1]`. Outside this interval, either λ
+   can't reach its target (η > 1: insufficient cumulative step) or
+   the noise overwhelms convergence (η ≤ 1/2: insufficient damping).
+2. **Roberts & Rosenthal 2007** ergodicity theorem (Theorem 1,
+   "containment + diminishing adaptation") requires only
+   `γ_t → 0` as `t → ∞`, which holds for *any* `η > 0`. So the
+   ergodicity argument is satisfied broadly; the (1/2, 1] interval
+   is the *tighter* Robbins-Monro constraint and is what we
+   enforce.
+
+i.e. the (1/2, 1] bound is what guarantees **λ-convergence to its
+target** (the property we actually want); the broader `η > 0`
+condition is what keeps the adaptive chain ergodic (the property
+that lets us record samples mid-adaptation). The implementation
+hard-errors on `η ∉ (1/2, 1]` (test #7); a value outside this
+range would degenerate the RM update silently otherwise.
 
 Defaults proposed:
 
 - `η = 0.6` (mid-range; Andrieu-Thoms 2008 footnote 5 suggests
   η ≈ 0.6–0.8 in practice; values closer to 1 adapt too slowly and
   closer to 1/2 are minimally damped).
-- `t₀ = 50` (matches the existing `adapt_start` default; γ_t at
-  t = adapt_start is c · 100^{-0.6} ≈ 0.063 · c — a modest first step).
-- `c = 1.0` (unit log-step under maximum signal; combined with α* =
-  0.234, the per-rejection log-decrement is ≤ 0.234/50^{0.6} ≈ 0.018,
-  i.e. ≤ 1.8% multiplicative shrink per rejection at the start of
-  adaptation, dropping to ~0.5% by step 1000).
+- `t₀ = 50` (numerical guard against division-by-zero at the RM
+  clock origin and a starting-scale tuning knob).
+- `c = 1.0` (unit log-step under maximum signal).
+
+**Clock convention.** The RM clock starts at `step = adapt_start`,
+so `rm_step = 0` at the first adapted step. The implementation
+passes `rm_step = step - adapt_start` into γ_t and adds the t₀
+offset internally: `γ_t = c · (rm_step + t₀)^{-η}`. With these
+defaults:
+
+- At `rm_step = 0`: `γ = c · 50^{-0.6} ≈ 0.0955 · c`.
+- Per-rejection log-decrement at `rm_step = 0`:
+  `γ · α* = 0.0955 · 0.234 ≈ 0.0224`, i.e. ~2.2% multiplicative
+  shrink per rejection at the start of adaptation.
+- By `rm_step = 1000`: `γ = (1050)^{-0.6} ≈ 0.0154`, per-rejection
+  decrement `≈ 0.0036` (~0.36%).
+- By `rm_step = 5000`: `γ ≈ 0.0061`, per-rejection decrement
+  `≈ 0.0014` (~0.14%).
+
+These defaults are conservative-but-recoverable: a chain with
+starting acceptance 0.005 needs `log λ` to shrink by roughly
+`log(10) ≈ 2.3` to bring acceptance into the 0.15–0.5 zone. At
+average rejection rate 0.995 and γ ≈ 0.05 averaged over the early
+window, the per-step log-decrement is `≈ 0.05 · 0.234 ≈ 0.012`,
+so ~190 steps of pure rejection shrink λ by 10×. Comfortably
+within a 500–1000 step burn-in.
 
 These defaults are conservative: a chain with starting acceptance
 0.005 needs `log λ` to shrink by roughly `log(10) ≈ 2.3` to bring
@@ -191,9 +233,22 @@ Roberts-Rosenthal asymptotic-vs-1d distinction:
 α*_default(d) = 0.234 if d ≥ 5 else 0.44                  … (4)
 ```
 
-i.e. flip at d = 5 (matches the threshold beyond which 0.234 is
-within 5% of the true optimum per the original Roberts-Gelman-Gilks
-table). Override via config.
+i.e. flip at d = 5. **The justification is "relative-efficiency
+curve is flat near the optimum," not "0.234 is exact for d ≥ 5."**
+The true optimal acceptance rate at d = 5 is closer to 0.27–0.28
+(Roberts-Rosenthal 2001 Table 1; Bédard 2008 numerically); 0.234
+is ~15% below it. But the asymptotic relative efficiency of the
+chain as a function of acceptance rate is *flat* in a wide
+neighbourhood of the optimum (Roberts-Gelman-Gilks 1997 §3): the
+penalty for targeting 0.234 instead of 0.28 at d = 5 is small
+single-digit % loss in effective sample size. Flipping to 0.44
+at d = 1 captures the regime where the curve is *not* flat
+(low-d optima are sharply peaked), and 0.234 there would cost
+substantially. The d = 5 threshold is a pragmatic round-up of
+"once you're in moderate dimension the curve flattens enough that
+0.234 is fine"; the alternative is to interpolate, which adds
+complexity for marginal gain. Override via config for users who
+care about the difference.
 
 ## Integration with the existing `AdaptiveProposal`
 
@@ -234,10 +289,27 @@ Three properties of this composition:
    coarse initial geometry. The two adaptations cooperate.
 2. **The 2.38²/d Gelman-Roberts-Gilks factor stays in the Cholesky
    path** (existing code at `update_cholesky`). RM's λ is an
-   *additional* multiplicative correction. At the asymptotic optimum
-   the empirical covariance plus 2.38²/d delivers near-optimal
-   proposals; λ converges to 1 in expectation. Off-optimum, λ pulls
-   the overall scale toward acceptance ≈ α*.
+   *additional* multiplicative correction. The combination — RM
+   scalar λ over an empirical-covariance Cholesky kernel — is
+   Andrieu-Thoms 2008 Algorithm 4, the well-trodden two-knob
+   adaptive Metropolis recipe.
+
+   **λ converges to 1 only when the target is approximately
+   Gaussian and `d` is large.** The 2.38²/d factor is the
+   asymptotic Gaussian optimum (Gelman-Roberts-Gilks 1996). For
+   finite-d or non-Gaussian targets — typical of camdl's epi
+   posteriors, which are skewed and have non-Gaussian tails — λ
+   converges to whatever multiplicative correction is needed on
+   top of 2.38²/d·Σ̂ to hit α*. This is a *free diagnostic*: a
+   `log λ_final` far from zero flags that the Gaussian assumption
+   (or the 2.38²/d rule) is off for that cell. Worth surfacing in
+   the per-cell diagnostics (gh#74 Option B added several
+   columns; `log_scale_final` is a natural sibling).
+
+   The redundancy of "two scale knobs" is the redundancy Vihola
+   2012 RAM collapses into a single rank-1 covariance update with
+   coerced acceptance — flagged as the v2 alternative if the
+   two-knob design proves cumbersome.
 3. **Diminishing adaptation is preserved.** Both the covariance and
    λ updates use cadences that decrease in influence with `t`
    (Welford automatically diminishes; RM via γ_t). Roberts & Rosenthal
@@ -307,15 +379,21 @@ plain MCMC. They suggested a moving-window acceptance estimate
 windowed-mean variant as a v2 if it's a problem in practice.**
 Reasoning:
 
+- Under `ρ > 0` (CPM-PMMH), consecutive accept indicators are
+  positively correlated — the persistent auxiliary noise makes the
+  likelihood-estimate differences correlated across steps. The RM
+  innovation `(a_t − α*)` is therefore *not* martingale-difference;
+  it is Markovian. The relevant convergence theorem is **Markovian
+  stochastic approximation** (Andrieu & Vihola 2014, which treats
+  adaptive PMMH explicitly), not the martingale-difference
+  variants that the Andrieu-Thoms 2008 §3.2 proof uses for plain
+  MCMC. The instantaneous signal is still admissible under the
+  Markovian theory, with a slightly weaker convergence-rate
+  guarantee.
 - The vanishing γ_t already provides averaging — early steps have
-  large γ but their impact diminishes; later steps have small γ that
-  smooths over local noise. Adding a moving-window mean is double
-  damping.
-- The standard RM literature (Andrieu-Thoms, Roberts-Rosenthal) uses
-  the instantaneous signal precisely because the convergence proofs
-  rely on it being a martingale-difference noise around the target.
-  Replacing with a moving mean changes the stochastic-approximation
-  noise structure.
+  large γ but their impact diminishes; later steps have small γ
+  that smooths local correlation. Adding a moving-window mean is
+  double damping.
 - If the windowed estimate is needed in practice, it's a one-line
   swap: maintain a `VecDeque<bool>` of the last `W` accept
   indicators and use the mean. Defer.
@@ -334,18 +412,27 @@ independent in principle. Stan and PyMC distinguish them. Today's
 PMMH conflates: adaptation ends at `n_steps` (always on),
 burn_in defines what's discarded. Cleanest mental model:
 
-- `adapt_n` ≥ `burn_in`: adapt during burn-in *and* part of the
-  sampling phase (acceptable for diminishing γ; preserves the
-  Roberts-Rosenthal 2007 ergodicity argument).
 - `adapt_n` = `burn_in`: adapt during burn-in only, lock for the
-  sample (the conservative choice that most users expect).
+  sample. **The default**: the reported chain is drawn from a fixed
+  kernel, which is the conservative choice most users expect.
 - `adapt_n` < `burn_in`: adapt for a portion of burn-in, lock for
-  the rest of burn-in *and* the sample (useful for very short
-  chains where you want a long stationary lock).
+  the rest of burn-in *and* the sample. Useful for very short
+  chains where you want a long stationary lock.
+- `adapt_n` > `burn_in`: adapt during burn-in *and* part of the
+  recorded sample. **Asymptotically valid** under
+  Roberts-Rosenthal 2007 (diminishing γ + containment), but
+  produces a recorded chain whose kernel is changing — standard
+  MCMC diagnostics on the recorded sample are harder to
+  interpret. Allowed (the user signed up for it explicitly), but
+  not the default.
 
-Recommend `adapt_n = burn_in` as the default to minimise surprises;
-document that increasing `adapt_n` past `burn_in` is acceptable when
-diminishing γ is in effect (which it always is under (3)).
+Recommend `adapt_n = burn_in` as the default. Locking is **not** a
+stationarity *requirement* — diminishing γ alone suffices for
+asymptotic validity — but it's the cleanest user-facing semantics
+and matches what Stan / PyMC users expect. The earlier draft's
+TL;DR over-claimed "locking preserves MH stationarity"; the
+honest framing is "locking gives the recorded chain a fixed kernel,
+which is what users want to diagnose against."
 
 ## Companion: explicit rw_sd override in fit.toml (separate, smaller)
 
@@ -518,14 +605,34 @@ fn sample_perturbation(&self, rng: &mut StatefulRng, fallback_sd: &[f64]) -> Vec
 
 ### Changes to the inner loop (pmmh.rs:397–490)
 
-The existing structure already has:
-- `ap.update(&current_transformed)` on every step (line 490)
+The existing structure has `ap.update(&current_transformed)` on
+every step (line 490) — this updates the Welford running mean/M₂
+*and*, every `chol_interval` steps, refreshes the Cholesky factor.
 
-Add immediately after the accept/reject decision (line 470 area):
+To match the spec's "lock both at adapt_n" semantics (see §"D5"),
+gate **both** the RM update *and* the covariance update by the
+same window. After locking, the reported chain is drawn from a
+fixed kernel `λ_final · K_final`, which is what Stan / PyMC users
+expect and what makes standard MCMC diagnostics on the recorded
+samples interpretable:
+
 ```rust
-// gh#74-related: RM scale tuning while in the adaptation window.
-if config.adapt && step >= config.adapt_start
-   && step < config.adapt_start + config.adapt_n {
+// gh#74-related: adapt the proposal kernel only inside the
+// adaptation window. After locking (step ≥ adapt_start + adapt_n),
+// the proposal is fixed at (λ_final, L_final), so the recorded
+// chain is drawn from a stationary MH kernel.
+//
+// Locking both RM and the covariance is the conservative choice:
+// the alternative (continued diminishing adaptation past adapt_n,
+// valid per Roberts-Rosenthal 2007) gives asymptotic validity but
+// leaves users guessing about non-stationarity in the recorded
+// sample. We prefer the explicit lock — see §"D5" for the
+// trade-off.
+let in_adapt_window = config.adapt
+    && step >= config.adapt_start
+    && step < config.adapt_start + config.adapt_n;
+
+if in_adapt_window {
     if let Some(ref mut ap) = adaptive {
         ap.rm_update(
             accepted,
@@ -536,12 +643,20 @@ if config.adapt && step >= config.adapt_start
         );
     }
 }
+
+// Covariance update (existing call; now gated):
+if in_adapt_window {
+    if let Some(ref mut ap) = adaptive {
+        ap.update(&current_transformed);
+    }
+}
 ```
 
 That's it for the algorithm. The profile/fit-run callers don't
 change; the new `PMMHConfig` fields all have defaults and the
 behaviour preserves the existing flow when adaptation is disabled
-or `adapt_n = 0`.
+or `adapt_n = 0` (in which case `in_adapt_window` is always false
+and neither RM nor covariance updates fire).
 
 ## Tests (TDD, in order)
 
@@ -551,9 +666,19 @@ or `adapt_n = 0`.
    the mean acceptance rate over the last 1000 steps is in
    `[α* - 0.05, α* + 0.05]`. This is the headline regression test.
 
-2. **Vanishing γ asymptote.** After adapt_n steps, λ has stopped
-   changing materially (max single-step Δlog λ in the last 100 steps
-   < 1e-3). Pins (3)'s diminishing property.
+2. **Vanishing γ as a ratio.** Test the *shrinkage* of the RM step
+   size, not an absolute threshold: assert that
+   `γ_{adapt_n - 1} / γ_0 ≤ 1/5`. With defaults
+   (c=1, t₀=50, η=0.6, adapt_n=5000), γ shrinks from
+   `50^{−0.6} ≈ 0.096` to `(50 + 4999)^{−0.6} ≈ 0.0061`, a 15.7×
+   reduction — comfortably below the 5× floor. The earlier draft
+   used an absolute "max Δlog λ < 1e−3" threshold; at the proposed
+   defaults the actual max single-step |Δlog λ| at adapt_n is
+   `γ × max(α*, 1−α*) = 0.0061 × 0.766 ≈ 4.7e−3`, ~5× the old
+   threshold — the threshold was wrong, not the algorithm. Testing
+   the *ratio* is the right invariant anyway: it pins the property
+   ("step size diminishes substantially over the window") without
+   coupling the test to a particular adapt_n length.
 
 3. **Diminishing-adaptation property (sanity).** Two PMMH runs with
    the same seed but `adapt_n=0` vs `adapt_n=1000`: after
@@ -578,9 +703,15 @@ or `adapt_n = 0`.
    actionable error pointing at the inequality.
 
 7. **`rm_eta ∈ (0.5, 1]` enforced at config-load**, with a one-line
-   reference to Roberts-Rosenthal 2007 in the error text. This is
-   the load-bearing ergodicity constraint and a hard error is
-   cheaper than a subtle wrong-stationary-distribution bug.
+   reference to Robbins-Monro 1951 / Andrieu-Thoms 2008 in the
+   error text. This is the **stochastic-approximation convergence
+   constraint** for the scalar λ — outside this interval, either
+   `Σγ_t < ∞` (λ can't reach its target, η > 1) or `Σγ_t² = ∞`
+   (noise overwhelms convergence, η ≤ 1/2). The Roberts-Rosenthal
+   2007 ergodicity result is *separate* and only requires γ_t → 0
+   (broadly true); confusing the two attributions was a draft-rev
+   error. A hard error here is cheaper than a subtle
+   silently-non-converging λ.
 
 ## Implementation outline
 
@@ -646,10 +777,28 @@ statistics. Same shape as the gh#89 cache invalidation.
   349–367. §3 contains worked examples with γ_t = (t + 1)^{-η}
   including the convergence diagnostics this proposal's tests
   mirror.
+- Gelman, A., Roberts, G. O. & Gilks, W. R. (1996). "Efficient
+  Metropolis jumping rules." In J. M. Bernardo et al. (eds.),
+  *Bayesian Statistics 5*: 599–607. Source of the 2.38²/d
+  asymptotic-Gaussian scaling factor that the existing
+  `AdaptiveProposal` bakes into the Cholesky path (and that this
+  proposal leaves untouched). Cited inline; previously missing
+  from the reference list.
 - Roberts, G. O., Gelman, A. & Gilks, W. R. (1997). "Weak
   convergence and optimal scaling of random walk Metropolis
   algorithms." *Annals of Applied Probability* 7(1): 110–120. The
-  0.234 asymptotic optimum target.
+  0.234 asymptotic optimum acceptance rate.
+- Robbins, H. & Monro, S. (1951). "A stochastic approximation
+  method." *Annals of Mathematical Statistics* 22(3): 400–407.
+  Source of the `Σγ_t = ∞`, `Σγ_t² < ∞` conditions that pin
+  `η ∈ (1/2, 1]`. Cited inline; added to the reference list for
+  the attribution fix in test #7.
+- Bédard, M. (2008). "Optimal acceptance rates for Metropolis
+  algorithms: moving beyond 0.234." *Stochastic Processes and
+  their Applications* 118(12): 2198–2222. Numerical evidence that
+  the true optimal acceptance rate exceeds 0.234 in moderate
+  dimension; cited in §"Target acceptance rate" for the
+  d = 5 flip rationale.
 - Roberts, G. O. & Rosenthal, J. S. (2001). "Optimal scaling for
   various Metropolis-Hastings algorithms." *Statistical Science*
   16(4): 351–367. The 0.44 one-dimensional optimum.
