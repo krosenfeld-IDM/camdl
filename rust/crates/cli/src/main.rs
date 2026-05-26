@@ -1,5 +1,6 @@
 mod args;
 mod util;
+mod params_resolver;  // unified parameter-value resolver (2026-05-25 CLI UX rev 2)
 mod hashing;
 mod run_meta;       // unified Run/RunKind ADT — see docs/dev/proposals/2026-04-19-unified-output-tree.md
 mod run_paths;      // canonical output-path helpers

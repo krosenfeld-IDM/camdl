@@ -76,27 +76,58 @@ fn references_compartments(expr: &Expr) -> Option<String> {
 
 pub fn cmd_eval(a: &crate::args::EvalArgs) {
     let ir_path = a.model.to_string_lossy();
-    let overrides: std::collections::HashMap<String, f64> = a.model_overrides.param
-        .iter()
-        .map(|p| (p.name.clone(), p.value))
-        .collect();
     let at_points: Option<Vec<f64>> = if a.at.is_empty() { None } else { Some(a.at.clone()) };
 
-    let (mut model, _model_json) = crate::util::load_model(&ir_path)
+    let (model_in, _model_json) = crate::util::load_model(&ir_path)
         .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
 
-    for pf in &a.model_overrides.params {
-        crate::util::apply_params_file(&mut model, &pf.to_string_lossy())
-            .unwrap_or_else(|e| { eprintln!("error loading params: {}", e); std::process::exit(1); });
-    }
+    // Unified parameter resolver (2026-05-25 CLI UX rev 2). Maps the
+    // legacy `--params FILE` (repeatable) → `fixed_files`, and
+    // `--param NAME=VALUE` → `fixed_cli`. `eval` has no scenario, no
+    // [estimate] set, and no external tables (the eval pipeline
+    // doesn't compile tables independently).
+    use crate::params_resolver::{ParameterInputs, resolve_parameters, print_warnings};
+    use indexmap::{IndexMap, IndexSet};
+    use std::collections::HashMap;
 
-    for p in &mut model.parameters {
-        if let Some(&v) = overrides.get(&p.name) { p.value = Some(v); }
-    }
+    let fixed_cli: Vec<(String, f64)> = a.model_overrides.param.iter()
+        .map(|p| (p.name.clone(), p.value)).collect();
+    let fixed_files: Vec<std::path::PathBuf> = a.model_overrides.params.clone();
+    let table_files: HashMap<String, std::path::PathBuf> = a.model_overrides.table.iter()
+        .map(|t| (t.name.clone(), t.path.clone())).collect();
+    let ftf: IndexMap<String, f64> = IndexMap::new();
+    let fte: IndexSet<String> = IndexSet::new();
 
-    // Bounds + finite-value check after all override paths resolved (gh#31).
-    crate::util::validate_parameter_values(&model)
-        .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+    let resolved = resolve_parameters(ParameterInputs {
+        model: &model_in,
+        scenario: None,
+        adhoc_enable: &[],
+        adhoc_disable: &[],
+        fixed_cli: &fixed_cli,
+        fixed_files: &fixed_files,
+        fit_toml_fixed: &ftf,
+        fit_toml_estimate: &fte,
+        table_files: &table_files,
+    }).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+    print_warnings(&resolved);
+    if log::log_enabled!(log::Level::Debug) {
+        for p in &resolved.params {
+            log::debug!("eval: param `{}` = {} ({})",
+                p.name, p.value, p.source.tag());
+        }
+        log::debug!("eval: {} parameter(s) in [estimate]: {:?}",
+            resolved.estimate_set.len(),
+            resolved.estimate_set.iter().collect::<Vec<_>>());
+    }
+    let model = resolved.model.clone();
+    // Touch role so the variant set is exhaustive — every consumer
+    // must handle Fixed/Estimated. For eval (non-inference) every
+    // param is `Fixed`; the assertion encodes that invariant.
+    for p in &resolved.params {
+        debug_assert!(matches!(p.role,
+            crate::params_resolver::ParameterRole::Fixed { .. }),
+            "eval is non-inference; every param must resolve to Fixed");
+    }
 
     let compiled = CompiledModel::new(model.clone())
         .unwrap_or_else(|e| { eprintln!("compile error: {:?}", e); std::process::exit(1); });
