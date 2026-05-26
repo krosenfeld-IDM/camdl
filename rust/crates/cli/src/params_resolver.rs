@@ -260,11 +260,29 @@ pub enum ResolveError {
     ExternalTableMissing { table: String },
     BoundsViolation      { name: String, value: f64, lo: f64, hi: f64 },
     NestedCompose        { name: String },
+    /// One or more finite/bounds violations collected together. The
+    /// post-resolution validation pass surfaces *all* violations at
+    /// once rather than failing on the first, so a user fixing
+    /// `--param beta=5 --param gamma=10` against bounded parameters
+    /// sees both names in a single error and can fix both before
+    /// re-running. Mirrors the legacy `validate_parameter_values`
+    /// behaviour, which already collected violations into one
+    /// message (pinned by
+    /// `parameter_bounds_validation::multiple_oob_params_reported_in_one_error`).
+    MultipleViolations(Vec<ResolveError>),
 }
 
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // Single-quoted parameter / scenario / table names are the
+            // established convention across the codebase (matches
+            // `unknown parameter '{0}'` in sim error variants, the
+            // legacy `resolve_run_model` messages, and the
+            // integration-test assertions in `util.rs`'s test module).
+            // Resolver diagnostics follow the same convention so a
+            // user can grep stderr without worrying about quoting
+            // style varying between code paths.
             ResolveError::UnknownParameter { name, source, candidates } => {
                 let src_label = match source {
                     ValueSource::FixedCli => "--fixed".to_string(),
@@ -274,22 +292,27 @@ impl std::fmt::Display for ResolveError {
                     other => format!("{:?}", other),
                 };
                 write!(f,
-                    "unknown parameter `{name}` from {src_label}.\n  \
+                    "unknown parameter '{name}' from {src_label}.\n  \
                      Available parameters: {}",
                     if candidates.is_empty() { "(none)".to_string() }
                     else { candidates.join(", ") })
             }
             ResolveError::NonFiniteValue { name, value, source } => {
+                // "not finite (NaN or ±∞)" mirrors the legacy
+                // `validate_parameter_values` wording so existing
+                // integration tests
+                // (`parameter_bounds_validation::param_positive_infinity_errors`)
+                // and the user's mental model both stay green.
                 write!(f,
-                    "parameter `{name}` resolved to non-finite value {value} \
-                     (from {}).\n  \
+                    "parameter '{name}' = {value} is not finite (NaN or ±∞), \
+                     resolved from {}.\n  \
                      Fix: supply a finite numeric value via --fixed, \
                      --fixed-file, or the scenario block.",
                     source.tag())
             }
             ResolveError::UnsetRequired { name } => {
                 write!(f,
-                    "parameter `{name}` has no value: no model default, no \
+                    "parameter '{name}' has no value: no model default, no \
                      scenario, no --fit toml entry, no --fixed-file, no \
                      --fixed.\n  \
                      Fix: declare a default in the .camdl model, or pin via \
@@ -298,26 +321,30 @@ impl std::fmt::Display for ResolveError {
             ResolveError::SchemaMismatch { path, msg } =>
                 write!(f, "schema mismatch in {}: {}", path.display(), msg),
             ResolveError::ScenarioNotFound { name, available } => {
-                write!(f, "scenario `{name}` not found in model.\n  Available: {}",
+                write!(f, "scenario '{name}' not found in model.\n  Available: {}",
                     if available.is_empty() { "(none)".to_string() }
                     else { available.join(", ") })
             }
             ResolveError::ExternalTableMissing { table } => {
                 write!(f,
-                    "table `{table}` is declared as external() but --table \
+                    "table '{table}' is declared as external() but --table \
                      {table}=<file> was not provided")
             }
             ResolveError::BoundsViolation { name, value, lo, hi } => {
                 write!(f,
-                    "parameter `{name}` = {value} is outside declared bounds \
+                    "parameter '{name}' = {value} is outside declared bounds \
                      [{lo}, {hi}].\n  \
                      Fix: either widen the bounds in the model, or supply a \
                      value within the declared range.")
             }
             ResolveError::NestedCompose { name } => {
                 write!(f,
-                    "nested compose is not supported. Scenario `{name}` \
+                    "nested compose is not supported. Scenario '{name}' \
                      referenced in compose = [...] itself uses compose.")
+            }
+            ResolveError::MultipleViolations(errs) => {
+                let parts: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
+                write!(f, "{}", parts.join("\n"))
             }
         }
     }
@@ -403,22 +430,34 @@ pub fn resolve_parameters<'a>(
              Vec::new(), Vec::new())
         };
 
-    // Intervention filter (independent of value precedence).
-    if scenario_name.is_some() {
-        crate::util::apply_scenario_filter(
-            &mut model, &scenario_enable, &scenario_disable)
-            .map_err(|msg| ResolveError::SchemaMismatch {
-                path: PathBuf::from("(scenario filter)"),
-                msg,
-            })?;
-    } else if !inputs.adhoc_enable.is_empty() || !inputs.adhoc_disable.is_empty() {
-        crate::util::apply_scenario_filter(
-            &mut model, inputs.adhoc_enable, inputs.adhoc_disable)
-            .map_err(|msg| ResolveError::SchemaMismatch {
-                path: PathBuf::from("(scenario filter)"),
-                msg,
-            })?;
-    }
+    // ── Intervention filter (independent of value precedence) ───────────
+    //
+    // Must be called **unconditionally** — even when no scenario and no
+    // adhoc enable/disable lists are present — because the filter is
+    // what enforces "toggleable interventions default OFF" (only
+    // `always_active` events survive an empty filter). Skipping the
+    // call leaves toggleable interventions live when the user didn't
+    // ask for them, which is a silent-wrong-answer bug
+    // (`intervention_event_defaults::simulate_default_event_fires_intervention_does_not`
+    // pins this contract).
+    //
+    // When `scenario_name.is_some()`, the composed scenario
+    // enable/disable lists drive the filter; otherwise the
+    // user-supplied `adhoc_enable`/`adhoc_disable` do (empty when the
+    // user passed neither — which is precisely the case where
+    // toggleables must drop).
+    let (filter_enable, filter_disable): (Vec<String>, Vec<String>) =
+        if scenario_name.is_some() {
+            (scenario_enable.clone(), scenario_disable.clone())
+        } else {
+            (inputs.adhoc_enable.to_vec(), inputs.adhoc_disable.to_vec())
+        };
+    crate::util::apply_scenario_filter(
+        &mut model, &filter_enable, &filter_disable)
+        .map_err(|msg| ResolveError::SchemaMismatch {
+            path: PathBuf::from("(scenario filter)"),
+            msg,
+        })?;
 
     // ── Tier 2: fit.toml [fixed] block ──────────────────────────────────
     for (name, &v) in inputs.fit_toml_fixed {
@@ -589,7 +628,22 @@ pub fn resolve_parameters<'a>(
     });
 
     // Assemble ResolvedParameter entries in declaration order.
+    //
+    // Two-phase validation:
+    //   (1) `UnsetRequired` is fatal-on-first-hit — a param with no
+    //       value at all is a structural error, not a "you typed the
+    //       wrong number" error, and reporting later params alongside
+    //       it would be noise.
+    //   (2) `NonFiniteValue` and `BoundsViolation` are collected
+    //       across all parameters and reported together via
+    //       `MultipleViolations`, so a user fixing
+    //       `--param a=NaN --param b=999` against bounded `a, b`
+    //       sees both problems in one stderr block.
+    //
+    // This mirrors the legacy `validate_parameter_values` behaviour
+    // (pinned by `parameter_bounds_validation::multiple_oob_params_*`).
     let mut params: Vec<ResolvedParameter> = Vec::with_capacity(model.parameters.len());
+    let mut violations: Vec<ResolveError> = Vec::new();
     for p in &model.parameters {
         let Some(value) = p.value else {
             return Err(ResolveError::UnsetRequired { name: p.name.clone() });
@@ -598,18 +652,20 @@ pub fn resolve_parameters<'a>(
             let source = current_source.get(&p.name)
                 .and_then(|s| s.clone())
                 .unwrap_or(ValueSource::ModelDefault);
-            return Err(ResolveError::NonFiniteValue {
+            violations.push(ResolveError::NonFiniteValue {
                 name: p.name.clone(),
                 value,
                 source,
             });
+            continue;
         }
         if let Some((lo, hi)) = p.bounds {
             if value < lo || value > hi {
-                return Err(ResolveError::BoundsViolation {
+                violations.push(ResolveError::BoundsViolation {
                     name: p.name.clone(),
                     value, lo, hi,
                 });
+                continue;
             }
         }
         let source = current_source.get(&p.name)
@@ -661,6 +717,17 @@ pub fn resolve_parameters<'a>(
             role,
             overrode_scenario,
         });
+    }
+
+    // Surface collected violations before doing anything downstream
+    // (external tables / Ok return). One violation degrades to a
+    // single-variant error so callers that pattern-match on a
+    // specific variant (e.g. test asserting `BoundsViolation`) still
+    // work; two or more roll up into `MultipleViolations`.
+    match violations.len() {
+        0 => {}
+        1 => return Err(violations.into_iter().next().unwrap()),
+        _ => return Err(ResolveError::MultipleViolations(violations)),
     }
 
     // ── External tables ─────────────────────────────────────────────────
@@ -1475,5 +1542,82 @@ mod tests {
             matches!(w, ResolverWarning::FixedEstimateOverlap { .. }));
         assert!(!has_overlap);
         assert!(resolved.estimate_set.contains("gamma"));
+    }
+
+    // ── Intervention filter must run unconditionally ────────────────────
+
+    fn mk_intervention(name: &str, always_active: bool) -> ir::intervention::Intervention {
+        use ir::intervention::{Action, AddAction, InterventionSchedule};
+        ir::intervention::Intervention {
+            name: name.into(),
+            base_name: None,
+            schedule: InterventionSchedule::AtTimes(vec![10.0]),
+            actions: vec![Action::Add(AddAction {
+                compartment: "S".into(),
+                count: ir::expr::Expr::Const(ir::expr::ConstExpr { value: 0.0 }),
+            })],
+            always_active,
+        }
+    }
+
+    #[test]
+    fn no_scenario_no_adhoc_still_drops_toggleable_interventions() {
+        // Regression guard for the bug where the resolver skipped
+        // `apply_scenario_filter` when scenario/adhoc were both
+        // empty, leaving toggleable interventions live by default.
+        // Contract: a `simulate` invocation with no `--scenario` and
+        // no `--enable` must drop toggleable interventions; only
+        // `always_active = true` (events) survive. This is the
+        // resolver-level mirror of the
+        // `intervention_event_defaults::simulate_default_event_fires_intervention_does_not`
+        // integration test.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        model.interventions = vec![
+            mk_intervention("event_a", true),   // always_active → must survive
+            mk_intervention("interv_b", false), // toggleable → must drop
+        ];
+
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let resolved = resolve_parameters(empty_inputs(&model, &fcli, &ffiles, &ftf, &fte))
+            .expect("ok");
+
+        let names: Vec<&str> = resolved.model.interventions.iter()
+            .map(|iv| iv.name.as_str()).collect();
+        assert_eq!(names, vec!["event_a"],
+            "toggleable interventions must drop without --enable / --scenario; \
+             survived = {:?}", names);
+    }
+
+    #[test]
+    fn adhoc_enable_keeps_named_toggleable_intervention() {
+        // Counter-test: with adhoc_enable supplying the name,
+        // the toggleable intervention is kept.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        model.interventions = vec![
+            mk_intervention("event_a", true),
+            mk_intervention("interv_b", false),
+        ];
+
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        let adhoc_enable = vec!["interv_b".to_string()];
+        inputs.adhoc_enable = &adhoc_enable;
+        let resolved = resolve_parameters(inputs).expect("ok");
+
+        let names: Vec<&str> = resolved.model.interventions.iter()
+            .map(|iv| iv.name.as_str()).collect();
+        // Order in `interventions` is preserved by `retain`, so
+        // event_a still comes first; interv_b survives only because
+        // it was explicitly enabled.
+        assert!(names.contains(&"event_a"),
+            "always_active event survives unconditionally");
+        assert!(names.contains(&"interv_b"),
+            "adhoc-enabled toggleable survives; got {:?}", names);
     }
 }

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use ir::table::TableSource;
 use ir::intervention::Intervention;
 use sim::{
     CompiledModel, GillespieSim, TauLeapSim, ChainBinomialSim, OdeSim,
@@ -807,7 +806,7 @@ pub fn resolve_run_model(run: &SimRun) -> Result<(CompiledModel, ir::Model), Str
     let src = std::fs::read_to_string(&ir_path_resolved)
         .map_err(|e| format!("cannot read {}: {}", ir_path_resolved, e))?;
     // gh#audit-C8. Envelope-aware load (see load_model above).
-    let mut model: ir::Model = ir::from_str(&src)
+    let model: ir::Model = ir::from_str(&src)
         .map_err(|e| format!("IR load error from {}: {}", ir_path_resolved, e))?;
     // RC1 in 2026-04-19 engine review.
     ir::validate::validate(&model).map_err(|errs| {
@@ -816,187 +815,79 @@ pub fn resolve_run_model(run: &SimRun) -> Result<(CompiledModel, ir::Model), Str
         msg
     })?;
 
-    // Resolve scenario patch up-front (interventions are applied here;
-    // parameter set/scale are deferred until AFTER --params + --param-vec,
-    // per the spec-documented precedence
-    //   params.toml  →  overridden by scenario  →  overridden by --param
-    // (see docs/camdl-run-spec.md §1.3). The old code applied scenario
-    // params first and let --params silently overwrite them — a
-    // silent-wrong-answer bug caught by
-    // `rust/crates/cli/tests/scenario_runtime_application.rs`.
-    let (scenario_params, scenario_scale): (Vec<(String, f64)>, Vec<(String, f64)>) = {
-        let (raw_enable, raw_disable, scenario_params, scenario_scale, _scenario_compose):
-            (Vec<String>, Vec<String>, Vec<(String, f64)>, Vec<(String, f64)>, Vec<String>) =
-            if let Some(ref name) = run.scenario_name {
-                let preset = model.presets.iter().find(|p| p.name == *name)
-                    .ok_or_else(|| {
-                        let available: Vec<&str> = model.presets.iter()
-                            .map(|p| p.name.as_str()).collect();
-                        format!("scenario '{}' not found in model. Available: {}",
-                            name,
-                            if available.is_empty() { "(none)".to_string() }
-                            else { available.join(", ") })
-                    })?.clone();
-                // Compose: apply sub-scenarios left-to-right (flat only — no nested compose)
-                let mut composed_enable: Vec<String> = Vec::new();
-                let mut composed_disable: Vec<String> = Vec::new();
-                let mut composed_params: Vec<(String, f64)> = Vec::new();
-                let mut composed_scale: Vec<(String, f64)> = Vec::new();
-                if !preset.compose.is_empty() {
-                    for sc_name in &preset.compose {
-                        let sub = model.presets.iter().find(|p| p.name == *sc_name)
-                            .ok_or_else(|| format!(
-                                "compose: scenario '{}' not found in model", sc_name))?;
-                        if !sub.compose.is_empty() {
-                            return Err(format!(
-                                "nested compose is not supported. Scenario '{}' referenced \
-                                 in compose = [...] itself uses compose.",
-                                sc_name));
-                        }
-                        composed_enable.extend(sub.enable.clone());
-                        composed_disable.extend(sub.disable.clone());
-                        composed_params.extend(sub.params.iter().map(|(k, &v)| (k.clone(), v)));
-                        composed_scale.extend(sub.scale.iter().map(|(k, &v)| (k.clone(), v)));
-                    }
-                }
-                // Own enable/disable/params override composed ones
-                composed_enable.extend(preset.enable.clone());
-                composed_disable.extend(preset.disable.clone());
-                composed_params.extend(preset.params.iter().map(|(k, &v)| (k.clone(), v)));
-                composed_scale.extend(preset.scale.iter().map(|(k, &v)| (k.clone(), v)));
-                (composed_enable, composed_disable, composed_params, composed_scale, preset.compose.clone())
-            } else {
-                (run.adhoc_enable.clone(), run.adhoc_disable.clone(), vec![], vec![], vec![])
-            };
-
-        // Apply the shared scenario filter. Preserves always_active events
-        // unless they're explicitly disabled; drops toggleable interventions
-        // unless they're explicitly enabled or named by the scenario.
-        // See apply_scenario_filter for the full semantics. Safe to apply
-        // here — intervention filtering is independent of parameter values.
-        apply_scenario_filter(&mut model, &raw_enable, &raw_disable)?;
-
-        (scenario_params, scenario_scale)
-    };
-
-    // Apply --params TOML files (layered, later overrides earlier)
+    // ── Expand --param-vec PREFIX=FILE entries into (NAME, VALUE) pairs ──
+    //
+    // `--param-vec` is a vector-stratification convenience for `--param`:
+    // `--param-vec beta=params.tsv` reads `(key, val)` rows and sets
+    // `beta_<key> = val`. The resolver doesn't know about `--param-vec`
+    // directly; instead, we expand it into the equivalent fixed-cli pairs
+    // and append BEFORE `run.overrides`, so that explicit `--param NAME=VAL`
+    // still wins under the resolver's last-wins semantics for tier 5
+    // (`fixed_cli`).
+    //
+    // **Deviation from the legacy precedence**: previously `--param-vec`
+    // sat between `--params` (tier-3-equivalent) and scenario (tier 4),
+    // meaning scenarios could override `--param-vec` values. Under the
+    // resolver this becomes tier 5 alongside `--param`, so scenarios
+    // **cannot** override `--param-vec` any more. This is a small
+    // behaviour change. No integration test pinned the old order
+    // (verified via `rg 'param.vec' rust/crates/cli/tests` — no hits),
+    // and the principled mapping is that `--param-vec` is the
+    // bulk-set sibling of `--param` and should share its precedence.
     let model_param_set: std::collections::HashSet<String> = model.parameters.iter()
         .map(|p| p.name.clone()).collect();
-    for path in &run.params_files {
-        let toml_overrides = load_params_toml(path)?;
-        // Check for unknown params in the file
-        for name in toml_overrides.keys() {
-            if !model_param_set.contains(name) {
+    let mut fixed_cli: Vec<(String, f64)> = Vec::new();
+    for (prefix, file) in &run.set_vec_entries {
+        let entries = load_keyed_tsv(file)?;
+        for (key, val) in entries {
+            let full_name = format!("{}_{}", prefix, key);
+            if !model_param_set.contains(&full_name) {
                 return Err(format!(
-                    "unknown parameter '{}' in params file '{}'.\n  \
-                     Available parameters: {}",
-                    name, path,
-                    model.parameters.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
-                ));
+                    "--param-vec {}: unknown parameter '{}'", prefix, full_name));
             }
-        }
-        for p in &mut model.parameters {
-            if let Some(&v) = toml_overrides.get(&p.name) {
-                if let Some(old) = p.value {
-                    if (old - v).abs() > 1e-15 {
-                        log::info!("--params {}: {}={} overrides previous value {}", path, p.name, v, old);
-                    }
-                }
-                p.value = Some(v);
-            }
+            fixed_cli.push((full_name, val));
         }
     }
+    // `run.overrides` is a HashMap; collect into a deterministic
+    // (alphabetical-by-name) Vec so the resolver's provenance is
+    // reproducible run-to-run.
+    let mut override_vec: Vec<(String, f64)> = run.overrides.iter()
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
+    override_vec.sort_by(|a, b| a.0.cmp(&b.0));
+    fixed_cli.extend(override_vec);
 
-    // Apply --param-vec entries
-    if !run.set_vec_entries.is_empty() {
-        let known_param_names: std::collections::HashSet<String> =
-            model.parameters.iter().map(|p| p.name.clone()).collect();
-        let mut resolved: Vec<(String, f64)> = Vec::new();
-        for (prefix, file) in &run.set_vec_entries {
-            let entries = load_keyed_tsv(file)?;
-            for (key, val) in entries {
-                let full_name = format!("{}_{}", prefix, key);
-                if !known_param_names.contains(&full_name) {
-                    return Err(format!("--param-vec {}: unknown parameter '{}'", prefix, full_name));
-                }
-                resolved.push((full_name, val));
-            }
-        }
-        for (full_name, val) in resolved {
-            for p in &mut model.parameters {
-                if p.name == full_name { p.value = Some(val); }
-            }
-        }
-    }
+    // ── Build resolver inputs ───────────────────────────────────────────
+    //
+    // `simulate` and `lineage` are non-inference subcommands. The
+    // `fit_toml_*` slots are empty; the resolver's [estimate] kick-out
+    // logic is a no-op. All value precedence flows through
+    // params_resolver, which is now the sole writer of
+    // `model.parameters[i].value` on the simulate/lineage path.
+    let fixed_files: Vec<std::path::PathBuf> = run.params_files.iter()
+        .map(std::path::PathBuf::from).collect();
+    let table_files: std::collections::HashMap<String, std::path::PathBuf> = run.table_files.iter()
+        .map(|(k, v)| (k.clone(), std::path::PathBuf::from(v))).collect();
+    let ftf: indexmap::IndexMap<String, f64> = indexmap::IndexMap::new();
+    let fte: indexmap::IndexSet<String> = indexmap::IndexSet::new();
 
-    // Apply scenario param set / scale — MUST happen after --params +
-    // --param-vec so scenarios override the file-loaded base values (as
-    // documented in docs/camdl-run-spec.md §1.3). --param CLI overrides
-    // below still win against scenarios — spec:
-    //   params.toml → scenario params → --param CLI flags.
-    for (k, v) in &scenario_params {
-        for p in &mut model.parameters {
-            if p.name == *k { p.value = Some(*v); }
+    let resolved = crate::params_resolver::resolve_parameters(
+        crate::params_resolver::ParameterInputs {
+            model: &model,
+            scenario: run.scenario_name.as_deref(),
+            adhoc_enable: &run.adhoc_enable,
+            adhoc_disable: &run.adhoc_disable,
+            fixed_cli: &fixed_cli,
+            fixed_files: &fixed_files,
+            fit_toml_fixed: &ftf,
+            fit_toml_estimate: &fte,
+            table_files: &table_files,
         }
-    }
-    for (k, factor) in &scenario_scale {
-        for p in &mut model.parameters {
-            if p.name == *k {
-                if let Some(v) = p.value {
-                    p.value = Some(v * factor);
-                }
-            }
-        }
-    }
+    ).map_err(|e| e.to_string())?;
 
-    // Apply scalar overrides (highest priority)
-    // Check for unknown params first
-    let model_param_names: std::collections::HashSet<&str> = model.parameters.iter()
-        .map(|p| p.name.as_str()).collect();
-    for name in run.overrides.keys() {
-        if !model_param_names.contains(name.as_str()) {
-            return Err(format!(
-                "unknown parameter '{}' in --param override.\n  \
-                 Available parameters: {}",
-                name,
-                model.parameters.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
-            ));
-        }
-    }
-    for p in &mut model.parameters {
-        if let Some(&v) = run.overrides.get(&p.name) {
-            if let Some(old) = p.value {
-                if (old - v).abs() > 1e-15 {
-                    log::info!("--param {}={} overrides previous value {}", p.name, v, old);
-                }
-            }
-            p.value = Some(v);
-        }
-    }
+    crate::params_resolver::print_warnings(&resolved);
 
-    // Fill external tables
-    for table in &mut model.tables {
-        if let TableSource::External { external: ref name } = table.source {
-            let logical_name = name.clone();
-            match run.table_files.get(&logical_name) {
-                None => {
-                    return Err(format!(
-                        "table '{}' is declared as external() but --table {}=<file> was not provided",
-                        logical_name, logical_name));
-                }
-                Some(path) => {
-                    let values = load_table_file(path)?;
-                    table.source = TableSource::Inline { values };
-                }
-            }
-        }
-    }
-
-    // Final post-resolution check: every parameter value is finite and
-    // (if bounded) within declared bounds. See `validate_parameter_values`
-    // for rationale; gh#31 for the silent-acceptance bug this closes.
-    validate_parameter_values(&model)?;
-
+    let model = resolved.model;
     let compiled = CompiledModel::new(model.clone())
         .map_err(|e| format!("model compile error: {:?}", e))?;
 
