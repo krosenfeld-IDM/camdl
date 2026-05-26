@@ -748,3 +748,100 @@ internal lines.
 Decision needed from maintainer: should `--scenario` be limited to
 one per invocation (so the resolver can absorb this helper), or
 should the resolver gain multi-scenario support?
+
+---
+
+## 2026-05-25 — Session handoff: steps 4-5 done, 6-12 deferred
+
+### Done in this worktree branch
+
+| Step | Commit  | Status |
+|------|---------|--------|
+| 4    | 376a1f4 | Survey migrated through resolver |
+| 5a   | accfd0d | if2 migrated through resolver |
+| 5b   | cd547b3 | profile migrated through resolver |
+| 5c   | 2b419bd | main.rs partial-resolution exceptions documented |
+| 5d   | 19ae908 | fit/runner.rs migrated through resolver |
+
+All commits pass:
+- intervention_event_defaults (7) — toggleable-OFF guardrail
+- parameter_bounds_validation (10)
+- scenario_runtime_application (2)
+- cas_integration (21)
+- profile_priors, profile_pmmh, profile_multi_stream, profile_diagnostics
+- survey_top_k_pgas, survey_top_k_pmmh
+- Full `cargo test --release -p cli --tests` — 588 unit + integration green
+
+`util::apply_params_file` is kept in `util.rs` for the documented
+exception in `prepare_cas_ctx` (see above notes).
+`FixedParams::resolve_with_model` is kept as the fit.toml `[fixed]`
+pre-processor (per proposal §"Step 4"); every other caller routes
+through `params_resolver::resolve_parameters`.
+
+### Audit checklist (proposal §"Post-implementation audit")
+
+1. **Sole writer of `model.parameters[i].value`** — partial. Outside
+   `params_resolver.rs`, the remaining writers are:
+   - `util::apply_params_file` (1 line, kept for cas-ctx).
+   - `main.rs:prepare_cas_ctx` (uses apply_params_file).
+   - `main.rs:generate_prior_draws_from_ir` (multi-scenario helper).
+   - `survey.rs` ([estimate].start fall-back, after resolver).
+   - `fit/runner.rs` ([estimate].start fall-back, before resolver).
+   All five are documented exceptions, not silent leaks.
+
+2. **Old resolvers** — partial. `apply_params_file` lives on for the
+   one exception above; `FixedParams::resolve_with_model` lives on as
+   the fit-toml pre-processor (per proposal). No inline resolvers
+   remain in profile/if2/pfilter.
+
+3. **Sole entry point per subcommand** — all inference subcommands
+   now route through `resolve_parameters`. `draw_chain_starts` per the
+   proposal §6 is not yet implemented (see deferred work below).
+
+4. **Provenance round-trip into run.json** — deferred (step 9).
+
+5. **Init-source coverage** — deferred (step 6).
+
+6. **No alias shims** — deferred (step 7's M-1 break).
+
+### Deferred to follow-up sessions
+
+| Step | Scope                                                              |
+|------|--------------------------------------------------------------------|
+| 6    | Extend `InitMethod` with FromPrior/FromPosterior/FromMle/FromParams |
+| 7    | M-1 CLI break: remove --params/--param from inference subcommands  |
+| 8    | Help text — shared `long_about` blocks for --init and --fixed      |
+| 9    | run.json provenance threading                                      |
+| 10   | Mechanical doc churn (~200 sed sites)                              |
+| 11   | 4 load-bearing prose rewrites                                      |
+| 12   | fit.toml fixture migration (~70 files)                             |
+
+Step 6 is the largest remaining piece of substantive code; steps 7+12
+are heavy mechanical churn; steps 8+9+10+11 are documentation /
+provenance work. The maintainer can pick these up as separate
+commits — none of them have inter-dependencies, so they can be
+ordered freely.
+
+### Why step 6 wasn't tackled this session
+
+The proposal §"Init phase types" specifies four new `InitMethod`
+variants with associated loaders. Each loader has a file-shape
+contract (`PosteriorSource`, `MleSource`, flat-TOML for FromParams,
+`~`-dist for FromPrior). Implementing them properly requires:
+
+1. New `InitSource` provenance enum variants (PriorDraw,
+   PosteriorRow, MlePoint, ParamsPoint).
+2. New file readers — posterior TSV column parser, mle.toml /
+   final_params.toml structured loader, prior sampler.
+3. Wiring into `build_chain_starts` so the new variants dispatch
+   correctly.
+4. Per-variant integration test producing a `run.json` with the
+   expected `init_provenance.method` tag (audit item 5).
+
+The wiring through PGAS / PMMH / IF2 stages requires careful
+ordering: each backend's stage-runner reads `InitMethod` and routes
+chain starts; adding variants must preserve the existing SurveyTopK
+dispatch contract.
+
+Recommend: dedicate one session per InitMethod variant. The proposal's
+type design (§"Init phase types") is detailed enough to follow exactly.
