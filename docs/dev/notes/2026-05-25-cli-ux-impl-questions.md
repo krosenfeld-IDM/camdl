@@ -87,6 +87,48 @@ if2/profile/fit-run`, `Step 6: InitMethod variants`, `Step 7: M-1
 CLI break`, `Step 8: shared help`, `Step 9: run.json provenance —
 will read overrode_scenario`, `Steps 10/11/12: doc churn`).
 
+## Update 2026-05-25 (Step 2 done): simulate + lineage migrated
+
+`util::resolve_run_model` (the shared 200-line value-resolution
+function used by both `simulate` and `lineage`) is now a thin
+wrapper around `params_resolver::resolve_parameters`. The inline
+tier-2-through-5 layering, the unknown-param checks, the
+finite/bounds validation, and the external-table resolution all
+live inside the resolver now — `resolve_run_model` just builds
+`ParameterInputs` and forwards.
+
+Three correctness issues surfaced during the migration and are
+fixed in the same commit (commit message captures the detail):
+
+1. **Intervention filter must run unconditionally** (resolver bug,
+   silent-wrong-answer class). The resolver was skipping
+   `apply_scenario_filter` when both scenario and adhoc enable/disable
+   were empty, leaving toggleable interventions live. Both an
+   integration test (`intervention_event_defaults::simulate_default_event_fires_intervention_does_not`)
+   and a new unit test
+   (`no_scenario_no_adhoc_still_drops_toggleable_interventions`)
+   now pin the unconditional-filter contract.
+2. **Multi-violation reporting**: `MultipleViolations(Vec<ResolveError>)`
+   variant added so multiple bounds/finite errors surface together,
+   matching the legacy `validate_parameter_values` ergonomics.
+3. **Error-message wording**: single-quoted parameter names + "not
+   finite (NaN or ±∞)" wording match the established convention
+   across the codebase.
+
+One intentional deviation from legacy precedence: `--param-vec`
+moves from "between `--params` and scenario" to "tier 5 alongside
+`--param`". Rationale in the commit message; no integration tests
+pinned the old order, and the new mapping is consistent with the
+proposal's "`--fixed` is highest" stance.
+
+Test posture after Step 2:
+- Resolver unit tests: 28/28 pass.
+- `intervention_event_defaults`: 7/7 (was 6/7).
+- `parameter_bounds_validation`: 10/10 (was 8/10).
+- `scenario_runtime_application`: 2/2 (spec §1.3 pins).
+- Workspace: 28 of 29 test groups green; only the pre-existing
+  `time::tests::*_panics_in_debug` failures remain.
+
 ## What shipped this session
 
 Three commits on `worktree-agent-a0d854c5fd1d64f12`:
