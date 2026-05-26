@@ -12,10 +12,219 @@ use clap::Args;
 use crate::colored_help;
 use types::{Backend, ListDuration, ParamOverride, ParamVecSpec, RwSd, SeedSpec, SweepSpec, TableSpec};
 
+// ─── Shared help-text constants ───────────────────────────────────────────────
+//
+// Per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
+// §"Help-text rewrite", the `--init` and `--fixed` flags share a single
+// normative description across every inference subcommand. clap's
+// `long_about` accepts these as constants so a doc edit lands in one
+// place instead of being copied per arg.
+
+/// CLI-side enum for `--init <MODE>` on inference subcommands. Mode
+/// names are snake_case (matches the in-tree `InitMethod` deserializer
+/// per agent-handoff `cb47ee1`). The CLI parses the bare tag here, then
+/// the dispatch site combines it with the companion path flags
+/// (`--posterior`, `--mle`, init-mode `--params`) to build a full
+/// `crate::fit::init::InitMethod` payload-carrying variant.
+///
+/// Why a separate enum: `crate::fit::init::InitMethod` has
+/// payload-bearing variants (`FromPosterior { source: PosteriorSource }`,
+/// etc.). clap's `ValueEnum` can only surface payload-free variants —
+/// the post-parse construction lives at the dispatch site so the
+/// arg-struct stays declarative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum InitModeTag {
+    /// every chain at the seeded base params
+    Single,
+    /// per-chain uniform draw within [estimate] bounds
+    Uniform,
+    /// Latin-hypercube stratified within [estimate] bounds
+    Lhs,
+    /// per-chain sample from each parameter's `~ <dist>` declaration
+    #[clap(name = "from_prior")]
+    FromPrior,
+    /// per-chain row from a posterior draws TSV (requires `--posterior`)
+    #[clap(name = "from_posterior")]
+    FromPosterior,
+    /// all chains at the MLE from a prior fit (requires `--mle`)
+    #[clap(name = "from_mle")]
+    FromMle,
+    /// all chains at the point in a hand-written flat params TOML
+    /// (requires the init-mode `--params <toml>` companion)
+    #[clap(name = "from_params")]
+    FromParams,
+    /// top-K rows from a `camdl survey` landscape (requires `--survey-path`)
+    #[clap(name = "survey_top_k")]
+    SurveyTopK,
+}
+
+impl std::fmt::Display for InitModeTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            InitModeTag::Single        => "single",
+            InitModeTag::Uniform       => "uniform",
+            InitModeTag::Lhs           => "lhs",
+            InitModeTag::FromPrior     => "from_prior",
+            InitModeTag::FromPosterior => "from_posterior",
+            InitModeTag::FromMle       => "from_mle",
+            InitModeTag::FromParams    => "from_params",
+            InitModeTag::SurveyTopK    => "survey_top_k",
+        })
+    }
+}
+
+impl InitModeTag {
+    /// Combine the parsed CLI tag with the companion path flags to
+    /// build the full `InitMethod` variant. Validates that companion
+    /// args match the chosen mode (and rejects payload args for modes
+    /// that don't accept them).
+    ///
+    /// Per the proposal §"`--init` family", payload modes require
+    /// their companion path; payload-free modes reject companions to
+    /// keep "the same flag means the same thing on every subcommand"
+    /// honest.
+    pub fn to_init_method(
+        self,
+        posterior: Option<&PathBuf>,
+        mle:       Option<&PathBuf>,
+        init_params: Option<&PathBuf>,
+    ) -> Result<crate::fit::init::InitMethod, String> {
+        use crate::fit::init::{InitMethod, MleSource, PosteriorSource};
+        // Reject companion paths on incompatible modes — better an
+        // error at parse time than a silent ignore.
+        match self {
+            InitModeTag::FromPosterior => {}
+            _ => if posterior.is_some() {
+                return Err(format!(
+                    "--posterior is only valid with --init from_posterior \
+                     (got --init {})", self));
+            }
+        }
+        match self {
+            InitModeTag::FromMle => {}
+            _ => if mle.is_some() {
+                return Err(format!(
+                    "--mle is only valid with --init from_mle \
+                     (got --init {})", self));
+            }
+        }
+        match self {
+            InitModeTag::FromParams => {}
+            _ => if init_params.is_some() {
+                return Err(format!(
+                    "--params is only valid with --init from_params \
+                     (got --init {}). For setting parameter values, \
+                     use --fixed NAME=VALUE or --fixed-file <toml>.", self));
+            }
+        }
+        Ok(match self {
+            InitModeTag::Single  => InitMethod::Single,
+            InitModeTag::Uniform => InitMethod::Uniform,
+            InitModeTag::Lhs     => InitMethod::Lhs,
+            InitModeTag::FromPrior => InitMethod::FromPrior,
+            InitModeTag::SurveyTopK => InitMethod::SurveyTopK,
+            InitModeTag::FromPosterior => {
+                let p = posterior.ok_or_else(|| {
+                    "--init from_posterior requires --posterior <path>".to_string()
+                })?;
+                // Distinguish a file from a directory at construction
+                // time so the loader can give a precise error message.
+                let source = if p.is_dir() {
+                    PosteriorSource::FitDir(p.clone())
+                } else {
+                    PosteriorSource::DrawsTsv(p.clone())
+                };
+                InitMethod::FromPosterior { source }
+            }
+            InitModeTag::FromMle => {
+                let p = mle.ok_or_else(|| {
+                    "--init from_mle requires --mle <path>".to_string()
+                })?;
+                let source = if p.is_dir() {
+                    MleSource::FitDir(p.clone())
+                } else {
+                    MleSource::File(p.clone())
+                };
+                InitMethod::FromMle { source }
+            }
+            InitModeTag::FromParams => {
+                let p = init_params.ok_or_else(|| {
+                    "--init from_params requires --params <toml>".to_string()
+                })?;
+                InitMethod::FromParams { path: p.clone() }
+            }
+        })
+    }
+}
+
+/// Shared `long_about` for `--init <MODE>` on inference subcommands
+/// (`if2`, `profile`, `fit run`). Mode names are snake_case to match
+/// the in-tree `InitMethod` deserializer (`from_prior`, not
+/// `from-prior`). gh#83 / gh#85.
+pub const INIT_LONG_ABOUT: &str = "\
+INIT MODES (where do chain starting points come from?)
+
+  single             every chain starts at the seeded base params
+  uniform            per-chain U(lo, hi) over [estimate] parameter bounds
+  lhs                Latin-hypercube stratified within bounds (scale-aware
+                     via Transform; best basin coverage at low chain counts)
+  from_params        load a single point from a flat params TOML; pass
+                     --params <path>. (Use this where you'd previously
+                     have written --params <path> on profile or if2.)
+  from_prior         sample once per chain from each parameter's `~ <dist>`
+                     declaration in the .camdl source
+  from_posterior     sample chain starts uniformly from a posterior draws TSV
+                     (or a fit-results directory containing draws.tsv); pass
+                     --posterior <path>
+  from_mle           all chains at the MLE point from a prior fit; pass
+                     --mle <path>
+  survey_top_k       initialise from the top-K best landscape points of a
+                     prior survey; pass --survey-path <dir>
+
+Init applies only to parameters in the inference [estimate] set; parameters
+in [fixed] (or absent from [estimate]) take their model value or --fixed
+override regardless of init mode.";
+
+/// Shared `long_about` for `--fixed NAME=VALUE` / `--fixed-file <toml>`
+/// on every subcommand. Per the proposal §"`--fixed` semantics,
+/// defined once", `--fixed` is the universal value-setter.
+pub const FIXED_LONG_ABOUT: &str = "\
+SET PARAMETER VALUES
+
+  --fixed NAME=VALUE      set NAME to VALUE (repeatable; explicit form only,
+                          name-only `--fixed NAME` was removed per the
+                          2026-05-25 CLI UX revision)
+  --fixed-file <toml>     load a flat params TOML; each top-level key is a
+                          parameter name (repeatable, later files override
+                          earlier ones)
+
+ON INFERENCE SUBCOMMANDS (if2, profile, fit run)
+
+  Any name appearing in `--fixed`/`--fixed-file` is pinned at the supplied
+  value AND removed from the inference [estimate] set if present (so that
+  `--fixed gamma=0.1 --sweep tau=lin(...)` is the canonical pattern for
+  profile-likelihood slicing — hold gamma, sweep tau). A warning is emitted
+  naming each parameter kicked from [estimate] and the source that did it.
+
+PRECEDENCE (last wins, per docs/camdl-run-spec.md §1.3)
+
+  1. Model parameter default in the .camdl source
+  2. fit.toml [fixed] block (if --fit is in scope)
+  3. --fixed-file <toml> (layered in declared order)
+  4. Scenario preset (--scenario NAME)
+  5. --fixed NAME=VALUE   (highest)";
+
 // ─── Shared flat arg groups ───────────────────────────────────────────────────
 
 /// `--params FILE` (repeatable) + `--param NAME=VALUE` (repeatable) +
-/// `--table NAME=FILE` (repeatable)
+/// `--table NAME=FILE` (repeatable). Used on **non-inference**
+/// subcommands (`simulate`, `pfilter`, `eval`) where `--params` is
+/// unambiguous — every value is trivially "fixed" because no inference
+/// is happening.
+///
+/// Inference subcommands use [`InferenceModelOverrides`] instead;
+/// `--params` / `--param` were removed there (M-1 break per
+/// 2026-05-25 CLI UX rev 2).
 #[derive(Args, Clone, Default)]
 pub struct ModelOverrides {
     /// Parameter TOML file (may be repeated)
@@ -29,6 +238,84 @@ pub struct ModelOverrides {
     /// External table for table-lookup expressions, e.g. --table contact=matrix.tsv
     #[arg(long, value_name = "NAME=FILE")]
     pub table: Vec<TableSpec>,
+}
+
+/// Inference-subcommand model overrides. Mirrors
+/// [`ModelOverrides`] structurally but drops `--params` / `--param` in
+/// favour of `--fixed NAME=VALUE` / `--fixed-file <toml>` (the
+/// universal value-setter from 2026-05-25 CLI UX rev 2).
+///
+/// `--params` and `--param` are reintroduced as hidden traps that
+/// produce an actionable error at dispatch time (per CLAUDE.md alpha
+/// posture: no backwards-compat shims, hard break with replacement
+/// spelled out).
+#[derive(Args, Clone, Default)]
+pub struct InferenceModelOverrides {
+    /// Pin NAME to VALUE (repeatable; sets value and removes the
+    /// parameter from `[estimate]` if present). See `--help-fixed` for
+    /// the full precedence / semantics block.
+    #[arg(long = "fixed", value_name = "NAME=VALUE",
+          long_help = FIXED_LONG_ABOUT)]
+    pub fixed_cli: Vec<ParamOverride>,
+
+    /// Load fixed values from a flat params TOML (repeatable, layered).
+    /// Each top-level key = parameter name; later files override
+    /// earlier ones. Listed parameters are removed from `[estimate]`
+    /// if present.
+    #[arg(long = "fixed-file", value_name = "TOML",
+          long_help = FIXED_LONG_ABOUT)]
+    pub fixed_files: Vec<PathBuf>,
+
+    /// External table for table-lookup expressions, e.g. --table contact=matrix.tsv
+    #[arg(long, value_name = "NAME=FILE")]
+    pub table: Vec<TableSpec>,
+
+    // ── Removed-flag traps (M-1 break per proposal §"Migration") ──
+    //
+    // These are accepted by clap so the user gets a helpful actionable
+    // error at dispatch time instead of the bare clap "unrecognised
+    // option" error. The dispatch site checks each and aborts with the
+    // replacement spelled out.
+    //
+    // Per CLAUDE.md alpha posture: no back-compat shims, no aliases —
+    // these traps exist purely so the error message is actionable.
+    // They have no other effect.
+    #[arg(long = "params", value_name = "FILE", hide = true)]
+    pub _removed_params: Vec<PathBuf>,
+    #[arg(long = "param", value_name = "NAME=VALUE", hide = true)]
+    pub _removed_param: Vec<ParamOverride>,
+}
+
+impl InferenceModelOverrides {
+    /// Emit an actionable error and abort if a removed flag was used.
+    /// Called by every inference-subcommand dispatch function before
+    /// any other work. Matches the wording in the proposal §"Migration".
+    pub fn check_removed_flags(&self, subcmd: &str) {
+        if !self._removed_params.is_empty() {
+            eprintln!(
+                "error: --params is no longer accepted on `camdl {}`. \
+                 Replacement:\n  \
+                 --fixed NAME=VALUE             (set & freeze specific values)\n  \
+                 --fixed-file <toml>            (load fixed values from a TOML file)\n  \
+                 --init from_params --params <toml>   \
+                     (chain warm-start from a hand-written params TOML)\n  \
+                 --init from_mle --mle <fit-dir>      \
+                     (chain warm-start from a prior fit's MLE)\n\
+                 See `camdl {} --help` (INIT MODES + SET PARAMETER VALUES sections).",
+                subcmd, subcmd);
+            std::process::exit(1);
+        }
+        if !self._removed_param.is_empty() {
+            eprintln!(
+                "error: --param is no longer accepted on `camdl {}`. \
+                 Replacement:\n  \
+                 --fixed NAME=VALUE             (set & freeze a single value)\n  \
+                 --fixed-file <toml>            (load fixed values from a TOML file)\n\
+                 See `camdl {} --help` (SET PARAMETER VALUES section).",
+                subcmd, subcmd);
+            std::process::exit(1);
+        }
+    }
 }
 
 /// `--scenario` XOR `--enable`/`--disable`
@@ -394,10 +681,6 @@ pub struct FitRunArgs {
     #[arg(long, requires = "stage", conflicts_with = "force")]
     pub resume: bool,
 
-    /// Starting-point directory or short run hash (requires --stage)
-    #[arg(long, requires = "stage")]
-    pub starts_from: Option<String>,
-
     /// Cartesian sweep over a fixed parameter (may repeat).
     /// SPEC is `V1,V2,...` | `lin(min,max,n)` | `log10(min,max,n)`.
     #[arg(long, value_name = "NAME=SPEC")]
@@ -421,16 +704,43 @@ pub struct FitRunArgs {
     #[arg(long, value_name = "DB", requires = "stage")]
     pub decibans_thresh: Option<f64>,
 
-    /// Override [stages.<stage>.init_method] for chain starts (gh#42):
-    /// `single` (all chains at the seeded start), `uniform` (per-chain
-    /// uniform random within bounds — v1 default), or `lhs`
-    /// (Latin-hypercube stratified, scale-aware via Transform — best
-    /// basin coverage at low chain counts). Requires --stage so scout
-    /// and refine can be set independently. Has no effect when the
-    /// stage uses `init_mle = "<prior_stage>"` — those chains start
-    /// from the prior MLE regardless.
-    #[arg(long, value_name = "MODE", requires = "stage")]
-    pub init_method: Option<crate::fit::init::InitMethod>,
+    /// Override [stages.<stage>.init] for chain starts (gh#42, gh#83).
+    /// See `--help` for the INIT MODES block. Requires --stage so
+    /// scout and refine can be set independently. Has no effect when
+    /// the stage uses `init_mle = "<prior_stage>"` — those chains
+    /// start from the prior MLE regardless. Renamed from
+    /// `--init-method` per 2026-05-25 CLI UX rev 2.
+    #[arg(long, value_name = "MODE", value_enum, requires = "stage",
+          long_help = INIT_LONG_ABOUT)]
+    pub init: Option<InitModeTag>,
+
+    /// Companion path for `--init from_posterior`. Accepts a posterior
+    /// draws TSV directly or a fit-results directory.
+    #[arg(long, value_name = "PATH", requires = "stage")]
+    pub posterior: Option<PathBuf>,
+
+    /// Companion path for `--init from_mle`. Accepts an MLE TOML
+    /// directly or a fit-results directory (auto-resolves
+    /// `<dir>/mle.toml`, then `<dir>/final_params.toml`). Replaces
+    /// the removed `--starts-from <dir>` flag.
+    #[arg(long, value_name = "PATH", requires = "stage")]
+    pub mle: Option<PathBuf>,
+
+    /// Companion path for `--init from_params`. Hand-written flat
+    /// params TOML; top-level keys are parameter names.
+    #[arg(long = "params", value_name = "TOML", requires = "stage")]
+    pub init_params: Option<PathBuf>,
+
+    // ── Removed-flag traps (M-1 break per 2026-05-25 proposal) ────────
+    //
+    // These flags were renamed/removed; the dispatch site emits an
+    // actionable error citing the replacement. Per CLAUDE.md alpha
+    // posture, no back-compat shims — these exist purely so the error
+    // message points the user to the right replacement.
+    #[arg(long = "init-method", value_name = "MODE", hide = true)]
+    pub _removed_init_method: Option<String>,
+    #[arg(long = "starts-from", value_name = "DIR_OR_HASH", hide = true)]
+    pub _removed_starts_from: Option<String>,
 
     /// Survey CAS directory consumed when `--init survey_top_k` is in
     /// effect (gh#51). Must contain `run.json` (RunKind::Survey) and
@@ -931,7 +1241,7 @@ pub struct If2Args {
     pub model: PathBuf,
 
     #[command(flatten)]
-    pub model_overrides: ModelOverrides,
+    pub model_overrides: InferenceModelOverrides,
 
     #[command(flatten)]
     pub scenario: ScenarioArgs,
@@ -965,10 +1275,6 @@ pub struct If2Args {
     /// Random-walk standard deviations, e.g. "beta=0.05,rho=0.01" or "auto"
     #[arg(long)]
     pub rw_sd: Option<RwSd>,
-
-    /// Parameters to hold fixed during estimation (comma-separated)
-    #[arg(long, value_delimiter = ',')]
-    pub fixed: Vec<String>,
 
     /// Initial-value-problem parameters (comma-separated)
     #[arg(long, value_delimiter = ',')]
@@ -1063,7 +1369,7 @@ pub struct ProfileArgs {
     pub model: PathBuf,
 
     #[command(flatten)]
-    pub model_overrides: ModelOverrides,
+    pub model_overrides: InferenceModelOverrides,
 
     #[command(flatten)]
     pub scenario: ScenarioArgs,
@@ -1114,14 +1420,33 @@ pub struct ProfileArgs {
     pub starts: usize,
 
     /// How the per-cell starting points (for `--starts > 1`) are drawn
-    /// across the non-focal estimated parameters' bounds:
-    /// `single` (every start at the seeded base — chains differ only
-    /// by IF2 RNG), `uniform` (per-start uniform random within bounds —
-    /// historical default), or `lhs` (Latin-hypercube stratified,
-    /// scale-aware via Transform — best basin coverage at low
-    /// `--starts`). gh#42.
-    #[arg(long, value_name = "MODE", default_value_t = crate::fit::init::InitMethod::Uniform)]
-    pub init: crate::fit::init::InitMethod,
+    /// across the non-focal estimated parameters' bounds. See `--help`
+    /// for the full INIT MODES block.
+    #[arg(long, value_name = "MODE", value_enum,
+          default_value_t = InitModeTag::Uniform,
+          long_help = INIT_LONG_ABOUT)]
+    pub init: InitModeTag,
+
+    /// Companion path for `--init from_posterior`. Accepts a posterior
+    /// draws TSV directly or a fit-results directory (auto-resolves
+    /// to `<dir>/draws.tsv`).
+    #[arg(long, value_name = "PATH")]
+    pub posterior: Option<PathBuf>,
+
+    /// Companion path for `--init from_mle`. Accepts an MLE TOML file
+    /// directly (`mle.toml` / `final_params.toml`) or a fit-results
+    /// directory (auto-resolves to `<dir>/mle.toml` then
+    /// `<dir>/final_params.toml`).
+    #[arg(long, value_name = "PATH")]
+    pub mle: Option<PathBuf>,
+
+    /// Companion path for `--init from_params`. Hand-written flat
+    /// params TOML; top-level keys are parameter names. This flag is
+    /// the init-mode counterpart to the **removed** value-setter
+    /// `--params` flag; it only fires when `--init from_params` is
+    /// also passed.
+    #[arg(long = "params", value_name = "TOML")]
+    pub init_params: Option<PathBuf>,
 
     /// Cooling schedule
     #[arg(long, default_value_t = 0.95)]
@@ -1130,10 +1455,6 @@ pub struct ProfileArgs {
     /// Random-walk SDs
     #[arg(long)]
     pub rw_sd: Option<RwSd>,
-
-    /// Parameters to hold fixed (comma-separated)
-    #[arg(long, value_delimiter = ',')]
-    pub fixed: Vec<String>,
 
     /// Profile TSV output (default: stdout)
     #[arg(short, long)]

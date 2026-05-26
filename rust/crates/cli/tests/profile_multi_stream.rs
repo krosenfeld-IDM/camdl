@@ -114,7 +114,10 @@ fn run_profile(
             "--sweep", "R0=lin(15,25,2)",
             "--particles", "100", "--iterations", "1", "--starts", "1",
             "--rw-sd", "auto",
-            "--fixed", "sigma,gamma,kappa,amplitude,iota,rho,sigma_se,k",
+            "--fixed", "sigma=0.125", "--fixed", "gamma=0.2",
+            "--fixed", "kappa=0.05", "--fixed", "amplitude=0.3",
+            "--fixed", "iota=1e-06", "--fixed", "rho=0.4",
+            "--fixed", "sigma_se=0.05", "--fixed", "k=10.0",
             "--output", &out_tsv.to_string_lossy(),
             "--seed", "1",
         ])
@@ -196,7 +199,10 @@ fn profile_multi_stream_model_requires_explicit_obs() {
             "--sweep", "R0=lin(15,25,2)",
             "--particles", "100", "--iterations", "1", "--starts", "1",
             "--rw-sd", "auto",
-            "--fixed", "sigma,gamma,kappa,amplitude,iota,rho,sigma_se,k",
+            "--fixed", "sigma=0.125", "--fixed", "gamma=0.2",
+            "--fixed", "kappa=0.05", "--fixed", "amplitude=0.3",
+            "--fixed", "iota=1e-06", "--fixed", "rho=0.4",
+            "--fixed", "sigma_se=0.05", "--fixed", "k=10.0",
             "--output", &out_tsv.to_string_lossy(),
             "--seed", "1",
         ])

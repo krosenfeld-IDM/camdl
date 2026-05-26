@@ -262,7 +262,7 @@ fn profile_pmmh_with_neither_warns_and_uses_flat() {
     let (ir, data) = write_fixture(tmp.path());
     let out_root = tmp.path().join("out_flat");
 
-    let output = run_profile(&bin, &out_root, &ir, &data, &["--fixed", "N0"]);
+    let output = run_profile(&bin, &out_root, &ir, &data, &["--fixed", "N0=1000"]);
     assert!(output.status.success(),
         "profile run failed: stderr=\n{}",
         String::from_utf8_lossy(&output.stderr));
@@ -386,7 +386,7 @@ fn same_model_no_fit_vs_with_fit_different_cas_dir() {
     let out_no  = tmp.path().join("out_nofit");
     let out_yes = tmp.path().join("out_yesfit");
 
-    let no  = run_profile(&bin, &out_no,  &ir, &data, &["--fixed", "N0"]);
+    let no  = run_profile(&bin, &out_no,  &ir, &data, &["--fixed", "N0=1000"]);
     let yes = run_profile(&bin, &out_yes, &ir, &data,
         &["--fit", &fit_toml.to_string_lossy()]);
     assert!(no.status.success(),
@@ -413,7 +413,7 @@ fn focal_param_in_fixed_errors_clearly() {
 
     let output = run_profile(&bin, &out_root, &ir, &data,
         // beta is both swept and fixed.
-        &["--fixed", "beta,gamma,N0"]);
+        &["--fixed", "beta=0.3", "--fixed", "gamma=0.1", "--fixed", "N0=1000"]);
     assert!(!output.status.success(),
         "swept+fixed conflict must be a hard error");
     let stderr = String::from_utf8_lossy(&output.stderr);

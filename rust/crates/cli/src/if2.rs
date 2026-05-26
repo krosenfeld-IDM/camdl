@@ -105,21 +105,18 @@ pub fn cmd_if2(a: &crate::args::If2Args) {
     let trace_path: Option<String> = a.trace.as_ref().map(|p| p.to_string_lossy().into_owned());
     let scenario_name = a.scenario.scenario.clone();
     let flow_name = a.flow.flow.clone();
-    // Build the resolver inputs from the CLI surface. `--params FILE`
-    // → `fixed_files`; `--param NAME=VALUE` → `fixed_cli`. The
-    // resolver handles tier ordering (model default → scenario →
-    // --fixed-file → --fixed-cli) and applies the intervention filter.
-    // For if2, `--fixed NAME` (name-only) is the kick-out partition for
-    // `--rw-sd auto`; it does NOT supply a value, so it goes into
-    // `fit_toml_estimate` via the inverse construction below.
-    //
-    // Per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
-    // §"Step 5 — Migrate if2", step 7 will rename `--fixed NAME` to
-    // `--fixed NAME=VALUE` (M-1 break). For step 5 the resolver only
-    // handles value resolution; the `fixed_set` partition for rw_sd
-    // auto stays as-is below.
-    let fixed_files_vec: Vec<std::path::PathBuf> = a.model_overrides.params.clone();
-    let fixed_cli_vec: Vec<(String, f64)> = a.model_overrides.param.iter()
+    // M-1 break per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
+    // §"Migration": fail loudly on removed flags before any work.
+    a.model_overrides.check_removed_flags("if2");
+    // Build the resolver inputs from the CLI surface. `--fixed-file`
+    // (repeatable) → `fixed_files`; `--fixed NAME=VALUE` (repeatable)
+    // → `fixed_cli`. The resolver handles tier ordering (model default
+    // → scenario → --fixed-file → --fixed) and applies the intervention
+    // filter. `--fixed NAME=VALUE` *also* kicks the listed names from
+    // the rw_sd-auto estimation partition below (per the proposal's
+    // universal value-setter semantic).
+    let fixed_files_vec: Vec<std::path::PathBuf> = a.model_overrides.fixed_files.clone();
+    let fixed_cli_vec: Vec<(String, f64)> = a.model_overrides.fixed_cli.iter()
         .map(|p| (p.name.clone(), p.value))
         .collect();
 
@@ -172,7 +169,13 @@ pub fn cmd_if2(a: &crate::args::If2Args) {
     };
 
     let ivp_set: std::collections::HashSet<String> = a.ivp.iter().cloned().collect();
-    let fixed_set: std::collections::HashSet<String> = a.fixed.iter().cloned().collect();
+    // `--fixed NAME=VALUE` (CLI rev 2): every listed name is pinned at
+    // VALUE by the resolver above AND kicked out of the rw_sd-auto
+    // estimation partition here. Same semantic as profile's [estimate]
+    // kick-out; in if2 the partition is the rw-sd auto set instead of
+    // a fit toml's [estimate] block.
+    let fixed_set: std::collections::HashSet<String> = a.model_overrides.fixed_cli.iter()
+        .map(|p| p.name.clone()).collect();
 
     // Load model
     let (model_pre, _model_json) = crate::util::load_model(&ir_path)

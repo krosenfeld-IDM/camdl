@@ -88,7 +88,10 @@ fn profile_pmmh_smoke_writes_mle_and_algorithm_block() {
             "--pmmh-rho", "0.99",
             "--starts", "1",
             "--rw-sd", "auto",
-            "--fixed", "sigma,gamma,rho,k,p_detect,N0,I0",
+            "--fixed", "sigma=0.2", "--fixed", "gamma=0.1",
+            "--fixed", "rho=0.5", "--fixed", "k=5.0",
+            "--fixed", "p_detect=0.8", "--fixed", "N0=100000.0",
+            "--fixed", "I0=10.0",
             "--output", &out_tsv.to_string_lossy(),
             "--seed", "1",
         ])
@@ -194,7 +197,10 @@ fn profile_pmmh_rejects_ode_backend() {
             "--pmmh-particles", "50",
             "--starts", "1",
             "--rw-sd", "auto",
-            "--fixed", "sigma,gamma,rho,k,p_detect,N0,I0",
+            "--fixed", "sigma=0.2", "--fixed", "gamma=0.1",
+            "--fixed", "rho=0.5", "--fixed", "k=5.0",
+            "--fixed", "p_detect=0.8", "--fixed", "N0=100000.0",
+            "--fixed", "I0=10.0",
             "--output", &out_tsv.to_string_lossy(),
             "--seed", "1",
         ])

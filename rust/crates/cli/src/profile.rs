@@ -429,18 +429,31 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         },
         None => None,
     };
-    // Per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
-    // §"Step 5 — Migrate profile": route value resolution through the
-    // unified resolver. `--params FILE` → `fixed_files`,
-    // `--param NAME=VALUE` → `fixed_cli`. The fit.toml [fixed] block
-    // stays pre-processed via FixedParams::expand_from_scenario +
-    // resolve_with_model (the config-file pre-processor); the result
-    // is fed into the resolver as `fit_toml_fixed`.
-    let fixed_files_vec: Vec<std::path::PathBuf> = a.model_overrides.params.clone();
-    let fixed_cli_vec: Vec<(String, f64)> = a.model_overrides.param.iter()
+    // M-1 break per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
+    // §"Migration": fail loudly on removed flags before any work.
+    a.model_overrides.check_removed_flags("profile");
+    // `--fixed NAME=VALUE` → `fixed_cli`, `--fixed-file <toml>`
+    // (repeatable, layered) → `fixed_files`. Both feed into the
+    // unified resolver; the fit.toml [fixed] block is still
+    // pre-processed via FixedParams::expand_from_scenario +
+    // resolve_with_model and supplied as `fit_toml_fixed`.
+    let fixed_files_vec: Vec<std::path::PathBuf> = a.model_overrides.fixed_files.clone();
+    let fixed_cli_vec: Vec<(String, f64)> = a.model_overrides.fixed_cli.iter()
         .map(|p| (p.name.clone(), p.value))
         .collect();
     let _overrides: HashMap<String, f64> = fixed_cli_vec.iter().cloned().collect();
+    // Construct the full InitMethod (with payload) from the CLI tag
+    // + companion path flags. This is the post-parse step that turns
+    // `--init from_posterior --posterior <path>` into a typed
+    // `InitMethod::FromPosterior { source: ... }`.
+    let init_method: crate::fit::init::InitMethod = a.init.to_init_method(
+        a.posterior.as_ref(),
+        a.mle.as_ref(),
+        a.init_params.as_ref(),
+    ).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
 
     let focal_names: Vec<String> = a.sweep.iter().map(|s| s.name.clone()).collect();
 
@@ -710,8 +723,14 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // with `--fit toml`'s `[fixed]` (per gh#73 §2 precedence). The
     // toml's `[fixed]` is the *artifact's* default; the CLI flag is
     // the per-invocation override.
+    //
+    // Per 2026-05-25 CLI UX rev 2, `--fixed NAME=VALUE` carries
+    // *both* a value (handled by the resolver above) and the kick-out
+    // assertion (this set). Names from `--fixed-file` are pulled in
+    // via the resolver's provenance — they kick out of [estimate]
+    // identically.
     let cli_fixed_names: std::collections::HashSet<String> =
-        a.fixed.iter().cloned().collect();
+        a.model_overrides.fixed_cli.iter().map(|p| p.name.clone()).collect();
     let mut fixed_names: std::collections::HashSet<String> = cli_fixed_names.clone();
     for k in fit_toml_fixed.keys() {
         fixed_names.insert(k.clone());
@@ -834,36 +853,33 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // same draw across cells (lets the per-start TSV rows be compared
     // cell-to-cell). `None` → every start uses `if2_params` directly
     // (Single mode; or `--starts 1`).
-    if a.init == crate::fit::init::InitMethod::SurveyTopK {
+    if init_method == crate::fit::init::InitMethod::SurveyTopK {
         eprintln!("error: --init survey_top_k is not yet supported on \
             `camdl profile`; v2 supports it on IF2 / PMMH / PGAS \
             `camdl fit` stages, profile (and NLopt) are deferred to v3 \
             (see gh#51 §\"Stage scope\"). Workaround: use --init lhs.");
         std::process::exit(1);
     }
-    // Step 6 warm-start variants: dispatch through the new
-    // `chain_starts::draw_chain_starts` entry point. `FromPrior` is
-    // reachable today via `--init from_prior`; the path-bearing
-    // variants (`FromPosterior`, `FromMle`, `FromParams`) need the
-    // step-7 CLI break to wire `--posterior` / `--mle` / `--params`
-    // flag parsing, so they're rejected at parse time and surfaced
-    // here as defensive-fall-through.
+    // Step 7 warm-start variants: dispatch through the new
+    // `chain_starts::draw_chain_starts` entry point. The CLI break
+    // wires `--posterior` / `--mle` / `--params` companion flags via
+    // `InitModeTag::to_init_method` (step 7).
     let per_start_params: Option<Arc<Vec<Vec<sim::inference::if2::EstimatedParam>>>> =
-        match &a.init {
+        match &init_method {
             crate::fit::init::InitMethod::FromPrior
             | crate::fit::init::InitMethod::FromPosterior { .. }
             | crate::fit::init::InitMethod::FromMle       { .. }
             | crate::fit::init::InitMethod::FromParams    { .. } => {
                 let starts = crate::fit::chain_starts::draw_chain_starts(
-                    &resolved, &a.init, n_starts, seed_base,
+                    &resolved, &init_method, n_starts, seed_base,
                 ).unwrap_or_else(|e| {
-                    eprintln!("error: profile --init {}: {}", a.init, e);
+                    eprintln!("error: profile --init {}: {}", init_method, e);
                     std::process::exit(1);
                 });
                 Some(Arc::new(starts.to_estimated_params(&if2_params)))
             }
             _ => crate::fit::init::build_chain_starts(
-                    a.init.clone(), &if2_params, n_starts, seed_base,
+                    init_method.clone(), &if2_params, n_starts, seed_base,
                 ).map(Arc::new),
         };
 
@@ -1026,7 +1042,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                         per_start.iter()
                             .map(|spec| (spec.name.clone(), spec.initial))
                             .collect();
-                    let source = match &a.init {
+                    let source = match &init_method {
                         crate::fit::init::InitMethod::FromPrior =>
                             crate::fit::chain_starts::InitSource::PriorDraw {
                                 seed: crate::util::derive_chain_seed(
@@ -1068,7 +1084,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     }
                 }).collect();
             let cs = crate::fit::chain_starts::ChainStarts {
-                starts, method: a.init.clone(),
+                starts, method: init_method.clone(),
             };
             crate::run_meta::InitProvenance::from_chain_starts(&cs)
         });

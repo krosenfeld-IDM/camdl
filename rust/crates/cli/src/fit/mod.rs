@@ -186,11 +186,45 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
 
     let _eval_stats_guard = crate::util::EvalStatsReportGuard::start();  // gh#audit-H5
     sim::eval_stats::set_allow_degenerate_rates(a.allow_degenerate_rates);  // gh#audit-C6
+    // M-1 break per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
+    // §"Migration": fail loudly on removed flags before any work.
+    if let Some(raw) = a._removed_starts_from.as_deref() {
+        eprintln!(
+            "error: --starts-from is no longer accepted on `camdl fit run`. \
+             Replacement:\n  \
+             --init from_mle --mle <fit-dir>       \
+                 (warm-start every chain from a prior fit's MLE)\n  \
+             --init from_params --params <toml>    \
+                 (warm-start from a hand-written params TOML)\n\
+             Saw --starts-from {}.\n\
+             See `camdl fit run --help` (INIT MODES section).",
+            raw);
+        std::process::exit(1);
+    }
+    if let Some(raw) = a._removed_init_method.as_deref() {
+        eprintln!(
+            "error: --init-method is no longer accepted on `camdl fit run`. \
+             It was renamed to --init for parity with `camdl profile`.\n\
+             Saw --init-method {}.\n\
+             See `camdl fit run --help` (INIT MODES section).",
+            raw);
+        std::process::exit(1);
+    }
     let fit_path              = a.config.to_string_lossy().into_owned();
     let base_seed             = a.seed.unwrap_or(1);
     let force                 = a.force;
     let stage_filter          = a.stage.clone();
-    let starts_from_override  = a.starts_from.as_ref().map(|s| resolve_starts_from_arg(s));
+    // `--init from_mle --mle <dir>` is the new spelling for the
+    // pre-rev-2 `--starts-from <dir>` flag. The mle-fitdir path
+    // becomes the "all chains at prior-fit MLE" warm start that the
+    // dispatcher's `starts_from_override` already implements.
+    let starts_from_override: Option<String> = a.mle.as_ref()
+        .filter(|_| matches!(a.init,
+            Some(crate::args::InitModeTag::FromMle)))
+        .map(|p| {
+            let s = p.to_string_lossy().to_string();
+            resolve_starts_from_arg(&s)
+        });
     let allow_nonconverged_scout = a.allow_nonconverged_scout;
     // CLI overrides for clean_eval / gate. clap enforces requires=stage so
     // these only fire when a single stage is selected, keeping scout and
@@ -198,7 +232,27 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     let cli_loglik_eval_particles = a.loglik_eval_particles;
     let cli_loglik_eval_reps      = a.loglik_eval_reps;
     let cli_decibans_thresh      = a.decibans_thresh;
-    let cli_init_method          = a.init_method.clone();
+    // Construct the full InitMethod payload from the CLI tag +
+    // companion paths. When `--init from_mle` is used the path-bearing
+    // variant is consumed by `starts_from_override` above (the legacy
+    // dispatcher's `--starts-from` semantic). For the other warm-start
+    // variants (from_prior / from_posterior / from_params) the typed
+    // InitMethod flows into `cli_init_method` and is dispatched
+    // through `pgas_opts.init_method` / `pmmh_opts.init_method` /
+    // the IF2 stage's `effective_init`.
+    let cli_init_method: Option<crate::fit::init::InitMethod> = match a.init {
+        Some(tag) if !matches!(tag, crate::args::InitModeTag::FromMle) => {
+            Some(tag.to_init_method(
+                a.posterior.as_ref(),
+                a.mle.as_ref(),
+                a.init_params.as_ref(),
+            ).unwrap_or_else(|e| {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }))
+        }
+        _ => None,
+    };
     let cli_survey_path          = a.survey_path.clone();
     let cli_survey_top_k         = a.survey_top_k;
     let sweep_specs: Vec<(String, Vec<f64>)> = a.sweep.iter()
@@ -2149,7 +2203,12 @@ fn find_runs_with_prefix(
     }
 }
 
-/// Hardening proposal ship-now #9.
+/// Resolve a `--init from_mle --mle <hash-or-path>` argument to a
+/// concrete stage directory path. If the argument looks like a path,
+/// pass it through; otherwise treat as a short content-hash prefix and
+/// resolve against the default output root. Hardening proposal
+/// ship-now #9 (originally for the removed `--starts-from` flag,
+/// now reachable via `--init from_mle --mle <hash>`).
 fn resolve_starts_from_arg(raw: &str) -> String {
     if raw.contains('/') || raw.contains('\\') || raw == "." || raw == ".." {
         return raw.to_string();
@@ -2161,7 +2220,7 @@ fn resolve_starts_from_arg(raw: &str) -> String {
     match crate::browse::resolve_stage_by_hash(&root, raw) {
         Ok(path) => path.to_string_lossy().to_string(),
         Err(e) => {
-            eprintln!("error: --starts-from '{}': {}", raw, e);
+            eprintln!("error: --init from_mle --mle '{}': {}", raw, e);
             eprintln!("  Tip: pass a full path (e.g. results/fits/FOO/real/fit_1/scout)");
             eprintln!("  or a longer hash prefix.");
             std::process::exit(1);

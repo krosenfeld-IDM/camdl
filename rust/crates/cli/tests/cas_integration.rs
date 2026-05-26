@@ -200,8 +200,12 @@ fn list_shows_cached_runs() {
     assert!(stdout.contains("baseline"), "list should show scenario name");
 }
 
-/// `--starts-from <hash>` should resolve a short-hash prefix to the
-/// matching fit-stage directory. Hardening #9.
+/// `--starts-from` was removed in the 2026-05-25 CLI UX rev 2 M-1
+/// break. Users get an actionable error pointing at the replacement
+/// (`--init from_mle --mle <fit-dir>`), and `--init from_mle --mle
+/// <hash>` resolves a short-hash prefix to the matching fit-stage
+/// directory (preserving Hardening #9's resolver behaviour under the
+/// new spelling).
 #[test]
 fn starts_from_resolves_short_hash() {
     let Some(bin) = skip_if_missing_binary() else { return; };
@@ -275,29 +279,49 @@ cooling = 0.7
 init_mle = "{{use CLI}}"
 "#, ir.display(), data.display())).unwrap();
 
+    // Removed flag: `--starts-from` produces the actionable error
+    // from the M-1 break (proposal §"Migration"), regardless of value.
     let out = Command::new(&bin)
         .current_dir(tmp.path())
         .args(["fit", "run", &fit_toml.to_string_lossy(),
                "--stage", "refine",
-               "--starts-from", "zzzznonexistent"])
+               "--starts-from", "deadbeef"])
+        .output().expect("spawn");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(),
+        "--starts-from must fail with the removed-flag error");
+    assert!(stderr.contains("--starts-from is no longer accepted"),
+        "expected actionable removed-flag error, got: {}", stderr);
+    assert!(stderr.contains("--init from_mle --mle"),
+        "removed-flag error must spell out the replacement, got: {}",
+        stderr);
+
+    // Bad hash with the new spelling: same short-hash resolver, same
+    // actionable error.
+    let out = Command::new(&bin)
+        .current_dir(tmp.path())
+        .args(["fit", "run", &fit_toml.to_string_lossy(),
+               "--stage", "refine",
+               "--init", "from_mle",
+               "--mle", "zzzznonexistent"])
         .output().expect("spawn");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "bad hash must fail");
     assert!(stderr.contains("no fit stage matching hash prefix"),
         "expected 'no fit stage matching hash prefix', got: {}", stderr);
 
-    // Good hash: resolves to the fake stage we planted. Resolution
-    // happens before the fit actually does anything expensive, so
-    // verifying the success path means checking that we get past
-    // arg parsing — the fit itself may still fail downstream (the
-    // model IR is empty), but the --starts-from lookup succeeded.
-    // We check that the stderr does NOT contain the 'no fit stage
-    // matching' message.
+    // Good hash: resolves to the fake stage we planted via the new
+    // `--init from_mle --mle <hash>` spelling. Resolution happens
+    // before the fit actually does anything expensive, so verifying
+    // the success path means checking that we get past arg parsing —
+    // the fit itself may still fail downstream (the model IR is
+    // empty), but the warm-start lookup succeeded.
     let out = Command::new(&bin)
         .current_dir(tmp.path())
         .args(["fit", "run", &fit_toml.to_string_lossy(),
                "--stage", "refine",
-               "--starts-from", "deadbeef"])
+               "--init", "from_mle",
+               "--mle", "deadbeef"])
         .output().expect("spawn");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("no fit stage matching hash prefix"),
