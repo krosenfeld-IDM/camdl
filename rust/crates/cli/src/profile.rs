@@ -414,9 +414,18 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         },
         None => None,
     };
-    let overrides: HashMap<String, f64> = a.model_overrides.param.iter()
+    // Per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
+    // §"Step 5 — Migrate profile": route value resolution through the
+    // unified resolver. `--params FILE` → `fixed_files`,
+    // `--param NAME=VALUE` → `fixed_cli`. The fit.toml [fixed] block
+    // stays pre-processed via FixedParams::expand_from_scenario +
+    // resolve_with_model (the config-file pre-processor); the result
+    // is fed into the resolver as `fit_toml_fixed`.
+    let fixed_files_vec: Vec<std::path::PathBuf> = a.model_overrides.params.clone();
+    let fixed_cli_vec: Vec<(String, f64)> = a.model_overrides.param.iter()
         .map(|p| (p.name.clone(), p.value))
         .collect();
+    let _overrides: HashMap<String, f64> = fixed_cli_vec.iter().cloned().collect();
 
     let focal_names: Vec<String> = a.sweep.iter().map(|s| s.name.clone()).collect();
 
@@ -433,27 +442,8 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         crate::args::types::RwSd::Map(m) => m.clone(),
     };
 
-    // Load model
-    let (mut model, model_json) = crate::util::load_model(&ir_path)
-        .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
-
-    for pf in &a.model_overrides.params {
-        crate::util::apply_params_file(&mut model, &pf.to_string_lossy())
-            .unwrap_or_else(|e| { eprintln!("{}", e); std::process::exit(1); });
-    }
-    if let Some(ref name) = scenario_name {
-        if let Some(preset) = model.presets.iter().find(|p| p.name == *name) {
-            for p in &mut model.parameters {
-                if let Some(&v) = preset.params.get(&p.name) { p.value = Some(v); }
-            }
-        }
-    }
-    for p in &mut model.parameters {
-        if let Some(&v) = overrides.get(&p.name) { p.value = Some(v); }
-    }
-
-    // Bounds + finite-value check after all override paths resolved (gh#31).
-    crate::util::validate_parameter_values(&model)
+    // Load model (pre-resolution)
+    let (model_pre, model_json) = crate::util::load_model(&ir_path)
         .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
 
     // ── Optional --fit toml resolution (gh#73) ──────────────────────
@@ -461,20 +451,20 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // When `--fit <path.toml>` is supplied, the fit-toml is the source
     // of truth for priors, bounds, and the default fixed list — same
     // shape `camdl fit run` reads. The toml's `[fixed]` block is
-    // resolved against the model so scenario-driven fixed values come
-    // through, then merged with the CLI `--fixed` (CLI wins on
-    // collision per gh#73 §2 precedence rules).
+    // pre-processed against the model so scenario-driven fixed values
+    // come through; the resulting IndexMap is fed to the unified
+    // resolver as `fit_toml_fixed` (per 2026-05-25 CLI UX rev 2).
     //
     // The estimate IndexMap returned here is the canonical prior
     // source used downstream by `resolve_priors_with_precedence`. When
     // `--fit` is absent the map is empty and the resolver falls
     // through to model-IR priors (tier 2) for every parameter.
-    let (fit_estimate, fit_toml_hash, fit_toml_fixed):
+    let (fit_estimate, fit_toml_hash, fit_toml_fixed_indexmap):
         (indexmap::IndexMap<String, crate::fit::config_v2::EstimateSpecV2>,
          Option<String>,
-         std::collections::HashMap<String, f64>) = if let Some(fit_path) = a.fit.as_ref() {
+         indexmap::IndexMap<String, f64>) = if let Some(fit_path) = a.fit.as_ref() {
         let fit_path_str = fit_path.to_string_lossy().into_owned();
-        let mut fit_cfg = crate::fit::config_v2::FitConfigV2::load(&fit_path_str)
+        let fit_cfg = crate::fit::config_v2::FitConfigV2::load(&fit_path_str)
             .unwrap_or_else(|e| {
                 eprintln!("error: failed to load --fit toml '{}': {}",
                     fit_path_str, e);
@@ -482,12 +472,13 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             });
         // Resolve [fixed] (file load, scenario, inline overlay) the
         // same way `camdl survey --fit` and `camdl fit run` do.
-        fit_cfg.fixed.expand_from_scenario(&model)
+        let mut fixed_cfg = fit_cfg.fixed.clone();
+        fixed_cfg.expand_from_scenario(&model_pre)
             .unwrap_or_else(|e| {
                 eprintln!("error: --fit toml [fixed].expand_from_scenario: {}", e);
                 std::process::exit(1);
             });
-        let fixed_resolved = fit_cfg.fixed.resolve_with_model(&model)
+        let fixed_resolved = fixed_cfg.resolve_with_model(&model_pre)
             .unwrap_or_else(|e| {
                 eprintln!("error: --fit toml [fixed].resolve_with_model: {}", e);
                 std::process::exit(1);
@@ -503,11 +494,35 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         let hash = crate::hashing::sha256_hex(&bytes);
         eprintln!("profile: using --fit '{}' for priors / bounds / [fixed]",
             fit_path_str);
-        (fit_cfg.estimate, Some(hash),
-         fixed_resolved.into_iter().collect::<std::collections::HashMap<_,_>>())
+        (fit_cfg.estimate, Some(hash), fixed_resolved)
     } else {
-        (indexmap::IndexMap::new(), None, std::collections::HashMap::new())
+        (indexmap::IndexMap::new(), None, indexmap::IndexMap::new())
     };
+
+    // Run the unified resolver.
+    let fit_toml_estimate: indexmap::IndexSet<String> =
+        fit_estimate.keys().cloned().collect();
+    let table_files_resolver: HashMap<String, std::path::PathBuf> = HashMap::new();
+    let resolved = crate::params_resolver::resolve_parameters(
+        crate::params_resolver::ParameterInputs {
+            model: &model_pre,
+            scenario: scenario_name.as_deref(),
+            adhoc_enable: &a.scenario.enable,
+            adhoc_disable: &a.scenario.disable,
+            fixed_cli: &fixed_cli_vec,
+            fixed_files: &fixed_files_vec,
+            fit_toml_fixed: &fit_toml_fixed_indexmap,
+            fit_toml_estimate: &fit_toml_estimate,
+            table_files: &table_files_resolver,
+        },
+    ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+    crate::params_resolver::print_warnings(&resolved);
+    let model = resolved.model.clone();
+
+    // Maintain the downstream `fit_toml_fixed: HashMap` view that the
+    // rest of profile.rs reads (focal-vs-fixed conflict check, etc.).
+    let fit_toml_fixed: HashMap<String, f64> = fit_toml_fixed_indexmap
+        .iter().map(|(k, &v)| (k.clone(), v)).collect();
 
     let compiled = Arc::new(CompiledModel::new(model.clone())
         .unwrap_or_else(|e| { eprintln!("{:?}", e); std::process::exit(1); }));
