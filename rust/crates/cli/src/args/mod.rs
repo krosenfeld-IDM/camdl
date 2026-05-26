@@ -2202,6 +2202,95 @@ mod tests {
         }
     }
 
+    // ── M-1 break: --params / --param / --starts-from / --init-method
+    //    are accepted by clap (so the error is actionable) but trapped
+    //    in pre-dispatch checks. These tests assert the parse layer
+    //    accepts the trap (hidden flags) so the dispatch site can emit
+    //    its actionable error. The corresponding end-to-end assertion
+    //    that the actionable error fires lives in
+    //    `tests/cas_integration.rs::starts_from_resolves_short_hash`.
+
+    #[test]
+    fn profile_params_flag_is_trapped_at_parse() {
+        // The hidden `_removed_params` trap collects `--params <PATH>`
+        // on profile/if2 so the dispatch's `check_removed_flags` can
+        // emit the actionable error. Pre-step-7 the field would have
+        // resided on `model_overrides.params`.
+        let full = ["camdl", "profile", "model.camdl",
+                    "--data", "cases.tsv",
+                    "--sweep", "R0=lin(0.5,5,5)",
+                    "--rw-sd", "auto",
+                    "--particles", "100",
+                    "--params", "truth.toml"];
+        let parsed = Cli::try_parse_from(full)
+            .expect("hidden trap must accept --params <path>");
+        match parsed.command {
+            Command::Profile(a) => {
+                assert_eq!(a.model_overrides._removed_params.len(), 1,
+                    "expected 1 trapped --params, got: {:?}",
+                    a.model_overrides._removed_params);
+                assert_eq!(a.model_overrides.fixed_cli.len(), 0,
+                    "trapped --params must not pollute fixed_cli");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn fit_run_starts_from_flag_is_trapped_at_parse() {
+        // Mirrors profile_params_flag_is_trapped_at_parse for the
+        // `--starts-from` removal on `camdl fit run`.
+        let a = try_parse_fit_run(&[
+            "fit.toml", "--stage", "refine",
+            "--starts-from", "fits/scout/",
+        ]).expect("hidden trap must accept --starts-from");
+        assert_eq!(a._removed_starts_from.as_deref(), Some("fits/scout/"));
+    }
+
+    #[test]
+    fn fit_run_init_method_alias_is_trapped_at_parse() {
+        // `--init-method` was renamed to `--init`. The trap collects
+        // the old spelling so the dispatch site can emit the
+        // actionable rename error.
+        let a = try_parse_fit_run(&[
+            "fit.toml", "--stage", "scout",
+            "--init-method", "lhs",
+        ]).expect("hidden trap must accept --init-method");
+        assert_eq!(a._removed_init_method.as_deref(), Some("lhs"));
+        assert!(a.init.is_none(),
+            "trapped --init-method must not populate the new --init field");
+    }
+
+    #[test]
+    fn fit_run_init_flag_parses_modes() {
+        // The renamed `--init` flag accepts every payload-free
+        // `InitModeTag` variant via clap's value_enum.
+        for mode in ["single", "uniform", "lhs", "from_prior",
+                     "from_posterior", "from_mle", "from_params",
+                     "survey_top_k"] {
+            let a = try_parse_fit_run(&[
+                "fit.toml", "--stage", "scout",
+                "--init", mode,
+            ]).unwrap_or_else(|e|
+                panic!("--init {} must parse: {}", mode, e));
+            assert!(a.init.is_some(),
+                "--init {} must populate the field", mode);
+        }
+    }
+
+    #[test]
+    fn fit_run_init_method_alias_does_not_resolve() {
+        // The trap is wired specifically — `--init-method` lives on
+        // `_removed_init_method`, not the new `init` field, so the
+        // dispatch's check_removed-flag style emit fires correctly.
+        let a = try_parse_fit_run(&[
+            "fit.toml", "--stage", "scout",
+            "--init-method", "from_prior",
+        ]).expect("hidden trap must accept --init-method <mode>");
+        assert!(a.init.is_none());
+        assert_eq!(a._removed_init_method.as_deref(), Some("from_prior"));
+    }
+
     #[test]
     fn fit_run_loglik_eval_overrides_parse_with_stage() {
         let a = try_parse_fit_run(&[
