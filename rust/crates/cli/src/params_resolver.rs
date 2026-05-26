@@ -39,17 +39,31 @@
 //! ----------------------
 //!
 //!   1. Model parameter default (`p.value` from DSL)
-//!   2. Scenario preset (`preset.params` for the active scenario, and
-//!      `preset.scale` applied multiplicatively to whatever the value
-//!      currently is)
-//!   3. `fit.toml [fixed]` block (when present)
-//!   4. `--fixed-file <toml>` (each file layered in order; later
+//!   2. `fit.toml [fixed]` block (when present)
+//!   3. `--fixed-file <toml>` (each file layered in order; later
 //!      overrides earlier)
+//!   4. Scenario preset (`preset.params` and multiplicative
+//!      `preset.scale`)
 //!   5. `--fixed NAME=VALUE` (highest)
+//!
+//! **Deliberate deviation from proposal:** the 2026-05-25 CLI UX
+//! rev 2 proposal lists scenario at tier 2 (below `--fixed-file`).
+//! That contradicts `docs/camdl-run-spec.md §1.3` which documents
+//! and tests scenario > `params.toml` for forward simulation
+//! (`scenario_runtime_application.rs` locks the behaviour in).
+//! The proposal's own §"What this proposal does NOT touch" says
+//! the spec order is "preserved exactly" — so the spec is the
+//! load-bearing artifact and the resolver implements that order.
+//! See `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`
+//! §"Decision D".
 //!
 //! `[estimate]` membership rule:
 //!   - Start: `estimate_set = inputs.fit_toml_estimate`
-//!   - Remove every name that appears in (4) or (5)
+//!   - Remove every name that appears in (3) or (5) — i.e. user-
+//!     explicit `--fixed{,-file}` assertions. Scenario does NOT
+//!     kick from `[estimate]` because scenarios are σ-layer
+//!     constructs (counterfactual modifications), not user
+//!     assertions about a specific value.
 //!   - Emit a warning (not an error) for each such removal
 //!
 //! On non-inference subcommands, `inputs.fit_toml_estimate` is empty;
@@ -283,75 +297,59 @@ pub fn resolve_parameters<'a>(
     let model_param_names: Vec<String> = model.parameters.iter()
         .map(|p| p.name.clone()).collect();
 
-    // ── Tier 2: scenario (preset.params + preset.scale + enable/disable) ─
-    //
-    // Mirrors the resolution in the previous `resolve_run_model` —
-    // composing sub-scenarios left-to-right, then the named scenario
-    // itself overrides. `enable`/`disable` are applied as a filter to
-    // `model.interventions`.
+    // Pre-resolve the scenario preset (and recursively-composed
+    // sub-scenarios) so we know which intervention enable/disable
+    // names to apply *and* which params/scales to layer at tier 4.
+    // The intervention filter applies regardless of tier ordering
+    // because it modifies `model.interventions`, not parameter
+    // values.
     let scenario_name = inputs.scenario.map(|s| s.to_string());
-    if let Some(name) = scenario_name.as_deref() {
-        let preset = model.presets.iter().find(|p| p.name == name)
-            .ok_or_else(|| ResolveError::ScenarioNotFound {
-                name: name.to_string(),
-                available: model.presets.iter().map(|p| p.name.clone()).collect(),
-            })?
-            .clone();
-
-        let mut composed_enable: Vec<String> = Vec::new();
-        let mut composed_disable: Vec<String> = Vec::new();
-        let mut composed_params: Vec<(String, f64)> = Vec::new();
-        let mut composed_scale: Vec<(String, f64)> = Vec::new();
-        for sc_name in &preset.compose {
-            let sub = model.presets.iter().find(|p| p.name == *sc_name)
+    let (scenario_enable, scenario_disable, scenario_params, scenario_scale):
+        (Vec<String>, Vec<String>, Vec<(String, f64)>, Vec<(String, f64)>) =
+        if let Some(name) = scenario_name.as_deref() {
+            let preset = model.presets.iter().find(|p| p.name == name)
                 .ok_or_else(|| ResolveError::ScenarioNotFound {
-                    name: sc_name.clone(),
+                    name: name.to_string(),
                     available: model.presets.iter().map(|p| p.name.clone()).collect(),
-                })?;
-            if !sub.compose.is_empty() {
-                return Err(ResolveError::NestedCompose { name: sc_name.clone() });
+                })?
+                .clone();
+            let mut composed_enable: Vec<String> = Vec::new();
+            let mut composed_disable: Vec<String> = Vec::new();
+            let mut composed_params: Vec<(String, f64)> = Vec::new();
+            let mut composed_scale: Vec<(String, f64)> = Vec::new();
+            for sc_name in &preset.compose {
+                let sub = model.presets.iter().find(|p| p.name == *sc_name)
+                    .ok_or_else(|| ResolveError::ScenarioNotFound {
+                        name: sc_name.clone(),
+                        available: model.presets.iter().map(|p| p.name.clone()).collect(),
+                    })?;
+                if !sub.compose.is_empty() {
+                    return Err(ResolveError::NestedCompose { name: sc_name.clone() });
+                }
+                composed_enable.extend(sub.enable.clone());
+                composed_disable.extend(sub.disable.clone());
+                composed_params.extend(sub.params.iter().map(|(k, &v)| (k.clone(), v)));
+                composed_scale.extend(sub.scale.iter().map(|(k, &v)| (k.clone(), v)));
             }
-            composed_enable.extend(sub.enable.clone());
-            composed_disable.extend(sub.disable.clone());
-            composed_params.extend(sub.params.iter().map(|(k, &v)| (k.clone(), v)));
-            composed_scale.extend(sub.scale.iter().map(|(k, &v)| (k.clone(), v)));
-        }
-        composed_enable.extend(preset.enable.clone());
-        composed_disable.extend(preset.disable.clone());
-        composed_params.extend(preset.params.iter().map(|(k, &v)| (k.clone(), v)));
-        composed_scale.extend(preset.scale.iter().map(|(k, &v)| (k.clone(), v)));
+            composed_enable.extend(preset.enable.clone());
+            composed_disable.extend(preset.disable.clone());
+            composed_params.extend(preset.params.iter().map(|(k, &v)| (k.clone(), v)));
+            composed_scale.extend(preset.scale.iter().map(|(k, &v)| (k.clone(), v)));
+            (composed_enable, composed_disable, composed_params, composed_scale)
+        } else {
+            (inputs.adhoc_enable.to_vec(), inputs.adhoc_disable.to_vec(),
+             Vec::new(), Vec::new())
+        };
 
+    // Intervention filter (independent of value precedence).
+    if scenario_name.is_some() {
         crate::util::apply_scenario_filter(
-            &mut model, &composed_enable, &composed_disable)
+            &mut model, &scenario_enable, &scenario_disable)
             .map_err(|msg| ResolveError::SchemaMismatch {
                 path: PathBuf::from("(scenario filter)"),
                 msg,
             })?;
-
-        for (k, v) in &composed_params {
-            for p in &mut model.parameters {
-                if p.name == *k {
-                    p.value = Some(*v);
-                    current_source.insert(k.clone(),
-                        Some(ValueSource::Scenario(name.to_string())));
-                }
-            }
-        }
-        for (k, factor) in &composed_scale {
-            for p in &mut model.parameters {
-                if p.name == *k {
-                    if let Some(v) = p.value {
-                        p.value = Some(v * factor);
-                        current_source.insert(k.clone(),
-                            Some(ValueSource::Scenario(name.to_string())));
-                    }
-                }
-            }
-        }
     } else if !inputs.adhoc_enable.is_empty() || !inputs.adhoc_disable.is_empty() {
-        // Ad-hoc enable/disable lists (no scenario name). Mutually
-        // exclusive with --scenario in the CLI surface; the resolver
-        // accepts either form.
         crate::util::apply_scenario_filter(
             &mut model, inputs.adhoc_enable, inputs.adhoc_disable)
             .map_err(|msg| ResolveError::SchemaMismatch {
@@ -360,7 +358,7 @@ pub fn resolve_parameters<'a>(
             })?;
     }
 
-    // ── Tier 3: fit.toml [fixed] block ──────────────────────────────────
+    // ── Tier 2: fit.toml [fixed] block ──────────────────────────────────
     for (name, &v) in inputs.fit_toml_fixed {
         if !model_param_set.contains(name) {
             return Err(ResolveError::UnknownParameter {
@@ -377,7 +375,7 @@ pub fn resolve_parameters<'a>(
         }
     }
 
-    // ── Tier 4: --fixed-file <toml> (layered, last wins) ────────────────
+    // ── Tier 3: --fixed-file <toml> (layered, last wins) ────────────────
     for path in inputs.fixed_files {
         let path_str = path.to_string_lossy().into_owned();
         let overrides = crate::util::load_params_toml(&path_str)
@@ -399,6 +397,35 @@ pub fn resolve_parameters<'a>(
                 p.value = Some(v);
                 current_source.insert(p.name.clone(),
                     Some(ValueSource::FixedFile { path: path.clone() }));
+            }
+        }
+    }
+
+    // ── Tier 4: scenario params + scale ─────────────────────────────────
+    //
+    // Order is spec-§1.3-compliant: scenarios override `--fixed-file`
+    // (the legacy `--params FILE`). The intervention filter for the
+    // scenario was applied earlier; only `params` / `scale` happen
+    // here, layered on top of the file overrides.
+    if let Some(name) = scenario_name.as_deref() {
+        for (k, v) in &scenario_params {
+            for p in &mut model.parameters {
+                if p.name == *k {
+                    p.value = Some(*v);
+                    current_source.insert(k.clone(),
+                        Some(ValueSource::Scenario(name.to_string())));
+                }
+            }
+        }
+        for (k, factor) in &scenario_scale {
+            for p in &mut model.parameters {
+                if p.name == *k {
+                    if let Some(v) = p.value {
+                        p.value = Some(v * factor);
+                        current_source.insert(k.clone(),
+                            Some(ValueSource::Scenario(name.to_string())));
+                    }
+                }
             }
         }
     }
@@ -872,6 +899,102 @@ mod tests {
     }
 
     // ── Provenance round-trip ───────────────────────────────────────────
+
+    // ── Spec-§1.3 precedence: scenario > --fixed-file > --fixed CLI ─────
+
+    #[test]
+    fn scenario_beats_fit_toml_fixed_per_spec_section_1_3() {
+        // Spec §1.3 says: params.toml < scenario. The resolver
+        // implements this — fit-toml [fixed] (tier 2) is overwritten
+        // by scenario params (tier 4). Locked in by the integration
+        // test `scenario_runtime_application::scenario_set_replaces_mu_value`.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_params = HashMap::new();
+        scen_params.insert("beta".to_string(), 0.9);
+        model.presets.push(Preset {
+            name: "preset".into(),
+            label: "preset".into(),
+            params: scen_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![];
+        let ffiles = vec![];
+        let mut ftf = IndexMap::new();
+        ftf.insert("beta".into(), 0.7);
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("preset");
+        let resolved = resolve_parameters(inputs).expect("ok");
+        // Scenario value wins, not the fit-toml fixed value.
+        assert_eq!(resolved.params[0].value, 0.9);
+        assert!(matches!(&resolved.params[0].source,
+            ValueSource::Scenario(name) if name == "preset"));
+    }
+
+    #[test]
+    fn fixed_cli_beats_scenario_per_spec_section_1_3() {
+        // Spec §1.3 says: scenario < --param CLI. `--fixed CLI`
+        // (tier 5) must override scenario (tier 4).
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_params = HashMap::new();
+        scen_params.insert("beta".to_string(), 0.9);
+        model.presets.push(Preset {
+            name: "preset".into(),
+            label: "preset".into(),
+            params: scen_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![("beta".to_string(), 1.5)];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("preset");
+        let resolved = resolve_parameters(inputs).expect("ok");
+        // --fixed CLI wins over scenario.
+        assert_eq!(resolved.params[0].value, 1.5);
+        assert_eq!(resolved.params[0].source, ValueSource::FixedCli);
+    }
+
+    #[test]
+    fn scenario_scale_multiplies_resolved_value_not_just_model_default() {
+        // Scenario `scale` applies multiplicatively to whatever
+        // value is currently in the slot. The order ensures that
+        // tier 2 + tier 3 layered values feed into the multiplication.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_scale = HashMap::new();
+        scen_scale.insert("beta".to_string(), 2.0);
+        model.presets.push(Preset {
+            name: "doubled".into(),
+            label: "doubled".into(),
+            params: HashMap::new(),
+            scale: scen_scale,
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![];
+        let ffiles = vec![];
+        let mut ftf = IndexMap::new();
+        ftf.insert("beta".into(), 0.7);  // tier 2 sets beta=0.7
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("doubled");
+        let resolved = resolve_parameters(inputs).expect("ok");
+        // 0.7 (fit_toml_fixed) × 2.0 (scale) = 1.4
+        assert!((resolved.params[0].value - 1.4).abs() < 1e-12,
+            "scenario scale must multiply tier-2/3 value; got {}",
+            resolved.params[0].value);
+    }
 
     #[test]
     fn resolved_model_carries_mutated_values() {

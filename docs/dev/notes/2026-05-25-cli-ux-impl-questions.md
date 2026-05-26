@@ -322,6 +322,74 @@ If the maintainer prefers defence-in-depth (validate at resolver
 level too), file as a follow-up — the resolver has the data to do
 it; the test would be straightforward.
 
+### Decision D — Scenario-vs-`--fixed-file` precedence: proposal contradicts spec
+
+**This blocks Step 2 (`simulate` / `lineage` migration).** Flagging
+explicitly because it is the highest-leverage ambiguity I hit.
+
+The proposal lists the precedence as (last-wins):
+
+  1. Model default
+  2. Scenario
+  3. fit-toml [fixed]
+  4. `--fixed-file`
+  5. `--fixed` CLI
+
+But `docs/camdl-run-spec.md §1.3` documents the *current* simulate
+precedence as:
+
+```
+params.toml (=`--fixed-file`)
+  ↓ overridden by
+sweep point
+  ↓ overridden by
+scenario params
+  ↓ overridden by
+--param CLI flags (=`--fixed` CLI)
+```
+
+i.e. **scenario beats `--params FILE` today**. The proposal §"What
+this proposal does NOT touch" says: "The forward-sim precedence
+order documented in `docs/camdl-run-spec.md §1.3` is preserved
+exactly — the resolver is a refactor, not a semantic change to the
+order." But the resolver's stated order above changes scenario's
+position from tier 4-ish to tier 2.
+
+This isn't a typo — the proposal's full text includes the
+profile-likelihood ergonomic ("--fixed gamma=0.1 to hold gamma while
+sweeping tau") which only makes sense if `--fixed` beats scenario.
+But the spec test `scenario_runtime_application.rs::scenario_set_replaces_mu_value`
+locks in the *opposite* order for `--params` vs scenario: it confirms
+scenario beats `--params`.
+
+Two ways to interpret the proposal:
+
+  - **(A) The proposal IS a semantic change.** The "preserved
+    exactly" sentence is overpromising — the proposal does change
+    precedence to give CLI verbs (`--fixed-file`, `--fixed`)
+    primacy over scenario. The scenario test must be re-baselined.
+  - **(B) The proposal preserves spec semantics.** The stated tier
+    list is loose; the real intent is to keep scenario above
+    `--fixed-file` (matching the documented spec) and only put
+    `--fixed CLI` above scenario.
+
+My resolver currently implements interpretation (A) — the literal
+proposal order. Test `scenario_runtime_application.rs` will
+**fail** when `simulate` is migrated unless either the order is
+changed to (B) or the test is updated to match (A).
+
+This is a maintainer decision because the bug pre-existed and was
+explicitly fixed (see `util.rs:824-826` comment: "The old code
+applied scenario params first and let --params silently overwrite
+them — a silent-wrong-answer bug caught by tests"). The proposal
+is implicitly reverting that fix, which may be intentional (the
+profile ergonomic warrants the change) or accidental (the
+proposal's tier-list was written without consulting the spec).
+
+**Provisional choice in resolver:** interpretation (A). Override
+is a one-line swap (reorder tiers 2 and 4 in `resolve_parameters`)
+if the maintainer prefers (B).
+
 ### Decision C — `--scenario` + `--enable`/`--disable` mutual exclusion
 
 Today's CLI surface declares these mutually exclusive at the clap
