@@ -826,9 +826,25 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             (see gh#51 §\"Stage scope\"). Workaround: use --init lhs.");
         std::process::exit(1);
     }
+    // Step 6 warm-start variants (`from-prior`, `from-posterior`,
+    // `from-mle`, `from-params`) are not yet routed through profile's
+    // per-cell init builder; the legacy `build_chain_starts` rejects
+    // them via a debug_assert + None return. Refuse cleanly here so
+    // the user sees an actionable error rather than silent fallback.
+    if matches!(a.init,
+        crate::fit::init::InitMethod::FromPrior
+        | crate::fit::init::InitMethod::FromPosterior { .. }
+        | crate::fit::init::InitMethod::FromMle    { .. }
+        | crate::fit::init::InitMethod::FromParams { .. }) {
+        eprintln!("error: --init {} is a step-6 warm-start variant not \
+            yet wired into `camdl profile` per-cell init. Use --init \
+            lhs / uniform / single for now; profile support arrives \
+            with the step-7 CLI break.", a.init);
+        std::process::exit(1);
+    }
     let per_start_params: Option<Arc<Vec<Vec<sim::inference::if2::EstimatedParam>>>> =
         crate::fit::init::build_chain_starts(
-            a.init, &if2_params, n_starts, seed_base,
+            a.init.clone(), &if2_params, n_starts, seed_base,
         ).map(Arc::new);
 
     let process = Arc::new(ChainBinomialProcess::new(compiled.clone(), dt));

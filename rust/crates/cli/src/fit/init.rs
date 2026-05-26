@@ -27,6 +27,8 @@
 //! starts at low N) miss basins; LHS gives stratified coverage at
 //! the same chain count.
 
+use std::path::PathBuf;
+
 use sim::inference::types::{EstimatedParam, Transform};
 use sim::rng::StatefulRng;
 
@@ -35,9 +37,35 @@ use crate::util::derive_chain_seed;
 /// How chain (or per-cell) starting points are drawn.
 ///
 /// Default is `Lhs` — see the `Default` impl below for rationale.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum)]
+///
+/// **Step 6 (proposal 2026-05-25-cli-init-and-params-ux) expansion.**
+/// Four new variants for inference warm-starts:
+///
+/// - `FromPrior` — sample once per chain from each parameter's `~`
+///   declaration in the model IR. Parameters with no `~` fall back to
+///   bounds-uniform with a startup warning (Decision A).
+/// - `FromPosterior { source }` — draw one row per chain from a
+///   posterior draws TSV (uniform with replacement; gh#83 default).
+/// - `FromMle { source }` — all chains start at the MLE point from a
+///   prior fit. Knows the fit-output TOML schema.
+/// - `FromParams { path }` — all chains at a flat hand-written params
+///   TOML. Top-level keys = parameter names → values.
+///
+/// Per the proposal's verb-per-source contract, `FromMle` and
+/// `FromParams` are distinct verbs (not unified) because their file
+/// schemas differ (structured fit output vs flat hand-authored TOML).
+///
+/// `SurveyTopK` is kept as a unit variant rather than carrying the
+/// proposal's `SurveyTopK { source: SurveySource, k: usize }` payload.
+/// The existing fit.toml stage dispatch reads sibling `survey_path` /
+/// `survey_top_k_n` fields and constructs the per-chain starts via
+/// `resolve_per_chain_starts_from_method`, which is independent of the
+/// `draw_chain_starts` entry point introduced for the four new
+/// variants. Restructuring `SurveyTopK`'s payload would cascade into
+/// pgas / pmmh / profile / nlopt_stage dispatch — out of scope for
+/// step 6, deferred to step 7's CLI break or a follow-up RFC.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-#[clap(rename_all = "lowercase")]
 pub enum InitMethod {
     Single,
     Uniform,
@@ -51,8 +79,55 @@ pub enum InitMethod {
     /// bounds before ranking. See gh#51 +
     /// `docs/dev/proposals/2026-05-07-survey-top-k-init.md`.
     #[serde(rename = "survey_top_k")]
-    #[clap(name = "survey_top_k")]
     SurveyTopK,
+    /// Per-chain draw from each parameter's `~ <dist>` declaration in
+    /// the model IR. Parameters with no prior declared fall back to
+    /// bounds-uniform with a startup warning (proposal Decision A).
+    /// gh#83.
+    #[serde(rename = "from_prior")]
+    FromPrior,
+    /// Per-chain draw from a posterior draws TSV (uniformly with
+    /// replacement; gh#83's default). Source may be the TSV file
+    /// directly or a fit-results directory whose canonical
+    /// `draws.tsv` is loaded.
+    #[serde(rename = "from_posterior")]
+    FromPosterior { source: PosteriorSource },
+    /// All chains start at the MLE point from a prior fit. Knows the
+    /// fit-output TOML schema: skips `[provenance]`, `[focal]`, and
+    /// reads parameter values from the section that holds them.
+    /// Replaces the legacy `--starts-from <fit-dir>` flag.
+    #[serde(rename = "from_mle")]
+    FromMle { source: MleSource },
+    /// All chains at the point given by a hand-written **flat** params
+    /// TOML. Top-level keys = parameter names → values. Distinct from
+    /// `FromMle` so the loader can reject misuse with an actionable
+    /// hint (e.g. user pointing `from-params` at an `mle.toml`).
+    #[serde(rename = "from_params")]
+    FromParams { path: PathBuf },
+}
+
+/// Where to read posterior draws from. See [`InitMethod::FromPosterior`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PosteriorSource {
+    /// A posterior draws TSV directly. Header line: column-per-parameter;
+    /// each row is one draw.
+    DrawsTsv(PathBuf),
+    /// A fit-results directory. Auto-resolves to `<dir>/draws.tsv`;
+    /// errors if missing.
+    FitDir(PathBuf),
+}
+
+/// Where to read an MLE point from. See [`InitMethod::FromMle`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MleSource {
+    /// An MLE-shape TOML file directly (e.g. `mle.toml` or
+    /// `final_params.toml`).
+    File(PathBuf),
+    /// A fit-results directory. Auto-resolves: tries `<dir>/mle.toml`
+    /// first, then `<dir>/final_params.toml`. Errors if neither exists.
+    FitDir(PathBuf),
 }
 
 impl Default for InitMethod {
@@ -70,28 +145,81 @@ impl Default for InitMethod {
 
 impl std::str::FromStr for InitMethod {
     type Err = String;
+    /// Parse a string form into an `InitMethod`. Only the **payload-free**
+    /// variants are parseable from a bare string — the new
+    /// `from-posterior` / `from-mle` / `from-params` variants need
+    /// companion path flags and are constructed by the step-7 CLI
+    /// layer; `from-prior` is parseable as a bare string.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "single"        => Ok(InitMethod::Single),
             "uniform"       => Ok(InitMethod::Uniform),
             "lhs"           => Ok(InitMethod::Lhs),
             "survey_top_k"  => Ok(InitMethod::SurveyTopK),
+            "from_prior" | "from-prior" => Ok(InitMethod::FromPrior),
             other => Err(format!(
                 "unknown init_method '{}': expected one of \
-                 single, uniform, lhs, survey_top_k",
+                 single, uniform, lhs, survey_top_k, from_prior. \
+                 from-posterior / from-mle / from-params require \
+                 companion path flags and cannot be set as a bare string.",
                 other)),
         }
     }
 }
 
 impl std::fmt::Display for InitMethod {
+    /// Stable string tag for one-line provenance / `chain_init_source` /
+    /// `init_provenance.method`. Variants with payload render the bare
+    /// kebab-case tag (`from-posterior`, `from-mle`, `from-params`);
+    /// per-chain provenance lives in the sibling
+    /// [`InitSource`] discriminator with the actual path.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            InitMethod::Single      => "single",
-            InitMethod::Uniform     => "uniform",
-            InitMethod::Lhs         => "lhs",
-            InitMethod::SurveyTopK  => "survey_top_k",
+            InitMethod::Single             => "single",
+            InitMethod::Uniform            => "uniform",
+            InitMethod::Lhs                => "lhs",
+            InitMethod::SurveyTopK         => "survey_top_k",
+            InitMethod::FromPrior          => "from-prior",
+            InitMethod::FromPosterior { .. } => "from-posterior",
+            InitMethod::FromMle       { .. } => "from-mle",
+            InitMethod::FromParams    { .. } => "from-params",
         })
+    }
+}
+
+/// Manual `clap::ValueEnum` over the payload-free `InitMethod`
+/// variants. Variants with payload (`FromPosterior`, `FromMle`,
+/// `FromParams`) are not surfaced through `value_enum` parsing —
+/// they're constructed by the step-7 CLI layer from `--init <mode>` +
+/// companion path flags.
+///
+/// Preserves the legacy CLI surface (`camdl profile --init lhs`,
+/// `camdl profile --init survey_top_k`) while the type itself grew
+/// payload variants.
+impl clap::ValueEnum for InitMethod {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            InitMethod::Single,
+            InitMethod::Uniform,
+            InitMethod::Lhs,
+            InitMethod::SurveyTopK,
+            InitMethod::FromPrior,
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        let name = match self {
+            InitMethod::Single       => "single",
+            InitMethod::Uniform      => "uniform",
+            InitMethod::Lhs          => "lhs",
+            InitMethod::SurveyTopK   => "survey_top_k",
+            InitMethod::FromPrior    => "from_prior",
+            // Payload variants are not surfaced via value_enum.
+            InitMethod::FromPosterior { .. }
+            | InitMethod::FromMle    { .. }
+            | InitMethod::FromParams { .. } => return None,
+        };
+        Some(clap::builder::PossibleValue::new(name))
     }
 }
 
@@ -131,6 +259,23 @@ pub fn build_chain_starts(
                  callsite must dispatch via build_chain_starts_from_survey");
             None
         }
+        // Step 6 init variants: not yet routed through the
+        // legacy `build_chain_starts` surface. These are constructed
+        // by step-7 CLI parsing and dispatched via `draw_chain_starts`
+        // (which is the unified entry point for the warm-start
+        // family). Reaching this branch is a wiring bug — debug-panic
+        // so it surfaces in tests; return None in release so the
+        // caller falls back to base specs without mid-fit panicking.
+        InitMethod::FromPrior
+        | InitMethod::FromPosterior { .. }
+        | InitMethod::FromMle    { .. }
+        | InitMethod::FromParams { .. } => {
+            debug_assert!(false,
+                "InitMethod::{} reached build_chain_starts; \
+                 callsite must dispatch via draw_chain_starts",
+                method);
+            None
+        }
     }
 }
 
@@ -149,22 +294,43 @@ pub fn build_chain_starts(
 /// where the fit-level cross-check context (`SurveyFitContext`) is in
 /// scope.
 pub fn build_chain_param_vecs(
-    method: InitMethod,
+    method: &InitMethod,
     base_specs: &[EstimatedParam],
     base_params: &[f64],
     n_chains: usize,
     seed: u64,
 ) -> Result<Option<Vec<Vec<f64>>>, String> {
-    if method == InitMethod::SurveyTopK {
-        return Err(
-            "init_method = \"survey_top_k\" is not yet supported on this \
-             stage type; v2 ships it on IF2 / PMMH / PGAS. NLopt and \
-             profile support is deferred to v3 (see gh#51). Workaround: \
-             use init_method = \"lhs\" on this stage, or run an IF2 / \
-             PMMH / PGAS scout first and chain via \
-             starts_from = \"<scout>\".".to_string());
+    match method {
+        InitMethod::SurveyTopK => {
+            return Err(
+                "init_method = \"survey_top_k\" is not yet supported on this \
+                 stage type; v2 ships it on IF2 / PMMH / PGAS. NLopt and \
+                 profile support is deferred to v3 (see gh#51). Workaround: \
+                 use init_method = \"lhs\" on this stage, or run an IF2 / \
+                 PMMH / PGAS scout first and chain via \
+                 starts_from = \"<scout>\".".to_string());
+        }
+        // Step 6 warm-start variants — not yet routed through the
+        // legacy NLopt / profile `build_chain_param_vecs` surface.
+        // These are constructed by step-7 CLI parsing and dispatched
+        // via `draw_chain_starts`; profile / NLopt support arrives in
+        // step 7 alongside the CLI break. Errors actionably so the
+        // user redirects to a supported mode.
+        InitMethod::FromPrior
+        | InitMethod::FromPosterior { .. }
+        | InitMethod::FromMle    { .. }
+        | InitMethod::FromParams { .. } => {
+            return Err(format!(
+                "init_method = \"{}\" is not yet supported on this stage \
+                 type (NLopt / profile). Use init_method = \"lhs\" or \
+                 \"single\" for now; warm-start `from-prior` / \
+                 `from-posterior` / `from-mle` / `from-params` ship on \
+                 IF2 / PGAS / PMMH stages via the step-7 CLI surface.",
+                method));
+        }
+        _ => {}
     }
-    let per_chain = build_chain_starts(method, base_specs, n_chains, seed);
+    let per_chain = build_chain_starts(method.clone(), base_specs, n_chains, seed);
     Ok(per_chain.map(|chains| chain_starts_to_param_vecs(&chains, base_params)))
 }
 
@@ -209,7 +375,7 @@ pub fn chain_starts_to_param_vecs(
 /// error naming the offending stage. Callers handle this with the same
 /// diagnostic surface they use for other survey-config mistakes.
 pub fn resolve_per_chain_starts_from_method(
-    method: InitMethod,
+    method: &InitMethod,
     survey_path: Option<&std::path::Path>,
     survey_top_k_n: Option<usize>,
     stage_name: &str,
@@ -230,8 +396,25 @@ pub fn resolve_per_chain_starts_from_method(
             let chains_out = result.chains.clone();
             Ok((Some(chains_out), Some(result)))
         }
+        // Step 6 warm-start variants: not yet wired into the fit.toml
+        // stage runner. The fit-stage path drives chain init from
+        // sibling fields (`survey_path`, `starts_from`, etc.); the
+        // step-7 CLI break is what introduces `--init from-prior`
+        // etc. through the runner. Until then a user landing here via
+        // a fit.toml `init = "from_prior"` hits an actionable error.
+        InitMethod::FromPrior
+        | InitMethod::FromPosterior { .. }
+        | InitMethod::FromMle    { .. }
+        | InitMethod::FromParams { .. } => Err(format!(
+            "stage `{}`: init_method = \"{}\" is a step-6 warm-start \
+             variant that is not yet routable through the fit.toml \
+             stage runner. Use the upcoming `camdl fit run --init \
+             {}` CLI surface (step 7) once it lands, or fall back to \
+             `init = \"lhs\"` for now.",
+            stage_name, method, method)),
         _ => {
-            let per_chain = build_chain_starts(method, base_specs, n_chains, seed);
+            let per_chain = build_chain_starts(
+                method.clone(), base_specs, n_chains, seed);
             Ok((per_chain, None))
         }
     }
@@ -694,7 +877,7 @@ fn emit_top_k_se_warning(top_k: &[&LandscapeRow]) {
 /// `lhs` / `single` / `uniform` for the in-process samplers,
 /// `survey:<full-hash>:top-<K>` for the survey reader.
 pub fn format_chain_init_source(
-    method: InitMethod,
+    method: &InitMethod,
     survey_top_k: Option<&SurveyTopKResult>,
 ) -> String {
     if let Some(res) = survey_top_k {
@@ -710,6 +893,14 @@ pub fn format_chain_init_source(
             // provenance string into fit_state.toml.
             "survey:<missing-result>:top-?".into()
         }
+        // Step 6 warm-start variants render the bare kebab-case tag
+        // here. Per-chain provenance lives in `InitSource` on each
+        // `ChainStart`, which step-9 serialises into
+        // `init_provenance.chains[i]` of `run.json`.
+        InitMethod::FromPrior          => "from-prior".into(),
+        InitMethod::FromPosterior { .. } => "from-posterior".into(),
+        InitMethod::FromMle       { .. } => "from-mle".into(),
+        InitMethod::FromParams    { .. } => "from-params".into(),
     }
 }
 
@@ -730,7 +921,7 @@ pub fn write_chain_starts_tsv(
     base: &[EstimatedParam],
     per_chain_starts: Option<&[Vec<EstimatedParam>]>,
     n_chains: usize,
-    method: InitMethod,
+    method: &InitMethod,
     survey_top_k: Option<&SurveyTopKResult>,
 ) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -1210,15 +1401,15 @@ beta\tgamma\tn_replicates\tpoint_id\n\
 
     #[test]
     fn chain_init_source_format_for_each_method() {
-        assert_eq!(format_chain_init_source(InitMethod::Single, None), "single");
-        assert_eq!(format_chain_init_source(InitMethod::Uniform, None), "uniform");
-        assert_eq!(format_chain_init_source(InitMethod::Lhs, None), "lhs");
+        assert_eq!(format_chain_init_source(&InitMethod::Single, None), "single");
+        assert_eq!(format_chain_init_source(&InitMethod::Uniform, None), "uniform");
+        assert_eq!(format_chain_init_source(&InitMethod::Lhs, None), "lhs");
 
         let result = SurveyTopKResult {
             chains: vec![Vec::new(); 20],   // 20 chains
             survey_hash: "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234".into(),
         };
-        let s = format_chain_init_source(InitMethod::SurveyTopK, Some(&result));
+        let s = format_chain_init_source(&InitMethod::SurveyTopK, Some(&result));
         // Full hash, not short — the audit-survivability invariant.
         assert!(s.starts_with("survey:deadbeefcafe1234deadbeefcafe1234"),
             "should embed full hash: {}", s);
@@ -1230,7 +1421,7 @@ beta\tgamma\tn_replicates\tpoint_id\n\
     fn chain_init_source_falls_back_when_survey_result_missing() {
         // Defensive: should never happen in practice, but a wiring
         // bug must not write a corrupt provenance string.
-        let s = format_chain_init_source(InitMethod::SurveyTopK, None);
+        let s = format_chain_init_source(&InitMethod::SurveyTopK, None);
         assert!(s.contains("missing"),
             "fallback string should flag the wiring bug: {}", s);
     }
@@ -1461,7 +1652,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
             estimate_names: &names,
         };
         let (per_chain, survey) = resolve_per_chain_starts_from_method(
-            InitMethod::Lhs, None, None, "scout",
+            &InitMethod::Lhs, None, None, "scout",
             &base, 8, 42, &ctx,
         ).expect("non-survey LHS path must succeed");
         assert!(per_chain.is_some(), "Lhs with n_chains=8 should produce chains");
@@ -1481,7 +1672,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
             estimate_names: &names,
         };
         let (per_chain, survey) = resolve_per_chain_starts_from_method(
-            InitMethod::Single, None, None, "refine",
+            &InitMethod::Single, None, None, "refine",
             &base, 4, 42, &ctx,
         ).unwrap();
         assert!(per_chain.is_none(), "Single → None (caller uses base directly)");
@@ -1500,7 +1691,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
             estimate_names: &names,
         };
         let err = resolve_per_chain_starts_from_method(
-            InitMethod::SurveyTopK, None, None, "scout",
+            &InitMethod::SurveyTopK, None, None, "scout",
             &base, 4, 42, &ctx,
         ).unwrap_err();
         assert!(err.contains("survey_path"),
@@ -1566,7 +1757,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         let base = vec![ep("beta", 0.1, 1.0, Transform::Log { lo: 0.1, hi: 1.0 }, 0.5)];
 
         let (per_chain, survey) = resolve_per_chain_starts_from_method(
-            InitMethod::SurveyTopK, Some(&dir), Some(2), "scout",
+            &InitMethod::SurveyTopK, Some(&dir), Some(2), "scout",
             &base, 2, 42, &ctx,
         ).expect("SurveyTopK happy path must succeed");
         let chains = per_chain.expect("SurveyTopK must produce chains");

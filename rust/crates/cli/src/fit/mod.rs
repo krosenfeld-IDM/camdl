@@ -197,7 +197,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     let cli_loglik_eval_particles = a.loglik_eval_particles;
     let cli_loglik_eval_reps      = a.loglik_eval_reps;
     let cli_decibans_thresh      = a.decibans_thresh;
-    let cli_init_method          = a.init_method;
+    let cli_init_method          = a.init_method.clone();
     let cli_survey_path          = a.survey_path.clone();
     let cli_survey_top_k         = a.survey_top_k;
     let sweep_specs: Vec<(String, Vec<f64>)> = a.sweep.iter()
@@ -820,7 +820,8 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 // CLI `--init` overrides the stage-config init_method
                 // when a single stage is selected (clap requires --stage
                 // with --init).
-                let effective_init = cli_init_method.unwrap_or(*init_method);
+                let effective_init: crate::fit::init::InitMethod =
+                    cli_init_method.clone().unwrap_or_else(|| init_method.clone());
                 // CLI overrides for survey_top_k siblings (require
                 // --stage; clap enforces). When the stage TOML sets
                 // them too, CLI wins.
@@ -851,7 +852,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                             estimate_names: &estimate_names,
                         };
                         init::resolve_per_chain_starts_from_method(
-                            effective_init,
+                            &effective_init,
                             effective_survey_path.as_deref(),
                             effective_survey_top_k_n,
                             stage_name,
@@ -869,13 +870,13 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     &run_config.estimated_params,
                     per_chain_params.as_deref(),
                     *chains,
-                    effective_init,
+                    &effective_init,
                     survey_top_k_result.as_ref(),
                 ) {
                     eprintln!("warning: could not write chain_starts.tsv: {}", e);
                 }
                 let chain_init_source = init::format_chain_init_source(
-                    effective_init, survey_top_k_result.as_ref(),
+                    &effective_init, survey_top_k_result.as_ref(),
                 );
                 let stage_dir_str = stage_dir.to_string_lossy();
                 let chain_results = runner::run_chains_with_per_chain_params(
@@ -1107,7 +1108,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 if let Some(n) = a.n_trajectories { pgas_opts.n_trajectories = n; }
                 if a.diagonal_mass { pgas_opts.dense_mass = false; }
                 if a.no_nuts       { pgas_opts.use_nuts   = false; }
-                if let Some(m) = cli_init_method { pgas_opts.init_method = m; }
+                if let Some(m) = cli_init_method.clone() { pgas_opts.init_method = m; }
                 // gh#51 v2: CLI survey-path / survey-top-k overrides.
                 // Same priority as IF2 / PMMH: CLI > stage TOML.
                 if let Some(ref p) = cli_survey_path {
@@ -1148,7 +1149,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     }
                     pmmh_opts.rho = Some(r);
                 }
-                if let Some(m) = cli_init_method { pmmh_opts.init_method = m; }
+                if let Some(m) = cli_init_method.clone() { pmmh_opts.init_method = m; }
                 // gh#51 v2: CLI survey-path / survey-top-k flags
                 // override the stage-config values. Same priority chain
                 // as IF2: CLI > stage TOML > default. `pmmh::run_stage`

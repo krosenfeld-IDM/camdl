@@ -74,7 +74,7 @@ impl PmmhStageOpts {
                     adapt: *adapt,
                     adapt_start: *adapt_start,
                     rho: *rho,
-                    init_method: *init_method,
+                    init_method: init_method.clone(),
                     survey_path: survey_path.clone(),
                     survey_top_k_n: *survey_top_k_n,
                 })
@@ -195,7 +195,7 @@ pub fn run_stage(
         };
         let (chains_opt, result) =
             super::init::resolve_per_chain_starts_from_method(
-                pmmh_opts.init_method,
+                &pmmh_opts.init_method,
                 pmmh_opts.survey_path.as_deref(),
                 pmmh_opts.survey_top_k_n,
                 stage_name,
@@ -210,7 +210,7 @@ pub fn run_stage(
         super::init::chain_starts_to_param_vecs(&chains_specs, &base)
     } else {
         super::init::build_chain_param_vecs(
-            pmmh_opts.init_method,
+            &pmmh_opts.init_method,
             &config.estimated_params,
             &base,
             n_chains,
@@ -337,7 +337,7 @@ pub fn run_stage(
         &config.estimated_params,
         Some(&per_chain_specs_for_audit),
         n_chains,
-        pmmh_opts.init_method,
+        &pmmh_opts.init_method,
         survey_top_k_result.as_ref(),
     ) {
         eprintln!("warning: could not write chain_starts.tsv: {}", e);
@@ -687,7 +687,7 @@ pub fn run_stage(
         // SurveyTopK is dispatched via the shared
         // `resolve_per_chain_starts_from_method` helper above.
         chain_init_source: Some(super::init::format_chain_init_source(
-            pmmh_opts.init_method, survey_top_k_result.as_ref(),
+            &pmmh_opts.init_method, survey_top_k_result.as_ref(),
         )),
         // gh#52: Richardson dt-check IF2-only in v1.
         dt_check: None,

@@ -130,7 +130,7 @@ pub fn run_stage(
         );
     }
     let chain_starts: Vec<Vec<f64>> = build_chain_param_vecs(
-        knobs.init_method,
+        &knobs.init_method,
         &run_config.estimated_params,
         &run_config.base_params,
         effective_chains,

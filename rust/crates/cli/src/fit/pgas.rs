@@ -94,7 +94,7 @@ impl PgasStageOpts {
                     n_trajectories: *n_trajectories,
                     dense_mass: *dense_mass,
                     use_nuts: *use_nuts,
-                    init_method: *init_method,
+                    init_method: init_method.clone(),
                     survey_path: survey_path.clone(),
                     survey_top_k_n: *survey_top_k_n,
                 })
@@ -340,7 +340,7 @@ pub fn run_stage(
         };
         let (chains_opt, result) =
             super::init::resolve_per_chain_starts_from_method(
-                pgas_opts.init_method,
+                &pgas_opts.init_method,
                 pgas_opts.survey_path.as_deref(),
                 pgas_opts.survey_top_k_n,
                 stage_name,
@@ -355,7 +355,7 @@ pub fn run_stage(
         super::init::chain_starts_to_param_vecs(&chains_specs, &config.base_params)
     } else {
         super::init::build_chain_param_vecs(
-            pgas_opts.init_method,
+            &pgas_opts.init_method,
             &config.estimated_params,
             &config.base_params,
             n_chains,
@@ -405,7 +405,7 @@ pub fn run_stage(
         &config.estimated_params,
         Some(&per_chain_specs_for_audit),
         n_chains,
-        pgas_opts.init_method,
+        &pgas_opts.init_method,
         survey_top_k_result.as_ref(),
     ) {
         eprintln!("warning: could not write chain_starts.tsv: {}", e);
@@ -798,7 +798,7 @@ pub fn run_stage(
         // SurveyTopK is dispatched via the shared
         // `resolve_per_chain_starts_from_method` helper above.
         chain_init_source: Some(super::init::format_chain_init_source(
-            pgas_opts.init_method, survey_top_k_result.as_ref(),
+            &pgas_opts.init_method, survey_top_k_result.as_ref(),
         )),
         // gh#52: Richardson dt-check is wired only on IF2 stages in
         // v1 (the inference math is shared but the dispatch site
