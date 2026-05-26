@@ -104,9 +104,22 @@ pub fn cmd_if2(a: &crate::args::If2Args) {
     let output_dir: Option<String> = a.output_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
     let trace_path: Option<String> = a.trace.as_ref().map(|p| p.to_string_lossy().into_owned());
     let scenario_name = a.scenario.scenario.clone();
-    let _adhoc_enable = a.scenario.enable.clone();
     let flow_name = a.flow.flow.clone();
-    let overrides: HashMap<String, f64> = a.model_overrides.param.iter()
+    // Build the resolver inputs from the CLI surface. `--params FILE`
+    // → `fixed_files`; `--param NAME=VALUE` → `fixed_cli`. The
+    // resolver handles tier ordering (model default → scenario →
+    // --fixed-file → --fixed-cli) and applies the intervention filter.
+    // For if2, `--fixed NAME` (name-only) is the kick-out partition for
+    // `--rw-sd auto`; it does NOT supply a value, so it goes into
+    // `fit_toml_estimate` via the inverse construction below.
+    //
+    // Per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
+    // §"Step 5 — Migrate if2", step 7 will rename `--fixed NAME` to
+    // `--fixed NAME=VALUE` (M-1 break). For step 5 the resolver only
+    // handles value resolution; the `fixed_set` partition for rw_sd
+    // auto stays as-is below.
+    let fixed_files_vec: Vec<std::path::PathBuf> = a.model_overrides.params.clone();
+    let fixed_cli_vec: Vec<(String, f64)> = a.model_overrides.param.iter()
         .map(|p| (p.name.clone(), p.value))
         .collect();
 
@@ -162,29 +175,34 @@ pub fn cmd_if2(a: &crate::args::If2Args) {
     let fixed_set: std::collections::HashSet<String> = a.fixed.iter().cloned().collect();
 
     // Load model
-    let (mut model, _model_json) = crate::util::load_model(&ir_path)
+    let (model_pre, _model_json) = crate::util::load_model(&ir_path)
         .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
 
-    for pf in &a.model_overrides.params {
-        crate::util::apply_params_file(&mut model, &pf.to_string_lossy())
-            .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
-    }
-
-    if let Some(ref name) = scenario_name {
-        if let Some(preset) = model.presets.iter().find(|p| p.name == *name) {
-            for p in &mut model.parameters {
-                if let Some(&v) = preset.params.get(&p.name) { p.value = Some(v); }
-            }
-        }
-    }
-
-    for p in &mut model.parameters {
-        if let Some(&v) = overrides.get(&p.name) { p.value = Some(v); }
-    }
-
-    // Bounds + finite-value check after all override paths resolved (gh#31).
-    crate::util::validate_parameter_values(&model)
-        .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+    // Route value resolution through the unified resolver.
+    // if2 today has no `--fit` toml input, so fit_toml_fixed /
+    // fit_toml_estimate are empty. The intervention filter runs inside
+    // the resolver, so the manual scenario_name/adhoc_enable apply
+    // loops here go away.
+    let ftf: indexmap::IndexMap<String, f64> = indexmap::IndexMap::new();
+    let fte: indexmap::IndexSet<String> = indexmap::IndexSet::new();
+    let table_files: HashMap<String, std::path::PathBuf> = HashMap::new();
+    let resolved = crate::params_resolver::resolve_parameters(
+        crate::params_resolver::ParameterInputs {
+            model: &model_pre,
+            scenario: scenario_name.as_deref(),
+            adhoc_enable: &a.scenario.enable,
+            adhoc_disable: &a.scenario.disable,
+            fixed_cli: &fixed_cli_vec,
+            fixed_files: &fixed_files_vec,
+            fit_toml_fixed: &ftf,
+            fit_toml_estimate: &fte,
+            table_files: &table_files,
+        },
+    ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+    crate::params_resolver::print_warnings(&resolved);
+    // Resolver already validated bounds + finiteness; no need for a
+    // second validate_parameter_values pass.
+    let model = resolved.model.clone();
 
     let compiled = CompiledModel::new(model.clone())
         .unwrap_or_else(|e| { eprintln!("compile error: {:?}", e); std::process::exit(1); });
