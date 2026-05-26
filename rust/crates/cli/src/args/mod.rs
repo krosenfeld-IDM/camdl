@@ -621,6 +621,21 @@ Examples:
   # Force rerun even if cached results match
   camdl fit run fit.toml --seed 1 --force
 
+  # Override the stage's init mode via the new `--init` flag (renamed
+  # from --init-method per 2026-05-25 CLI UX rev 2)
+  camdl fit run fit.toml --stage scout --init lhs
+
+  # Warm-start every chain from a prior fit's MLE (replaces the
+  # removed --starts-from <dir> flag)
+  camdl fit run fit.toml --stage refine --init from_mle --mle fits/scout/
+
+  # Warm-start from a posterior draws TSV / fit-results directory
+  camdl fit run fit.toml --stage pgas --init from_posterior \\
+      --posterior fits/scout/draws.tsv
+
+  # Warm-start from a hand-written flat params TOML
+  camdl fit run fit.toml --stage refine --init from_params --params truth.toml
+
 Notes:
   - PGAS/PMMH fits can resume a partial run with `--resume`.
   - Output goes under `<root>/fits/<stem>-<hash>/`; resolve with
@@ -1235,6 +1250,15 @@ Examples:
   # Multiple chains in parallel
   camdl if2 sir.camdl --data cases.tsv --rw-sd auto \\
       --regime refine --chains 4 --parallel 4
+
+  # Pin parameters at specific values with --fixed (universal
+  # value-setter; removes the named params from rw_sd-auto estimation)
+  camdl if2 sir.camdl --data cases.tsv --rw-sd auto \\
+      --fixed N0=1000 --fixed mu=0.0
+
+  # Load fixed values from a layered TOML file
+  camdl if2 sir.camdl --data cases.tsv --rw-sd auto \\
+      --fixed-file fixed.toml
 "))]
 pub struct If2Args {
     /// IR JSON or .camdl model file
@@ -1300,17 +1324,32 @@ pub struct If2Args {
 Examples:
   # 1D profile likelihood for R0 via parallel IF2
   camdl profile sir.camdl --data cases.tsv \\
-      --param R0 --grid 0.5:5:20 --particles 2000
+      --sweep \"R0=lin(0.5,5,20)\" --particles 2000 --rw-sd auto
 
   # 2D profile (R0 × sigma)
   camdl profile sir.camdl --data cases.tsv \\
-      --param R0 --grid 0.5:5:10 \\
-      --param sigma --grid 0.1:1.0:10
+      --sweep \"R0=lin(0.5,5,10)\" --sweep \"sigma=lin(0.1,1.0,10)\" \\
+      --rw-sd auto
+
+  # Slice profile: hold gamma at 0.1, sweep tau (the canonical
+  # `--fixed NAME=VALUE` pattern — kicks gamma from [estimate])
+  camdl profile sir.camdl --data cases.tsv \\
+      --sweep \"tau=lin(-35,-1,30)\" --fixed gamma=0.1 --rw-sd auto
 
   # Profile-posterior sweep — PMMH per cell with priors from a fit toml
   camdl profile sir.camdl --data cases.tsv \\
       --sweep \"tau=lin(-35,-1,30)\" --algorithm pmmh \\
       --fit fits/profile_tau.toml --pmmh-steps 1500
+
+  # Warm-start chains from a hand-written params TOML
+  camdl profile sir.camdl --data cases.tsv \\
+      --sweep \"R0=lin(0.5,5,20)\" --init from_params --params truth.toml \\
+      --starts 4 --rw-sd auto
+
+  # Warm-start chains from a prior fit's MLE
+  camdl profile sir.camdl --data cases.tsv \\
+      --sweep \"R0=lin(0.5,5,20)\" --init from_mle --mle fits/scout/ \\
+      --starts 4 --rw-sd auto
 
 PRIORS (--algorithm pmmh)
 
