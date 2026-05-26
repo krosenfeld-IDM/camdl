@@ -470,8 +470,11 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         crate::args::types::RwSd::Map(m) => m.clone(),
     };
 
-    // Load model (pre-resolution)
-    let (model_pre, model_json) = crate::util::load_model(&ir_path)
+    // Load model (pre-resolution). `mut` because the gh#34
+    // `[estimate].start` fall-back below seeds values into
+    // `model_pre.parameters[i].value` before the resolver call —
+    // same pattern as `fit/runner.rs:144-180`.
+    let (mut model_pre, model_json) = crate::util::load_model(&ir_path)
         .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
 
     // ── Optional --fit toml resolution (gh#73) ──────────────────────
@@ -526,6 +529,30 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     } else {
         (indexmap::IndexMap::new(), None, indexmap::IndexMap::new())
     };
+
+    // gh#34 [estimate].start fall-back. Apply BEFORE the resolver so
+    // that params listed in fit-toml `[estimate]` with an explicit
+    // `start = ...` carry that value past the resolver's
+    // `UnsetRequired` check, exactly the way `camdl fit run` does
+    // (see `fit/runner.rs:144-180`). Without this, a user writing
+    //   [estimate]
+    //   beta = { bounds = [0.01, 5.0], start = 0.5143 }
+    // and no DSL default for `beta` would hit the resolver's
+    // `UnsetRequired` error reading "no model default, no scenario,
+    // no --fit toml entry, ..." — the [estimate].start was silently
+    // ignored. Scope: explicit `spec.start` only (no
+    // bounds-uniform fallback for profile yet — the focal sweep
+    // overrides the focal param's value per-cell anyway, and the
+    // non-focal params are usually pinned via `--fixed`).
+    for (name, spec) in &fit_estimate {
+        if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == *name) {
+            if p.value.is_none() {
+                if let Some(start) = spec.start {
+                    p.value = Some(start);
+                }
+            }
+        }
+    }
 
     // Run the unified resolver.
     let fit_toml_estimate: indexmap::IndexSet<String> =
