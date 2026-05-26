@@ -1519,19 +1519,38 @@ pub fn compute_chain_agreement(
     agreement_map
 }
 
-/// Compute R-hat and ESS from per-chain parameter traces.
-/// `chains[chain_id]` is a Vec of param values (one per sample).
-/// Returns `(rhat, ess)`. R-hat requires >= 2 chains with >= 4
-/// samples each, all chains equal length (Im24 in the 2026-04-19
-/// inference review); returns `(NaN, NaN)` when not met.
+/// R-hat and ESS diagnostics for a single parameter.
 ///
-/// IM12 in the same review: total ESS is only meaningful when R-hat
-/// indicates convergence. If R-hat > 1.1, chains are effectively
-/// sampling different distributions and summing their per-chain
-/// ESS estimates is not interpretable — return `NaN` for ESS so
-/// the caller doesn't display a misleading "total ESS" number that
-/// makes a non-converged run look adequately sampled.
-pub fn compute_rhat_ess(chains: &[Vec<f64>]) -> (f64, f64) {
+/// `ess_total` is meaningful only when chains agree (R-hat ≤ 1.1).
+/// Under multi-modality the sum-of-per-chain ESS overstates the
+/// effective N for the *joint* posterior — each chain reports ESS
+/// of its mode, not of the posterior — so we suppress to NaN per
+/// IM12 (2026-04-19 inference review). The rank-normalized bulk-ESS
+/// of Vehtari et al. 2021 is the structurally-robust replacement and
+/// is tracked as a follow-up.
+///
+/// `ess_per_chain` is always populated when the structural
+/// preconditions hold (≥ 2 chains, equal length, ≥ 4 samples each).
+/// Each entry is the Geyer initial-positive-sequence ESS for that
+/// chain — interpretable as the chain's effective N for whatever
+/// distribution it is sampling, *regardless* of cross-chain
+/// agreement. This is the right diagnostic when R-hat is bad:
+/// the user can distinguish chains stuck in different modes but
+/// well-mixing-within-mode (large per-chain ESS) from chains that
+/// are both stuck and non-stationary (small per-chain ESS).
+pub struct RhatEss {
+    pub rhat: f64,
+    pub ess_total: f64,
+    pub ess_per_chain: Vec<f64>,
+}
+
+/// Compute R-hat and ESS diagnostics from per-chain parameter
+/// traces. `chains[chain_id]` is a Vec of param values
+/// (one per sample). Structural preconditions (Im24,
+/// 2026-04-19 inference review): ≥ 2 chains with ≥ 4 samples each,
+/// all chains equal length. Below this, all three fields are NaN /
+/// empty.
+pub fn compute_rhat_ess(chains: &[Vec<f64>]) -> RhatEss {
     use sim::inference::pmmh::mcmc_ess;
 
     let n_chains = chains.len();
@@ -1543,7 +1562,7 @@ pub fn compute_rhat_ess(chains: &[Vec<f64>]) -> (f64, f64) {
         .unwrap_or(false);
 
     if n_chains < 2 || !equal_lengths || !chains.iter().all(|c| c.len() >= 4) {
-        return (f64::NAN, f64::NAN);
+        return RhatEss { rhat: f64::NAN, ess_total: f64::NAN, ess_per_chain: Vec::new() };
     }
 
     let chain_means: Vec<f64> = chains.iter().map(|c| {
@@ -1563,15 +1582,23 @@ pub fn compute_rhat_ess(chains: &[Vec<f64>]) -> (f64, f64) {
         (((n_samples - 1.0) / n_samples * within + between / n_samples) / within).sqrt()
     } else { f64::NAN };
 
-    // IM12: gate ESS on R-hat. 1.1 is the standard threshold (BDA3).
+    // Per-chain ESS is always computed when structural preconditions
+    // hold — each value is interpretable on its own. The user gets
+    // the within-chain mixing diagnostic regardless of R-hat.
+    let ess_per_chain: Vec<f64> = chains.iter().map(|c| mcmc_ess(c)).collect();
+
+    // IM12: joint-posterior ESS is the sum, gated on R-hat ≤ 1.1
+    // because the sum is only valid when chains agree. 1.1 is the
+    // standard threshold (BDA3). When the gate fails, the per-chain
+    // breakdown (above) carries the diagnostic information.
     const RHAT_THRESHOLD: f64 = 1.1;
-    let total_ess = if rhat.is_finite() && rhat <= RHAT_THRESHOLD {
-        chains.iter().map(|c| mcmc_ess(c)).sum()
+    let ess_total = if rhat.is_finite() && rhat <= RHAT_THRESHOLD {
+        ess_per_chain.iter().sum()
     } else {
         f64::NAN
     };
 
-    (rhat, total_ess)
+    RhatEss { rhat, ess_total, ess_per_chain }
 }
 
 /// MAD-based auto rw_sd calibration from chain best-loglik parameters.
@@ -3453,5 +3480,88 @@ dt = 1.0
             "flatlined-W param must yield NaN Â; got {}", r_flat);
         assert!(r_active.is_finite(),
             "moving-param Â must be finite; got {}", r_active);
+    }
+
+    /// Under multi-modality (R-hat > 1.1) the sum-of-per-chain ESS
+    /// estimator overstates the effective N for the *joint* posterior
+    /// — `ess_total` must remain NaN per IM12. But the per-chain
+    /// values are interpretable on their own (each chain's effective
+    /// N for its sampling distribution), so `ess_per_chain` must be
+    /// populated. This lets the display layer surface within-chain
+    /// mixing diagnostics even when chains disagree.
+    #[test]
+    fn rhat_ess_reports_per_chain_when_rhat_exceeds_threshold() {
+        // Two chains targeting very different modes (means 1.0 vs 5.0)
+        // with small within-chain wobble. Between-chain separation
+        // dwarfs within-chain variance → R-hat huge.
+        let chain_a: Vec<f64> = (0..200)
+            .map(|i| 1.0 + 0.05 * ((i as f64 * 0.7).sin()))
+            .collect();
+        let chain_b: Vec<f64> = (0..200)
+            .map(|i| 5.0 + 0.05 * ((i as f64 * 0.7).sin()))
+            .collect();
+        let d = compute_rhat_ess(&[chain_a, chain_b]);
+        assert!(d.rhat.is_finite() && d.rhat > 1.1,
+            "fixture should produce R-hat > 1.1; got {}", d.rhat);
+        assert!(d.ess_total.is_nan(),
+            "ess_total must remain NaN under multi-modality (sum-of-per-chain \
+             would overstate joint ESS); got {}", d.ess_total);
+        assert_eq!(d.ess_per_chain.len(), 2,
+            "ess_per_chain must be populated for each chain regardless of R-hat");
+        assert!(d.ess_per_chain.iter().all(|&e| e.is_finite() && e > 0.0),
+            "per-chain ESS values must be finite; got {:?}", d.ess_per_chain);
+    }
+
+    /// Well-mixed regression: chains drawn from the same distribution
+    /// should have R-hat ≈ 1 AND finite `ess_total` (the sum is valid
+    /// when chains agree) AND finite per-chain values.
+    #[test]
+    fn rhat_ess_all_finite_for_well_mixed_chains() {
+        // Linear congruential pseudo-random in [0,1) — deterministic
+        // and uncorrelated enough that R-hat lands near 1.
+        let lcg = |seed: u64, n: usize| -> Vec<f64> {
+            let mut s = seed;
+            (0..n).map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((s >> 33) as f64) / (u32::MAX as f64)
+            }).collect()
+        };
+        let chain_a = lcg(1, 500);
+        let chain_b = lcg(2, 500);
+        let d = compute_rhat_ess(&[chain_a, chain_b]);
+        assert!(d.rhat.is_finite() && d.rhat < 1.1,
+            "well-mixed pseudo-iid chains should give R-hat < 1.1; got {}", d.rhat);
+        assert!(d.ess_total.is_finite() && d.ess_total > 0.0,
+            "ess_total must be finite when R-hat ≤ 1.1; got {}", d.ess_total);
+        assert_eq!(d.ess_per_chain.len(), 2);
+        assert!(d.ess_per_chain.iter().all(|&e| e.is_finite() && e > 0.0));
+        // Joint sum invariant — ess_total is the sum of per-chain entries.
+        let sum: f64 = d.ess_per_chain.iter().sum();
+        assert!((d.ess_total - sum).abs() < 1e-10,
+            "ess_total ({}) should equal sum of per-chain ({})", d.ess_total, sum);
+    }
+
+    /// Structural preconditions: ≥ 2 chains, equal length, ≥ 4 samples
+    /// each. Below this everything is NaN / empty — the estimators are
+    /// genuinely undefined, not merely difficult to interpret.
+    #[test]
+    fn rhat_ess_returns_nan_when_too_few_samples() {
+        let chain_a: Vec<f64> = vec![1.0, 1.1, 1.05];
+        let chain_b: Vec<f64> = vec![1.0, 1.2, 1.10];
+        let d = compute_rhat_ess(&[chain_a, chain_b]);
+        assert!(d.rhat.is_nan(),       "< 4 samples per chain → R-hat NaN; got {}",       d.rhat);
+        assert!(d.ess_total.is_nan(),  "< 4 samples per chain → ess_total NaN; got {}",   d.ess_total);
+        assert!(d.ess_per_chain.is_empty(),
+            "< 4 samples per chain → ess_per_chain empty; got {:?}", d.ess_per_chain);
+    }
+
+    #[test]
+    fn rhat_ess_returns_nan_for_single_chain() {
+        // R-hat needs ≥ 2 chains.
+        let chain: Vec<f64> = (0..200).map(|i| 1.0 + 0.01 * i as f64).collect();
+        let d = compute_rhat_ess(&[chain]);
+        assert!(d.rhat.is_nan() && d.ess_total.is_nan() && d.ess_per_chain.is_empty(),
+            "single chain → all NaN/empty; got ({}, {}, {:?})",
+            d.rhat, d.ess_total, d.ess_per_chain);
     }
 }

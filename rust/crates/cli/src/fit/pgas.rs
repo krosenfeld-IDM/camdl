@@ -869,6 +869,7 @@ pub fn run_stage(
 struct Diagnostics {
     rhat: HashMap<String, f64>,
     ess: HashMap<String, f64>,
+    ess_per_chain: HashMap<String, Vec<f64>>,
 }
 
 fn compute_diagnostics(
@@ -877,20 +878,24 @@ fn compute_diagnostics(
 ) -> Diagnostics {
     let mut rhat_map = HashMap::new();
     let mut ess_map = HashMap::new();
+    let mut ess_per_chain_map = HashMap::new();
 
     for spec in estimated_params {
         let chains: Vec<Vec<f64>> = results.iter()
             .map(|(_, sweeps, _)| sweeps.iter().map(|s| s.params[spec.index]).collect())
             .collect();
 
-        let (rhat, ess) = super::runner::compute_rhat_ess(&chains);
-        if rhat.is_finite() {
-            rhat_map.insert(spec.name.clone(), rhat);
+        let d = super::runner::compute_rhat_ess(&chains);
+        if d.rhat.is_finite() {
+            rhat_map.insert(spec.name.clone(), d.rhat);
         }
-        ess_map.insert(spec.name.clone(), ess);
+        ess_map.insert(spec.name.clone(), d.ess_total);
+        if !d.ess_per_chain.is_empty() {
+            ess_per_chain_map.insert(spec.name.clone(), d.ess_per_chain);
+        }
     }
 
-    Diagnostics { rhat: rhat_map, ess: ess_map }
+    Diagnostics { rhat: rhat_map, ess: ess_map, ess_per_chain: ess_per_chain_map }
 }
 
 fn write_summary(
@@ -909,6 +914,7 @@ fn write_summary(
         "acceptance_rates": acceptance_rates,
         "rhat": diagnostics.rhat,
         "ess": diagnostics.ess,
+        "ess_per_chain": diagnostics.ess_per_chain,
     });
 
     let path = dir.join("pgas_summary.json");
