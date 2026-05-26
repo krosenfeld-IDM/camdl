@@ -4,7 +4,95 @@ Date: 2026-05-25
 Author: claude-agent (session for V. Buffalo)
 Proposal: `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`
 Branch: `worktree-agent-a0d854c5fd1d64f12` (original) → continued on
-`main` after maintainer merged keeper commits.
+`main` after maintainer merged keeper commits → continued on
+`worktree-agent-a097f618cd0989d9b` for steps 6 + 9.
+
+## Update 2026-05-25 (steps 6 + 9 session): InitMethod expansion + run.json provenance
+
+This session lands steps 6 (init family) and 9 (run.json provenance)
+of the rev 2 proposal. Two commits on
+`worktree-agent-a097f618cd0989d9b`:
+
+  - `gh#83/gh#85 step 6a: extend InitMethod ADT with warm-start variants`
+    — adds the four proposal-mandated variants (`FromPrior`,
+    `FromPosterior`, `FromMle`, `FromParams`) to `InitMethod`, drops
+    `Copy` since `FromParams` carries a `PathBuf`, and provides a
+    manual `clap::ValueEnum` impl that surfaces only the payload-free
+    variants to the CLI (preserves the legacy `--init lhs / single /
+    uniform / survey_top_k` surface while the type itself grew payload
+    variants). Cascading edits at all `*init_method` deref sites
+    (pgas / pmmh / nlopt_stage / profile / mod.rs).
+  - `gh#83/gh#85 steps 6b+9: chain_starts loaders + run.json provenance`
+    — new module `rust/crates/cli/src/fit/chain_starts.rs` with
+    `draw_chain_starts`, `ChainStart`, `ChainStarts`, `InitSource`,
+    `InitError` plus loaders for each of the four new variants.
+    Profile is wired to dispatch warm-start variants through
+    `draw_chain_starts` so `--init from_prior` works end-to-end today.
+    Step-9 provenance schema: `ParameterProvenance`,
+    `InitProvenance`, `ChainStartProvenance`,
+    `ScenarioOverrideRecord`, `KickedFromEstimate` added to
+    `run_meta.rs`, with `parameters_provenance` / `init_provenance`
+    fields threaded through `SimulateMeta` / `FitMeta` /
+    `FitStageMeta` / `ProfileMeta` / `SurveyMeta`. Profile + survey
+    populate provenance directly from their existing
+    `resolve_parameters` call.
+
+Tests (20 new + 3 round-trip, all green):
+
+  * Per-variant loader tests (chain_starts.rs):
+    `from_params_loads_flat_toml_and_assigns_to_estimate_set_only`,
+    `from_params_errors_on_mle_toml_shape_with_actionable_hint`,
+    `from_mle_resolves_fitdir_to_mle_toml_first_then_final_params`,
+    `from_mle_handles_explicit_mle_toml_file`,
+    `from_posterior_samples_uniformly_with_replacement`,
+    `from_posterior_resolves_fitdir_to_draws_tsv`,
+    `from_prior_falls_back_to_bounds_uniform_with_warning_for_no_tilde_params`
+    (Decision A),
+    `from_prior_uses_declared_dist_when_tilde_present`,
+    `legacy_single_returns_seeded_base`,
+    plus 4 × `{variant}_chainstart_values_restricted_to_estimate_set`
+    and 4 × `{variant}_chainstart_source_records_provenance_with_correct_tag`.
+
+  * Round-trip tests (run_meta.rs):
+    `parameter_provenance_round_trips_via_simulate_meta` (covers
+    every ValueSource tag + KickedFromEstimate + ScenarioOverride),
+    `init_provenance_method_tag_matches_for_every_variant` (covers
+    all 8 InitMethod variants),
+    `init_source_per_chain_tags_round_trip` (covers all 8
+    InitSource tags per-chain).
+
+Post-implementation audit checklist for this session:
+  4. **Provenance round-trip** — ✅ Round-trip tests assert
+     non-empty `parameters_provenance` on `SimulateMeta` with every
+     `ValueSource` variant present, and `init_provenance.method` tag
+     matching for every `InitMethod` variant.
+  5. **Init-source coverage** — ✅ Every variant covered by at
+     least one round-trip test through JSON.
+
+Deferred for follow-up (intentional scope reduction; documented inline):
+  - The proposal's `SurveyTopK { source: SurveySource, k: usize }`
+    payload restructure stayed as the legacy unit variant with
+    sibling `survey_path` / `survey_top_k_n` fields on stage opts.
+    Restructuring would cascade into pgas/pmmh/profile/nlopt_stage
+    dispatch — out of scope for step 6, deferred to step 7's CLI
+    break or a follow-up RFC.
+  - The non-profile inference subcommands (`if2`, `pgas`, `pmmh`)
+    don't yet route their chain init through `draw_chain_starts` —
+    they keep dispatching via the legacy
+    `init::resolve_per_chain_starts_from_method` for SurveyTopK and
+    the unit `build_chain_starts` for legacy modes. The new
+    variants are not yet reachable through fit.toml stage configs
+    (the rejection path emits a clear "step-7 CLI surface" error).
+    Step 7 wires the new variants into the inference subcommand
+    arg parsers and threads `--posterior` / `--mle` / `--params`
+    through to chain init.
+  - FitMeta / FitStageMeta construction sites for the inference
+    subcommands carry empty `parameters_provenance` /
+    `init_provenance` for now; the inference-algorithm runners
+    (pgas, pmmh, if2, nlopt_stage) need a small extension to
+    pass their stage-scope `ResolvedParameters` / `ChainStarts`
+    into the meta builder. Schema is in place — only the wiring
+    is pending.
 
 This note records the state of the CLI UX rev 2 implementation as of
 this session — what shipped, what's deferred, and the specific
