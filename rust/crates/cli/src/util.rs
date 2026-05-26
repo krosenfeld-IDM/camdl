@@ -386,6 +386,507 @@ pub fn resolve_flow_indices(model: &ir::Model, flow_name: Option<&str>) -> Resul
     }
 }
 
+// ─── Multi-stream binding diagnostics (gh#90) ───────────────────────────────
+
+/// Build the gh#90 unbound-streams warning string when the user is
+/// running profile/pfilter against a model that declares more than one
+/// observation block but only one stream is bound to data.
+///
+/// Symptom this catches: a SEIR with `observations { cases : ...,
+/// deaths : ... }`, run as `camdl profile model.camdl --data deaths.tsv
+/// --obs deaths ...`, silently drops `cases` from the likelihood —
+/// `cases` falls back to its priors. The result looks plausible but is
+/// methodologically wrong: it's profile-on-deaths with cases-side
+/// parameters floating, not profile-on-deaths-given-cases.
+///
+/// Arguments:
+///   `cmd`: subcommand name (`profile` or `pfilter`) — used in the
+///          warning text for actionable phrasing.
+///   `all_obs_names`: every observation block declared in the model,
+///                    in declaration order.
+///   `bound_names`: the names of streams actually bound to data by the
+///                  current invocation (resolved from `--obs` / `--fit`).
+///
+/// Returns `None` when no warning is needed: the model declares ≤ 1
+/// observation block, or every block is bound. Returns the formatted
+/// warning otherwise.
+///
+/// Family-root semantics: `bound_names` here is the *resolved leaf set*
+/// (e.g. `cases_a02, cases_a25, ...` after family expansion). The
+/// caller is responsible for handing in the post-resolution names so
+/// that `--obs cases` covering a 5-cell family is correctly seen as
+/// "binding 5 streams", not "binding 1 stream".
+/// gh#90: resolve `--data` flags against the model's observation
+/// blocks into a canonical per-stream binding map.
+///
+/// Returns `Vec<(stream_name, path)>` in the order the resolver
+/// determined (deterministic for a given input). Errors are
+/// user-facing: pick the right form, point at the model's stream
+/// names if a NAME mismatched, give an actionable suggestion when
+/// the user is implicitly trying to drop streams.
+///
+/// Validation rules:
+///   1. Empty `--data` list → caller decides (fit-toml fallback).
+///   2. All-Single or all-Named only — mixed forms error.
+///   3. Single-form: max one flag. Two single PATHs is ambiguous.
+///      With N=1 obs block: bind to that block. With N>1: requires
+///      `--obs NAME` to disambiguate (single-stream scoring, the
+///      caller emits the unbound-streams warning).
+///   4. Named-form: every NAME must match a model observation block
+///      (exact name OR family root). NAME collisions across flags
+///      are errors. Multi-stream binding is the joint-scoring path.
+pub fn resolve_data_specs(
+    data_specs: &[crate::args::types::DataSpec],
+    model_obs_names: &[String],
+    obs_arg: Option<&str>,
+) -> Result<Vec<(String, std::path::PathBuf)>, String> {
+    use crate::args::types::DataSpec;
+
+    if data_specs.is_empty() {
+        return Err(
+            "--data is required (no --data flags supplied and no \
+             fit-toml fallback found). Use `--data PATH` for a \
+             single-stream model, or `--data NAME=PATH` (repeatable) \
+             for a multi-stream model."
+                .to_string(),
+        );
+    }
+
+    // Partition into single-form vs named-form. Mixed → error.
+    let n_single = data_specs.iter()
+        .filter(|d| matches!(d, DataSpec::Single(_))).count();
+    let n_named = data_specs.iter()
+        .filter(|d| matches!(d, DataSpec::Named { .. })).count();
+    if n_single > 0 && n_named > 0 {
+        return Err(
+            "--data PATH and --data NAME=PATH are mutually exclusive; \
+             pick one form.\n  \
+             Use --data PATH (single flag) for single-stream models, \
+             or --data NAME=PATH (repeatable, one per stream) for \
+             multi-stream models.".to_string(),
+        );
+    }
+
+    // All-Single form.
+    if n_named == 0 {
+        if n_single > 1 {
+            return Err(format!(
+                "--data PATH given {} times; use one --data flag (the \
+                 single-stream form takes a single path). For multiple \
+                 streams use --data NAME=PATH (repeatable).",
+                n_single,
+            ));
+        }
+        let path = match &data_specs[0] {
+            DataSpec::Single(p) => p.clone(),
+            _ => unreachable!(),
+        };
+        return resolve_single_form(path, model_obs_names, obs_arg);
+    }
+
+    // All-Named form.
+    if obs_arg.is_some() {
+        return Err(
+            "--obs NAME is redundant with --data NAME=PATH (each pair \
+             names its own stream); pass --obs only with the single-\
+             stream --data PATH form.".to_string(),
+        );
+    }
+    let mut out: Vec<(String, std::path::PathBuf)> = Vec::with_capacity(n_named);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for spec in data_specs {
+        let (name, path) = match spec {
+            DataSpec::Named { name, path } => (name.clone(), path.clone()),
+            _ => unreachable!(),
+        };
+        if !seen.insert(name.clone()) {
+            return Err(format!(
+                "--data {}=... supplied more than once; each stream \
+                 name may appear at most once.", name));
+        }
+        // Validate NAME against the model. Two acceptable shapes:
+        //   1. Exact match on a leaf obs block (`name == obs.name`).
+        //   2. Family-root match — every IR obs whose name starts
+        //      with `<name>_` is bound to this path. Mirrors profile's
+        //      existing family resolution so a single `--data
+        //      cases=cases.tsv` on a stratified `cases_a02, cases_a25`
+        //      family covers both leaves with one wide TSV.
+        let exact_match = model_obs_names.iter().any(|n| n == &name);
+        let family_prefix = format!("{}_", name);
+        let family_matches: Vec<&String> = model_obs_names.iter()
+            .filter(|n| n.starts_with(&family_prefix))
+            .collect();
+        if exact_match {
+            out.push((name, path));
+        } else if !family_matches.is_empty() {
+            for leaf in family_matches {
+                out.push((leaf.clone(), path.clone()));
+            }
+        } else {
+            let avail = if model_obs_names.is_empty() {
+                "<model has no observation blocks>".to_string()
+            } else {
+                model_obs_names.iter()
+                    .map(|n| format!("'{}'", n))
+                    .collect::<Vec<_>>().join(", ")
+            };
+            return Err(format!(
+                "--data {}=...: '{}' does not match any observation block \
+                 in the model (neither as a leaf name nor a family root). \
+                 Available: {}.", name, name, avail));
+        }
+    }
+    Ok(out)
+}
+
+/// Helper for the single-PATH branch of `resolve_data_specs`.
+fn resolve_single_form(
+    path: std::path::PathBuf,
+    model_obs_names: &[String],
+    obs_arg: Option<&str>,
+) -> Result<Vec<(String, std::path::PathBuf)>, String> {
+    if model_obs_names.is_empty() {
+        return Err(
+            "model declares no observation blocks; cannot bind data."
+                .to_string());
+    }
+    if model_obs_names.len() == 1 {
+        // Single-block model.
+        if let Some(name) = obs_arg {
+            // --obs NAME redundant but allowed: must match.
+            if name != model_obs_names[0] {
+                // Also accept a family-root if the single block looks
+                // like an expanded leaf (`<name>_<idx>...`). Conservative
+                // here — only accept exact match. Family-root semantics
+                // on a single-block model are odd.
+                return Err(format!(
+                    "--obs '{}' does not match the model's single \
+                     observation block '{}'.",
+                    name, model_obs_names[0]));
+            }
+        }
+        Ok(vec![(model_obs_names[0].clone(), path)])
+    } else {
+        // Multi-block model.
+        match obs_arg {
+            None => {
+                let avail = model_obs_names.iter()
+                    .map(|n| format!("'{}'", n))
+                    .collect::<Vec<_>>().join(", ");
+                Err(format!(
+                    "model has multiple observation blocks ({}); use \
+                     --data NAME=PATH (repeatable) to bind every stream, \
+                     or --data PATH --obs NAME to score only one. \
+                     Currently --data PATH (no NAME) and no --obs is \
+                     ambiguous on a multi-block model — refusing to \
+                     silently score a single stream.",
+                    avail))
+            }
+            Some(name) => {
+                // Resolve as exact or family-root.
+                let exact_match = model_obs_names.iter().any(|n| n == name);
+                let family_prefix = format!("{}_", name);
+                let family_matches: Vec<&String> = model_obs_names.iter()
+                    .filter(|n| n.starts_with(&family_prefix))
+                    .collect();
+                if exact_match {
+                    Ok(vec![(name.to_string(), path)])
+                } else if !family_matches.is_empty() {
+                    Ok(family_matches.into_iter()
+                        .map(|leaf| (leaf.clone(), path.clone()))
+                        .collect())
+                } else {
+                    let avail = model_obs_names.iter()
+                        .map(|n| format!("'{}'", n))
+                        .collect::<Vec<_>>().join(", ");
+                    Err(format!(
+                        "--obs '{}' does not match any observation block. \
+                         Available: {}.", name, avail))
+                }
+            }
+        }
+    }
+}
+
+pub fn format_unbound_streams_warning(
+    cmd: &str,
+    all_obs_names: &[String],
+    bound_names: &[String],
+) -> Option<String> {
+    if all_obs_names.len() <= 1 {
+        return None;
+    }
+    let bound: std::collections::HashSet<&str> = bound_names.iter()
+        .map(|s| s.as_str()).collect();
+    let unbound: Vec<&str> = all_obs_names.iter()
+        .map(|s| s.as_str())
+        .filter(|n| !bound.contains(*n))
+        .collect();
+    if unbound.is_empty() {
+        return None;
+    }
+    let bound_list: Vec<&str> = all_obs_names.iter()
+        .map(|s| s.as_str())
+        .filter(|n| bound.contains(*n))
+        .collect();
+    let bound_phrase = if bound_list.len() == 1 {
+        format!("'{}' is", bound_list[0])
+    } else {
+        format!("{} are",
+            bound_list.iter().map(|n| format!("'{}'", n))
+                .collect::<Vec<_>>().join(", "))
+    };
+    let unbound_phrase = if unbound.len() == 1 {
+        format!("'{}'", unbound[0])
+    } else {
+        unbound.iter().map(|n| format!("'{}'", n))
+            .collect::<Vec<_>>().join(" and ")
+    };
+    let all_names = all_obs_names.iter().map(|s| s.as_str())
+        .collect::<Vec<_>>().join(", ");
+    Some(format!(
+        "{}: warning: model has {} observation blocks ({}); only {} \
+         bound to data — likelihood from {} is silently zero. To \
+         score jointly, use --data NAME=PATH for each stream (or \
+         --fit FOO.toml with a [data.observations] section).\n",
+        cmd, all_obs_names.len(), all_names, bound_phrase, unbound_phrase,
+    ))
+}
+
+#[cfg(test)]
+mod gh90_resolver_tests {
+    use super::*;
+    use crate::args::types::DataSpec;
+    use std::path::PathBuf;
+
+    fn n(s: &str) -> String { s.to_string() }
+
+    #[test]
+    fn resolve_data_specs_single_block_single_data_works() {
+        let specs = vec![DataSpec::Single(PathBuf::from("cases.tsv"))];
+        let bound = resolve_data_specs(&specs, &[n("cases")], None).unwrap();
+        assert_eq!(bound, vec![(n("cases"), PathBuf::from("cases.tsv"))]);
+    }
+
+    #[test]
+    fn resolve_data_specs_single_block_single_data_with_redundant_obs_works() {
+        let specs = vec![DataSpec::Single(PathBuf::from("cases.tsv"))];
+        let bound = resolve_data_specs(&specs, &[n("cases")], Some("cases")).unwrap();
+        assert_eq!(bound, vec![(n("cases"), PathBuf::from("cases.tsv"))]);
+    }
+
+    #[test]
+    fn resolve_data_specs_single_block_single_data_with_mismatched_obs_errors() {
+        let specs = vec![DataSpec::Single(PathBuf::from("cases.tsv"))];
+        let err = resolve_data_specs(&specs, &[n("cases")], Some("deaths")).unwrap_err();
+        assert!(err.contains("'deaths'"));
+        assert!(err.contains("'cases'"));
+    }
+
+    #[test]
+    fn resolve_data_specs_multi_block_no_obs_errors_actionable() {
+        let specs = vec![DataSpec::Single(PathBuf::from("data.tsv"))];
+        let model = vec![n("cases"), n("deaths"), n("hosps")];
+        let err = resolve_data_specs(&specs, &model, None).unwrap_err();
+        // Actionable: name every block, suggest both --data NAME=PATH
+        // and --data PATH --obs NAME forms.
+        assert!(err.contains("'cases'"), "{}", err);
+        assert!(err.contains("'deaths'"), "{}", err);
+        assert!(err.contains("--data NAME=PATH"), "{}", err);
+        assert!(err.contains("--obs"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_data_specs_multi_block_single_data_with_obs_works() {
+        let specs = vec![DataSpec::Single(PathBuf::from("data.tsv"))];
+        let model = vec![n("cases"), n("deaths")];
+        let bound = resolve_data_specs(&specs, &model, Some("cases")).unwrap();
+        assert_eq!(bound, vec![(n("cases"), PathBuf::from("data.tsv"))]);
+    }
+
+    #[test]
+    fn resolve_data_specs_multi_block_named_pairs_works() {
+        let specs = vec![
+            DataSpec::Named { name: n("cases"), path: PathBuf::from("c.tsv") },
+            DataSpec::Named { name: n("deaths"), path: PathBuf::from("d.tsv") },
+        ];
+        let model = vec![n("cases"), n("deaths")];
+        let bound = resolve_data_specs(&specs, &model, None).unwrap();
+        assert_eq!(bound, vec![
+            (n("cases"), PathBuf::from("c.tsv")),
+            (n("deaths"), PathBuf::from("d.tsv")),
+        ]);
+    }
+
+    #[test]
+    fn resolve_data_specs_partial_named_pairs_works() {
+        // Multi-block model, only some streams bound — succeeds at the
+        // resolver level; the caller (profile/pfilter) emits the
+        // unbound-streams warning over the returned set.
+        let specs = vec![
+            DataSpec::Named { name: n("cases"), path: PathBuf::from("c.tsv") },
+        ];
+        let model = vec![n("cases"), n("deaths"), n("hosps")];
+        let bound = resolve_data_specs(&specs, &model, None).unwrap();
+        assert_eq!(bound, vec![(n("cases"), PathBuf::from("c.tsv"))]);
+    }
+
+    #[test]
+    fn resolve_data_specs_mixed_single_and_named_errors() {
+        let specs = vec![
+            DataSpec::Single(PathBuf::from("c.tsv")),
+            DataSpec::Named { name: n("deaths"), path: PathBuf::from("d.tsv") },
+        ];
+        let err = resolve_data_specs(&specs, &[n("cases"), n("deaths")], None).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_data_specs_named_unknown_name_errors() {
+        let specs = vec![
+            DataSpec::Named { name: n("typos"), path: PathBuf::from("t.tsv") },
+        ];
+        let model = vec![n("cases"), n("deaths")];
+        let err = resolve_data_specs(&specs, &model, None).unwrap_err();
+        assert!(err.contains("'typos'"), "{}", err);
+        assert!(err.contains("does not match"), "{}", err);
+        // Lists what *is* available.
+        assert!(err.contains("'cases'"), "{}", err);
+        assert!(err.contains("'deaths'"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_data_specs_duplicate_named_errors() {
+        let specs = vec![
+            DataSpec::Named { name: n("cases"), path: PathBuf::from("a.tsv") },
+            DataSpec::Named { name: n("cases"), path: PathBuf::from("b.tsv") },
+        ];
+        let err = resolve_data_specs(&specs, &[n("cases")], None).unwrap_err();
+        assert!(err.contains("more than once"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_data_specs_two_singles_errors() {
+        let specs = vec![
+            DataSpec::Single(PathBuf::from("a.tsv")),
+            DataSpec::Single(PathBuf::from("b.tsv")),
+        ];
+        let err = resolve_data_specs(&specs, &[n("cases")], None).unwrap_err();
+        assert!(err.contains("given 2 times") || err.contains("NAME=PATH"),
+            "{}", err);
+    }
+
+    #[test]
+    fn resolve_data_specs_empty_errors() {
+        let err = resolve_data_specs(&[], &[n("cases")], None).unwrap_err();
+        assert!(err.contains("--data is required"), "{}", err);
+    }
+
+    #[test]
+    fn resolve_data_specs_named_family_root_expands() {
+        // Family-root in NAME=PATH form expands to every leaf.
+        let specs = vec![
+            DataSpec::Named { name: n("cases"), path: PathBuf::from("wide.tsv") },
+        ];
+        let model = vec![n("cases_a02"), n("cases_a25"), n("deaths_a02")];
+        let bound = resolve_data_specs(&specs, &model, None).unwrap();
+        assert_eq!(bound, vec![
+            (n("cases_a02"), PathBuf::from("wide.tsv")),
+            (n("cases_a25"), PathBuf::from("wide.tsv")),
+        ]);
+    }
+
+    #[test]
+    fn resolve_data_specs_named_with_obs_errors() {
+        // Defensive: --obs is for single-stream selection; named
+        // pairs name themselves. Combining is a user-confusion smell.
+        let specs = vec![
+            DataSpec::Named { name: n("cases"), path: PathBuf::from("c.tsv") },
+        ];
+        let err = resolve_data_specs(&specs, &[n("cases")], Some("cases"))
+            .unwrap_err();
+        assert!(err.contains("redundant") || err.contains("only with"),
+            "{}", err);
+    }
+}
+
+#[cfg(test)]
+mod gh90_warning_tests {
+    use super::*;
+
+    #[test]
+    fn no_warning_when_model_has_one_obs_block() {
+        // Single-stream model: no methodology trap, no warning.
+        let all = vec!["cases".to_string()];
+        let bound = vec!["cases".to_string()];
+        assert!(format_unbound_streams_warning("profile", &all, &bound).is_none());
+    }
+
+    #[test]
+    fn warning_when_multi_block_but_one_bound() {
+        // gh#90 primary trap: cases + deaths declared, only deaths
+        // bound. Previously silent — now must surface.
+        let all = vec!["cases".to_string(), "deaths".to_string()];
+        let bound = vec!["deaths".to_string()];
+        let w = format_unbound_streams_warning("profile", &all, &bound)
+            .expect("warning should fire");
+        assert!(w.contains("warning"));
+        assert!(w.contains("cases"), "warning should name unbound stream: {}", w);
+        assert!(w.contains("deaths"), "warning should name bound stream: {}", w);
+        assert!(w.contains("silently zero"),
+            "warning should describe the silent failure mode: {}", w);
+        // gh#90: primary surface is `--data NAME=PATH`; --fit remains
+        // mentioned as a fallback.
+        assert!(w.contains("--data NAME=PATH"),
+            "warning should suggest --data NAME=PATH: {}", w);
+        assert!(w.contains("--fit"),
+            "warning should suggest --fit fallback: {}", w);
+        assert!(w.starts_with("profile:"),
+            "warning should be tagged with subcommand: {}", w);
+    }
+
+    #[test]
+    fn no_warning_when_all_blocks_bound_via_family_root() {
+        // `--obs cases` covering an indexed family expands to multiple
+        // resolved names — the warning must see "all bound", not
+        // "one of N bound". The caller hands in resolved leaves.
+        let all = vec![
+            "cases_a02".to_string(),
+            "cases_a25".to_string(),
+            "cases_a65".to_string(),
+        ];
+        let bound = all.clone();
+        assert!(format_unbound_streams_warning("profile", &all, &bound).is_none());
+    }
+
+    #[test]
+    fn warning_when_partial_family_bound_partial_unbound() {
+        // Realistic: 2 cases streams + 2 deaths streams, user bound
+        // only the cases family (`--obs cases`). Deaths streams must
+        // surface in the warning.
+        let all = vec![
+            "cases_a02".to_string(), "cases_a25".to_string(),
+            "deaths_a02".to_string(), "deaths_a25".to_string(),
+        ];
+        let bound = vec!["cases_a02".to_string(), "cases_a25".to_string()];
+        let w = format_unbound_streams_warning("profile", &all, &bound)
+            .expect("warning should fire");
+        assert!(w.contains("deaths_a02"), "warning must list each unbound leaf: {}", w);
+        assert!(w.contains("deaths_a25"), "warning must list each unbound leaf: {}", w);
+    }
+
+    #[test]
+    fn warning_tagged_with_pfilter_too() {
+        // Both subcommands share the helper — the prefix lets callers
+        // tell which warned (matters when both fire in a script).
+        let all = vec!["cases".to_string(), "deaths".to_string()];
+        let bound = vec!["deaths".to_string()];
+        let w = format_unbound_streams_warning("pfilter", &all, &bound)
+            .expect("warning should fire for pfilter too");
+        assert!(w.starts_with("pfilter:"), "got: {}", w);
+    }
+}
+
 // ─── Loader helpers ──────────────────────────────────────────────────────────
 
 /// Load a flat Vec<Expr::Const> from a CSV, TSV, or JSON file.

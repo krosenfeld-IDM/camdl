@@ -40,6 +40,49 @@ impl FromStr for TableSpec {
     }
 }
 
+// ─── DataSpec ─────────────────────────────────────────────────────────────────
+
+/// `--data PATH`  or  `--data NAME=PATH` (repeatable).
+///
+/// gh#90: the primary multi-stream surface for `camdl profile` /
+/// `camdl pfilter`. Polymorphic — same flag accepts both forms, mirroring
+/// the existing `TableSpec` precedent (`--table NAME=FILE`). The two
+/// forms are mutually exclusive within a single invocation (the
+/// dispatch-side resolver enforces this).
+///
+/// - `--data PATH` — single-stream. Binds to the model's single obs
+///   block (or the one named by `--obs`).
+/// - `--data NAME=PATH` — multi-stream. Each pair binds one obs block
+///   by name. Repeat the flag for every stream.
+///
+/// Empty `NAME` (`--data =foo.tsv`) is treated as a single PATH whose
+/// filename literally starts with `=`, not as a malformed NAME=PATH.
+/// The guard (`!name.is_empty()`) intentionally lets such a path
+/// through rather than rejecting it — single-PATH form swallows the
+/// whole argument, and the file-existence check downstream catches
+/// the (unlikely) typo.
+#[derive(Clone, Debug)]
+pub enum DataSpec {
+    /// `--data PATH` — no `=`, or `=` at position 0.
+    Single(PathBuf),
+    /// `--data NAME=PATH` — explicit stream-name binding.
+    Named { name: String, path: PathBuf },
+}
+
+impl FromStr for DataSpec {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once('=') {
+            Some((name, path)) if !name.is_empty() => Ok(DataSpec::Named {
+                name: name.to_string(),
+                path: PathBuf::from(path),
+            }),
+            _ => Ok(DataSpec::Single(PathBuf::from(s))),
+        }
+    }
+}
+
+
 // ─── Backend ──────────────────────────────────────────────────────────────────
 
 /// Simulation backend.  Used as a clap `ValueEnum` so `--help` lists variants.
@@ -532,4 +575,60 @@ mod sweep_tests {
     fn missing_equals_rejected() {
         assert!("betalin(1,4,4)".parse::<SweepSpec>().is_err());
     }
+}
+
+#[cfg(test)]
+mod data_spec_tests {
+    use super::*;
+
+    #[test]
+    fn data_spec_parses_single_path() {
+        let d: DataSpec = "cases.tsv".parse().unwrap();
+        match d {
+            DataSpec::Single(p) => assert_eq!(p, PathBuf::from("cases.tsv")),
+            DataSpec::Named { .. } => panic!("expected Single, got Named"),
+        }
+    }
+
+    #[test]
+    fn data_spec_parses_named_form() {
+        let d: DataSpec = "cases=path/to/cases.tsv".parse().unwrap();
+        match d {
+            DataSpec::Named { name, path } => {
+                assert_eq!(name, "cases");
+                assert_eq!(path, PathBuf::from("path/to/cases.tsv"));
+            }
+            DataSpec::Single(_) => panic!("expected Named, got Single"),
+        }
+    }
+
+    #[test]
+    fn data_spec_named_empty_name_treated_as_path() {
+        // `--data =foo.tsv` has empty NAME; we fall through to Single
+        // with the literal `=foo.tsv` path. This is the documented
+        // behaviour — empty-NAME pairs are not a NAME=PATH binding.
+        let d: DataSpec = "=foo.tsv".parse().unwrap();
+        match d {
+            DataSpec::Single(p) => assert_eq!(p, PathBuf::from("=foo.tsv")),
+            DataSpec::Named { .. } => panic!(
+                "empty NAME must NOT be treated as Named binding"),
+        }
+    }
+
+    #[test]
+    fn data_spec_path_with_equals_in_filename_is_named_if_lhs_nonempty() {
+        // `cases=2026=foo.tsv` parses as Named { name: "cases", path:
+        // "2026=foo.tsv" }. `split_once` takes the *first* `=`.
+        // Documented; users with `=` in filenames must rename or use
+        // the Single form with NAME-free paths.
+        let d: DataSpec = "cases=2026=foo.tsv".parse().unwrap();
+        match d {
+            DataSpec::Named { name, path } => {
+                assert_eq!(name, "cases");
+                assert_eq!(path, PathBuf::from("2026=foo.tsv"));
+            }
+            _ => panic!("expected Named"),
+        }
+    }
+
 }

@@ -10,7 +10,7 @@ pub mod types;
 use std::path::PathBuf;
 use clap::Args;
 use crate::colored_help;
-use types::{Backend, ListDuration, ParamOverride, ParamVecSpec, RwSd, SeedSpec, SweepSpec, TableSpec};
+use types::{Backend, DataSpec, ListDuration, ParamOverride, ParamVecSpec, RwSd, SeedSpec, SweepSpec, TableSpec};
 
 // ─── Shared help-text constants ───────────────────────────────────────────────
 //
@@ -1206,9 +1206,25 @@ pub struct PfilterArgs {
     #[command(flatten)]
     pub flow: FlowProjection,
 
-    /// Observation data TSV (with time column)
-    #[arg(long)]
-    pub data: PathBuf,
+    /// Observation data TSV (with time column).
+    ///
+    /// gh#90: polymorphic, repeatable. Two forms (mutually exclusive
+    /// within a single invocation):
+    ///   --data PATH         single-stream: binds to the model's only
+    ///                       observation block (or the one selected by
+    ///                       --obs NAME).
+    ///   --data NAME=PATH    multi-stream: bind one observation block by
+    ///                       name. Repeat for every stream.
+    /// Mixing the two forms is a hard error. Multi-stream models must
+    /// bind every block (warning fires when only a subset is bound).
+    #[arg(long, value_name = "[NAME=]PATH")]
+    pub data: Vec<DataSpec>,
+
+    /// Optional fit toml supplying the multi-stream binding via its
+    /// `[data.observations]` map (gh#90). Only consulted when no
+    /// `--data` flags were supplied; CLI flags always win.
+    #[arg(long, value_name = "PATH")]
+    pub fit: Option<PathBuf>,
 
     /// Number of independent filter runs
     #[arg(long, default_value_t = 1)]
@@ -1441,9 +1457,19 @@ pub struct ProfileArgs {
     #[command(flatten)]
     pub flow: FlowProjection,
 
-    /// Observation data TSV
-    #[arg(long)]
-    pub data: PathBuf,
+    /// Observation data TSV.
+    ///
+    /// gh#90: polymorphic, repeatable. Two forms (mutually exclusive
+    /// within a single invocation):
+    ///   --data PATH         single-stream: binds to the model's only
+    ///                       observation block (or the one selected by
+    ///                       --obs NAME).
+    ///   --data NAME=PATH    multi-stream: bind one observation block by
+    ///                       name. Repeat for every stream.
+    /// Mixing the two forms is a hard error. Multi-stream models must
+    /// bind every block (warning fires when only a subset is bound).
+    #[arg(long, value_name = "[NAME=]PATH")]
+    pub data: Vec<DataSpec>,
 
     /// Optional fit toml supplying priors, bounds, and fixed list for
     /// the per-cell PMMH (gh#73). Mirrors `camdl survey --fit`'s
