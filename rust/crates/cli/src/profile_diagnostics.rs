@@ -85,6 +85,13 @@ pub struct PerStartDiagnostics {
     /// level agreement metric, so the perturbed trace is a fine
     /// proxy for "are the starts wandering the same basin."
     pub loglik_trace: Vec<f64>,
+    /// gh#109: per-step `log_likelihood + log_prior` trace for PMMH
+    /// (i.e. the joint log-posterior at each accepted step). Empty
+    /// for IF2 / NLopt — those are point-MLE algorithms with no
+    /// posterior concept. When non-empty, surfaces alongside
+    /// `loglik_trace` so the user can compare the profile likelihood
+    /// against the profile posterior (where priors pull θ).
+    pub log_posterior_trace: Vec<f64>,
 }
 
 impl PerStartDiagnostics {
@@ -107,22 +114,8 @@ impl PerStartDiagnostics {
         if let Some(v) = self.cooling_final {
             body.push_str(&format!("cooling_final = {}\n", v));
         }
-        if !self.loglik_trace.is_empty() {
-            body.push_str("loglik_trace = [");
-            for (i, v) in self.loglik_trace.iter().enumerate() {
-                if i > 0 { body.push_str(", "); }
-                if v.is_finite() {
-                    body.push_str(&format!("{}", v));
-                } else if v.is_nan() {
-                    body.push_str("nan");
-                } else if *v == f64::INFINITY {
-                    body.push_str("inf");
-                } else {
-                    body.push_str("-inf");
-                }
-            }
-            body.push_str("]\n");
-        }
+        write_f64_trace(&mut body, "loglik_trace",         &self.loglik_trace);
+        write_f64_trace(&mut body, "log_posterior_trace",  &self.log_posterior_trace);
         body
     }
 
@@ -148,12 +141,43 @@ impl PerStartDiagnostics {
             .and_then(|v| v.as_integer())
             .and_then(|i| usize::try_from(i).ok());
         let cooling_final = t.get("cooling_final").and_then(toml_as_f64);
-        let loglik_trace: Vec<f64> = t.get("loglik_trace")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(toml_as_f64).collect())
-            .unwrap_or_default();
-        Self { algo, completed, acc_rate, iterations_used, cooling_final, loglik_trace }
+        let loglik_trace = read_f64_trace(t, "loglik_trace");
+        let log_posterior_trace = read_f64_trace(t, "log_posterior_trace");
+        Self { algo, completed, acc_rate, iterations_used, cooling_final,
+               loglik_trace, log_posterior_trace }
     }
+}
+
+/// Emit `<name> = [v0, v1, ...]` to `body` when `trace` is non-empty.
+/// Skips entirely when empty so older / non-PMMH `mle.toml` files stay
+/// tight (no spurious empty arrays). NaN/±Inf serialised as TOML 1.0
+/// reserved keywords (`nan`, `inf`, `-inf`).
+fn write_f64_trace(body: &mut String, name: &str, trace: &[f64]) {
+    if trace.is_empty() { return; }
+    body.push_str(name);
+    body.push_str(" = [");
+    for (i, v) in trace.iter().enumerate() {
+        if i > 0 { body.push_str(", "); }
+        if v.is_finite() {
+            body.push_str(&format!("{}", v));
+        } else if v.is_nan() {
+            body.push_str("nan");
+        } else if *v == f64::INFINITY {
+            body.push_str("inf");
+        } else {
+            body.push_str("-inf");
+        }
+    }
+    body.push_str("]\n");
+}
+
+/// Parse a TOML f64 array under `name` from the `[diagnostics]` table.
+/// Missing key → empty Vec (graceful for old / non-PMMH mle.toml files).
+fn read_f64_trace(t: &toml::value::Table, name: &str) -> Vec<f64> {
+    t.get(name)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(toml_as_f64).collect())
+        .unwrap_or_default()
 }
 
 fn toml_as_f64(v: &toml::Value) -> Option<f64> {
@@ -568,6 +592,8 @@ mod tests {
             iterations_used: None,
             cooling_final: None,
             loglik_trace: vec![-10.0, -9.5, -9.0],
+            // gh#109: PMMH cells also carry the joint log-posterior trace.
+            log_posterior_trace: vec![-8.5, -8.2, -7.9],
         };
         let body = format!(
             "final_loglik = -9.0\n[diagnostics]\n{}",
@@ -578,6 +604,8 @@ mod tests {
         let back = PerStartDiagnostics::from_toml(&doc);
         assert_eq!(back.algo, Some(DiagAlgo::Pmmh));
         assert!(back.completed);
+        assert_eq!(back.loglik_trace,         vec![-10.0, -9.5, -9.0]);
+        assert_eq!(back.log_posterior_trace,  vec![-8.5, -8.2, -7.9]);
         assert_eq!(back.acc_rate, Some(0.42));
         assert_eq!(back.loglik_trace.len(), 3);
     }

@@ -1380,7 +1380,14 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         // for IF2, completion flag for everyone). The rollup phase
         // aggregates these across K starts → per-cell columns.
         let mut diag = crate::profile_diagnostics::PerStartDiagnostics::default();
-        let (final_loglik, mle_params): (f64, Vec<f64>) = match profile_algo {
+        // gh#109: per-cell return carries final_log_posterior alongside
+        // final_loglik. Only the PMMH branch populates it (PMMHResult
+        // already exposes map_log_posterior); IF2/NLopt are point-MLE
+        // optimisers with no posterior concept, so the field is NaN
+        // for those algorithms. Downstream (render_mle_toml, rollup
+        // TSV) skip-when-NaN so the addition is transparent for
+        // existing IF2/NLopt profiles.
+        let (final_loglik, final_log_posterior, mle_params): (f64, f64, Vec<f64>) = match profile_algo {
             ProfileAlgo::If2 => {
                 let config = IF2Config {
                     n_particles, n_iterations,
@@ -1468,14 +1475,15 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                             }
                         });
                         diag.loglik_trace = trace;
-                        (true_ll, r.mle)
+                        // IF2 is a point-MLE optimiser; no posterior.
+                        (true_ll, f64::NAN, r.mle)
                     }
                     Err(_) => {
                         // diag.completed stays false; iterations_used /
                         // cooling_final / loglik_trace stay at defaults
                         // — the aggregator records NaN for this start's
                         // contribution.
-                        (f64::NEG_INFINITY, params.clone())
+                        (f64::NEG_INFINITY, f64::NAN, params.clone())
                     }
                 }
             }
@@ -1600,6 +1608,14 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 diag.loglik_trace = result.steps.iter()
                     .map(|s| s.log_likelihood)
                     .collect();
+                // gh#109: per-step joint log-posterior (log_likelihood
+                // + log_prior). Together with the loglik trace this
+                // lets the rollup compute the prior-contribution
+                // delta and lets the user compare a profile likelihood
+                // vs profile posterior.
+                diag.log_posterior_trace = result.steps.iter()
+                    .map(|s| s.log_likelihood + s.log_prior)
+                    .collect();
                 let best_ll = result.steps.iter()
                     .map(|s| s.log_likelihood)
                     .fold(f64::NEG_INFINITY, f64::max);
@@ -1617,7 +1633,16 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     f64::NEG_INFINITY
                 };
                 diag.completed = final_ll.is_finite();
-                (final_ll, result.map_params)
+                // gh#109: PMMH carries the MAP joint log-posterior
+                // alongside the MLE-by-loglik. NaN-guard mirrors the
+                // final_ll computation above so a non-finite chain
+                // doesn't leak Inf into mle.toml.
+                let final_lp = if result.map_log_posterior.is_finite() {
+                    result.map_log_posterior
+                } else {
+                    f64::NAN
+                };
+                (final_ll, final_lp, result.map_params)
             }
             ProfileAlgo::Nlopt(nlopt_algo) => {
                 // Per-cell starting point: copy `params` (focal pinned)
@@ -1666,14 +1691,15 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                             mle[model_idx] = r.params[slot];
                         }
                         diag.completed = r.loglik.is_finite();
-                        (r.loglik, mle)
+                        // NLopt is a point-MLE optimiser; no posterior.
+                        (r.loglik, f64::NAN, mle)
                     }
                     Err(e) => {
                         eprintln!(
                             "warning: nlopt optimize_cell failed at grid {}/start {}: {}",
                             grid_idx, start_idx, e
                         );
-                        (f64::NEG_INFINITY, params.clone())
+                        (f64::NEG_INFINITY, f64::NAN, params.clone())
                     }
                 }
             }
@@ -1689,7 +1715,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
 
         let mle_toml = render_mle_toml(&if2_params, &focal_values,
             &focal_grids.iter().map(|fg| fg.name.as_str()).collect::<Vec<_>>(),
-            &mle_params, final_loglik, &diag);
+            &mle_params, final_loglik, final_log_posterior, &diag);
         let _ = std::fs::write(start_dir.join("mle.toml"), mle_toml);
 
         // Per-start run.json. parent_profile_hash references THIS
@@ -1935,11 +1961,23 @@ fn render_mle_toml(
     focal_names: &[&str],
     mle: &[f64],
     final_loglik: f64,
+    final_log_posterior: f64,
     diag: &crate::profile_diagnostics::PerStartDiagnostics,
 ) -> String {
     let mut body = String::new();
     body.push_str("# Per-start MLE for one profile grid point.\n\n");
-    body.push_str(&format!("final_loglik = {}\n\n", final_loglik));
+    body.push_str(&format!("final_loglik = {}\n", final_loglik));
+    // gh#109: PMMH cells carry the MAP joint log-posterior. Other
+    // algorithms (IF2, NLopt) write NaN here; the rollup reads-or-NaN
+    // and the TSV column reads NaN as missing.
+    if final_log_posterior.is_finite() {
+        body.push_str(&format!("final_log_posterior = {}\n", final_log_posterior));
+    } else if final_log_posterior.is_nan() {
+        // Skip — keep mle.toml tight for IF2/NLopt cells.
+    } else {
+        body.push_str("final_log_posterior = -inf\n");
+    }
+    body.push('\n');
     body.push_str("[focal]\n");
     for (name, v) in focal_names.iter().zip(focal_values.iter()) {
         body.push_str(&format!("{} = {}\n", name, v));
@@ -2034,6 +2072,7 @@ fn rewrite_rollup(
             rows.push(RollupRow {
                 focal_values: best.focal_values,
                 best_loglik: best.final_loglik,
+                best_log_posterior: best.final_log_posterior,
                 best_start_idx: best_start,
                 mle: best.mle,
                 wall_time_sum,
@@ -2048,7 +2087,11 @@ fn rewrite_rollup(
     body.push_str(&format!("# total_points={} completed={}\n",
         n_grid_points, rows.len()));
     for name in focal_names { body.push_str(&format!("{}\t", name)); }
-    body.push_str("best_loglik\tbest_start_idx\twall_time_seconds");
+    // gh#109: `best_log_posterior` sits next to `best_loglik` for
+    // natural grouping. Header-based parsers (the camdl-book scripts
+    // grep by column name) are unaffected; position-based parsers
+    // shift by one column (already brittle pre-change).
+    body.push_str("best_loglik\tbest_log_posterior\tbest_start_idx\twall_time_seconds");
     for spec in if2_params.iter() { body.push_str(&format!("\t{}", spec.name)); }
     for c in crate::profile_diagnostics::DIAG_COLUMNS {
         body.push_str(&format!("\t{}", c));
@@ -2056,8 +2099,16 @@ fn rewrite_rollup(
     body.push('\n');
     for row in &rows {
         for v in &row.focal_values { body.push_str(&format!("{:.4}\t", v)); }
-        body.push_str(&format!("{:.4}\t{}\t{:.3}",
-            row.best_loglik, row.best_start_idx, row.wall_time_sum));
+        // NaN-as-text: `nan` is the TSV-friendly form (Python pandas,
+        // R read.table, jq all parse this). On IF2/NLopt cells the
+        // column reads `nan`; on PMMH cells it reads a real f64.
+        let lp_field = if row.best_log_posterior.is_finite() {
+            format!("{:.4}", row.best_log_posterior)
+        } else {
+            "nan".to_string()
+        };
+        body.push_str(&format!("{:.4}\t{}\t{}\t{:.3}",
+            row.best_loglik, lp_field, row.best_start_idx, row.wall_time_sum));
         for spec in if2_params.iter() {
             body.push_str(&format!("\t{:.6}", row.mle[spec.index]));
         }
@@ -2077,6 +2128,10 @@ fn rewrite_rollup(
 struct RollupRow {
     focal_values: Vec<f64>,
     best_loglik: f64,
+    /// gh#109: MAP joint log-posterior for the winning start. NaN on
+    /// IF2 / NLopt cells (point-MLE algorithms with no posterior),
+    /// and on cells whose mle.toml predates gh#109 (cached CAS dirs).
+    best_log_posterior: f64,
     best_start_idx: usize,
     mle: Vec<f64>,
     wall_time_sum: f64,
@@ -2086,6 +2141,9 @@ struct RollupRow {
 
 struct ParsedMle {
     final_loglik: f64,
+    /// gh#109: MAP joint log-posterior. NaN when the per-start
+    /// mle.toml omits the field (older / non-PMMH cells).
+    final_log_posterior: f64,
     focal_values: Vec<f64>,
     mle: Vec<f64>,
 }
@@ -2097,6 +2155,12 @@ fn parse_mle_toml(
 ) -> Option<ParsedMle> {
     let doc: toml::Value = toml::from_str(text).ok()?;
     let final_loglik = toml_as_f64(doc.get("final_loglik")?)?;
+    // gh#109: optional — present on PMMH cells, omitted on
+    // IF2/NLopt. Missing → NaN; the rollup TSV column reads NaN
+    // as missing.
+    let final_log_posterior = doc.get("final_log_posterior")
+        .and_then(toml_as_f64)
+        .unwrap_or(f64::NAN);
     let focal = doc.get("focal")?.as_table()?;
     let mle = doc.get("mle")?.as_table()?;
 
@@ -2119,7 +2183,7 @@ fn parse_mle_toml(
         }
     }
 
-    Some(ParsedMle { final_loglik, focal_values, mle: mle_values })
+    Some(ParsedMle { final_loglik, final_log_posterior, focal_values, mle: mle_values })
 }
 
 /// Accept TOML numeric values whether they serialised as Integer
@@ -2178,6 +2242,10 @@ fn write_cross_seed_summary(
     // the render loop below via `CellDiagnostics::average_across_seeds`.
     struct PerSeedSample {
         loglik:    f64,
+        /// gh#109: MAP joint log-posterior. NaN when the per-seed
+        /// profile.tsv's cell shows `nan` (IF2/NLopt or pre-gh#109
+        /// cached cells).
+        lp:        f64,
         mle:       Vec<f64>,
         diag:      CellDiagnostics,
     }
@@ -2194,19 +2262,24 @@ fn write_cross_seed_summary(
             if cols.get(focal_names.len()).copied() == Some("best_loglik") {
                 continue;
             }
-            // Layout (gh#74 Option B): focal_1 ... focal_N |
-            //   best_loglik | best_start_idx | wall_time_seconds |
-            //   mle_param_1 ... mle_param_M | acc_rate_avg | acc_rate_min |
-            //   loglik_spread_starts | loglik_rhat_starts |
-            //   starts_n_completed | iterations_used | cooling_final
-            let base_cols = focal_names.len() + 3 + if2_params.len();
+            // Layout (gh#74 + gh#109): focal_1 ... focal_N |
+            //   best_loglik | best_log_posterior | best_start_idx |
+            //   wall_time_seconds | mle_param_1 ... mle_param_M |
+            //   acc_rate_avg | acc_rate_min | loglik_spread_starts |
+            //   loglik_rhat_starts | starts_n_completed |
+            //   iterations_used | cooling_final
+            let base_cols = focal_names.len() + 4 + if2_params.len();
             if cols.len() < base_cols { continue; }
 
             let focal_key: Vec<String> = cols[..focal_names.len()]
                 .iter().map(|s| s.trim().to_string()).collect();
             let Ok(best_loglik) = cols[focal_names.len()].parse::<f64>() else { continue; };
+            // gh#109: best_log_posterior in the next column. `nan`
+            // for non-PMMH cells or cached pre-gh#109 rollups (the
+            // rollup writer emits the literal "nan" for those).
+            let best_lp = parse_summary_cell(cols[focal_names.len() + 1]);
 
-            let mle_start = focal_names.len() + 3;
+            let mle_start = focal_names.len() + 4;
             let mut mle = vec![f64::NAN; mle_len];
             for (i, spec) in if2_params.iter().enumerate() {
                 if let Some(s) = cols.get(mle_start + i) {
@@ -2242,7 +2315,7 @@ fn write_cross_seed_summary(
             };
 
             by_grid.entry(focal_key).or_default().push(PerSeedSample {
-                loglik: best_loglik, mle, diag,
+                loglik: best_loglik, lp: best_lp, mle, diag,
             });
         }
     }
@@ -2266,6 +2339,13 @@ fn write_cross_seed_summary(
     if multi_seed {
         body.push_str("\tloglik_sd\tloglik_min\tloglik_max");
     }
+    // gh#109: log_posterior column (and multi-seed spread) sits
+    // alongside loglik so the cross-seed summary mirrors the
+    // per-seed profile.tsv layout.
+    body.push_str("\tlog_posterior");
+    if multi_seed {
+        body.push_str("\tlog_posterior_sd\tlog_posterior_min\tlog_posterior_max");
+    }
     for spec in if2_params.iter() {
         body.push_str(&format!("\t{}", spec.name));
         if multi_seed {
@@ -2285,6 +2365,24 @@ fn write_cross_seed_summary(
         body.push_str(&format!("{:.4}", mean_ll));
         if multi_seed {
             body.push_str(&format!("\t{:.4}\t{:.4}\t{:.4}", sd_ll, min_ll, max_ll));
+        }
+        // gh#109: log_posterior cross-seed aggregate. Same shape as
+        // loglik. When every seed's sample is NaN (e.g. all IF2 cells),
+        // emit "nan" so the column is round-trippable.
+        let lps: Vec<f64> = samples.iter().map(|s| s.lp)
+            .filter(|x| x.is_finite()).collect();
+        let (mean_lp, sd_lp, min_lp, max_lp) = summary_stats(&lps);
+        if mean_lp.is_finite() {
+            body.push_str(&format!("\t{:.4}", mean_lp));
+        } else {
+            body.push_str("\tnan");
+        }
+        if multi_seed {
+            if sd_lp.is_finite() || mean_lp.is_finite() {
+                body.push_str(&format!("\t{:.4}\t{:.4}\t{:.4}", sd_lp, min_lp, max_lp));
+            } else {
+                body.push_str("\tnan\tnan\tnan");
+            }
         }
         for spec in if2_params.iter() {
             let vals: Vec<f64> = samples.iter()
@@ -2367,12 +2465,17 @@ mod tests {
         std::fs::create_dir_all(seed_dir).unwrap();
         let mut s = String::new();
         for n in focal_names { s.push_str(&format!("{}\t", n)); }
-        s.push_str("best_loglik\tbest_start_idx\twall_time_seconds");
+        // gh#109: best_log_posterior column sits between best_loglik
+        // and best_start_idx in the per-seed profile.tsv. Test
+        // helpers emit `nan` for the new column (the test rows
+        // model IF2/legacy cells — no posterior); the gh#109-
+        // specific tests below override with explicit values.
+        s.push_str("best_loglik\tbest_log_posterior\tbest_start_idx\twall_time_seconds");
         for i in 0..rows[0].2.len() { s.push_str(&format!("\tparam_{}", i)); }
         s.push('\n');
         for (focal, ll, mle) in rows {
             for v in focal { s.push_str(&format!("{}\t", v)); }
-            s.push_str(&format!("{:.4}\t0\t0.0", ll));
+            s.push_str(&format!("{:.4}\tnan\t0\t0.0", ll));
             for v in mle { s.push_str(&format!("\t{:.6}", v)); }
             s.push('\n');
         }
@@ -2408,11 +2511,13 @@ mod tests {
         let lines = data_lines(&text);
         let header = lines[0];
         let cols: Vec<&str> = header.split('\t').collect();
-        let mut expected = vec!["s0", "loglik", "R0", "alpha"];
+        // gh#109: `log_posterior` sits next to `loglik` in the cross-seed
+        // summary, mirroring the per-seed profile.tsv layout.
+        let mut expected = vec!["s0", "loglik", "log_posterior", "R0", "alpha"];
         for c in crate::profile_diagnostics::DIAG_COLUMNS { expected.push(c); }
         assert_eq!(cols, expected,
-            "n=1 schema must be focal + bare loglik + bare params + diagnostics; got {:?}",
-            cols);
+            "n=1 schema must be focal + bare loglik + bare log_posterior \
+             + bare params + diagnostics; got {:?}", cols);
 
         // Cross-seed spread columns must not leak through (gh#30
         // option A); the diagnostic columns are unrelated and are
@@ -2425,7 +2530,10 @@ mod tests {
         }
 
         assert_eq!(lines.len(), 3, "expected header + 2 grid rows: {:?}", lines);
-        let row_cols = 4 + crate::profile_diagnostics::DIAG_COLUMNS.len();
+        // gh#109: row_cols = focal(1) + loglik(1) + log_posterior(1) +
+        // params(2) + DIAG_COLUMNS(7) = 12. Previously 11 before
+        // log_posterior column.
+        let row_cols = 5 + crate::profile_diagnostics::DIAG_COLUMNS.len();
         assert_eq!(lines[1].split('\t').count(), row_cols);
         assert_eq!(lines[2].split('\t').count(), row_cols);
     }
@@ -2461,6 +2569,9 @@ mod tests {
         let cols: Vec<&str> = lines[0].split('\t').collect();
         let mut expected = vec![
             "s0", "loglik", "loglik_sd", "loglik_min", "loglik_max",
+            // gh#109: log_posterior aggregate sits between loglik
+            // group and per-param group.
+            "log_posterior", "log_posterior_sd", "log_posterior_min", "log_posterior_max",
             "R0", "R0_sd", "alpha", "alpha_sd",
         ];
         for c in crate::profile_diagnostics::DIAG_COLUMNS { expected.push(c); }
@@ -2857,6 +2968,98 @@ mod tests {
         assert_eq!(params.iter()
             .find(|p| p.name == "beta").unwrap().value, original_beta,
             "Lhs must NOT seed model_pre");
+    }
+
+    // ── gh#109: log_posterior surfaces in mle.toml + profile TSV ──────
+    //
+    // PMMHResult exposes map_log_posterior alongside map_loglik; the
+    // pre-gh#109 profile pipeline dropped the posterior at the per-cell
+    // closure. These tests pin the new plumbing through render_mle_toml,
+    // parse_mle_toml, and the rollup TSV header.
+
+    fn estimated_param(name: &str, index: usize) -> sim::inference::if2::EstimatedParam {
+        sim::inference::if2::EstimatedParam {
+            name: name.into(), index,
+            initial: 0.5, rw_sd: 0.1,
+            transform: sim::inference::types::Transform::None,
+            lower: 0.0, upper: 1.0,
+            ivp: false, rw_sd_auto: false,
+        }
+    }
+
+    #[test]
+    fn render_mle_toml_emits_final_log_posterior_when_finite() {
+        // PMMH cell: both fields written, transparent to a TOML round-trip.
+        let if2 = vec![estimated_param("beta", 0), estimated_param("gamma", 1)];
+        let diag = crate::profile_diagnostics::PerStartDiagnostics {
+            algo: Some(crate::profile_diagnostics::DiagAlgo::Pmmh),
+            completed: true,
+            acc_rate: Some(0.3),
+            iterations_used: None,
+            cooling_final: None,
+            loglik_trace:        vec![-12.0, -11.5, -11.0],
+            log_posterior_trace: vec![-10.5, -10.0, -9.5],
+        };
+        let body = render_mle_toml(
+            &if2, &[25.0], &["R0"], &[0.42, 0.10],
+            -11.0, -9.5, &diag,
+        );
+        assert!(body.contains("final_loglik = -11"),
+            "final_loglik must appear: {}", body);
+        assert!(body.contains("final_log_posterior = -9.5"),
+            "final_log_posterior must appear with the supplied value: {}", body);
+        assert!(body.contains("log_posterior_trace ="),
+            "[diagnostics] log_posterior_trace must appear: {}", body);
+    }
+
+    #[test]
+    fn render_mle_toml_omits_final_log_posterior_when_nan() {
+        // IF2 / NLopt cell: no posterior concept. Field should be
+        // skipped entirely (mle.toml stays tight; readers fall back
+        // to NaN at parse time).
+        let if2 = vec![estimated_param("beta", 0)];
+        let diag = crate::profile_diagnostics::PerStartDiagnostics::default();
+        let body = render_mle_toml(
+            &if2, &[25.0], &["R0"], &[0.42],
+            -11.0, f64::NAN, &diag,
+        );
+        assert!(body.contains("final_loglik = -11"));
+        assert!(!body.contains("final_log_posterior"),
+            "NaN log_posterior must be omitted, not emitted as 'nan': {}", body);
+    }
+
+    #[test]
+    fn parse_mle_toml_reads_final_log_posterior() {
+        // Round-trip: render + parse must preserve the field.
+        let if2 = vec![estimated_param("beta", 0)];
+        let diag = crate::profile_diagnostics::PerStartDiagnostics::default();
+        let body = render_mle_toml(
+            &if2, &[25.0], &["R0"], &[0.42],
+            -11.0, -9.5, &diag,
+        );
+        let focal_names = vec!["R0".to_string()];
+        let parsed = parse_mle_toml(&body, &if2, &focal_names)
+            .expect("synthetic mle.toml must parse");
+        assert!((parsed.final_loglik - (-11.0)).abs() < 1e-9);
+        assert!((parsed.final_log_posterior - (-9.5)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_mle_toml_legacy_without_log_posterior_returns_nan() {
+        // Cached CAS dirs from before gh#109: mle.toml has no
+        // final_log_posterior field. Parser must accept and return
+        // NaN so the rollup degrades gracefully (NaN column in TSV).
+        let body = "final_loglik = -11.0\n\n\
+                    [focal]\nR0 = 25\n\n\
+                    [mle]\nbeta = 0.42\n";
+        let if2 = vec![estimated_param("beta", 0)];
+        let focal_names = vec!["R0".to_string()];
+        let parsed = parse_mle_toml(body, &if2, &focal_names)
+            .expect("legacy mle.toml must parse");
+        assert!((parsed.final_loglik - (-11.0)).abs() < 1e-9);
+        assert!(parsed.final_log_posterior.is_nan(),
+            "legacy mle.toml without final_log_posterior must parse as NaN; \
+             got {}", parsed.final_log_posterior);
     }
 }
 
