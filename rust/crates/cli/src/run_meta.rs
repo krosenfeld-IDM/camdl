@@ -1420,16 +1420,16 @@ mod tests {
             (InitMethod::Uniform,       "uniform"),
             (InitMethod::Lhs,           "lhs"),
             (InitMethod::SurveyTopK,    "survey_top_k"),
-            (InitMethod::FromPrior,     "from-prior"),
+            (InitMethod::FromPrior,     "from_prior"),
             (InitMethod::FromPosterior {
                 source: PosteriorSource::DrawsTsv("/tmp/draws.tsv".into()),
-            }, "from-posterior"),
+            }, "from_posterior"),
             (InitMethod::FromMle {
                 source: MleSource::File("/tmp/mle.toml".into()),
-            }, "from-mle"),
+            }, "from_mle"),
             (InitMethod::FromParams {
                 path: "/tmp/params.toml".into(),
-            }, "from-params"),
+            }, "from_params"),
         ];
         for (method, expected_tag) in &cases {
             // Single-chain ChainStarts → InitProvenance → JSON.

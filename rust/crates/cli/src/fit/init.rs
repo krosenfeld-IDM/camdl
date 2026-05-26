@@ -169,20 +169,22 @@ impl std::str::FromStr for InitMethod {
 
 impl std::fmt::Display for InitMethod {
     /// Stable string tag for one-line provenance / `chain_init_source` /
-    /// `init_provenance.method`. Variants with payload render the bare
-    /// kebab-case tag (`from-posterior`, `from-mle`, `from-params`);
-    /// per-chain provenance lives in the sibling
-    /// [`InitSource`] discriminator with the actual path.
+    /// `init_provenance.method`. Snake_case throughout to match the
+    /// CLI + serde + `clap::ValueEnum::to_possible_value` surfaces;
+    /// any downstream tool that ingests `run.json` only needs to
+    /// recognise one spelling per variant (gh#87). Variants with
+    /// payload render the bare tag; per-chain provenance lives in
+    /// the sibling [`InitSource`] discriminator with the actual path.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             InitMethod::Single             => "single",
             InitMethod::Uniform            => "uniform",
             InitMethod::Lhs                => "lhs",
             InitMethod::SurveyTopK         => "survey_top_k",
-            InitMethod::FromPrior          => "from-prior",
-            InitMethod::FromPosterior { .. } => "from-posterior",
-            InitMethod::FromMle       { .. } => "from-mle",
-            InitMethod::FromParams    { .. } => "from-params",
+            InitMethod::FromPrior          => "from_prior",
+            InitMethod::FromPosterior { .. } => "from_posterior",
+            InitMethod::FromMle       { .. } => "from_mle",
+            InitMethod::FromParams    { .. } => "from_params",
         })
     }
 }
@@ -1092,15 +1094,59 @@ mod tests {
             InitMethod::Uniform,
             InitMethod::Lhs,
             InitMethod::SurveyTopK,
+            InitMethod::FromPrior,
         ] {
             let s = m.to_string();
             let parsed: InitMethod = s.parse().unwrap();
-            assert_eq!(parsed, m);
+            assert_eq!(parsed, m,
+                "Display ↔ FromStr round-trip must succeed for {:?}; \
+                 got tag {:?}", m, s);
         }
         assert!("unknown".parse::<InitMethod>().is_err());
         // The TOML-on-the-wire form is the snake_case variant, not
         // hyphenated — survey_top_k, not survey-top-k.
         assert!("survey-top-k".parse::<InitMethod>().is_err());
+    }
+
+    /// gh#87: Display must emit **snake_case** for every variant, to
+    /// match the CLI / serde / `clap::ValueEnum::to_possible_value`
+    /// surfaces. Pre-fix, the payload-bearing variants rendered as
+    /// kebab-case (`from-prior`, `from-posterior`, …) while the
+    /// payload-free ones used snake_case (`survey_top_k`) —
+    /// inconsistent JSON tags in `run.json`'s
+    /// `init_provenance.method` field, and a downstream tool
+    /// ingesting that field had to handle both spellings.
+    #[test]
+    fn init_method_display_is_snake_case_for_every_variant() {
+        use std::path::PathBuf;
+        let cases: Vec<(InitMethod, &str)> = vec![
+            (InitMethod::Single,                              "single"),
+            (InitMethod::Uniform,                             "uniform"),
+            (InitMethod::Lhs,                                 "lhs"),
+            (InitMethod::SurveyTopK,                          "survey_top_k"),
+            (InitMethod::FromPrior,                           "from_prior"),
+            (InitMethod::FromPosterior {
+                source: PosteriorSource::DrawsTsv(PathBuf::from("/x")),
+            },                                                "from_posterior"),
+            (InitMethod::FromMle {
+                source: MleSource::File(PathBuf::from("/y")),
+            },                                                "from_mle"),
+            (InitMethod::FromParams {
+                path: PathBuf::from("/z"),
+            },                                                "from_params"),
+        ];
+        for (m, expected_tag) in cases {
+            let got = m.to_string();
+            assert_eq!(got, expected_tag,
+                "InitMethod::{:?} Display must emit {:?} (snake_case); \
+                 got {:?}. gh#87 pins this — downstream tools \
+                 ingest run.json's init_provenance.method without \
+                 having to disambiguate kebab-/snake-case forms.",
+                m, expected_tag, got);
+            // No `-` in any variant's Display tag.
+            assert!(!got.contains('-'),
+                "InitMethod::{:?} Display contains '-': {}", m, got);
+        }
     }
 
     #[test]
