@@ -2950,20 +2950,25 @@ camdl pfilter MODEL --params P.toml --data cases.tsv \
     --flow recovery --obs-model discretized_normal --tol 1e-18 \
     --trace
 
-# Iterated filtering — explicit rw_sd (the list IS the partition)
-camdl if2 MODEL --params P.toml --data cases.tsv \
+# Iterated filtering — explicit rw_sd (the list IS the partition).
+# `--init from_params --params P.toml` warm-starts chains at the
+# point in P.toml; `--fixed` pins specific params at explicit values.
+camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
     --rw-sd "R0=5,sigma=0.01,gamma=0.01" \
     --particles 2000 --iterations 100 --cooling 0.95 \
     --chains 4 --regime scout --ivp "S0,I0" \
     --flow recovery --obs-model discretized_normal
 
-# Auto rw_sd from parameter bounds (--fixed excludes non-estimable params)
-camdl if2 MODEL --params P.toml --data cases.tsv \
-    --rw-sd auto --fixed "N0,mu,k" \
+# Auto rw_sd from parameter bounds; pin specific params with --fixed
+# (NAME=VALUE form is the only form on inference subcommands —
+# the legacy name-only `--fixed "N0,mu,k"` was removed in the
+# 2026-05-25 CLI UX revision; see "Pinning many params" below).
+camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
+    --rw-sd auto --fixed N0=1000 --fixed mu=0.0 --fixed k=10 \
     --regime scout --flow recovery
 
 # Profile likelihood — parameter identifiability
-camdl profile MODEL --params P.toml --data cases.tsv \
+camdl profile MODEL --init from_params --params P.toml --data cases.tsv \
     --focal R0 --grid "10,20,30,40,50,60,70" \
     --rw-sd "sigma=0.01,gamma=0.01" \
     --particles 500 --iterations 30 --starts 3 --parallel 8
@@ -2984,7 +2989,8 @@ heteroscedastic variance).
 - Explicit: `--rw-sd "R0=5,sigma=0.01"` — the list IS the partition.
   Parameters not listed are held fixed. No `--fixed` needed.
 - Auto: `--rw-sd auto` — heuristic from parameter bounds (`(hi-lo)/6`
-  on transformed scale). Use `--fixed "N0,mu,k"` to exclude params.
+  on transformed scale). Use `--fixed NAME=VALUE` (repeatable) or
+  `--fixed-file <toml>` to exclude and value-pin specific params.
 - Mixed: `--rw-sd "R0=5,sigma=auto"` — explicit where you know, auto
   where you don't.
 
@@ -2998,8 +3004,35 @@ convention (halfway-SD fraction); see `docs/methods/cooling.md`.
 
 **`--ivp "S0,I0"`**: Initial value parameters, perturbed only at t=0.
 
-**`--fixed "N0,mu"`**: Exclude parameters from estimation (with
-`--rw-sd auto`). Also available on `camdl profile`.
+**`--fixed NAME=VALUE`**: Pin `NAME` at `VALUE` (repeatable) and remove
+it from the inference `[estimate]` set if present. The universal
+value-setter on every subcommand. Available on `camdl if2`,
+`camdl profile`, `camdl survey`, and `camdl fit run` (where the
+toml-side spelling is `[fixed] NAME = VALUE`).
+
+**Pinning many params (the replacement for the removed name-only `--fixed`).**
+
+The pre-2026-05-25 surface accepted a name-only comma list:
+`--fixed "N0,mu,k"` meaning "freeze these three at their model
+defaults." That form is **removed**. The two replacements are:
+
+- `--fixed NAME=VALUE` (repeated): explicit values, one per flag.
+  Preferred for the small case (≤ 3 names).
+- `--fixed-file <toml>`: a flat params TOML — top-level keys are
+  parameter names, values are the pin values; repeatable, later
+  files override earlier ones. Preferred for many-params vignettes
+  (extract the values once, commit the TOML, point the
+  invocation at it).
+- For the original "pin at the model default" intent — i.e. when
+  the user didn't want to type any values at all — the equivalent
+  under the new surface is to simply **not list the parameter in
+  `--fixed`/`--fixed-file`**. The model default flows through the
+  precedence chain unchanged. The previous spelling expressed
+  "freeze at default" as an explicit gesture; the new spelling
+  expresses it as the absence of one. See
+  `docs/camdl-run-spec.md §1.3` for the full precedence chain and
+  `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`
+  §"`--fixed` semantics, defined once" for the rationale.
 
 ### 22.6 Fit Workflow
 
@@ -3010,12 +3043,12 @@ camdl fit status fit.toml
 
 Driven by `fit.toml` with `[estimate]`, `[fixed]`, `[data]`, and
 one or more `[stages.NAME]` blocks. Stages are named by the user
-(by convention `scout`, `refine`, `validate`) and chain via each
-stage's optional `starts_from` field. `--stage NAME` runs a single
-stage; `--sweep` takes a Cartesian product over parameter grids
-and, when a cell fails the convergence gate, records the failure
-in `sweep_failures.tsv` and continues rather than halting. See
-`docs/camdl-inference-spec.md`.
+(by convention `scout`, `refine`, `validate`) and chain via the
+`init = "from_mle"` + `init_mle = "<prior-stage>"` pair on each
+stage. `--stage NAME` runs a single stage; `--sweep` takes a
+Cartesian product over parameter grids and, when a cell fails the
+convergence gate, records the failure in `sweep_failures.tsv` and
+continues rather than halting. See `docs/camdl-inference-spec.md`.
 
 **Pfilter replicates:**
 
