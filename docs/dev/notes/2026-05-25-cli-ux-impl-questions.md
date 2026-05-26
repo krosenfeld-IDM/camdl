@@ -3,7 +3,8 @@
 Date: 2026-05-25
 Author: claude-agent (session for V. Buffalo)
 Proposal: `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`
-Branch: `worktree-agent-a0d854c5fd1d64f12`
+Branch: `worktree-agent-a0d854c5fd1d64f12` (original) → continued on
+`main` after maintainer merged keeper commits.
 
 This note records the state of the CLI UX rev 2 implementation as of
 this session — what shipped, what's deferred, and the specific
@@ -13,6 +14,78 @@ CLAUDE.md ("If you can't produce a reproduction, the artifact is a
 *question* filed under `docs/dev/notes/`") — the question here is
 "how do you want the migration sequenced given the schedule
 coordination call-outs in the proposal?"
+
+## Update 2026-05-25 (later session): ScenarioOverridden + FixedEstimateOverlap landed
+
+Following the proposal's updated `§"Scenario-override visibility"` and
+the resolved decisions (D = spec wins; A = bounds-uniform fallback for
+from-prior; B = warn on fit-toml `[fixed] ∩ [estimate]` overlap; C =
+resolver does not enforce scenario-vs-enable/disable mutex), this
+session implemented the additive resolver changes:
+
+- `ResolverWarning::ScenarioOverridden { name, scenario, scenario_value,
+  by, new_value }` — emitted when the scenario set a value but a
+  higher-precedence source (currently only `--fixed-cli` under the
+  spec §1.3 ordering, though the FixedFile branch is reachable if
+  precedence ever shifts) overrode it.
+- `ResolverWarning::FixedEstimateOverlap { name }` — emitted when a
+  name appears in both `[fixed]` and `[estimate]` of the same fit-toml.
+  Resolution: `[fixed]` wins; the name is dropped from `estimate_set`
+  with role `Fixed { reason: NotInEstimate }`.
+- `ResolvedParameter.overrode_scenario: Option<ScenarioOverride>` and
+  the new `ScenarioOverride { scenario, scenario_value }` struct.
+  Populated alongside the `ScenarioOverridden` warning whenever
+  applicable; future Step 9 (run.json provenance) will read this
+  directly into the `parameters_provenance.overrode_scenario` JSON
+  block.
+- `print_warnings` now also runs a debug-only structural cross-check
+  that warnings-of-override and `overrode_scenario` provenance name
+  the same parameters. Catches a class of resolver bugs where one
+  side was added without the other.
+
+Tests (7 new, all green):
+
+- `fixed_cli_override_of_scenario_emits_warning_and_provenance` —
+  scenario `worst_case` sets `beta=0.3`; `--fixed beta=0.5` wins;
+  warning emitted; `overrode_scenario = Some(ScenarioOverride
+  { scenario: "worst_case", scenario_value: 0.3 })`.
+- `scenario_applied_cleanly_does_not_emit_override_warning` —
+  scenario wins cleanly; no warning, no provenance entry.
+- `fixed_cli_matching_scenario_value_does_not_warn` — equal values
+  → no warning even though source ends up `FixedCli`.
+- `scenario_override_warning_formats_actionably` — stderr format
+  names parameter, CLI flag+value, scenario name, and intended value.
+- `fit_toml_fixed_estimate_overlap_warns_and_fixed_wins` — overlap
+  warning emitted; param removed from `estimate_set`; role is
+  `Fixed { reason: NotInEstimate }`.
+- `fixed_estimate_overlap_warning_formats_actionably` — message
+  names the param and both block names.
+- `no_overlap_means_no_overlap_warning` — disjoint blocks → no
+  warning.
+
+Replaced the previous `fit_toml_fixed_does_not_warn_or_kick` test
+(which asserted that the pathological overlap was silent) with
+`fit_toml_fixed_does_not_emit_kickedfromestimate_warning` (asserts
+only that tier-3 doesn't trigger the *kick-out* warning — the new
+overlap warning handles the overlap case separately).
+
+Total resolver tests: 26 passing. Workspace-wide
+`cargo test --release --workspace --tests --exclude camdl-tests`:
+586 + 200 + ... pass; only the 4 pre-existing
+`time::tests::*_panics_in_debug` failures remain (expected, debug
+asserts compiled out in release).
+
+This commit is additive — does not touch precedence ordering, does
+not regress the `bbc4d8d` spec-vs-proposal fix, does not change the
+public resolver API for existing callers (eval.rs, pfilter.rs). All
+that changed is the resolver now records and reports more
+provenance/warning detail.
+
+Remaining steps unchanged from the original status note below
+(`Step 2: simulate + lineage migration`, `Step 4: survey`, `Step 5:
+if2/profile/fit-run`, `Step 6: InitMethod variants`, `Step 7: M-1
+CLI break`, `Step 8: shared help`, `Step 9: run.json provenance —
+will read overrode_scenario`, `Steps 10/11/12: doc churn`).
 
 ## What shipped this session
 

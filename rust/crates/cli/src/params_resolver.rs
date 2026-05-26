@@ -146,12 +146,29 @@ pub enum FixReason {
     KickedFromEstimate { by: ValueSource },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioOverride {
+    /// The active scenario's name (preset name).
+    pub scenario:       String,
+    /// The value the scenario tried to set, before a higher-precedence
+    /// source overrode it.
+    pub scenario_value: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedParameter {
     pub name:   String,
     pub value:  f64,
     pub source: ValueSource,
     pub role:   ParameterRole,
+    /// Present iff the active scenario set this parameter to a value
+    /// different from the final winner — i.e. a higher-precedence
+    /// source (currently only `--fixed-cli` given the spec §1.3
+    /// ordering) silently displaced the scenario value. Pairs with
+    /// the [`ResolverWarning::ScenarioOverridden`] warning so the
+    /// override is auditable from `run.json` even after stderr is
+    /// gone.
+    pub overrode_scenario: Option<ScenarioOverride>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +182,27 @@ pub struct ResolvedParameters {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolverWarning {
     KickedFromEstimate { name: String, by: ValueSource },
+    /// The active scenario set `name = scenario_value`, but a
+    /// higher-precedence source (`by` — `--fixed-cli` or `--fixed-file`,
+    /// per spec §1.3 ordering only `--fixed-cli` can actually beat
+    /// scenario today) overrode it to `new_value`. Surfaced on stderr
+    /// at resolve time and threaded into run.json's
+    /// `parameters_provenance.overrode_scenario` field. Not an error
+    /// — CLI override of a scenario value is a legitimate quick-test
+    /// workflow; the warning ensures the override is never silent.
+    ScenarioOverridden {
+        name: String,
+        scenario: String,
+        scenario_value: f64,
+        by: ValueSource,
+        new_value: f64,
+    },
+    /// `fit.toml` lists `name` in both `[fixed]` and `[estimate]`.
+    /// The resolver treats `[fixed]` as winning (a parameter that is
+    /// both fixed and estimated is a config bug; the conservative
+    /// interpretation is "the user meant fixed"). Surfaced so the
+    /// user fixes their toml.
+    FixedEstimateOverlap { name: String },
 }
 
 impl ResolverWarning {
@@ -183,6 +221,30 @@ impl ResolverWarning {
                     "warning: {} removes `{}` from [estimate]; it will be \
                      pinned to its resolved value rather than inferred.",
                     source_clause, name)
+            }
+            ResolverWarning::ScenarioOverridden {
+                name, scenario, scenario_value, by, new_value,
+            } => {
+                let source_clause = match by {
+                    ValueSource::FixedCli => format!("--fixed {}={}", name, new_value),
+                    ValueSource::FixedFile { path } => {
+                        format!("--fixed-file {} ({}={})",
+                            path.display(), name, new_value)
+                    }
+                    other => format!("source {:?} ({}={})",
+                        other, name, new_value),
+                };
+                format!(
+                    "warning: {} overrides scenario `{}` which would have \
+                     set `{}` = {}.",
+                    source_clause, scenario, name, scenario_value)
+            }
+            ResolverWarning::FixedEstimateOverlap { name } => {
+                format!(
+                    "warning: `{}` appears in both [fixed] and [estimate] in \
+                     fit.toml; [fixed] wins. Remove `{}` from one of the \
+                     blocks to silence this warning.",
+                    name, name)
             }
         }
     }
@@ -407,6 +469,14 @@ pub fn resolve_parameters<'a>(
     // (the legacy `--params FILE`). The intervention filter for the
     // scenario was applied earlier; only `params` / `scale` happen
     // here, layered on top of the file overrides.
+    //
+    // Tracking for [`ResolverWarning::ScenarioOverridden`]: record
+    // what value the scenario *would have* set each named param to,
+    // so the post-tier-5 sweep can detect silent overrides by
+    // comparing final winner vs scenario intent. Stored as
+    // (scenario_name, value) so we know which preset's intent was
+    // overridden.
+    let mut scenario_assigned: HashMap<String, (String, f64)> = HashMap::new();
     if let Some(name) = scenario_name.as_deref() {
         for (k, v) in &scenario_params {
             for p in &mut model.parameters {
@@ -414,6 +484,8 @@ pub fn resolve_parameters<'a>(
                     p.value = Some(*v);
                     current_source.insert(k.clone(),
                         Some(ValueSource::Scenario(name.to_string())));
+                    scenario_assigned.insert(k.clone(),
+                        (name.to_string(), *v));
                 }
             }
         }
@@ -421,9 +493,12 @@ pub fn resolve_parameters<'a>(
             for p in &mut model.parameters {
                 if p.name == *k {
                     if let Some(v) = p.value {
-                        p.value = Some(v * factor);
+                        let scaled = v * factor;
+                        p.value = Some(scaled);
                         current_source.insert(k.clone(),
                             Some(ValueSource::Scenario(name.to_string())));
+                        scenario_assigned.insert(k.clone(),
+                            (name.to_string(), scaled));
                     }
                 }
             }
@@ -447,8 +522,32 @@ pub fn resolve_parameters<'a>(
         }
     }
 
+    // ── fit.toml [fixed] ∩ [estimate] overlap (config-file bug) ─────────
+    //
+    // Per resolved decision B in the 2026-05-25 CLI UX proposal: a name
+    // appearing in both blocks of the same fit.toml is treated as
+    // `[fixed]` wins, with a warning emitted so the user fixes their
+    // config. Caller-side mutual exclusion is *not* enforced because
+    // some toml loaders accept the pathological case silently; this
+    // surface emits a clear diagnostic instead of letting the bug
+    // pass.
+    for name in inputs.fit_toml_fixed.keys() {
+        if inputs.fit_toml_estimate.contains(name) {
+            warnings.push(ResolverWarning::FixedEstimateOverlap {
+                name: name.clone(),
+            });
+        }
+    }
+
     // ── Estimate-set kick-out + provenance assembly ─────────────────────
+    //
+    // Build the estimate set from the fit-toml input, then drop names
+    // that fit-toml's own [fixed] block claimed — this preserves the
+    // [fixed]-wins-over-[estimate] resolution from the overlap check
+    // above, so the run.json provenance shows `role = "fixed"` for
+    // overlapping names rather than `"estimated"`.
     let mut estimate_set: IndexSet<String> = inputs.fit_toml_estimate.clone();
+    estimate_set.retain(|n| !inputs.fit_toml_fixed.contains_key(n));
 
     // A name is "kicked from [estimate]" if it appears in tier 4 or
     // tier 5 (CLI / file `--fixed*`) — those are user-explicit "pin
@@ -525,11 +624,42 @@ pub fn resolve_parameters<'a>(
         } else {
             ParameterRole::Fixed { reason: FixReason::NotInEstimate }
         };
+
+        // Scenario-override visibility: if the scenario intended to
+        // set this parameter to value S but a higher-precedence
+        // source (currently only `--fixed-cli` given spec §1.3) won
+        // with a different value V, record the override on the
+        // provenance and emit a warning. Float-equality is the right
+        // comparator here because the scenario writes an explicit
+        // value (or scales the pre-tier-4 value by an exact factor)
+        // — any deviation means a higher tier overwrote it.
+        let overrode_scenario = scenario_assigned.get(&p.name)
+            .and_then(|(scen_name, scen_value)| {
+                let final_is_scenario = matches!(
+                    &source, ValueSource::Scenario(_));
+                if !final_is_scenario && (*scen_value != value) {
+                    warnings.push(ResolverWarning::ScenarioOverridden {
+                        name: p.name.clone(),
+                        scenario: scen_name.clone(),
+                        scenario_value: *scen_value,
+                        by: source.clone(),
+                        new_value: value,
+                    });
+                    Some(ScenarioOverride {
+                        scenario: scen_name.clone(),
+                        scenario_value: *scen_value,
+                    })
+                } else {
+                    None
+                }
+            });
+
         params.push(ResolvedParameter {
             name: p.name.clone(),
             value,
             source,
             role,
+            overrode_scenario,
         });
     }
 
@@ -564,11 +694,40 @@ pub fn resolve_parameters<'a>(
 
 /// Render and print every warning in `resolved.warnings` to stderr.
 /// Subcommand wrappers call this once after `resolve_parameters`.
+///
+/// Also runs a structural cross-check between the
+/// `ResolverWarning::ScenarioOverridden` warnings and the
+/// `ResolvedParameter.overrode_scenario` field: every parameter
+/// carrying `overrode_scenario = Some(_)` must have a matching
+/// warning, and vice versa. A mismatch is a resolver-internal bug
+/// (the warning was emitted without populating provenance, or
+/// provenance was written without a stderr warning) — surfaced as
+/// `debug_assert!` so it trips in tests but degrades gracefully in
+/// release.
 pub fn print_warnings(resolved: &ResolvedParameters) {
     for w in &resolved.warnings {
         eprintln!("{}", w.format());
     }
+
+    // Structural agreement check (debug-only, zero cost in release):
+    // warnings-of-override and `overrode_scenario` provenance must
+    // name the same parameters. This catches a class of resolver
+    // bugs where one side was added without the other.
+    let warning_names: std::collections::HashSet<&str> =
+        resolved.warnings.iter().filter_map(|w| match w {
+            ResolverWarning::ScenarioOverridden { name, .. } => Some(name.as_str()),
+            _ => None,
+        }).collect();
+    let provenance_names: std::collections::HashSet<&str> =
+        resolved.params.iter()
+            .filter(|p| p.overrode_scenario.is_some())
+            .map(|p| p.name.as_str())
+            .collect();
+    debug_assert_eq!(warning_names, provenance_names,
+        "ScenarioOverridden warnings and overrode_scenario provenance \
+         must name the same parameters");
 }
+
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -844,30 +1003,34 @@ mod tests {
                 assert_eq!(name, "gamma");
                 assert_eq!(*by, ValueSource::FixedCli);
             }
+            other => panic!("expected KickedFromEstimate, got {:?}", other),
         }
     }
 
     #[test]
-    fn fit_toml_fixed_does_not_warn_or_kick() {
-        // fit.toml [fixed] is mutually-exclusive with [estimate] at
-        // config-load time, so the resolver doesn't emit a kick-out
-        // warning for tier-3 sources.
+    fn fit_toml_fixed_does_not_emit_kickedfromestimate_warning() {
+        // Tier-3 (fit-toml `[fixed]`) does NOT emit a
+        // `KickedFromEstimate` warning even when it overlaps
+        // `[estimate]`. The dedicated `FixedEstimateOverlap`
+        // warning handles that case (see
+        // `fit_toml_fixed_estimate_overlap_warns_and_fixed_wins`);
+        // the kick-out warning is reserved for tier-4 / tier-5
+        // CLI-side overrides.
         let model = mk_model(vec![mk_param("beta", Some(0.5))]);
         let fcli = vec![];
         let ffiles = vec![];
         let mut ftf = IndexMap::new();
         ftf.insert("beta".into(), 0.7);
         let mut fte: IndexSet<String> = IndexSet::new();
-        // Note: in real use, beta would not be in BOTH; we set it to
-        // verify the resolver's behaviour if the caller hands a
-        // pathological pair. Tier-3 does NOT warn.
         fte.insert("beta".into());
         let resolved = resolve_parameters(empty_inputs(&model, &fcli, &ffiles, &ftf, &fte))
             .expect("ok");
-        // beta remains in estimate_set; the warning fires only for
-        // tier 4 / tier 5 kickers.
-        assert!(resolved.estimate_set.contains("beta"));
-        assert!(resolved.warnings.is_empty());
+        // No `KickedFromEstimate` warning in the resolver output.
+        let has_kicked = resolved.warnings.iter().any(|w|
+            matches!(w, ResolverWarning::KickedFromEstimate { .. }));
+        assert!(!has_kicked,
+            "tier-3 must not emit KickedFromEstimate; saw {:?}",
+            resolved.warnings);
     }
 
     // ── Bounds + finite checks ──────────────────────────────────────────
@@ -1080,5 +1243,237 @@ mod tests {
         assert!(matches!(&by_name["b"].source, ValueSource::Scenario(_)));
         assert_eq!(by_name["c"].source, ValueSource::FitTomlFixed);
         assert_eq!(by_name["d"].source, ValueSource::FixedCli);
+    }
+
+    // ── Scenario-override visibility ────────────────────────────────────
+
+    #[test]
+    fn fixed_cli_override_of_scenario_emits_warning_and_provenance() {
+        // Scenario sets beta=0.3; --fixed beta=0.5 wins. The resolver
+        // must emit a ScenarioOverridden warning AND record the
+        // scenario's intended value on the parameter's
+        // `overrode_scenario` field so a future reader sees what the
+        // scenario *would* have set, even though the CLI overrode it.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_params = HashMap::new();
+        scen_params.insert("beta".to_string(), 0.3);
+        model.presets.push(Preset {
+            name: "worst_case".into(),
+            label: "worst_case".into(),
+            params: scen_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![("beta".to_string(), 0.5)];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("worst_case");
+        let resolved = resolve_parameters(inputs).expect("ok");
+
+        // CLI value wins.
+        assert_eq!(resolved.params[0].value, 0.5);
+        assert_eq!(resolved.params[0].source, ValueSource::FixedCli);
+
+        // Provenance carries the overridden scenario value.
+        let beta = &resolved.params[0];
+        assert_eq!(beta.overrode_scenario,
+            Some(ScenarioOverride {
+                scenario: "worst_case".into(),
+                scenario_value: 0.3,
+            }),
+            "overrode_scenario must record scenario name + intended value");
+
+        // Warning emitted.
+        let scen_warns: Vec<_> = resolved.warnings.iter().filter(|w|
+            matches!(w, ResolverWarning::ScenarioOverridden { .. })).collect();
+        assert_eq!(scen_warns.len(), 1);
+        match scen_warns[0] {
+            ResolverWarning::ScenarioOverridden {
+                name, scenario, scenario_value, by, new_value,
+            } => {
+                assert_eq!(name, "beta");
+                assert_eq!(scenario, "worst_case");
+                assert_eq!(*scenario_value, 0.3);
+                assert_eq!(*by, ValueSource::FixedCli);
+                assert_eq!(*new_value, 0.5);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn scenario_applied_cleanly_does_not_emit_override_warning() {
+        // If --fixed-cli doesn't conflict with scenario, the warning
+        // must NOT fire. Regression guard against a spurious warning
+        // on the legitimate single-source case.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_params = HashMap::new();
+        scen_params.insert("beta".to_string(), 0.3);
+        model.presets.push(Preset {
+            name: "worst_case".into(),
+            label: "worst_case".into(),
+            params: scen_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("worst_case");
+        let resolved = resolve_parameters(inputs).expect("ok");
+
+        assert_eq!(resolved.params[0].value, 0.3);
+        assert!(matches!(&resolved.params[0].source,
+            ValueSource::Scenario(name) if name == "worst_case"));
+        assert_eq!(resolved.params[0].overrode_scenario, None);
+        let has_scen_warn = resolved.warnings.iter().any(|w|
+            matches!(w, ResolverWarning::ScenarioOverridden { .. }));
+        assert!(!has_scen_warn,
+            "no override warning when scenario wins cleanly; saw {:?}",
+            resolved.warnings);
+    }
+
+    #[test]
+    fn fixed_cli_matching_scenario_value_does_not_warn() {
+        // Edge case: scenario sets beta=0.3 and --fixed beta=0.3 also.
+        // Final value is 0.3 either way; the resolver records source
+        // = FixedCli (last wins) but the warning should not fire
+        // because the user got the value they asked for.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_params = HashMap::new();
+        scen_params.insert("beta".to_string(), 0.3);
+        model.presets.push(Preset {
+            name: "worst_case".into(),
+            label: "worst_case".into(),
+            params: scen_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![("beta".to_string(), 0.3)];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("worst_case");
+        let resolved = resolve_parameters(inputs).expect("ok");
+
+        assert_eq!(resolved.params[0].value, 0.3);
+        assert_eq!(resolved.params[0].source, ValueSource::FixedCli);
+        assert_eq!(resolved.params[0].overrode_scenario, None,
+            "no override visibility when values agree");
+        let has_scen_warn = resolved.warnings.iter().any(|w|
+            matches!(w, ResolverWarning::ScenarioOverridden { .. }));
+        assert!(!has_scen_warn);
+    }
+
+    #[test]
+    fn scenario_override_warning_formats_actionably() {
+        // The stderr-printable form must name the parameter, the
+        // scenario, the would-have value, and the actual value so a
+        // user re-reading stderr can localise the override.
+        let w = ResolverWarning::ScenarioOverridden {
+            name: "beta".into(),
+            scenario: "worst_case".into(),
+            scenario_value: 0.3,
+            by: ValueSource::FixedCli,
+            new_value: 0.5,
+        };
+        let msg = w.format();
+        assert!(msg.contains("--fixed beta=0.5"),
+            "must show CLI flag and value: {}", msg);
+        assert!(msg.contains("worst_case"),
+            "must name scenario: {}", msg);
+        assert!(msg.contains("0.3"),
+            "must show scenario's intended value: {}", msg);
+    }
+
+    // ── fit.toml [fixed] ∩ [estimate] overlap (resolved decision B) ─────
+
+    #[test]
+    fn fit_toml_fixed_estimate_overlap_warns_and_fixed_wins() {
+        // Pathological config: same name in both `[fixed]` and
+        // `[estimate]`. Resolver must:
+        //   1. Treat `[fixed]` as winning (parameter is Fixed, not
+        //      Estimated).
+        //   2. Emit a FixedEstimateOverlap warning so the user sees
+        //      the config bug.
+        let model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let fcli = vec![];
+        let ffiles = vec![];
+        let mut ftf = IndexMap::new();
+        ftf.insert("beta".into(), 0.7);
+        let mut fte: IndexSet<String> = IndexSet::new();
+        fte.insert("beta".into());
+        let resolved = resolve_parameters(empty_inputs(&model, &fcli, &ffiles, &ftf, &fte))
+            .expect("ok");
+
+        // [fixed] won: not in estimate_set, role is Fixed.
+        assert!(!resolved.estimate_set.contains("beta"),
+            "beta must be removed from estimate_set when [fixed] wins");
+        let beta = &resolved.params[0];
+        assert_eq!(beta.value, 0.7);
+        assert_eq!(beta.source, ValueSource::FitTomlFixed);
+        assert!(matches!(&beta.role,
+            ParameterRole::Fixed { reason: FixReason::NotInEstimate }),
+            "[fixed]-wins-over-[estimate] yields NotInEstimate (overlap \
+             is reported via the dedicated warning, not via FixReason)");
+
+        // Warning emitted.
+        let overlap_warns: Vec<_> = resolved.warnings.iter().filter(|w|
+            matches!(w, ResolverWarning::FixedEstimateOverlap { .. })).collect();
+        assert_eq!(overlap_warns.len(), 1);
+        match overlap_warns[0] {
+            ResolverWarning::FixedEstimateOverlap { name } => {
+                assert_eq!(name, "beta");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn fixed_estimate_overlap_warning_formats_actionably() {
+        let w = ResolverWarning::FixedEstimateOverlap {
+            name: "gamma".into(),
+        };
+        let msg = w.format();
+        assert!(msg.contains("gamma"), "must name the param: {}", msg);
+        assert!(msg.contains("[fixed]"),
+            "must mention [fixed] block: {}", msg);
+        assert!(msg.contains("[estimate]"),
+            "must mention [estimate] block: {}", msg);
+    }
+
+    #[test]
+    fn no_overlap_means_no_overlap_warning() {
+        // Disjoint [fixed] and [estimate] → no overlap warning.
+        let model = mk_model(vec![
+            mk_param("beta", Some(0.5)),
+            mk_param("gamma", Some(0.1)),
+        ]);
+        let fcli = vec![];
+        let ffiles = vec![];
+        let mut ftf = IndexMap::new();
+        ftf.insert("beta".into(), 0.7);
+        let mut fte: IndexSet<String> = IndexSet::new();
+        fte.insert("gamma".into());
+        let resolved = resolve_parameters(empty_inputs(&model, &fcli, &ffiles, &ftf, &fte))
+            .expect("ok");
+        let has_overlap = resolved.warnings.iter().any(|w|
+            matches!(w, ResolverWarning::FixedEstimateOverlap { .. }));
+        assert!(!has_overlap);
+        assert!(resolved.estimate_set.contains("gamma"));
     }
 }
