@@ -94,79 +94,11 @@ impl ProfileAlgo {
     }
 }
 
-// ─── Observation family resolution ───────────────────────────────────────────
-
-/// Resolve `--obs <name>` against the IR's observation list.
-///
-/// gh#38: profile must walk the *full* indexed observation family and
-/// sum log-likelihood across every concrete stream that descended from
-/// it — matching `camdl fit run`. Previously profile silently scored
-/// only the first IR observation entry, producing a profile loglik
-/// ~5 orders of magnitude off what the user thought they were
-/// plotting on a 15-cell stratified family like typhoid's
-/// `cases[s in setting, a in age]`.
-///
-/// Resolution rules:
-///
-/// 1. If `obs_name` is supplied:
-///    a. Exact match against an IR obs name → single-stream profile.
-///       (Family-name lookup never sees this — it's the leaf of an
-///        already-expanded family.)
-///    b. Otherwise treat the name as a family root and match every
-///       IR obs whose name starts with `<name>_` (the OCaml expander
-///       names indexed observations as `<family>_<idx1>_<idx2>...`).
-///    c. No matches → `Err`.
-/// 2. If `obs_name` is `None`:
-///    a. Exactly one IR observation → use it.
-///    b. Multiple → `Err` listing available names.
-///    c. Zero → `Err`.
-///
-/// Returns the borrowed IR observations, in IR declaration order. The
-/// returned slice is non-empty on `Ok`.
-pub(crate) fn resolve_obs_family<'a>(
-    observations: &'a [ir::observation::ObservationModel],
-    obs_name: Option<&str>,
-) -> Result<Vec<&'a ir::observation::ObservationModel>, String> {
-    match obs_name {
-        Some(name) => {
-            // 1a. Exact match (single stream).
-            let exact: Vec<_> = observations.iter().filter(|o| o.name == name).collect();
-            if !exact.is_empty() {
-                return Ok(exact);
-            }
-            // 1b. Family match.
-            let prefix = format!("{}_", name);
-            let family: Vec<_> = observations.iter()
-                .filter(|o| o.name.starts_with(&prefix))
-                .collect();
-            if family.is_empty() {
-                let avail = observations.iter().map(|o| o.name.as_str())
-                    .collect::<Vec<_>>().join(", ");
-                return Err(format!(
-                    "error: --obs '{}' matches no observation in the IR.\n\
-                     Available observation names: {}",
-                    name, avail));
-            }
-            Ok(family)
-        }
-        None => {
-            if observations.is_empty() {
-                Err("error: model has no observations block".to_string())
-            } else if observations.len() == 1 {
-                Ok(vec![&observations[0]])
-            } else {
-                let avail = observations.iter().map(|o| o.name.as_str())
-                    .collect::<Vec<_>>().join(", ");
-                Err(format!(
-                    "error: model declares {} observation streams. Pass `--obs <NAME>` \
-                     to select one (exact stream name) or a family root (e.g. `cases` \
-                     for an indexed `cases[s,a]` block — sums all expanded streams).\n\
-                     Available: {}",
-                    observations.len(), avail))
-            }
-        }
-    }
-}
+// Observation family resolution lives in `crate::util::resolve_data_specs`
+// (gh#90). Profile's previous `resolve_obs_family` (gh#38) is subsumed
+// there: `--data PATH --obs <family-root>` matches every IR obs whose
+// name starts with `<root>_`, and `--data NAME=PATH` (gh#90 named form)
+// also expands NAME as a family root. Same semantics, single dispatch.
 
 // ─── ProfileInputs ───────────────────────────────────────────────────────────
 
@@ -192,13 +124,19 @@ pub struct ProfileInputs {
     pub model_hash: String,
     /// Canonical-form hash of the base parameter vector.
     pub base_params_hash: String,
-    /// Full SHA-256 of the `--data` file's bytes. Content-only — the
-    /// path is not part of this hash, so two users with the same TSV
-    /// at different paths share a cache entry, while two users with
-    /// different TSVs at the same path do not (gh#39: editing the data
-    /// file in place must invalidate the cache, not silently return the
-    /// previous run's logliks against the old observations).
-    pub data_hash: String,
+    /// Per-stream SHA-256 of each bound `--data` file's bytes. gh#90
+    /// extends the gh#39 single-file hash to multi-stream: every
+    /// (stream_name, content_hash) pair the resolver bound participates
+    /// in the cache key. Sorted by stream name before hashing for
+    /// deterministic order independent of how the user spelled
+    /// `--data NAME=PATH` on the command line.
+    ///
+    /// Content-only — paths are not part of these hashes, so two users
+    /// with the same TSVs at different filesystem locations share a
+    /// cache entry, while two users with different TSVs at the same
+    /// path do not. gh#39: editing any bound stream's data file in
+    /// place must invalidate the cache.
+    pub data_hashes: Vec<(String, String)>,
     /// Focal grid (one axis per `--sweep` flag).
     pub focal_grid: Vec<GridAxis>,
     /// Fixed parameters (`--fixed`): excluded from IF2 estimation. Order
@@ -307,6 +245,19 @@ impl ProfileInputs {
         let priors_canonical: String = priors_sorted.iter()
             .map(|(n, s)| format!("{}={}", n, s))
             .collect::<Vec<_>>().join(",");
+        // gh#90: every bound stream contributes its (name,
+        // content_hash) pair. Sort by stream name so CLI ordering
+        // (`--data cases=... --data deaths=...` vs `--data deaths=...
+        // --data cases=...`) doesn't move the cache key, and so two
+        // profiles with the same N streams in any order hit the same
+        // entry. Concatenated with a NUL separator that can't appear
+        // in a stream name to avoid `cases:hashA,deaths` colliding
+        // with `cases:hashA-deaths:` style sneaky merges.
+        let mut data_pairs_sorted = self.data_hashes.clone();
+        data_pairs_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        let data_canonical: String = data_pairs_sorted.iter()
+            .map(|(n, h)| format!("{}={}", n, h))
+            .collect::<Vec<_>>().join("\x00");
         hash_canonical(&[
             ("model",       &self.model_hash),
             ("base_params", &self.base_params_hash),
@@ -317,7 +268,7 @@ impl ProfileInputs {
             ("if2",         &if2),
             ("pmmh",        &pmmh),
             ("starts_from", self.starts_from_lineage.as_deref().unwrap_or("")),
-            ("data",        &self.data_hash),
+            ("data",        &data_canonical),
             ("fit_toml",    self.fit_toml_hash.as_deref().unwrap_or("")),
             ("priors",      &priors_canonical),
         ])
@@ -421,7 +372,6 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     }
 
     let ir_path = a.model.to_string_lossy().into_owned();
-    let data_path = a.data.to_string_lossy().into_owned();
     let n_particles = a.inference.particles;
     let n_iterations = a.iterations;
     let n_starts = a.starts;
@@ -635,87 +585,120 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         std::process::exit(1);
     }
 
-    // ── Resolve --obs against the IR's observation list ─────────────
+    // ── Resolve --data and --obs against the IR's observation list ──
     //
-    // gh#38: profile must walk the *full* indexed observation family
-    // and sum log-likelihood across every concrete stream that
-    // descended from it — matching `camdl fit run`. Previously this
-    // path silently scored only the first IR observation (e.g.
-    // `cases_medium_a02`), producing a profile loglik ~5 orders of
-    // magnitude off what the user thought they were plotting on a
-    // 15-cell stratified family like typhoid's
-    // `cases[s in setting, a in age]`.
+    // gh#90: polymorphic `--data` is the primary multi-stream surface.
+    //   --data PATH         → single-stream, optionally narrowed by --obs.
+    //   --data NAME=PATH    → multi-stream, joint scoring of every bound
+    //                         stream (repeatable; one flag per stream).
     //
-    // Resolution rules (mirrors `pfilter` for the single-stream case
-    // and `fit run` for the family case):
+    // gh#38 family resolution survives: in the single-PATH form,
+    // `--obs <root>` matches every IR obs whose name starts with
+    // `<root>_`, so a single wide TSV covers an indexed
+    // `cases[s,a]` family with one `--data <file>` flag plus
+    // `--obs cases`.
     //
-    // 1. If `--obs <name>` is supplied:
-    //    a. Exact match against an IR obs name → single-stream profile.
-    //       (Family-name lookup never sees this — it's the leaf of an
-    //        already-expanded family.)
-    //    b. Otherwise treat `<name>` as a family root and match every
-    //       IR obs whose name starts with `<name>_` (the OCaml expander
-    //       names indexed observations as `<family>_<idx1>_<idx2>...`).
-    //    c. No matches → hard error.
-    // 2. If `--obs` is omitted:
-    //    a. Exactly one IR observation → use it.
-    //    b. Multiple → error, list available names + family roots.
-    //    c. Zero → error (model declares no observations block).
-    //
-    // `--flow <name>` is only meaningful for single-stream profiles
-    // (it overrides the obs model's projection to a custom flow sum).
-    // It's incompatible with a multi-stream resolution because each
-    // stream has its own per-stratum projection.
+    // fit-toml fallback: when no `--data` flags supplied AND `--fit`
+    // is, read `[data]` / `[data.observations]` from the toml. CLI
+    // flags always win when both are supplied.
     let obs_name_arg = a.flow.obs.clone();
-    let resolved_obs: Vec<&ir::observation::ObservationModel> =
-        resolve_obs_family(&model.observations, obs_name_arg.as_deref())
-            .unwrap_or_else(|e| { eprintln!("{}", e); std::process::exit(1); });
+    let model_obs_names: Vec<String> = model.observations.iter()
+        .map(|o| o.name.clone()).collect();
+    let cli_data_specs: Vec<crate::args::types::DataSpec> = a.data.clone();
+    let bound_streams: Vec<(String, std::path::PathBuf)> = if cli_data_specs.is_empty() {
+        if let Some(fit_path) = a.fit.as_ref() {
+            eprintln!("profile: no --data flags supplied, reading bindings \
+                from --fit toml [data.observations]");
+            crate::pfilter::load_data_observations_from_fit_toml(
+                fit_path.as_path(), &model_obs_names,
+            ).unwrap_or_else(|e| {
+                eprintln!("error: --fit toml fallback for --data: {}", e);
+                std::process::exit(1);
+            })
+        } else {
+            eprintln!("error: --data is required. Use `--data PATH` for a \
+                single-stream model, `--data NAME=PATH` (repeatable) for a \
+                multi-stream model, or `--fit FOO.toml` with a \
+                [data.observations] section.");
+            std::process::exit(1);
+        }
+    } else {
+        if a.fit.is_some() {
+            eprintln!("profile: --data on CLI overrides --fit toml [data.observations]");
+        }
+        crate::util::resolve_data_specs(&cli_data_specs, &model_obs_names, obs_name_arg.as_deref())
+            .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+    };
+
+    if bound_streams.is_empty() {
+        eprintln!("error: zero streams resolved from --data / --fit toml.");
+        std::process::exit(1);
+    }
+
+    // Resolved IR observation models, one per bound stream. Family
+    // expansion happened inside the resolver; here every bound name
+    // is an exact leaf match.
+    let resolved_obs: Vec<&ir::observation::ObservationModel> = {
+        let mut v = Vec::with_capacity(bound_streams.len());
+        for (sname, _) in &bound_streams {
+            match model.observations.iter().find(|o| &o.name == sname) {
+                Some(o) => v.push(o),
+                None => {
+                    eprintln!("error: bound stream '{}' has no matching IR \
+                        observation block (resolver bug). Available: {}",
+                        sname,
+                        model.observations.iter().map(|o| o.name.as_str())
+                            .collect::<Vec<_>>().join(", "));
+                    std::process::exit(1);
+                }
+            }
+        }
+        v
+    };
 
     if resolved_obs.len() > 1 && flow_name.is_some() {
         eprintln!(
-            "error: --flow <NAME> is incompatible with a multi-stream observation \
-             family. `--obs '{}'` resolved to {} concrete streams (each has its own \
-             per-stratum projection); `--flow` only makes sense when scoring a single \
-             stream against a custom flow override.",
-            obs_name_arg.as_deref().unwrap_or(""), resolved_obs.len(),
+            "error: --flow <NAME> is incompatible with multi-stream --data \
+             ({} streams bound). --flow rewrites a single stream's projection; \
+             for multi-stream profile each stream uses its own IR projection.",
+            resolved_obs.len(),
         );
         std::process::exit(1);
     }
 
     if resolved_obs.len() > 1 {
         eprintln!(
-            "profile: --obs '{}' resolved to {} expanded streams \
-             (joint loglik = sum across all)",
-            obs_name_arg.as_deref().unwrap_or(""), resolved_obs.len(),
+            "profile: {} streams bound (joint loglik = sum across all): {}",
+            resolved_obs.len(),
+            resolved_obs.iter().map(|o| o.name.as_str())
+                .collect::<Vec<_>>().join(", "),
         );
     } else {
         eprintln!("profile: using observation model '{}' from IR",
             resolved_obs[0].name);
     }
 
-    // Load each stream's column from the data TSV. The lookup keys
-    // on `obs.name` to match the rest of the toolchain:
-    //
-    // * `camdl fit run` (runner.rs:271) loads per stream by the model
-    //   observation's `name`, not its `data_stream`. Profile must
-    //   agree so a `--data <file>.tsv` produced by `camdl simulate
-    //   --obs-only` (which writes columns by `name`) reads back
-    //   identically under both commands.
-    // * The IR's `data_stream` field is preserved as the *declarer's*
-    //   intended source-file column (see ocaml/lib/compiler/expander.ml
-    //   ~line 2958), but for the runtime data-loading path the
-    //   `name`/`data_stream` distinction is dead code today — fit
-    //   uses `name`, simulate writes by `name`, and the wide-TSV
-    //   convention assumed by indexed-obs families (e.g. typhoid's
-    //   `cases_<setting>_<age>`) makes `name == data_stream`
-    //   anyway when no explicit override was declared.
-    //
-    // Fallback for single-stream models: if the user supplied a 2-col
-    // (time, value) TSV with a non-matching column name, accept it
-    // via `load_data_tsv_pub` — same behaviour profile had before the
-    // multi-stream rewrite, and matches what `camdl pfilter` does.
-    // For multi-stream resolution every column must match by name;
-    // no ambiguity is allowed.
+    // gh#90: silent-wrong-answer warning. If the model declares N>1
+    // observation blocks but only M<N are bound, the unbound streams
+    // contribute zero to the likelihood — the result looks plausible
+    // but is methodologically wrong (those parameters fall back to
+    // priors). Fires whether the user used --data PATH --obs NAME
+    // (intentional single-stream subset) or named pairs covering a
+    // subset of the model's blocks.
+    {
+        let bound_names: Vec<String> = bound_streams.iter()
+            .map(|(n, _)| n.clone()).collect();
+        if let Some(w) = crate::util::format_unbound_streams_warning(
+            "profile", &model_obs_names, &bound_names,
+        ) {
+            eprint!("{}", w);
+        }
+    }
+
+    // Per-stream load: each binding picks its column from the bound
+    // file by stream name. For a single-stream binding fall back to
+    // the 2-col TSV loader when the file has no matching column —
+    // preserves the legacy (`time,value`) schema.
     let time_opts = crate::caltime_load::TimeOpts {
         origin: model.origin.as_deref(),
         time_unit: &model.time_unit,
@@ -723,29 +706,26 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         t_start: compiled.model.simulation.t_start,
         format: a.inference.time_format,
     };
-    let load_stream_obs = |column: &str| -> Vec<Observation> {
-        let result = if resolved_obs.len() == 1 {
-            // Single stream: try by-name first, fall back to first
-            // value column if the TSV has only (time, value).
-            crate::pfilter::load_data_tsv_column(&data_path, column, &time_opts)
-                .or_else(|_| crate::pfilter::load_data_tsv_pub(&data_path, &time_opts))
+
+    let mut per_stream_obs: Vec<Vec<Observation>> = Vec::with_capacity(bound_streams.len());
+    let mut canonical_times: Option<Vec<f64>> = None;
+    let n_streams = bound_streams.len();
+    for (sname, spath) in &bound_streams {
+        let path_str = spath.to_string_lossy().into_owned();
+        let result = if n_streams == 1 {
+            crate::pfilter::load_data_tsv_column(&path_str, sname, &time_opts)
+                .or_else(|_| crate::pfilter::load_data_tsv_pub(&path_str, &time_opts))
         } else {
-            crate::pfilter::load_data_tsv_column(&data_path, column, &time_opts)
+            crate::pfilter::load_data_tsv_column(&path_str, sname, &time_opts)
         };
-        match result {
+        let stream_obs: Vec<Observation> = match result {
             Ok(v) => v.into_iter().map(|o| Observation { time: o.time, value: o.value }).collect(),
             Err(e) => {
                 eprintln!("error: cannot load data column '{}' from {}: {}",
-                    column, data_path, e);
+                    sname, path_str, e);
                 std::process::exit(1);
             }
-        }
-    };
-
-    let mut per_stream_obs: Vec<Vec<Observation>> = Vec::with_capacity(resolved_obs.len());
-    let mut canonical_times: Option<Vec<f64>> = None;
-    for obs in &resolved_obs {
-        let stream_obs = load_stream_obs(&obs.name);
+        };
         let times: Vec<f64> = stream_obs.iter().map(|o| o.time).collect();
         match &canonical_times {
             None => canonical_times = Some(times),
@@ -754,10 +734,10 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     || ct.iter().zip(&times).any(|(a, b)| (a - b).abs() > 1e-9)
                 {
                     eprintln!(
-                        "error: observation times for stream '{}' differ from the first \
-                         resolved stream. All streams in a profile family must share \
-                         identical observation times.",
-                        obs.name
+                        "error: observation times for stream '{}' differ from \
+                         the first resolved stream. All streams in a profile \
+                         must share identical observation times.",
+                        sname,
                     );
                     std::process::exit(1);
                 }
@@ -1047,18 +1027,38 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let obs_family_key = obs_name_arg.clone()
         .unwrap_or_else(|| resolved_obs[0].name.clone());
 
-    // gh#39: hash the --data file's bytes once at launch. The previous
-    // CAS key omitted observation data entirely, so a user editing
-    // `cases.tsv` in place silently got the prior run's logliks back
-    // (correct shape, wrong likelihood). Mirrors the fit-side pattern
-    // (see `FitConfigV2::fit_content_hash`). Path-independent: only
-    // the bytes participate, so moving the file or pointing two
-    // commands at copies of the same TSV still produces a cache hit.
-    let data_bytes = std::fs::read(&data_path).unwrap_or_else(|e| {
-        eprintln!("error: cannot read --data file '{}': {}", data_path, e);
-        std::process::exit(1);
-    });
-    let data_hash = crate::hashing::sha256_hex(&data_bytes);
+    // gh#39 + gh#90: hash every bound stream's data file bytes at
+    // launch. Each (stream_name, content_hash) pair participates in
+    // the CAS key (sorted by stream name) so:
+    //   - editing any one stream's data file invalidates the cache
+    //     (gh#39 invariant generalised to multi-stream),
+    //   - adding or removing a stream binding invalidates the cache
+    //     (gh#90: switching --data cases=... → --data cases=...
+    //     --data deaths=... is a real content change),
+    //   - reordering --data flags on the CLI does NOT invalidate the
+    //     cache (sort by name).
+    // De-duplicate identical file paths: when a wide TSV serves
+    // multiple streams (`--data cases=wide.tsv --data deaths=wide.tsv`
+    // or family-root single-file expansion), each stream still records
+    // its own (name, hash) pair so adding a stream invalidates even
+    // when the file bytes are unchanged.
+    let mut data_hashes: Vec<(String, String)> = Vec::with_capacity(bound_streams.len());
+    let mut file_cache: HashMap<std::path::PathBuf, String> = HashMap::new();
+    for (sname, spath) in &bound_streams {
+        let h = if let Some(h) = file_cache.get(spath) {
+            h.clone()
+        } else {
+            let bytes = std::fs::read(spath).unwrap_or_else(|e| {
+                eprintln!("error: cannot read --data file '{}': {}",
+                    spath.display(), e);
+                std::process::exit(1);
+            });
+            let h = crate::hashing::sha256_hex(&bytes);
+            file_cache.insert(spath.clone(), h.clone());
+            h
+        };
+        data_hashes.push((sname.clone(), h));
+    }
 
     // gh#73: the per-parameter source list is stored in the same
     // order the resolver emitted (declaration order of estimated
@@ -1163,7 +1163,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         stem: stem.clone(),
         model_hash: model_hash.clone(),
         base_params_hash,
-        data_hash,
+        data_hashes,
         focal_grid: grid_spec,
         fixed: fixed_for_cas,
         obs_family: obs_family_key,
@@ -2474,122 +2474,26 @@ mod tests {
             "bare loglik should be the cross-seed mean, got {}", bare_loglik);
     }
 
-    // ── gh#38 obs-family resolution ─────────────────────────────────
-
-    /// Build a synthetic `ObservationModel` for resolution tests.
-    /// Likelihood/projection/schedule fields are placeholders — only
-    /// `name` is exercised by `resolve_obs_family`.
-    fn make_obs(name: &str) -> ir::observation::ObservationModel {
-        use ir::observation::{
-            Likelihood, ObservationSchedule, PoissonLikelihood,
-            Projection, RegularSchedule,
-        };
-        use ir::expr::Expr;
-        ir::observation::ObservationModel {
-            name: name.to_string(),
-            data_stream: name.to_string(),
-            schedule: ObservationSchedule::Regular(RegularSchedule {
-                start: 0.0, step: 1.0, end: 10.0,
-            }),
-            projection: Projection::CumulativeFlow("flow".to_string()),
-            likelihood: Likelihood::Poisson(PoissonLikelihood {
-                rate: Expr::Const(ir::expr::ConstExpr { value: 1.0 }),
-            }),
-        }
-    }
-
-    #[test]
-    fn resolve_obs_family_root_matches_full_indexed_expansion() {
-        // gh#38 core: passing the family root resolves to ALL expanded
-        // streams (not just the first). The OCaml expander emits names
-        // like `<family>_<idx1>_<idx2>...`.
-        let obs = vec![
-            make_obs("cases_medium_a02"),
-            make_obs("cases_medium_a25"),
-            make_obs("cases_high_a02"),
-            make_obs("cases_high_a25"),
-            make_obs("cases_veryhigh_a02"),
-        ];
-        let resolved = resolve_obs_family(&obs, Some("cases")).unwrap();
-        assert_eq!(resolved.len(), 5,
-            "family root 'cases' must match all 5 expanded streams, got {}",
-            resolved.len());
-        let names: Vec<&str> = resolved.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(names, vec![
-            "cases_medium_a02", "cases_medium_a25",
-            "cases_high_a02", "cases_high_a25", "cases_veryhigh_a02",
-        ]);
-    }
-
-    #[test]
-    fn resolve_obs_family_exact_match_takes_precedence_over_family() {
-        // 1a: an exact match against an expanded leaf must short-circuit
-        // — passing `cases_medium_a02` should give back exactly that
-        // stream, not also the other `cases_medium_a02_*` siblings if
-        // the model happened to declare any.
-        let obs = vec![
-            make_obs("cases_medium_a02"),
-            make_obs("cases_medium_a02_extra"),
-            make_obs("cases_medium_a25"),
-        ];
-        let resolved = resolve_obs_family(&obs, Some("cases_medium_a02")).unwrap();
-        assert_eq!(resolved.len(), 1,
-            "exact match must take precedence over family expansion");
-        assert_eq!(resolved[0].name, "cases_medium_a02");
-    }
-
-    #[test]
-    fn resolve_obs_family_unknown_name_errors() {
-        let obs = vec![make_obs("cases_a02"), make_obs("cases_a25")];
-        let err = resolve_obs_family(&obs, Some("deaths")).unwrap_err();
-        assert!(err.contains("deaths") && err.contains("Available"),
-            "error should name the unknown obs and list available, got: {}", err);
-    }
-
-    #[test]
-    fn resolve_obs_family_no_arg_picks_unique_obs() {
-        let obs = vec![make_obs("reported_cases")];
-        let resolved = resolve_obs_family(&obs, None).unwrap();
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "reported_cases");
-    }
-
-    #[test]
-    fn resolve_obs_family_no_arg_with_multiple_errors() {
-        // No --obs + multiple observations is the failure mode that
-        // the gh#38 fix is closing: previously profile silently picked
-        // the first one and reported "using observation model
-        // 'cases_medium_a02' from IR", off by orders of magnitude.
-        let obs = vec![
-            make_obs("cases_a02"),
-            make_obs("cases_a25"),
-        ];
-        let err = resolve_obs_family(&obs, None).unwrap_err();
-        assert!(err.contains("Pass `--obs"),
-            "error should prompt user to pass --obs, got: {}", err);
-        assert!(err.contains("cases_a02") && err.contains("cases_a25"),
-            "error should list available streams, got: {}", err);
-    }
-
-    #[test]
-    fn resolve_obs_family_no_observations_errors() {
-        let obs: Vec<ir::observation::ObservationModel> = vec![];
-        assert!(resolve_obs_family(&obs, None).is_err());
-        assert!(resolve_obs_family(&obs, Some("cases")).is_err());
-    }
-
     // ── gh#39 data-file content hashing ─────────────────────────────────
+    //
+    // Note: the gh#38 `resolve_obs_family` standalone helper and its
+    // tests moved to `crate::util::resolve_data_specs` (gh#90), where
+    // single-PATH + --obs and named-pair forms share one dispatch.
+    // Equivalence tests for family expansion live in
+    // `util.rs::gh90_resolver_tests`.
 
     /// Construct a `ProfileInputs` with all content fields fixed to
-    /// stable placeholders. Caller overrides only the field under test
-    /// (typically `data_hash`) so cross-test comparisons are crisp.
+    /// stable placeholders. Caller overrides only the field under
+    /// test (typically `data_hashes`) so cross-test comparisons are
+    /// crisp. The single-element `data_hashes` mirrors the
+    /// single-stream profile case; multi-stream tests append more.
     fn fixture_inputs(data_hash: &str) -> ProfileInputs {
         ProfileInputs {
             model_path: "model.camdl".into(),
             stem: Some("model".into()),
             model_hash: "deadbeef".repeat(8),
             base_params_hash: "cafef00d".repeat(8),
-            data_hash: data_hash.to_string(),
+            data_hashes: vec![("cases".into(), data_hash.to_string())],
             focal_grid: vec![GridAxis {
                 param: "R0".into(),
                 values: vec![1.5, 2.0, 2.5],
@@ -2741,14 +2645,98 @@ mod tests {
     #[test]
     fn inner_hash_data_field_is_load_bearing() {
         // Cross-check against the canonical-key implementation: with
-        // every other field fixed, varying only `data_hash` must move
-        // the inner_hash. This catches a future refactor that
+        // every other field fixed, varying only `data_hashes[0]` must
+        // move the inner_hash. This catches a future refactor that
         // accidentally drops the `("data", ...)` entry from the
         // canonical-keys vector.
         let a = fixture_inputs(&"a".repeat(64));
         let b = fixture_inputs(&"b".repeat(64));
         assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "data_hash must be wired into inner_hash's canonical keys");
+            "data_hashes must be wired into inner_hash's canonical keys");
+    }
+
+    // ── gh#90 multi-stream cache key invariants ──────────────────────
+    //
+    // The data_hashes Vec replaces the gh#39 single data_hash to
+    // carry every bound stream's (name, content_hash) pair into the
+    // cache key. These tests pin the invariants that the dispatch
+    // requires.
+
+    #[test]
+    fn profile_inner_hash_changes_when_stream_set_changes() {
+        // Adding a stream to the bound set is a real content change
+        // — the profile that scores `cases + deaths` jointly is NOT
+        // the same as the one that scores only `cases`.
+        let h_cases  = "a".repeat(64);
+        let h_deaths = "b".repeat(64);
+        let one = fixture_inputs(&h_cases);
+        let two = ProfileInputs {
+            data_hashes: vec![
+                ("cases".into(),  h_cases.clone()),
+                ("deaths".into(), h_deaths.clone()),
+            ],
+            ..fixture_inputs(&h_cases)
+        };
+        assert_ne!(one.inner_hash().full(), two.inner_hash().full(),
+            "adding a bound stream MUST invalidate the profile CAS \
+             key (gh#90); otherwise the cache silently returns the \
+             1-stream loglik for what the user thinks is a 2-stream \
+             joint score");
+    }
+
+    #[test]
+    fn profile_inner_hash_changes_when_stream_data_content_changes() {
+        // Per-stream gh#39 invariant: editing the bytes of any bound
+        // stream's data file must invalidate the cache, including
+        // streams beyond the first.
+        let h_cases  = "a".repeat(64);
+        let h_deaths_v1 = "b".repeat(64);
+        let h_deaths_v2 = "c".repeat(64);
+        let a = ProfileInputs {
+            data_hashes: vec![
+                ("cases".into(),  h_cases.clone()),
+                ("deaths".into(), h_deaths_v1.clone()),
+            ],
+            ..fixture_inputs(&h_cases)
+        };
+        let b = ProfileInputs {
+            data_hashes: vec![
+                ("cases".into(),  h_cases.clone()),
+                ("deaths".into(), h_deaths_v2.clone()),
+            ],
+            ..fixture_inputs(&h_cases)
+        };
+        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
+            "editing the bytes of any bound stream's --data file MUST \
+             invalidate the cache (gh#39 generalised to multi-stream \
+             per gh#90)");
+    }
+
+    #[test]
+    fn profile_inner_hash_invariant_under_stream_reordering() {
+        // The CLI ordering of --data NAME=PATH flags is presentation,
+        // not content — `--data cases=... --data deaths=...` and
+        // `--data deaths=... --data cases=...` must hit the same
+        // cache entry. The inner_hash sort-by-name normalises this.
+        let h_cases  = "a".repeat(64);
+        let h_deaths = "b".repeat(64);
+        let a = ProfileInputs {
+            data_hashes: vec![
+                ("cases".into(),  h_cases.clone()),
+                ("deaths".into(), h_deaths.clone()),
+            ],
+            ..fixture_inputs(&h_cases)
+        };
+        let b = ProfileInputs {
+            data_hashes: vec![
+                ("deaths".into(), h_deaths.clone()),
+                ("cases".into(),  h_cases.clone()),
+            ],
+            ..fixture_inputs(&h_cases)
+        };
+        assert_eq!(a.inner_hash().full(), b.inner_hash().full(),
+            "reordering --data NAME=PATH flags must NOT change the \
+             cache key — that's presentation, not content");
     }
 
     // ── seed_params_from_init_method: Phase 3 → Phase 2 bridge ────────

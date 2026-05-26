@@ -26,7 +26,6 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
     let _eval_stats_guard = crate::util::EvalStatsReportGuard::start();  // gh#audit-H5
     sim::eval_stats::set_allow_degenerate_rates(a.inference.allow_degenerate_rates);  // gh#audit-C6
     let ir_path = a.model.to_string_lossy().into_owned();
-    let data_path = a.data.to_string_lossy().into_owned();
     let n_particles = a.inference.particles;
     let dt = a.inference.dt;
     let seed = a.inference.seed;
@@ -83,6 +82,49 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         .unwrap_or_else(|e| { eprintln!("compile error: {:?}", e); std::process::exit(1); });
     let params = compiled.default_params.clone();
 
+    // ── Resolve --data flags (gh#90) ─────────────────────────────────
+    //
+    // Polymorphic `--data` mirrors the existing `--table NAME=FILE`
+    // pattern. Two forms: `--data PATH` (single-stream) and
+    // `--data NAME=PATH` (repeatable, multi-stream). The resolver
+    // returns one (stream_name, path) pair per bound stream.
+    //
+    // fit-toml fallback: when no --data flags supplied AND --fit was,
+    // pull the multi-stream binding from the toml's
+    // `[data.observations]` block. CLI flags always win; we emit an
+    // info line if both forms were supplied.
+    let model_obs_names: Vec<String> = model.observations.iter()
+        .map(|o| o.name.clone()).collect();
+    let cli_data_specs: Vec<crate::args::types::DataSpec> = a.data.clone();
+    let bound_streams: Vec<(String, std::path::PathBuf)> = if cli_data_specs.is_empty() {
+        // No CLI --data. Try the fit-toml fallback.
+        if let Some(fit_path) = a.fit.as_ref() {
+            load_data_observations_from_fit_toml(fit_path, &model_obs_names)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: --fit toml fallback for --data: {}", e);
+                    std::process::exit(1);
+                })
+        } else {
+            eprintln!("error: --data is required. Use `--data PATH` for a \
+                single-stream model, `--data NAME=PATH` (repeatable) for a \
+                multi-stream model, or `--fit FOO.toml` with a \
+                [data.observations] section.");
+            std::process::exit(1);
+        }
+    } else {
+        if a.fit.is_some() {
+            eprintln!("pfilter: --data on CLI overrides --fit toml [data.observations]");
+        }
+        crate::util::resolve_data_specs(&cli_data_specs, &model_obs_names, obs_name.as_deref())
+            .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+    };
+
+    if bound_streams.is_empty() {
+        eprintln!("error: zero streams resolved from --data / --fit toml. \
+                   pfilter requires at least one observation stream.");
+        std::process::exit(1);
+    }
+
     // Load data — route the time column through the calendar-time boundary
     // translator (numeric or dated, per --time-format + the model origin).
     let time_opts = TimeOpts {
@@ -92,44 +134,103 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         t_start: compiled.model.simulation.t_start,
         format: a.inference.time_format,
     };
-    let observations = load_data_tsv(&data_path, &time_opts)
-        .unwrap_or_else(|e| { eprintln!("error loading data: {}", e); std::process::exit(1); });
 
-    eprintln!("pfilter: {} observations, {} particles, dt={}, seed={}",
-        observations.len(), n_particles, dt, seed);
-
-    // Find observation model from the IR.
-    // Im22 in 2026-04-19 inference review batch 3: pfilter is single-
-    // stream only — the runtime's MultiStreamObsModel supports
-    // joint observation across multiple streams, but this CLI
-    // driver scores exactly one `[observations.NAME]` block per
-    // invocation. Use `camdl fit run` (PGAS/PMMH stages) for
-    // multi-stream joint inference.
-    let obs_model_ir = if let Some(ref name) = obs_name {
-        model.observations.iter().find(|o| o.name == *name)
-            .cloned()
-            .unwrap_or_else(|| {
-                eprintln!("error: no observation block '{}'. Available: {}",
-                    name, model.observations.iter().map(|o| o.name.as_str()).collect::<Vec<_>>().join(", "));
+    // Build per-stream Observation vectors. For each bound stream
+    // try the column-named loader first (multi-stream wide TSV),
+    // fall back to the 2-col TSV loader when there's a single
+    // stream (preserves the legacy single-stream `time,value`
+    // schema). For multi-stream, every column must be named.
+    let n_streams = bound_streams.len();
+    let mut per_stream_obs: Vec<Vec<Observation>> = Vec::with_capacity(n_streams);
+    for (sname, spath) in &bound_streams {
+        let path_str = spath.to_string_lossy().into_owned();
+        let result = if n_streams == 1 {
+            load_data_tsv_column(&path_str, sname, &time_opts)
+                .or_else(|_| load_data_tsv(&path_str, &time_opts))
+        } else {
+            load_data_tsv_column(&path_str, sname, &time_opts)
+        };
+        match result {
+            Ok(obs) => per_stream_obs.push(obs),
+            Err(e) => {
+                eprintln!("error: cannot load data column '{}' from {}: {}",
+                    sname, path_str, e);
                 std::process::exit(1);
-            })
-    } else if model.observations.len() == 1 {
-        model.observations[0].clone()
-    } else if !model.observations.is_empty() {
-        eprintln!("error: model has {} observation blocks. Use --obs NAME to select one:", model.observations.len());
-        for o in &model.observations { eprintln!("  {}", o.name); }
-        std::process::exit(1);
-    } else {
-        eprintln!("error: model has no observations block. Cannot run pfilter without an observation model.");
-        std::process::exit(1);
-    };
+            }
+        }
+    }
 
-    // Build the projection. An explicit `--flow NAME` overrides the obs
-    // model's projection (forces incidence over the named transition);
-    // otherwise the projection comes from the obs model's `projection:`
-    // field — incidence, prevalence, or a DerivedExpr snapshot.
-    let projection: sim::inference::multi_stream_obs::StreamProjection =
+    // Validate every stream shares the same obs_times schedule.
+    {
+        let first_times: Vec<f64> = per_stream_obs[0].iter().map(|o| o.time).collect();
+        for (i, obs) in per_stream_obs.iter().enumerate().skip(1) {
+            let times: Vec<f64> = obs.iter().map(|o| o.time).collect();
+            if times.len() != first_times.len()
+                || times.iter().zip(&first_times).any(|(a, b)| (a - b).abs() > 1e-9)
+            {
+                eprintln!(
+                    "error: observation times for stream '{}' differ from \
+                     stream '{}'. All streams must share identical observation \
+                     times.",
+                    bound_streams[i].0, bound_streams[0].0);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Canonical observations: first stream's vector. Downstream
+    // single-stream code paths (trace, prequential, save_filtering,
+    // save_paths, save_final_state) consume `obs.time` and
+    // `obs.value`; for multi-stream the `.value` is the first
+    // stream's, which is fine for trace timestamps and the
+    // single-loglik scalar output (which sums across streams).
+    let observations = per_stream_obs[0].clone();
+
+    eprintln!("pfilter: {} observations × {} streams, {} particles, dt={}, seed={}",
+        observations.len(), n_streams, n_particles, dt, seed);
+    if n_streams > 1 {
+        eprintln!("  streams: {}", bound_streams.iter()
+            .map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "));
+    }
+
+    // ── Resolve IR observation models for each bound stream ──────────
+    //
+    // Each bound stream resolves to one IR observation block by exact
+    // name match. Family-root expansion already happened in the
+    // resolver. For the single-stream + --flow override path we
+    // additionally rewrite the projection to a flow-sum below.
+    let mut bound_ir: Vec<ir::observation::ObservationModel> =
+        Vec::with_capacity(n_streams);
+    for (sname, _) in &bound_streams {
+        match model.observations.iter().find(|o| &o.name == sname) {
+            Some(o) => bound_ir.push(o.clone()),
+            None => {
+                eprintln!("error: bound stream '{}' has no matching IR \
+                    observation block (the resolver should have caught \
+                    this; this is a bug). Available: {}", sname,
+                    model.observations.iter().map(|o| o.name.as_str())
+                        .collect::<Vec<_>>().join(", "));
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // --flow override: only valid for single-stream pfilter. Building
+    // a flow override for a multi-stream invocation would silently
+    // overwrite each stream's per-block projection with the same flow
+    // sum, which is rarely what the user wants.
+    if n_streams > 1 && flow_name.is_some() {
+        eprintln!(
+            "error: --flow <NAME> is incompatible with multi-stream --data \
+             ({} streams bound). --flow rewrites a single stream's \
+             projection; for multi-stream pfilter, each stream uses its \
+             own IR projection.", n_streams);
+        std::process::exit(1);
+    }
+
+    let projections: Vec<sim::inference::multi_stream_obs::StreamProjection> =
         if let Some(ref name) = flow_name {
+            // Single-stream path with --flow override.
             let indices: Vec<usize> = model.transitions.iter().enumerate()
                 .filter(|(_, tr)| tr.name == *name || tr.name.starts_with(&format!("{}_", name)))
                 .map(|(i, _)| i)
@@ -140,41 +241,56 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
                 std::process::exit(1);
             }
             eprintln!("pfilter: --flow override → incidence({}) ({} transitions)", name, indices.len());
-            sim::inference::multi_stream_obs::StreamProjection::FlowSum(indices)
+            vec![sim::inference::multi_stream_obs::StreamProjection::FlowSum(indices)]
         } else {
-            sim::inference::multi_stream_obs::StreamProjection::from_ir(
-                &obs_model_ir.projection, &compiled, &obs_model_ir.name,
-            ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+            bound_ir.iter().map(|o| {
+                sim::inference::multi_stream_obs::StreamProjection::from_ir(
+                    &o.projection, &compiled, &o.name,
+                ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+            }).collect()
         };
 
-    eprintln!("pfilter: obs_model={}, likelihood={}", obs_model_ir.name,
-        match &obs_model_ir.likelihood {
-            ir::observation::Likelihood::NegBinomial(_) => "neg_binomial",
-            ir::observation::Likelihood::Normal(_) => "normal",
-            ir::observation::Likelihood::Poisson(_) => "poisson",
-            ir::observation::Likelihood::Binomial(_) => "binomial",
+    eprintln!("pfilter: bound streams: {}", bound_ir.iter()
+        .map(|o| format!("{}({})", o.name, match &o.likelihood {
+            ir::observation::Likelihood::NegBinomial(_)  => "neg_binomial",
+            ir::observation::Likelihood::Normal(_)       => "normal",
+            ir::observation::Likelihood::Poisson(_)      => "poisson",
+            ir::observation::Likelihood::Binomial(_)     => "binomial",
             ir::observation::Likelihood::BetaBinomial(_) => "beta_binomial",
-            ir::observation::Likelihood::Bernoulli(_) => "bernoulli",
-        });
+            ir::observation::Likelihood::Bernoulli(_)    => "bernoulli",
+        })).collect::<Vec<_>>().join(", "));
+
+    // gh#90: emit unbound-streams warning if a multi-block model
+    // is only partially covered by the resolved bindings.
+    {
+        let all_names: Vec<String> = model.observations.iter()
+            .map(|o| o.name.clone()).collect();
+        let bound_names: Vec<String> = bound_streams.iter()
+            .map(|(n, _)| n.clone()).collect();
+        if let Some(w) = crate::util::format_unbound_streams_warning(
+            "pfilter", &all_names, &bound_names,
+        ) {
+            eprint!("{}", w);
+        }
+    }
 
     // Build process + observation model via traits
     let compiled = std::sync::Arc::new(compiled);
     let process = ChainBinomialProcess::new(compiled.clone(), dt);
 
     let obs_times: Vec<f64> = observations.iter().map(|o| o.time).collect();
-    let obs_values: Vec<f64> = observations.iter().map(|o| o.value).collect();
-    let obs_model = MultiStreamObsModel::new(
-        vec![StreamSpec {
+    let stream_specs: Vec<StreamSpec> = bound_ir.iter().zip(projections.into_iter())
+        .zip(per_stream_obs.iter()).map(|((o, projection), stream_obs)| StreamSpec {
             projection,
-            ir_model: obs_model_ir.clone(),
-            observations: obs_values,
-            obs_times,
-        }],
-        compiled.clone(),
-    ).unwrap_or_else(|e| {
-        eprintln!("error: observation model construction failed: {:?}", e);
-        std::process::exit(1);
-    });
+            ir_model: o.clone(),
+            observations: stream_obs.iter().map(|x| x.value).collect(),
+            obs_times: obs_times.clone(),
+        }).collect();
+    let obs_model = MultiStreamObsModel::new(stream_specs, compiled.clone())
+        .unwrap_or_else(|e| {
+            eprintln!("error: observation model construction failed: {:?}", e);
+            std::process::exit(1);
+        });
 
     // Record ancestry when either --save-paths or --save-filtering is
     // active. Both flags consume the same per-step snapshot data; the
@@ -392,6 +508,32 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
 }
 
 use crate::caltime_load::{check_substeps_and_grid, convert_time_column, TimeFormat, TimeOpts};
+
+/// gh#90: fit-toml fallback for `camdl pfilter --fit fit.toml` (no CLI
+/// `--data` flags). Reads `[data]` from the toml and returns a list of
+/// (stream_name, path) bindings — same shape `resolve_data_specs`
+/// produces, so downstream code is uniform.
+pub fn load_data_observations_from_fit_toml(
+    fit_path: &std::path::Path,
+    model_obs_names: &[String],
+) -> Result<Vec<(String, std::path::PathBuf)>, String> {
+    let path_str = fit_path.to_string_lossy().into_owned();
+    let fit_cfg = crate::fit::config_v2::FitConfigV2::load(&path_str)
+        .map_err(|e| format!("failed to load --fit toml '{}': {}", path_str, e))?;
+    let data_spec = fit_cfg.data_spec()?;
+    let effective = data_spec.effective_observations(model_obs_names)?;
+    if effective.is_empty() {
+        return Err(format!(
+            "--fit toml '{}' [data] resolves to zero observation streams.",
+            path_str));
+    }
+    // Sort by name for deterministic ordering (matches fit/runner.rs).
+    let mut entries: Vec<(String, std::path::PathBuf)> = effective.iter()
+        .map(|(k, v)| (k.clone(), std::path::PathBuf::from(v)))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
 
 /// Load observation data from a TSV file (first value column), routing the
 /// time column through the calendar-time boundary translator (numeric or

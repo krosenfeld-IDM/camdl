@@ -211,8 +211,12 @@ fn profile_multi_stream_model_requires_explicit_obs() {
     assert!(!output.status.success(),
         "profile must fail without --obs on multi-stream model");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Pass `--obs"),
+    // gh#90: error now actionable — names both the --data NAME=PATH
+    // and --data PATH --obs NAME paths the user can take.
+    assert!(stderr.contains("--obs"),
         "error must guide the user to pass --obs: {}", stderr);
+    assert!(stderr.contains("--data NAME=PATH"),
+        "error must suggest --data NAME=PATH multi-stream form: {}", stderr);
     assert!(stderr.contains("cases_p1"),
         "error must list at least one available stream: {}", stderr);
 }
