@@ -110,7 +110,7 @@ ability to evaluate transition densities — currently only the chain-binomial
 ### The recommended workflow
 
 ```
-IF2 (scout → refine) → PGAS (--starts-from refine/)
+IF2 (scout → refine) → PGAS ([stages.pgas] init = "from_mle", init_mle = "refine")
 ```
 
 IF2 finds the right basin quickly (global exploration via many particles). PGAS
@@ -453,7 +453,7 @@ Run multiple independent IF2 chains from different random seeds to detect
 multimodality and assess convergence:
 
 ```bash
-camdl if2 model.camdl --params p.toml --data cases.tsv \
+camdl if2 model.camdl --init from_params --params p.toml --data cases.tsv \
     --chains 4 --rw-sd "R0=5,gamma=0.01" \
     --particles 1000 --iterations 50 --seed 42
 ```
@@ -527,7 +527,7 @@ identifiability, confidence intervals, and parameter correlations.
 ### 1D profile
 
 ```bash
-camdl profile model.camdl --params p.toml --data cases.tsv \
+camdl profile model.camdl --init from_params --params p.toml --data cases.tsv \
     --focal R0 --grid "10,20,30,40,50,60,70,80" \
     --rw-sd "sigma=0.01,gamma=0.01" \
     --particles 500 --iterations 30 --starts 3 --parallel 8
@@ -543,7 +543,7 @@ values).
 ### 2D profile
 
 ```bash
-camdl profile model.camdl --params p.toml --data cases.tsv \
+camdl profile model.camdl --init from_params --params p.toml --data cases.tsv \
     --focal alpha,gamma \
     --grid-alpha "0.85,0.90,0.95,0.99" \
     --grid-gamma "0.06,0.08,0.10,0.12" \
@@ -651,19 +651,73 @@ camdl profile model.camdl --data cases.tsv \
 camdl fit run fits/synth.toml --seed 0 --stage posterior
 ```
 
-**Precedence rules** when `--params`, `--fit`, `--fixed`, and the fit
-toml's `[fixed]` block overlap (profile-specific):
+**Precedence rules** for parameter values (the unified chain shipped
+in the 2026-05-25 CLI UX revision; see
+[`docs/camdl-run-spec.md §1.3`](camdl-run-spec.md) for the
+authoritative tier list and
+[`docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`](dev/proposals/2026-05-25-cli-init-and-params-ux.md)
+§"Precedence (last wins)" for the design rationale). Each tier
+overrides the tier above it:
 
-- `--params` carries values only. When both `--params` and `--fit`
-  supply a starting value for the same parameter, `--params` wins.
-  Priors and bounds always come from `--fit` (or the model IR).
-- The CLI `--fixed` flag wins over the fit toml's `[fixed]` block on
-  collision (the CLI is the per-invocation override; the toml is the
-  artifact's default).
-- The focal swept parameter is always removed from the estimated set,
-  even when it appears in the fit toml's `[estimate]`. Listing the
-  focal parameter in `--fixed` (or in the fit toml's `[fixed]`) is a
-  hard error — a parameter cannot be simultaneously swept and fixed.
+1. **Model parameter default.** The value declared in the `.camdl`
+   source.
+2. **`fit.toml` `[fixed]` block.** When `--fit` is in scope, every
+   key in `[fixed]` overrides the model default.
+3. **`--fixed-file <toml>`** (repeatable). A flat parameter TOML;
+   top-level keys are parameter names. Layered in declaration
+   order — later files override earlier ones.
+4. **Scenario preset** (`--scenario NAME` or composed
+   `--enable`/`--disable`). The active scenario's `params.set` /
+   `params.scale` directives override everything above. *Scenarios
+   travel with the model and beat user-supplied params files by
+   design — choosing a scenario is choosing the model author's
+   documented bundle.*
+5. **`--fixed NAME=VALUE`** (repeatable, highest). The
+   per-invocation override; always wins. Use this for "I want to
+   change one value for this one run."
+
+The legacy `--params` and `--param` flags on inference subcommands
+(profile, if2, fit run, survey) were removed in the same revision.
+Their replacements are:
+- `--fixed-file <toml>` for the "load many values from a file" case.
+- `--fixed NAME=VALUE` for the "change one value" case.
+- `--init from_params --params <toml>` (a *companion* of `--init`,
+  not a top-level flag) for the *warm-start chain origin* case —
+  when the file is a starting point for inference, not a pin.
+
+`--fixed`/`--fixed-file` on inference subcommands also removes the
+listed parameter from the `[estimate]` set if it was there — so
+`--fixed gamma=0.1 --sweep tau=lin(-35,-1,30)` is the canonical
+slice-while-holding-gamma pattern. The kick-out is announced on
+stderr (one line per parameter) so the override is never silent.
+
+**Scenario-override visibility.** When a `--fixed-file` or
+`--fixed NAME=VALUE` value overrides a value that the active
+scenario *also* set, the resolver emits a `ScenarioOverridden`
+warning to stderr at resolve time and records both values into
+`run.json`'s `parameters_provenance` block:
+
+```json
+"beta": {
+  "value": 0.5,
+  "source": "fixed_cli",
+  "role": "fixed",
+  "overrode_scenario": {
+    "scenario": "worst_case",
+    "scenario_value": 0.3
+  }
+}
+```
+
+CLI override of a scenario value is a legitimate quick-test
+workflow; the warning + provenance pair ensure six-months-later
+auditing of which value actually ran isn't blocked by archaeology.
+
+**Profile focal parameters.** The focal swept parameter(s) are
+always removed from the estimated set, even when they appear in the
+fit toml's `[estimate]`. Listing a focal parameter in
+`--fixed`/`--fixed-file` (or in the fit toml's `[fixed]`) is a
+hard error — a parameter cannot be simultaneously swept and pinned.
 
 **Provenance.** Both subcommands write per-parameter `resolved_priors`
 into `run.json`:
@@ -788,14 +842,16 @@ variance, so NUTS takes appropriately-sized steps in every direction.
 ### Running PGAS
 
 ```bash
-# From IF2 starting point
-camdl fit pgas fit.toml --starts-from validate/
+# From IF2 starting point: declare in fit.toml as
+#   [stages.pgas] init = "from_mle", init_mle = "validate"
+camdl fit run fit.toml --stage pgas
 
-# From random starts (overdispersed initialization)
-camdl fit pgas fit.toml --seed 42
+# From random starts (overdispersed initialization):
+#   [stages.pgas] init = "lhs"  (or omit; lhs is the default)
+camdl fit run fit.toml --stage pgas --seed 42
 
 # Force MH-within-Gibbs instead of NUTS
-camdl fit pgas fit.toml --no-nuts
+camdl fit run fit.toml --stage pgas --no-nuts
 ```
 
 Configuration in `fit.toml`:
@@ -950,10 +1006,10 @@ fit.toml + model.camdl + data.tsv
     │
     └── camdl fit run fit.toml
             <fit_dir>/real/fit_<seed>/
-              ├── scout/    fit_state.toml      (stage, starts_from = random)
-              ├── refine/   mle_params.toml     (stage, starts_from = scout)
-              ├── validate/ mle_params.toml     (stage, starts_from = refine)
-              └── pgas/     chain_N/trace.tsv   (stage, starts_from = refine)
+              ├── scout/    fit_state.toml      (stage, init = "lhs")
+              ├── refine/   mle_params.toml     (stage, init = "from_mle", init_mle = "scout")
+              ├── validate/ mle_params.toml     (stage, init = "from_mle", init_mle = "refine")
+              └── pgas/     chain_N/trace.tsv   (stage, init = "from_mle", init_mle = "refine")
 ```
 
 > **v2 layout note.** Stage directories live under
@@ -965,8 +1021,9 @@ fit.toml + model.camdl + data.tsv
 > diagrams that show stages directly under `<fit_dir>/` are stale.
 
 Each named block under `[stages.NAME]` in `fit.toml` chains via
-its `starts_from` field. The default set is scout → refine →
-validate (+ pgas), but users can define any sequence.
+the `init = "from_mle"` + `init_mle = "<prior-stage>"` pair. The
+default set is scout → refine → validate (+ pgas), but users can
+define any sequence.
 
 **Scout** (8 chains, 200 particles, no cooling): random starts across the
 parameter space, MAD-based auto-calibration of rw_sd. Identifies the likelihood
@@ -988,7 +1045,9 @@ hashing that feeds directly into `camdl simulate` and `camdl batch run`.
 camdl fit run    fit.toml --seed 1
 
 # Re-run a single stage from a prior stage's output
-camdl fit run    fit.toml --stage refine --starts-from fit/he2010/real/fit_1/scout/
+#   (configured in fit.toml as `[stages.refine] init = "from_mle",
+#    init_mle = "fit/he2010/real/fit_1/scout/"`)
+camdl fit run    fit.toml --stage refine
 camdl fit run    fit.toml --stage validate
 camdl fit status fit.toml
 ```
@@ -1000,7 +1059,7 @@ omit it (and the model file doesn't already declare a value for the
 parameter via `parameters { X : rate = 0.3 }` or a scenario), the
 runner draws a single Transform-aware uniform value within the
 parameter's bounds and uses that as the base point. From there the
-selected `init_method` perturbs per-chain as usual.
+selected `init` mode perturbs per-chain as usual.
 
 The draw is:
 
@@ -1022,20 +1081,20 @@ unspecified parameters.
 This replaces an earlier bounds-midpoint heuristic that gave the
 same point at every seed and ignored the parameter's transform.
 
-### Per-chain init: `init_method`
+### Per-chain init: `init`
 
 How chain (or per-cell) starting points are drawn. Set on each
-stage in `fit.toml` (or override per-stage on the CLI with
-`--init`); also available as `--init` on `camdl profile` for
-per-cell starts. Honoured by **IF2**, **PGAS**, **PMMH**, **NLopt**
-(`nl_sbplx`, `nl_bobyqa`), and **profile**.
+stage in `fit.toml` via the `init = "<mode>"` key (or override
+per-stage on the CLI with `--init`); also available as `--init` on
+`camdl profile` for per-cell starts. Honoured by **IF2**, **PGAS**,
+**PMMH**, **NLopt** (`nl_sbplx`, `nl_bobyqa`), and **profile**.
 
 ```toml
 [stages.scout]
-algorithm   = "if2"
-backend     = "chain_binomial"
-chains      = 16
-init_method = "lhs"            # this is now the default; shown for clarity
+algorithm = "if2"
+backend   = "chain_binomial"
+chains    = 16
+init      = "lhs"            # this is now the default; shown for clarity
 ```
 
 | Mode | Behaviour | When to use |
@@ -1044,9 +1103,9 @@ init_method = "lhs"            # this is now the default; shown for clarity
 | `uniform` | Per-chain uniform random within natural-scale bounds. Chain 0 keeps the seeded start. | Legacy mode. Equivalent to LHS for `Logit`/`None` parameters, but worse for `Log`-typed parameters at low chain count (clumps in linear space). Kept for reproducibility of pre-LHS results. |
 | `single` | Every chain at the seeded `[estimate].start` (or its `Transform`-aware uniform fallback when `start` is omitted). Chains differ only by per-chain RNG. | See "When `single` is the right choice" below. |
 
-When a stage uses `starts_from = "<prior>"`, every chain starts from
-the prior stage's MLE regardless of `init_method` — that's the
-intent of the handoff.
+When a stage uses `init = "from_mle"` + `init_mle = "<prior>"`, every
+chain starts from the prior stage's MLE — that's the intent of the
+handoff.
 
 **Why LHS is the default.** With single-point starts (or clumpy
 uniform starts at low chain counts), chains find one basin and miss
@@ -1056,7 +1115,7 @@ typhoid stratified scout, 30 LHS chains beat 8 uniform-random
 chains by ~80,000 nats, holding everything else equal.
 
 **When `single` is the right choice.** Four legitimate cases:
-1. **Refine stages with `starts_from = "<prior>"`** — all chains start
+1. **Refine stages with `init = "from_mle"` + `init_mle = "<prior>"`** — all chains start
    from the prior stage's MLE anyway; `single` is redundant but harmless.
 2. **Single-chain runs (`chains = 1`)** — there's no per-chain spread to
    draw, so the three modes collapse to the same draw.
@@ -1070,7 +1129,7 @@ chains by ~80,000 nats, holding everything else equal.
    known seeded point.
 
 **Per-stage independence.** Scout and refine can use different
-`init_method` (LHS for basin-finding in scout, `single` in refine
+`init` modes (LHS for basin-finding in scout, `single` in refine
 to converge from scout's MLE). The CLI `--init` flag requires
 `--stage` for the same reason — it's stage-scoped.
 
