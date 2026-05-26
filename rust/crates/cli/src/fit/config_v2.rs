@@ -528,16 +528,11 @@ pub enum EstimatePriorSpec {
     },
 }
 
-impl EstimatePriorSpec {
-    /// `true` iff this is the explicit flat opt-in (gh#75). Used by
-    /// the `--draws prior` path to reject flat priors (no finite
-    /// distribution to sample from) and by `validate_priors_present`
-    /// to distinguish the explicit-flat path from the missing-prior
-    /// path in error messages.
-    pub fn is_flat(&self) -> bool {
-        matches!(self, EstimatePriorSpec::Flat { .. })
-    }
-}
+// (Previously: `impl EstimatePriorSpec { pub fn is_flat(&self) }` —
+// removed in gh#86 when `--draws prior` switched to the unified
+// precedence resolver, which handles the explicit-flat case via
+// `PriorSource::FlatExplicit`. Callers that need the bool predicate
+// inline can use `matches!(spec, EstimatePriorSpec::Flat { .. })`.)
 
 // ─── Fixed ──────────────────────────────────────────────────────────────────
 
@@ -2508,7 +2503,7 @@ sweeps = 5000
         // And the typed spec correctly identifies the variant.
         let beta_spec = config.estimate.get("beta").expect("beta in estimate");
         let prior = beta_spec.prior.as_ref().expect("prior is set");
-        assert!(prior.is_flat(),
+        assert!(matches!(prior, EstimatePriorSpec::Flat { .. }),
             "beta's prior should be the explicit-flat variant, got {:?}", prior);
     }
 
@@ -2546,11 +2541,11 @@ sweeps = 5000
         "#).unwrap();
 
         let beta_prior = config.estimate.get("beta").unwrap().prior.as_ref().unwrap();
-        assert!(beta_prior.is_flat(),
+        assert!(matches!(beta_prior, EstimatePriorSpec::Flat { .. }),
             "beta with `prior = {{ flat = {{}} }}` should deserialize to Flat, \
              got {:?}", beta_prior);
         let gamma_prior = config.estimate.get("gamma").unwrap().prior.as_ref().unwrap();
-        assert!(!gamma_prior.is_flat(),
+        assert!(!matches!(gamma_prior, EstimatePriorSpec::Flat { .. }),
             "gamma with `prior = {{ log_normal = ... }}` should NOT be Flat, \
              got {:?}", gamma_prior);
         // gamma's inner PriorDist is LogNormal.

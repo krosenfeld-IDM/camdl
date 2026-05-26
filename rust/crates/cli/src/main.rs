@@ -739,8 +739,16 @@ fn run_simulate(a: &args::SimulateArgs) {
             });
             match fit_path_for_draws.as_ref() {
                 Some(fit_path) => {
-                    // fit.toml prior source (overrides or supplements model priors)
-                    generate_prior_draws(fit_path, n, seed).unwrap_or_else(|e| {
+                    // fit.toml prior source (overrides or supplements
+                    // model priors). gh#86: the model IR is the
+                    // tier-2 fallback when the fit toml omits a prior
+                    // for a parameter that declares `~ <dist>` in the
+                    // model file.
+                    let (draws_model, _) = util::load_model(&ir_path).unwrap_or_else(|e| {
+                        eprintln!("error loading model for --draws prior: {}", e);
+                        std::process::exit(1);
+                    });
+                    generate_prior_draws(fit_path, n, seed, &draws_model).unwrap_or_else(|e| {
                         eprintln!("error: {}", e);
                         std::process::exit(1);
                     })
@@ -1446,86 +1454,119 @@ fn generate_uniform_draws(
 
 /// Generate N draws from declared priors in a fit.toml.
 /// Each draw is a complete parameter vector (estimated from priors + fixed).
+///
+/// gh#86: resolves priors through the three-tier precedence chain
+/// (fit_toml > model_ir > flat) shared with `camdl fit run` (gh#75) and
+/// `camdl profile --algorithm pmmh` (gh#73). This is the load-bearing
+/// change: previously the fit-toml side was the only consulted source,
+/// so a model declaring `~ <dist>` on every parameter would still be
+/// rejected if the fit toml's [estimate] blocks omitted `prior = { ... }`.
+/// Now the model-IR `~` priors satisfy the requirement.
+///
+/// `model` is the simulate-flow's already-loaded IR. Threading it through
+/// is what enables the IR-tier fallback — without it, this function would
+/// be dependent on `FitConfigV2`'s `[model] camdl = …` path and have to
+/// re-load. The caller passes the same model used for simulation, so the
+/// priors we sample from match the model that runs.
+///
+/// Sampling reuses the same `sample_from_prior_raw` helper as
+/// `generate_prior_draws_from_ir` for distribution consistency across
+/// the two `--draws prior` modes. The deviation from the previous
+/// fit-toml-only implementation: the Exponential variant previously
+/// used `rand_distr::Exp::new(rate)` (a Ziggurat sampler) while
+/// `sample_from_prior_raw` uses inverse-CDF `-ln(U)/rate`. Both are
+/// statistically Exp(rate) with E[X] = 1/rate and Var = 1/rate² — only
+/// the RNG-byte trajectory changes. Verified by the
+/// `sample_from_prior_raw_matches_expected_moments` test, which asserts
+/// the moment-matching at N=50k.
 fn generate_prior_draws(
     fit_path: &str,
     n: usize,
     seed: u64,
+    model: &ir::Model,
 ) -> Result<Vec<HashMap<String, f64>>, String> {
     use fit::config_v2::{FitConfigV2, EstimatePriorSpec};
-    use ir::parameter::PriorDist;
+    use crate::fit::priors_precedence::{
+        resolve_priors_with_precedence, PriorSource,
+    };
 
     let config = FitConfigV2::load(fit_path)?;
     let fixed = config.fixed.resolve()?;
 
-    // Check all estimated params have priors. `prior = { flat = {} }`
-    // (gh#75) is not draw-able — an improper uniform has no finite
-    // sampling distribution — so reject it here with the same
-    // remediation hint as the no-prior case.
-    let missing: Vec<&str> = config.estimate.iter()
-        .filter(|(_, spec)| spec.prior.is_none() || spec.prior.as_ref().map_or(false, |s| s.is_flat()))
-        .map(|(name, _)| name.as_str())
+    // Three-tier resolution: fit_toml > model_ir > flat. Walks every
+    // estimated param in declaration order.
+    let names: Vec<String> = config.estimate.keys().cloned().collect();
+    let resolved = resolve_priors_with_precedence(&names, &config.estimate, model);
+
+    // Identify params with no usable prior in either source. The two
+    // flat cases are both unusable for sampling — there's no finite
+    // distribution to draw from — but they get distinguishable error
+    // text because the remediation differs:
+    //   - FlatFallback: neither tier supplied a prior; user must add one
+    //     to the model file OR the fit toml.
+    //   - FlatExplicit: user wrote `prior = { flat = {} }`; the only
+    //     remediation is to replace it with a proper distribution.
+    let unusable: Vec<&str> = resolved.iter()
+        .filter(|r| matches!(r.source,
+            PriorSource::FlatFallback | PriorSource::FlatExplicit))
+        .map(|r| r.param.as_str())
         .collect();
-    if !missing.is_empty() {
-        return Err(format!(
+    if !unusable.is_empty() {
+        // For each unusable param, find its source class for the message.
+        let has_explicit_flat = resolved.iter()
+            .any(|r| r.source == PriorSource::FlatExplicit);
+        let missing_list = unusable.join(", ");
+        let first = unusable[0];
+        let mut msg = format!(
             "--draws prior requires a proper (non-flat) prior on every \
              estimated parameter.\n  \
              Missing or flat priors: {}\n  \
-             Add prior = {{ <dist> = {{ ... }} }} to [estimate.{}] \
-             (e.g. `prior = {{ log_normal = {{ mu = 0, sigma = 1 }} }}`). \
-             `prior = {{ flat = {{}} }}` is rejected because there is no \
-             finite distribution to sample from.",
-            missing.join(", "), missing[0]
-        ));
+             To fix, either:\n    \
+             (i)  add `prior = {{ <dist> = {{ ... }} }}` to `[estimate.{}]` \
+                  in your fit.toml \
+                  (e.g. `prior = {{ log_normal = {{ mu = 0, sigma = 1 }} }}`), \
+                  OR\n    \
+             (ii) add a `~ <dist>(...)` declaration to parameter `{}` \
+                  in your .camdl model file.",
+            missing_list, first, first,
+        );
+        if has_explicit_flat {
+            msg.push_str(
+                "\n  Note: `prior = { flat = {} }` is rejected because there \
+                 is no finite distribution to sample from — flat is an \
+                 improper uniform with infinite support.");
+        }
+        return Err(msg);
     }
 
+    // Sampling. Each resolved entry corresponds to one param in `names`
+    // (and thus to one entry in `config.estimate`); to honour the
+    // precedence chain we need the original PriorDist (fit_toml ▸ ir),
+    // not the runtime `Prior`. Re-walk the precedence chain in the same
+    // order to extract the PriorDist used for sampling. The clamp uses
+    // the fit toml's `bounds` when present (preserving the existing
+    // behaviour for fit-toml-narrower-than-model bounds).
     let mut rng = sim::rng::StatefulRng::new(seed ^ SEED_MIX_PRIOR);
     let mut draws = Vec::with_capacity(n);
 
     for _ in 0..n {
         let mut row = HashMap::new();
         for (name, spec) in &config.estimate {
-            // Flat already rejected above; unwrap_or_else is unreachable.
-            let pd = match spec.prior.as_ref().unwrap() {
-                EstimatePriorSpec::Dist(pd) => pd,
-                EstimatePriorSpec::Flat { .. } => unreachable!(
-                    "flat priors rejected by the missing-priors check above"),
+            // Mirror `resolve_priors_with_precedence` to pick the PriorDist.
+            // The unusable check above guarantees we find a non-flat one.
+            let pd = match spec.prior.as_ref() {
+                Some(EstimatePriorSpec::Dist(pd)) => pd,
+                Some(EstimatePriorSpec::Flat { .. }) => unreachable!(
+                    "explicit flat priors rejected by the unusable check above"),
+                None => {
+                    let ir_param = model.parameters.iter()
+                        .find(|p| &p.name == name)
+                        .expect("unusable check guarantees presence");
+                    ir_param.prior.as_ref().expect(
+                        "unusable check guarantees a prior in either source")
+                }
             };
-            let value = match pd {
-                PriorDist::LogNormal(p) => {
-                    // z ~ N(mu, sigma), value = exp(z)
-                    let z = p.mu + p.sigma * rng.normal();
-                    z.exp()
-                }
-                PriorDist::Normal(p) => {
-                    p.mean + p.sd * rng.normal()
-                }
-                PriorDist::Beta(p) => {
-                    // Beta via ratio of Gammas: X/(X+Y) where X~Gamma(a), Y~Gamma(b)
-                    use rand::prelude::Distribution;
-                    let x = rand_distr::Gamma::new(p.alpha, 1.0).unwrap()
-                        .sample(rng.inner_mut());
-                    let y = rand_distr::Gamma::new(p.beta, 1.0).unwrap()
-                        .sample(rng.inner_mut());
-                    x / (x + y)
-                }
-                PriorDist::Uniform(p) => {
-                    p.lower + (p.upper - p.lower) * rng.uniform()
-                }
-                PriorDist::HalfNormal(p) => {
-                    (p.sigma * rng.normal()).abs()
-                }
-                PriorDist::Gamma(p) => {
-                    use rand::prelude::Distribution;
-                    rand_distr::Gamma::new(p.shape, 1.0 / p.rate).unwrap()
-                        .sample(rng.inner_mut())
-                }
-                PriorDist::Exponential(p) => {
-                    use rand::prelude::Distribution;
-                    rand_distr::Exp::new(p.rate).unwrap()
-                        .sample(rng.inner_mut())
-                }
-                PriorDist::Fixed(v) => *v,
-            };
+            let value = sample_from_prior_raw(pd, &mut rng);
             // Bounds-optional: clamp to fit.toml's [estimate.X].bounds
             // when present; otherwise pass the raw prior draw through
             // (the model file's parameters block bounds will catch
@@ -1542,8 +1583,16 @@ fn generate_prior_draws(
         draws.push(row);
     }
 
-    eprintln!("generated {} prior draws from {} ({} estimated + {} fixed params)",
-        n, fit_path, config.estimate.len(), fixed.len());
+    // Provenance: report how many came from each tier so users can
+    // verify the right source was consulted.
+    let n_fit_toml = resolved.iter()
+        .filter(|r| r.source == PriorSource::FitToml).count();
+    let n_model_ir = resolved.iter()
+        .filter(|r| r.source == PriorSource::ModelIr).count();
+    eprintln!(
+        "generated {} prior draws from {} ({} estimated [{} fit-toml + {} model-IR] + {} fixed params)",
+        n, fit_path, config.estimate.len(), n_fit_toml, n_model_ir, fixed.len()
+    );
     Ok(draws)
 }
 
@@ -2371,8 +2420,10 @@ mod tests {
     ///
     /// Only the surface that the function actually reads is filled in
     /// (model, estimate, fixed). `FitConfigV2::load` parses the toml
-    /// without running validate(), so a stage table is unnecessary for
-    /// the prior-draws code path.
+    /// without running validate(), but the parse step still enforces
+    /// the Stage enum's required fields — so we emit a syntactically
+    /// minimal IF2 stage. None of those values are read by the
+    /// prior-draws code path.
     fn write_fit_toml_for_prior_draws(
         dir: &std::path::Path,
         model_ir_path: &str,
@@ -2391,6 +2442,11 @@ camdl = "{model}"
 
 [stages.draw]
 algorithm = "if2"
+backend = "chain_binomial"
+chains = 1
+particles = 10
+iterations = 1
+cooling = 0.7
 "#,
             model = model_ir_path,
             estimate = estimate_block,
