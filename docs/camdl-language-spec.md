@@ -2984,7 +2984,6 @@ Options:
   --disable    NAME       disable an intervention
   --param      NAME=VALUE override a parameter value
   --param-vec  PREFIX=FILE override indexed params from a keyed TSV
-  --table      NAME=FILE  supply a runtime external() table
   --params     FILE.toml  load parameter values (repeatable, later overrides earlier)
 ```
 

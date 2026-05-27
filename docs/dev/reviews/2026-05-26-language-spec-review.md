@@ -4,10 +4,53 @@ date: 2026-05-26
 kind: language-spec review
 scope: docs/camdl-language-spec.md — normative design document audit
 reviewer: external / upstream
-verification: per-finding code+spec checks added 2026-05-26 (paste-the-receipt per CLAUDE.md). Each confirmed finding ends with a `Verification (2026-05-26)` block that records what we checked locally and any severity adjustment.
-verdict: 28 confirmed (some with severity adjustments after verification) / 1 definitively refuted (F2) / 2 sub-claims refuted (within F11 and F12 framing) — refuted items moved to the bottom of this file.
+verification: per-finding code+spec checks added 2026-05-26 (paste-the-receipt per CLAUDE.md). Each finding carries a `Verification` block that records what we checked locally, the multi-axis status label (see legend below), and any severity adjustment.
+verdict: |
+  Most findings confirmed. No fully refuted design findings against the
+  reviewed spec text. F2 (bare stratified) is implementation-protected at
+  the compiler but still a stale spec example. F11 and F12 sub-claims I
+  previously marked "refuted" were wrong — the IR example F11 cites IS in
+  the spec, and F12 is a prose-precision issue, not a refutation. The
+  cheap-batch fixes in commit 1a7ba112 are confirmed against the current
+  spec file (this branch's HEAD), not just claimed.
+status-legend: |
+  Each finding carries one of these labels:
+    confirmed-open                          — issue is in the spec; no fix landed
+    confirmed-code-protected-but-spec-stale — compiler/runtime rejects the
+                                              bad pattern, but the spec still
+                                              teaches it; the spec is the
+                                              contract, so the issue stands
+    resolved-in-commit                      — fixed in a named commit AND
+                                              verified line-cited against the
+                                              current spec file
+    needs-proposal                          — confirmed, but the fix is a
+                                              structural change deserving a
+                                              docs/dev/proposals/ doc
+    text-fix-pending                        — confirmed, spec-prose-only fix
+                                              that doesn't need a proposal
 followup-commits:
   - 1a7ba112 (cheap-batch spec edits: F7, F15-subclaim, F16, F17, F27, F29, F30)
+  - ab69bdbe (review restructure + F1 §1 spec rewrite)
+revision-note: |
+  This revision (2026-05-27) reflects upstream feedback on the earlier
+  assessment. Three corrections applied:
+    1. F2 moved out of "refuted" — implementation rejects bare stratified,
+       BUT the §10 coupling-sugar example still contains the sentence
+       "Progression and recovery are automatically replicated within each
+       stratum (default behavior when no coupling is declared)" at lines
+       3331-3333 of the current spec. The compiler's behavior does not
+       refute the spec contradiction.
+    2. F11 sub-claim restored to confirmed — the IR example
+       `Cond(Pop("I"), <rate_expr>, Const(0.0))` does appear in the spec
+       at line 1647. My earlier "exact phrase not found" claim was wrong
+       (used the wrong grep pattern).
+    3. F12 sub-claim reworded — the prose IS imprecise about whether
+       σ²_SE equals Var[G] or σ²/dt equals Var[G]. The reviewer's
+       "both cannot be true" framing was a fair complaint about
+       imprecision, not a math error. Not a refutation.
+  The reviewer's broader methodology point — "do not let implementation
+  behavior refute a normative spec inconsistency. For camdl, the spec is
+  the contract." — is the framing applied throughout this revision.
 ---
 
 # camdl Language Spec Review — 2026-05-26
@@ -97,7 +140,58 @@ Then enforce the boundary:
 > gone. Severity downgraded from Critical to Medium — it was always a
 > spec-prose issue, not a structural one.
 
-## 2. _(moved to refuted section — see bottom)_
+## 2. Bare stratified transition semantics contradict "no auto-localization"
+
+**Location** — §1, §5.1, §10, §23.3, §25–26
+
+**Category** — user footgun; bad abstraction; scientific correctness
+
+**Defect** — The spec says bare compartment names after stratification are global sums and that stoichiometry must fully specify all dimensions. But the coupling-sugar example uses:
+
+```camdl
+progression : E --> I @ sigma * E
+recovery    : I --> R @ gamma * I
+```
+
+and says these are "automatically replicated within each stratum." That is auto-localization.
+
+**Why it matters** — This is one of the most dangerous possible ambiguities. Does `recovery : I --> R` in an age × patch model mean one global transition, a compile error, or one recovery transition per age × patch cell? Those are three different epidemic models.
+
+**Fix** — Pick one rule and make it universal. The safer rule is:
+
+```text
+Bare stratified compartments are illegal in stoichiometry.
+```
+
+Then coupling/lifting must be explicit syntax, for example:
+
+```camdl
+lift[age, patch] {
+  progression : E --> I @ sigma * E
+  recovery    : I --> R @ gamma * I
+}
+```
+
+or the coupling sugar must be the only context where bare stratified stoichiometry is legal. Do not describe implicit replication as default behavior.
+
+**Severity** — Critical → **High** (spec/UX inconsistency rather than Critical runtime defect, since the compiler protects against the runtime hazard — but the spec is the user-facing contract)
+
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: confirmed-code-protected-but-spec-stale.**
+>
+> *Implementation side:* The OCaml compiler rejects bare stratified transitions in stoichiometry. Verified by writing a test model with `progression : E --> I @ sigma * E` (with `E` stratified by age) and running `camdl compile`:
+>
+> ```
+> error[E272]: compartment 'E' is stratified but used without indices in stoichiometry
+>   = hint: pick an expansion or index the transition: E_child, E_adult
+> ```
+>
+> *Spec side:* §10 coupling-sugar (lines 3331-3333 of the current spec) still contains the contradictory sentence:
+>
+> > "...Progression and recovery are automatically replicated within each stratum (default behavior when no coupling is declared)."
+>
+> A user copying this example would write code the compiler rejects; the spec teaches a pattern that doesn't work. The runtime hazard is gone but the documentation hazard is real, and the spec is the contract. **Earlier "refuted" verdict was wrong:** compiler protection does not refute a normative spec inconsistency.
+>
+> **Fix:** delete the "automatically replicated within each stratum" sentence in §10 (or introduce an explicit `lift[age] { ... }` syntax and gate the coupling-sugar example on it). The reviewer's proposed `lift[age, patch] { ... }` form is the clean shape if explicit lifting is added; otherwise the example needs to use fully-indexed transitions.
 
 ## 3. Real-valued compartments have no dimensional semantics
 
@@ -332,17 +426,32 @@ time    stream          observed    n_tested    ...
 Legacy `--flow` / `--obs-model` should be marked as low-level deprecated
 commands or removed.
 
-**Severity** — Critical → **High** (after verification)
+**Severity** — Critical → **High** (split status; see Verification)
 
-> **Verification (2026-05-26):** §21.5 (renumbered from §22.5) still documented
-> `--flow recovery --obs-model discretized_normal` in the worked examples. Grep
-> of current `rust/crates/cli/src/args/mod.rs` for these flags returns zero hits
-> — they were removed in the 2026-05-25 CLI UX revision. The bypass the reviewer
-> warned about no longer exists at the CLI surface; the spec text was stale and
-> was fixed in commit `1a7ba112` (cheap-batch). Severity downgraded from
-> Critical to High because the live failure mode is gone; the canonical
-> multi-stream data-file schema described by the reviewer is still missing from
-> the spec and remains a real open issue.
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: mixed.**
+>
+> *Implementation bypass:* **resolved-in-commit (independent of this review).**
+> Grep of current `rust/crates/cli/src/args/mod.rs` for `--flow` /
+> `--obs-model` returns zero hits — these flags were removed in the
+> 2026-05-25 CLI UX revision. The live failure mode the reviewer warned
+> about no longer exists.
+>
+> *Spec stale CLI text:* **resolved-in-commit `1a7ba112`.** The pfilter / if2
+> / profile examples in §21.5 used to show `--flow recovery --obs-model
+> discretized_normal`; the cheap-batch commit removed those flags from the
+> worked examples and added a paragraph saying the projection and likelihood
+> come from the model's `observations { ... }` block. Verified against
+> current spec: grep `'--flow' docs/camdl-language-spec.md` finds only the
+> "legacy `--flow` / `--obs-model` flags were removed" disclaimer text.
+>
+> *Canonical multi-stream observation data schema:* **confirmed-open.** The
+> spec still doesn't define the `time / stream / observed / n_tested / ...`
+> data file schema the reviewer described. Stream selection via `--stream
+> NAME` is documented in §21.5 but the file-format contract isn't. This is
+> the real remaining issue.
+>
+> Severity reflects the canonical-schema gap (High); the live-bypass and
+> stale-CLI-text concerns are both addressed.
 
 ## 8. Tables with repeated dimensions need axis names
 
@@ -512,13 +621,26 @@ it should become `Cond(Gt(Pop("I"), Const(0)), ...)`.
 
 **Severity** — Critical
 
-> **Verification (2026-05-26):** The `is_pulse` example exists at line 1575:
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: confirmed-open.**
+> The `is_pulse` example exists at line 1575:
 > `let is_pulse = (day_of_year > 250.0) * (day_of_year < 252.0)` — using
 > comparison results as numeric 0/1 multipliers. No Boolean type is defined.
-> Confirmed. The sub-claim about an IR example `Cond(Pop("I"), ...)` was not
-> located in current spec text (the exact phrase does not appear; possibly an
-> older draft) — that sub-claim is listed in the "Refuted sub-claims" section at
-> the bottom; the top-level finding stands.
+>
+> The IR sub-claim is also confirmed against the current spec. At line 1647:
+>
+> ```
+>   @ if I > 0 then beta * S * I / N else 0.0
+>
+>   This becomes `Cond(Pop("I"), <rate_expr>, Const(0.0))` in the IR.
+> ```
+>
+> The condition `I > 0` lowers to `Pop("I")` in the example, dropping the
+> `Gt(_, Const(0.0))` comparison wrapper entirely. The reviewer's recommended
+> form is `Cond(Gt(Pop("I"), Const(0.0)), <rate_expr>, Const(0.0))`. The
+> earlier assessment said the phrase wasn't in the spec — that was wrong
+> (the grep pattern I used was too literal and missed the actual line). Both
+> the broader F11 finding (no Boolean type) and the specific IR-example
+> sub-claim are confirmed.
 
 ## 12. Overdispersion is parameterized inconsistently
 
@@ -560,16 +682,24 @@ Multi-source reactions: backend-specific; unsupported unless exact law is define
 
 **Severity** — Critical
 
-> **Verification (2026-05-26):** §9.8 prose (line 1635): "σ²_SE, the variance of
-> the Gamma noise multiplier (which has mean 1)". §9.7 wrapper table (line
-> 1585): `Var = mean + mean² · σ² / dt`. The two are inconsistent on the literal
-> reading: if `Var[G] = σ²` per prose, then under Gamma-Poisson
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: confirmed-open
+> (text-fix-pending).** §9.8 prose (line 1635): "σ²_SE, the variance of the
+> Gamma noise multiplier (which has mean 1)". §9.7 wrapper table (line 1585):
+> `Var = mean + mean² · σ² / dt`. Under the literal reading these are
+> inconsistent: if `Var[G] = σ²` per prose, then under Gamma-Poisson
 > `Var[events] = mean + mean²·σ²` with no `/dt`; the table form requires
-> `Var[G] = σ²/dt`. The spec needs to pick one and say which. The reviewer's
-> "both cannot be true" framing is too binary (a careful read can reconcile them
-> by treating σ² as a _name_ and `σ²/dt` as the actual Var[G]) — that framing
-> sub-claim is in the "Refuted sub-claims" section below; the top-level
-> contradiction stands. Confirmed.
+> `Var[G] = σ²/dt`.
+>
+> The earlier assessment tried to reconcile these by treating `σ²` as a
+> *parameter name* and `σ²/dt` as the actual step-level Var[G]. That
+> reconciliation is mathematically possible but it is not what the prose
+> currently says — and the reviewer's complaint that the prose is wrong is
+> fair. **Earlier "sub-claim refuted" label was wrong.** Reframe as: the
+> intended formula is probably "σ²_SE is the per-unit-time overdispersion
+> parameter; on a step of length dt the Gamma multiplier has Var[G] = σ²_SE
+> / dt". Fix the §9.8 prose to say that explicitly. Not a refutation of any
+> sub-claim — it is a real wording-precision defect with statistical
+> consequences.
 
 ## 13. Events and interventions allow silent invalid state changes
 
@@ -750,10 +880,13 @@ Pick one form.
 
 **Severity** — High → **resolved**
 
-> **Verification (2026-05-26):** Confirmed — §7 had both forms; the OCaml parser
-> at `parser.mly:319` accepts only `name : KIND 'unit { … }`. Rewrote every
-> forcing example in §7 and §23 to the colon-block form in commit `1a7ba112`.
-> **Resolved.**
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: resolved-in-commit
+> `1a7ba112`, verified against current spec file.** §7 had both forms;
+> the OCaml parser at `parser.mly:319` accepts only `name : KIND 'unit { … }`.
+> Rewrote every forcing example in §7 and §23 to the colon-block form.
+> Current-spec verification: `grep -n "= sinusoidal(\|= periodic(\|= piecewise(\|=
+> interpolated(" docs/camdl-language-spec.md` returns zero hits — the
+> old-syntax examples are gone.
 
 ## 17. Unit literals are inconsistently defined
 
@@ -784,11 +917,20 @@ them.
 
 **Severity** — High → **resolved**
 
-> **Verification (2026-05-26):** §2.1 list was missing `'count` and `'ratio`;
-> one occurrence of singular `'day` at line 2369. Added `'count` and `'ratio` to
-> the supported-units list with their dimensions, and changed `every = 1 'day`
-> to `every = 1 'days` (the lexer only accepts plural). Commit `1a7ba112`.
-> **Resolved.**
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: resolved-in-commit
+> `1a7ba112`, verified against current spec file.** §2.1 list was missing
+> `'count` and `'ratio`; one occurrence of singular `'day`. Added the two
+> units with their dimensions and corrected the singular. Current-spec
+> verification:
+>
+> ```
+> $ sed -n '113,115p' docs/camdl-language-spec.md
+> Supported units: `'days`, `'weeks`, `'months`, `'years`, `'per_day`,
+> `'per_week`, `'per_month`, `'per_year`, `'count`, `'ratio`.
+> `'count` carries dimension P (population); `'ratio` is dimensionless.
+> $ grep -n "'day\b" docs/camdl-language-spec.md | grep -v "'days\|'day_"
+> (no output — singular 'day fully removed)
+> ```
 
 ## 18. Several worked examples are dimensionally wrong
 
@@ -826,16 +968,31 @@ distance : src:patch × dst:patch 'km = read("data/lga_dist.tsv")
 
 Do not use `default = 0.0` for denominator tables.
 
-**Severity** — High (partial confirmation)
+**Severity** — High
 
-> **Verification (2026-05-26):** The forcing-syntax sub-bullet was confirmed and
-> resolved in commit `1a7ba112` alongside F16. The individual dimension-error
-> sub-bullets (`C_age 'per_day`, `import_rate : rate`, `pop : patch = read(...)`
-> no `'count`, `default = 0.0` denominator) are each present in the spec but
-> each one requires either compiler test-drive or a proposal for the right
-> structural fix (axis-named tables — see F8 — would change the call site too).
-> Left as a partial-confirm; per-bullet remediation can land alongside the F8 /
-> F4 proposals.
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: confirmed-open.**
+> The forcing-syntax sub-bullet was confirmed and resolved in commit
+> `1a7ba112` alongside F16 (line-cited check below in F16's verification
+> block). The individual dimension-error sub-bullets are each derivable from
+> the spec's own dimensional rules without a compiler run:
+>
+> - `C_age : age × age 'per_day` combined with `beta : rate * S * sum(b in age,
+>   C_age[a,b] * I[b] / N[b])` gives an extra `T⁻¹` factor — the infection
+>   rate dimension comes out `P·T⁻²` instead of the `P·T⁻¹` E300 requires.
+> - `import_rate : rate` used as `@ import_rate * pop[p] / sum(q in patch,
+>   pop[q])` — `pop[p] / sum(pop)` is dimensionless, so the result is `T⁻¹`,
+>   not the `P·T⁻¹` an inflow needs.
+> - `pop : patch = read(...)` (omitting `'count`) leaves the table cells
+>   dimensionless under §6.1's tier-3 unit rule.
+> - `distance : patch × patch = read(..., default = 0.0)` used in a kernel
+>   denominator creates a divide-by-zero hazard.
+>
+> Earlier "partial confirmation" label was too soft — each of these is
+> derivable from the spec's dimensional rules alone; compiler tests would
+> confirm but aren't required to know they're wrong. Per-bullet remediation
+> still needs to wait for F8 (axis-named tables) and F4 (`count` vs
+> `population` kind split) proposals because the right *fix* depends on
+> those, but the *finding* is confirmed-open at High severity now.
 
 ## 19. Indexed parameters are single-dimensional in one section and multi-dimensional in another
 
@@ -1129,14 +1286,30 @@ changing model hash or IR, reproducibility is broken.
 
    Then include table file content hash in `run_hash`.
 
-**Severity** — High → **Medium** (after verification)
+**Severity** — High → **Medium** (split status; see Verification)
 
-> **Verification (2026-05-26):** Grep for `external()` syntax in spec returns
-> nothing; grep for `--table` flag in `rust/crates/cli/src/args/mod.rs` also
-> returns nothing. The contradiction the reviewer warned about is gone in
-> current code; the spec hash rules are still incomplete in the way F15
-> describes, but the specific runtime-external-tables-bypass concern is moot.
-> Downgraded to Medium because no implementation gap exists today.
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: mixed.**
+>
+> *Implementation gap:* **resolved-in-commit (independent of this review).**
+> Grep for `--table` flag in `rust/crates/cli/src/args/mod.rs` returns
+> nothing; grep for `external()` table syntax in `parser.mly` returns
+> nothing. The runtime-external-tables bypass the reviewer warned about
+> does not exist in current code.
+>
+> *Spec stale CLI text:* **was confirmed-open in the previous assessment.**
+> Spec §21.2 listed `--table NAME=FILE supply a runtime external() table`
+> at line 2987 even though no such flag exists. The earlier "downgrade to
+> Medium because no implementation gap exists today" verdict was too
+> eager — the reviewer correctly noted that as long as the spec advertised
+> `--table`, users could still encounter the contradiction. **The stale
+> line is now deleted in this commit** (verified: `grep -n '--table'
+> docs/camdl-language-spec.md` returns no hits in the §21.2 CLI flag table).
+>
+> *Hash inputs for runtime external tables:* per the F15 finding, the hash
+> design doesn't cover runtime external table content. Since the runtime
+> mechanism doesn't exist, this is moot for now — but if external tables
+> are reintroduced (one of the reviewer's "Pick one design" options),
+> `run_hash` must include the file content hash.
 
 # Medium findings
 
@@ -1158,10 +1331,17 @@ future section and require the compiler to reject them.
 
 **Severity** — Medium → **resolved**
 
-> **Verification (2026-05-26):** Confirmed — §24.1 grammar listing was missing
-> `events_block` and `balance_block` even though the OCaml parser supports both
-> (verified at `parser.mly:90-100`). Added both productions to the declaration
-> grammar in commit `1a7ba112`. **Resolved.**
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: resolved-in-commit
+> `1a7ba112`, verified against current spec file.** §24.1 grammar listing
+> was missing `events_block` and `balance_block` even though the OCaml
+> parser supports both (verified at `parser.mly:90-100`). Added both
+> productions. Current-spec verification:
+>
+> ```
+> $ grep -nA1 "events_block\|balance_block" docs/camdl-language-spec.md
+> 3730:  | events_block                      # events { ... }
+> 3737:  | balance_block                     # balance { ... }
+> ```
 
 ## 28. "Parsed but discarded" features should not exist
 
@@ -1225,11 +1405,16 @@ Then reject user declarations that collide.
 
 **Severity** — Medium → **resolved**
 
-> **Verification (2026-05-26):** Confirmed — §14.2 list was 5 names; expanded to
-> cover `t`, `dt`, `origin`, calendar builtins, `projected` (observation
-> namespace), rate wrappers, likelihood family names, `baseline`, `scenario`.
-> Organized by namespace so the contextual reservations (observation-only
-> `projected`, etc.) are clear. Commit `1a7ba112`. **Resolved.**
+> **Verification (2026-05-26, revised 2026-05-27).** **Status: resolved-in-commit
+> `1a7ba112`, verified against current spec file.** §14.2 list was 5 names
+> (`t_start`, `t_end`, `compartments`, `sum`, `consecutive`); expanded to
+> cover `t`, `dt`, `origin`, calendar builtins (`date`, `add_calendar_*`,
+> `date_range`), `projected` (observation namespace only), rate wrappers
+> (`overdispersed`, `deterministic`), likelihood family names (`poisson`,
+> `neg_binomial`, `normal`, `binomial`, `beta_binomial`, `bernoulli`),
+> `baseline`, `scenario`. Organized by namespace so contextual reservations
+> are clear. Current-spec verification: §14.2 (lines 2291+ in current file)
+> now lists 22 names across 6 namespace categories.
 
 ## 30. Section numbering and version status are unstable
 
@@ -1256,9 +1441,10 @@ timepoints            future        parse error
 coupling sugar        future        parse error
 ```
 
-**Severity** — Medium → **resolved (numbering pass)**
+**Severity** — Medium — numbering pass **resolved-in-commit `1a7ba112`**;
+status-table sub-issue **confirmed-open**.
 
-> **Verification (2026-05-26):** Confirmed:
+> **Verification (2026-05-26, revised 2026-05-27).** Original misnumbering:
 >
 > ```
 > §12 Observations             (line 1836)
@@ -1273,7 +1459,10 @@ coupling sugar        future        parse error
 > Renumbered in commit `1a7ba112`: 75 mechanical shifts via script + 3 manual
 > catches (`## 14.5 Events`, `## 14.8 Balance`, `### 13.2.1 Diagnostic-test`);
 > also resolved §2.3 duplicate (Date Literals stays §2.3; "Three tiers" → §2.4;
-> "Table Unit Annotations" → §2.5). One stale cross-ref `§9.9 → §9.8` fixed. The
+> "Table Unit Annotations" → §2.5). One stale cross-ref `§9.9 → §9.8` fixed.
+> Current-spec verification: walking the headers now shows clean parent/subsection
+> alignment (`§12.1` under `§12 Observations`, `§13.1` under `§13 Interventions`,
+> etc.) — see line-cited tour in the §30 history block above. The
 > version-label/status-table sub-issue is still open — that's a doc-content
 > choice, not a numbering one.
 
@@ -1293,113 +1482,148 @@ The most important rule: every example in the spec should be a golden test. If
 an example is future syntax, it should live in a clearly marked "future
 proposal" document, not in the normative language spec.
 
-# Refuted findings — we looked, did not find
+# Refuted findings — what didn't survive verification
 
-## 2. Bare stratified transition semantics contradict "no auto-localization"
+After upstream feedback on the earlier assessment (2026-05-27), this section is
+short: **no finding is fully refuted against the reviewed spec text.** Earlier
+labels said otherwise; that was wrong.
 
-**Reviewer's claim:** the spec promises bare stratified compartments in
-stoichiometry auto-localize per stratum — specifically that the coupling-sugar
-example's `progression : E --> I @ sigma * E` documents auto-localization as
-default behavior. The reviewer's recommended fix was to make bare stratified
-compartments illegal in stoichiometry.
+- **F2 — previously marked "refuted"; now confirmed-code-protected-but-spec-stale.**
+  The compiler rejects bare stratified stoichiometry with E272 (good), but the
+  §10 coupling-sugar example at lines 3331-3333 of the current spec still tells
+  users "Progression and recovery are automatically replicated within each
+  stratum (default behavior when no coupling is declared)" — which contradicts
+  §5.1 and the actual compiler behavior. Implementation does not refute a spec
+  inconsistency; the spec is the contract. Moved back to its §2 slot at the top
+  of the file with the full finding text and the revised verification.
 
-**Verification (2026-05-26): refuted.** The spec §5.1 is the _opposite_ of what
-the reviewer described — bare stratified is already illegal:
+- **F11 sub-claim — previously marked "refuted"; now confirmed-open.** The
+  reviewer cited the IR example
+  `Cond(Pop("I"), <rate_expr>, Const(0.0))` and recommended changing it to
+  `Cond(Gt(Pop("I"), Const(0.0)), <rate_expr>, Const(0.0))`. Earlier I claimed
+  the phrase wasn't in the spec — that was wrong (my grep pattern was too
+  literal). The text is at line 1647. Both the top-level F11 finding and the
+  sub-claim are confirmed; the F11 verification block above now records both.
 
-> "In stoichiometry (left of `@`, source/destination of `-->`): **all dimensions
-> of the compartment must be specified.** You cannot write into a marginal — the
-> compiler must know exactly which cell gains or loses an individual."
+- **F12 sub-claim — previously marked "refuted"; now reframed as text-fix-pending.**
+  The reviewer's "both formulas cannot be true" complaint is fair: §9.8 prose
+  reads as `Var[G] = σ²` while the §9.7 wrapper-table form implies `Var[G] =
+  σ²/dt`. Earlier I tried to reconcile by treating σ² as a parameter name,
+  which is mathematically possible but isn't what the prose says. The
+  imprecision is real; the F12 verification block above now records the
+  correct framing (text fix: pin the parameterization in one clean sentence).
 
-The spec follows that paragraph with an explicit ERROR example showing
-partial-stratification rejected. And the OCaml compiler enforces this — verified
-by writing a test model with bare-stratified transitions and running
-`camdl compile`:
+The previous "refuted" labels were the methodological mistake the upstream
+reviewer named in their feedback: **don't let implementation behavior refute a
+normative spec inconsistency.** For camdl, the spec is the contract — if the
+compiler rejects a construct but the spec teaches users to write it, the
+defect is still real.
 
-```
-$ camdl compile /tmp/test_bare_strat.camdl
-error[E272]: compartment 'E' is stratified but used without indices in stoichiometry
-  = hint: pick an expansion or index the transition: E_child, E_adult
-error[E272]: compartment 'I' is stratified but used without indices in stoichiometry
-error[E272]: compartment 'R' is stratified but used without indices in stoichiometry
-```
+# Status summary (revised 2026-05-27)
 
-The reviewer appears to have confused §10 coupling-sugar (where the compiler
-expands a base model into per-stratum transitions via _explicit_ `coupling[dim]`
-declarations) with auto-localization at the transition level. They are different
-mechanisms; only the former exists. No spec change required.
+Using the multi-axis labels from the status legend at the top of this file:
 
-# Refuted sub-claims
+**resolved-in-commit `1a7ba112` (cheap-batch spec edits), verified against
+current spec file:**
 
-These sub-claims were inside otherwise-confirmed top-level findings; the parent
-findings stand, but the specific sub-claims do not.
+- F7 — stale `--flow` / `--obs-model` CLI text removed from §21.5
+- F16 — forcing syntax unified to colon-block form throughout
+- F17 — unit-literal list includes `'count` / `'ratio`; singular `'day` fixed
+- F27 — `events_block` + `balance_block` added to §24.1 grammar
+- F29 — §14.2 reserved-identifier list expanded to 22 names across 6 namespaces
+- F30 — section numbering pass (75 mechanical shifts + 3 manual catches;
+  §2.3 duplicate resolved)
+- F15 sub-claim — sha256("") special-case-display clarification
 
-- **F11 sub-claim about a particular IR example.** The reviewer cited an IR
-  example saying `if I > 0 ...` becomes `Cond(Pop("I"), ...)` and recommended
-  changing it to `Cond(Gt(Pop("I"), Const(0)), ...)`. The exact phrase
-  `Cond(Pop("I"))` does not appear in the current spec (grep returned no
-  matches). Possibly an older draft or a misquote. The broader F11 finding —
-  Boolean expressions are not typed, with the
-  `is_pulse = (day_of_year > 250.0) * (day_of_year < 252.0)` example shown — is
-  confirmed and stands.
+**resolved-in-commit `ab69bdbe` (spec §1 rewrite):**
 
-- **F12 sub-claim that "both formulas cannot be true".** The reviewer's binary
-  framing skips the possibility that `σ²` is a _parameter name_ and the actual
-  Gamma-multiplier variance is `σ²/dt` (per the wrapper table). On that reading
-  the two formulas are reconcilable; the spec is still imprecise (the prose
-  calling `σ²_SE` "the variance of the Gamma noise multiplier" reads as
-  `Var[G] = σ²`, not `σ²/dt`), but the contradiction is in the _prose
-  imprecision_, not the math itself. The top-level F12 finding — that the
-  parameterization is ambiguously specified and needs pinning down — stands; the
-  rhetorical claim of strict mathematical contradiction does not.
+- F1 — §1's "Model ≠ parameterization" prose rewritten to "Model + layered
+  configuration" so the principle matches the actual layered-precedence
+  design (the reviewer's "split into three files / ban values" remedy is
+  explicitly rejected as breaking self-contained reproducible models)
 
-# What this means for the spec-cleanup proposal
+**resolved-in-this-commit (cleanup riding alongside the assessment revision):**
 
-The reviewer's six-step cleanup list above stands. Even removing the one
-definitively refuted finding (F2), 28 of 30 findings hold as written or with the
-noted severity adjustments. Status by category:
+- F26 — stale `--table NAME=FILE supply a runtime external() table` line
+  removed from §21.2 CLI flag table
 
-- **Resolved by the 2026-05-26 cheap-batch commit `1a7ba112`:** F7 (CLI flag
-  deletion), F16 (forcing syntax unification), F17 (unit-literal completeness),
-  F27 (grammar listing), F29 (reserved identifier list), F30 (section
-  renumbering), F15 sub-claim (sha256 special-case display).
+**confirmed-code-protected-but-spec-stale (the methodology-correction class):**
 
-- **Need proposals before landing — structural changes that ripple through
-  IR/tests:**
-  - F1 + F22: split model from parameterization
-  - F4: split `count` (integer) from `population` (real with dim P)
-  - F8 + F9 + F19: typed semantic IR with axis names (overlaps
-    `docs/dev/proposals/2026-05-26-typed-indexed-reference-resolver.md` on OCaml
-    side; needs IR + Rust addendum for the coordinate-metadata change in IR)
-  - F11: typed Boolean
-  - F14: backend capability table
-  - F15 main body: hash-input revision (move `simulate.from/to`, output
-    schedules, scenario simulate overrides into the run hash)
-  - F6 + F25: interval-crossing semantics for observation windows and schedule
-    firing
-  - F20: explicit-column-mapping table load (depends on F8 axis-name proposal)
-  - F23: two-phase scenario `scale` validation
-  - F24: explicit init `default = error | 0`
+- F2 — compiler emits E272 on bare stratified stoichiometry, but the §10
+  coupling-sugar example still teaches the contradictory "automatically
+  replicated" pattern. Fix the §10 sentence.
 
-- **Need code-side resolution (existing GH issues already cover):**
-  - F13 ↔ #99 (event-action validation gaps)
-  - F14 ↔ #95 (Gillespie nonhomogeneous Poisson), #120 (chain-binomial real
-    state)
+**needs-proposal (structural changes deserving a `docs/dev/proposals/` doc):**
 
-- **Spec-only edits but design-flavored, not pure docs:**
-  - F3 (real-compartment dimensions — currently _planned v0.2_)
-  - F5 (split `branch { }` from `rates { }` constructs)
-  - F10 (math-function domain policy)
-  - F12 (pin down overdispersion variance parameterization)
-  - F18 (dimension-correct worked examples — partly resolved by F16; per-bullet
-    fixes alongside F8/F4 proposals)
-  - F21 (string-typed dimension levels)
-  - F26 main spec wording (already removed in code, just needs prose cleanup)
-  - F28 (reject vs parse-and-discard policy for unimplemented features)
-  - F30 version-status sub-issue (status table)
+- F4 — split `count` (integer) from `population` (real with dim P)
+- F8 + F9 + F19 — typed semantic IR with axis names + coordinate metadata
+  (overlaps `docs/dev/proposals/2026-05-26-typed-indexed-reference-resolver.md`
+  on the OCaml side; needs IR + Rust-runtime addendum for the
+  coordinate-metadata change in IR)
+- F11 — typed Boolean (and fix the `Cond(Pop("I"))` IR example at the same
+  time)
+- F14 — backend capability table; reject unsupported combinations before
+  simulation
+- F15 main body — hash-input revision: name a canonicalization step
+  (`structural_model_hash`) and move simulate window / output schedules /
+  scenario simulate overrides into `run_hash`
+- F6 + F25 — interval-crossing semantics for observation windows and
+  schedule firing
+- F20 — explicit-column-mapping table load (depends on F8 axis-name proposal)
+- F22 — scenario semantics: move set/scale patches out of the model file
+  or include them in `run_hash`; reserve `baseline` as identity
+- F23 — two-phase scenario `scale` validation (compile-time
+  parameter-only; runtime full-domain check)
+- F24 — explicit init `default = error | 0`; `camdl check` reports
+  zero-init count
 
-## Methodology meta-finding
+**needs code-side resolution — existing GH issues already cover:**
 
-The reviewer audited spec-only with no compiler access and got 28 of 30 right.
-That's strong evidence the spec is genuinely contradictory in the ways described
-— not just imprecise. F2 is the one case where the implementation has been
-pulled toward correct semantics ahead of the spec text catching up to clarify.
+- F13 ↔ #99 (event-action validation gaps)
+- F14 ↔ #95 (Gillespie nonhomogeneous Poisson), #120 (chain-binomial real state)
+
+**text-fix-pending (spec-prose-only fixes that don't need a proposal):**
+
+- F2 §10 coupling-sugar sentence (see above)
+- F3 — real-compartment dimensions (currently `_planned v0.2_`; need to
+  state the dim rule before that section becomes implementable)
+- F5 — split `branch { }` (weights sum to 1) from `rates { }` (independent
+  rate contributions) constructs
+- F10 — math-function domain policy: remove silent clamps for log/sqrt/mod
+- F12 — pin down `overdispersed` variance parameterization in one clean
+  sentence
+- F18 — dimension-correct worked examples (the forcing sub-bullet was
+  resolved alongside F16; the `C_age 'per_day`, `import_rate : rate`,
+  `pop : patch = read(...)` no-`'count`, `default = 0.0`-in-denominator
+  bullets all stand)
+- F21 — string-typed dimension levels (quoted indexing + alias columns)
+- F28 — reject vs parse-and-discard policy for unimplemented features
+- F30 version-status sub-issue (the feature-status table — separate from
+  the numbering pass)
+
+## Methodology meta-finding (revised 2026-05-27)
+
+Two methodology corrections after upstream feedback on the earlier
+assessment:
+
+1. **Compiler protection is not refutation.** F2 is the canonical example:
+   the OCaml compiler correctly rejects bare stratified stoichiometry, but
+   the spec still teaches users to write it (§10 coupling-sugar example).
+   Previously marking F2 "refuted" because of compiler behavior was wrong —
+   the spec is the user-facing contract and a stale example is still a
+   real bug. The reviewer named this trap explicitly: "do not let
+   implementation behavior refute a normative spec inconsistency."
+
+2. **"Resolved" needs evidence, not just a commit hash.** Earlier I labeled
+   F16/F17/F27/F29/F30 "resolved by commit 1a7ba112" without showing the
+   post-commit spec text. The reviewer was reading a snapshot that didn't
+   include the commit; from their perspective the labels lied. Revised
+   verification blocks now show line-cited evidence against the current
+   spec file (`grep -n …` receipts inline) — not just the commit hash.
+
+The remaining substantive observation about the original review still
+stands: the reviewer audited spec-only with no compiler access and got
+substantially all of it right. Of 30 findings, none is fully refuted
+against the reviewed spec text; the only category with reduced standing
+is "implementation-protected" (F2, partially F7, partially F26), and in
+each of those the spec still needs to be cleaned to match.
