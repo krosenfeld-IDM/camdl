@@ -343,7 +343,8 @@ comprehensive.
 
 ## Acknowledgments
 
-The review finding these issues (`agent-channel.md:8571`) is a
+The review finding these issues (`agent-channel.md:8571`, in
+pre-2026-05-26 git history) is a
 direct example of why we run external code review after shipping
 big refactors. The two-hour pass that produced the findings
 covered four real bugs (critical + three majors) that the internal

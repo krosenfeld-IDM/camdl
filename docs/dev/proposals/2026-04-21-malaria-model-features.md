@@ -997,7 +997,9 @@ compiles and fits age-specific partial-pooling parameters.
   - [ ] Non-centered reparameterisation (efficiency, not correctness).
   - [ ] `camdl inspect --hierarchy` visualiser.
   - [ ] Shrinkage regression test on synthetic data (belongs in
-        Garki fit vignette — tracked in agent-channel.md).
+        Garki fit vignette — tracked in the agent-channel log,
+        removed from the tree on 2026-05-26 but recoverable from
+        git history).
 - [ ] **Wave 2 demo**: `docs/vignettes/garki_2age_fit.qmd`
   Recovers age-specific `p_symp` with pooled-sigma shrinkage.
 
