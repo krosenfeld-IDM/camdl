@@ -850,6 +850,39 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
     let if2_params = Arc::new(if2_params);
 
+    // gh#118: focal params are pinned at grid values and excluded
+    // from `if2_params`, but their priors still contribute to the
+    // joint log-posterior. Build a parallel spec/prior set for the
+    // focal parameters so we can add the focal-prior offset to the
+    // emitted `log_posterior` column (matching `camdl fit run`'s
+    // definition: log_post = log_lik + Σ log_prior(all estimated)).
+    let focal_specs_for_priors: Vec<crate::fit::runner::ParamSpec> =
+        focal_names.iter().map(|name| {
+            let from_fit = fit_estimate.get(name);
+            crate::fit::runner::ParamSpec {
+                name: name.clone(),
+                rw_sd: rw_sd_map_raw.get(name).and_then(|v| *v)
+                    .or_else(|| from_fit.and_then(|e| e.rw_sd)),
+                transform: from_fit.and_then(|e|
+                    e.transform.as_ref().map(|t| t.as_str().to_string())),
+                ivp: from_fit.map(|e| e.ivp).unwrap_or(false),
+                bounds: from_fit.and_then(|e| e.bounds),
+            }
+        }).collect();
+    let focal_if2_params: Vec<sim::inference::if2::EstimatedParam> =
+        crate::fit::runner::build_if2_params_from_specs(
+            &model, &compiled, &base_params, &focal_specs_for_priors,
+        ).unwrap_or_else(|e| {
+            eprintln!("error: building focal-param specs: {}", e);
+            std::process::exit(1);
+        });
+    let focal_if2_params = Arc::new(focal_if2_params);
+    let focal_priors: Vec<sim::inference::prior::Prior> =
+        crate::fit::priors_precedence::resolve_priors_with_precedence(
+            &focal_names, &fit_estimate, &model,
+        ).into_iter().map(|r| r.prior).collect();
+    let focal_priors = Arc::new(focal_priors);
+
     // ── Prior resolution (gh#73) ─────────────────────────────────────
     //
     // Resolve priors once, up front, for two reasons:
@@ -1343,6 +1376,8 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         let process = Arc::clone(&process);
         let obs_model_obj = Arc::clone(&obs_model_obj);
         let if2_params = Arc::clone(&if2_params);
+        let focal_if2_params = Arc::clone(&focal_if2_params);
+        let focal_priors = Arc::clone(&focal_priors);
         let focal_values: Vec<f64> = grid_points[grid_idx].iter().map(|&(_, v)| v).collect();
         let seed = seeds[seed_idx];
 
@@ -1613,8 +1648,19 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 // lets the rollup compute the prior-contribution
                 // delta and lets the user compare a profile likelihood
                 // vs profile posterior.
+                //
+                // gh#118: `s.log_prior` from the PMMH engine sums over
+                // the nuisance (estimated) params only — focal params
+                // are pinned and excluded from PMMH's estimation set.
+                // Add the focal-prior contribution at the cell's fixed
+                // values so the column matches `camdl fit run`'s
+                // joint-posterior definition. The offset is constant
+                // within the cell.
+                let focal_log_prior_offset = compute_focal_log_prior_offset(
+                    &focal_if2_params, &focal_priors, &focal_values,
+                );
                 diag.log_posterior_trace = result.steps.iter()
-                    .map(|s| s.log_likelihood + s.log_prior)
+                    .map(|s| s.log_likelihood + s.log_prior + focal_log_prior_offset)
                     .collect();
                 let best_ll = result.steps.iter()
                     .map(|s| s.log_likelihood)
@@ -1637,8 +1683,16 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 // alongside the MLE-by-loglik. NaN-guard mirrors the
                 // final_ll computation above so a non-finite chain
                 // doesn't leak Inf into mle.toml.
+                //
+                // gh#118: add the focal-prior offset so the MAP
+                // log_posterior matches `camdl fit run`'s definition.
+                // If the offset itself is NEG_INFINITY (focal value
+                // outside its prior's support), the sum is non-finite
+                // and the is_finite guard surfaces NaN — semantically
+                // correct (cell at zero prior probability).
                 let final_lp = if result.map_log_posterior.is_finite() {
-                    result.map_log_posterior
+                    let corrected = result.map_log_posterior + focal_log_prior_offset;
+                    if corrected.is_finite() { corrected } else { f64::NAN }
                 } else {
                     f64::NAN
                 };
@@ -1947,6 +2001,50 @@ fn seed_params_from_init_method(
         }
     }
     Ok(())
+}
+
+/// gh#118: focal-parameter prior contribution at the cell's fixed
+/// focal values. Profile pins focal params at grid values and
+/// estimates only the nuisance set, so the PMMH engine's
+/// `log_prior` sum covers nuisance priors only. To make the
+/// emitted `log_posterior` column comparable to `camdl fit run`'s
+/// `log_posterior` (which sums priors over the full estimated
+/// set), add this offset.
+///
+/// The offset is constant within a cell (focal values are fixed by
+/// definition) and additive: corrected `log_posterior = log_lik +
+/// nuisance_log_prior + focal_log_prior_offset`.
+///
+/// Returns `NEG_INFINITY` when any focal value sits outside its
+/// prior's support (e.g. a uniform prior whose declared bounds
+/// don't cover the cell's grid value). That's semantically correct
+/// — the cell has zero prior probability — and propagates to a NaN
+/// in the rendered `mle.toml` via the existing `is_finite()` guard.
+///
+/// Hierarchical priors on focal params are not currently supported
+/// (the env-free `Prior::log_density` falls back to `NEG_INFINITY`
+/// for the Hierarchical variant per `prior.rs:143`). In practice
+/// focal params are typically simple univariate distributions
+/// (uniform / normal / log_normal); the rare case of a
+/// hierarchical focal prior would need a separate code path that
+/// passes a `NamedParams` env into `log_density_env`.
+fn compute_focal_log_prior_offset(
+    focal_specs:  &[sim::inference::if2::EstimatedParam],
+    focal_priors: &[sim::inference::prior::Prior],
+    focal_values: &[f64],
+) -> f64 {
+    debug_assert_eq!(focal_specs.len(), focal_priors.len(),
+        "focal_specs and focal_priors must align by index");
+    debug_assert_eq!(focal_specs.len(), focal_values.len(),
+        "focal_specs and focal_values must align by index");
+    focal_specs.iter()
+        .zip(focal_priors.iter())
+        .zip(focal_values.iter())
+        .map(|((spec, prior), &val)| {
+            let z = spec.to_transformed(val);
+            prior.log_density(val, z)
+        })
+        .sum()
 }
 
 /// gh#74 Option B: emits a trailing `[diagnostics]` block holding the
@@ -2484,6 +2582,94 @@ mod tests {
 
     fn data_lines(text: &str) -> Vec<&str> {
         text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).collect()
+    }
+
+    /// gh#118 regression: `log_posterior` in profile output was built
+    /// from the nuisance-only prior sum, silently excluding focal-
+    /// parameter prior contributions. The expected behaviour is that
+    /// `log_posterior = log_likelihood + Σ log_prior(ALL estimated
+    /// parameters)`, matching `camdl fit run`'s definition. This
+    /// regression pins the focal-prior offset computation against the
+    /// hand-computed values in the gh#118 forensic table on the
+    /// wa_weak seed-timing model.
+    #[test]
+    fn focal_log_prior_offset_matches_gh118_forensic_table() {
+        use sim::inference::prior::Prior;
+
+        // From gh#118: model has two focal params
+        //   tau:    instant ~ uniform(lower=-86, upper=0); pinned at -5
+        //   n_seed: count   ~ log_normal(mu=log 5, sigma=1); pinned at 100
+        let tau_spec = EstimatedParam {
+            name: "tau".into(), index: 0, initial: -5.0, rw_sd: 0.0,
+            transform: Transform::None,
+            lower: -86.0, upper: 0.0,
+            rw_sd_auto: false, ivp: false,
+        };
+        let n_seed_spec = EstimatedParam {
+            name: "n_seed".into(), index: 1, initial: 100.0, rw_sd: 0.0,
+            transform: Transform::Log { lo: 1.0, hi: 1000.0 },
+            lower: 1.0, upper: 1000.0,
+            rw_sd_auto: false, ivp: false,
+        };
+        let tau_prior = Prior::Uniform { lower: -86.0, upper: 0.0 };
+        let n_seed_prior = Prior::TransformedNormal {
+            mean: 5.0_f64.ln(), sd: 1.0,
+        };
+
+        let offset = compute_focal_log_prior_offset(
+            &[tau_spec, n_seed_spec],
+            &[tau_prior, n_seed_prior],
+            &[-5.0, 100.0],
+        );
+
+        // Hand-computed reference values from gh#118 (issue body §"Evidence"):
+        //   log_prior(τ uniform[-86, 0] at -5)         = -ln(86)
+        //                                              ≈ -4.4543
+        //   log_prior(n_seed LogN(log 5, 1) at 100)
+        //     = -ln(100) - ½ ln(2π) - ½ ((ln 100 - ln 5)/1)²
+        //     = -4.6052 - 0.9189 - 4.4878
+        //     ≈ -10.0119
+        //   total ≈ -14.4662
+        let expected = -(86.0_f64.ln())
+                     + (-(100.0_f64.ln())
+                        - 0.5 * (2.0 * std::f64::consts::PI).ln()
+                        - 0.5 * ((100.0_f64.ln() - 5.0_f64.ln()) / 1.0).powi(2));
+        assert!((offset - expected).abs() < 1e-9,
+            "offset {} does not match analytic expected {}", offset, expected);
+        // Sanity-check the analytic value lines up with the issue's
+        // reported gap (+14.467 with 3-decimal precision in the issue).
+        assert!((offset - (-14.4662)).abs() < 1e-3,
+            "offset {} does not match gh#118 forensic table -14.4662", offset);
+    }
+
+    /// Focal value outside a Uniform prior's support produces
+    /// -∞ — the cell is at zero prior probability. The wiring must
+    /// surface this as a non-finite log_posterior (NaN sentinel in
+    /// the emitted mle.toml), not a spuriously finite number.
+    #[test]
+    fn focal_log_prior_offset_out_of_support_is_neg_infinity() {
+        use sim::inference::prior::Prior;
+
+        let spec = EstimatedParam {
+            name: "tau".into(), index: 0, initial: -100.0, rw_sd: 0.0,
+            transform: Transform::None,
+            lower: -86.0, upper: 0.0,
+            rw_sd_auto: false, ivp: false,
+        };
+        let prior = Prior::Uniform { lower: -86.0, upper: 0.0 };
+        let offset = compute_focal_log_prior_offset(
+            &[spec], &[prior], &[-100.0],
+        );
+        assert!(offset.is_infinite() && offset < 0.0,
+            "expected NEG_INFINITY, got {}", offset);
+    }
+
+    /// Empty focal set (1D-profile-on-the-flat-case or
+    /// no-focal-priors path): offset is exactly zero.
+    #[test]
+    fn focal_log_prior_offset_empty_is_zero() {
+        let offset = compute_focal_log_prior_offset(&[], &[], &[]);
+        assert_eq!(offset, 0.0);
     }
 
     #[test]
