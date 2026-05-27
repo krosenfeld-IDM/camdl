@@ -1003,6 +1003,14 @@ let () =
       (* gh#116 / 2026-05-26 upstream OCaml-compiler review Critical #6 *)
       Alcotest.test_case "e304_binomial_p_is_count"  `Quick
         (test_error_golden "E304" "e304_binomial_p_is_count");
+      (* gh#116 follow-up coverage (2026-05-27 audit): pin every
+         distribution variant's strict dim-check independently. *)
+      Alcotest.test_case "e304_bernoulli_p_is_count"  `Quick
+        (test_error_golden "E304" "e304_bernoulli_p_is_count");
+      Alcotest.test_case "e304_beta_binomial_alpha_is_count"  `Quick
+        (test_error_golden "E304" "e304_beta_binomial_alpha_is_count");
+      Alcotest.test_case "e304_neg_binomial_dispersion_is_count"  `Quick
+        (test_error_golden "E304" "e304_neg_binomial_dispersion_is_count");
     ];
 
     (* ── Property-based tests (QCheck) ─────────────────────────────── *)
