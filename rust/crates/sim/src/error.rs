@@ -62,6 +62,37 @@ pub enum SimError {
         t: f64,
         cause: NegativeCountCause,
     },
+
+    /// gh#110. Particle filter degeneracy: the filter cannot return a
+    /// finite log-likelihood in bounded time at the supplied parameters.
+    /// Three triggers, all detected at observation-window boundaries:
+    ///
+    /// - `EssCollapsed`: effective sample size has been at or below
+    ///   `ESS_FLOOR` (= 2.0) for `ESS_COLLAPSE_WINDOWS` (= 3)
+    ///   consecutive observation windows. Sustained collapse — not a
+    ///   single-window dip during epidemic peaks.
+    /// - `WallClockExceeded`: per-call elapsed time has exceeded
+    ///   `WALLCLOCK_TIMEOUT_S` (= 120). A healthy PF eval on production
+    ///   models is seconds-to-tens-of-seconds; 2 minutes is generous
+    ///   enough to never false-positive and tight enough that a
+    ///   multi-chain run can't lose 40+ minutes to one bad chain.
+    /// - `AllParticlesDead`: every particle hit a per-particle-recoverable
+    ///   error (NumericalCollapse / NegativeCount{BinomialOvershoot}) —
+    ///   the limit case of ESS collapse, but cheap to detect and
+    ///   diagnostically distinct.
+    ///
+    /// Not per-particle-recoverable — this is a whole-call bail.
+    /// `Err(PFDegenerate)` collapses to NEG_INFINITY through the
+    /// existing `run_quick_pfilter_with_dt → Err(_) → NEG_INFINITY`
+    /// path so PMMH iteration steps reject the proposal cleanly.
+    /// Init-eval callers detect the bail explicitly to surface a
+    /// `BadInit` diagnostic and skip the chain.
+    #[error("particle filter degeneracy ({kind:?}) at obs_window {obs_window}, elapsed {elapsed_s:.2}s")]
+    PFDegenerate {
+        kind: PFDegenerateKind,
+        obs_window: usize,
+        elapsed_s: f64,
+    },
 }
 
 /// gh#audit-C6 / S1. Specific numerical-degeneracy mode that
@@ -88,6 +119,25 @@ pub enum NegativeCountCause {
     InterventionAddNegative,
 }
 
+/// gh#110. Specific degeneracy mode that triggered the bail.
+/// Each variant carries the data needed for downstream diagnostics:
+/// the K-window ESS history for `EssCollapsed`, nothing extra for
+/// the wall-clock and all-dead cases (the elapsed time and obs
+/// window live on the outer `SimError::PFDegenerate`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PFDegenerateKind {
+    /// ESS has been at or below the floor for K consecutive obs
+    /// windows. `last_ess` carries the K-window history (most
+    /// recent last) so the diagnostic message can show the trend.
+    EssCollapsed { last_ess: Vec<f64> },
+    /// Per-call wall-clock has exceeded the timeout.
+    WallClockExceeded,
+    /// Every particle hit a per-particle-recoverable error and is
+    /// marked dead. Resampling on the next step would have zero
+    /// weight everywhere; bail before the divide-by-zero.
+    AllParticlesDead,
+}
+
 impl SimError {
     /// gh#audit-C5 / C6. True when the error represents a
     /// per-particle numerical degeneracy that the inference layer
@@ -110,5 +160,75 @@ impl SimError {
             SimError::NumericalCollapse { .. }
             | SimError::NegativeCount { cause: NegativeCountCause::BinomialOvershoot, .. }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// gh#110. PFDegenerate is a whole-call bail; it must NOT be
+    /// folded into the per-particle dead-mask path. If it were, the
+    /// outer loop would silently mark every particle dead on the
+    /// first call and resampling would divide by zero on the next
+    /// observation window. The discriminator is `is_per_particle_recoverable`.
+    #[test]
+    fn pf_degenerate_is_not_per_particle_recoverable() {
+        let err = SimError::PFDegenerate {
+            kind: PFDegenerateKind::WallClockExceeded,
+            obs_window: 42,
+            elapsed_s: 121.0,
+        };
+        assert!(
+            !err.is_per_particle_recoverable(),
+            "PFDegenerate is a whole-call bail; must not be \
+             absorbed into the per-particle dead-mask"
+        );
+    }
+
+    #[test]
+    fn pf_degenerate_ess_collapsed_carries_history() {
+        let err = SimError::PFDegenerate {
+            kind: PFDegenerateKind::EssCollapsed {
+                last_ess: vec![1.5, 1.2, 1.0],
+            },
+            obs_window: 10,
+            elapsed_s: 3.2,
+        };
+        // Round-trip via the Display impl exercises the format!() string
+        let s = format!("{}", err);
+        assert!(s.contains("EssCollapsed"), "kind name should be in the message: {}", s);
+        assert!(s.contains("obs_window 10"), "obs_window should be in the message: {}", s);
+    }
+
+    /// Per-particle-recoverable variants stay recoverable — guards
+    /// against the inverse mistake (accidentally widening the
+    /// discriminator in a way that would silently kill swarms).
+    #[test]
+    fn per_particle_recoverable_set_is_minimal() {
+        // Recoverable
+        assert!(SimError::NumericalCollapse {
+            kind: CollapseKind::DivByZero,
+            t: 1.0,
+        }.is_per_particle_recoverable());
+        assert!(SimError::NegativeCount {
+            compartment: "S".into(),
+            attempted_value: -1,
+            t: 1.0,
+            cause: NegativeCountCause::BinomialOvershoot,
+        }.is_per_particle_recoverable());
+        // Not recoverable
+        assert!(!SimError::NegativeCount {
+            compartment: "S".into(),
+            attempted_value: -1,
+            t: 1.0,
+            cause: NegativeCountCause::InterventionAddNegative,
+        }.is_per_particle_recoverable());
+        assert!(!SimError::AbsorbingState(0.0).is_per_particle_recoverable());
+        assert!(!SimError::PFDegenerate {
+            kind: PFDegenerateKind::AllParticlesDead,
+            obs_window: 0,
+            elapsed_s: 0.0,
+        }.is_per_particle_recoverable());
     }
 }
