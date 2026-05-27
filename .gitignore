@@ -46,16 +46,13 @@ ocaml/lib/ir/ir_version_generated.ml
 .envrc
 mprocs.log
 
-# examples/polio_nigeria — raw PIM source data (not open-source; lives in adjacent repos)
-examples/polio_nigeria/data/raw/
-examples/polio_nigeria/data/*.csv.bak
-
-# examples/seir_age_sobol — commit analysis TSVs + figures, but not sim run files
-!examples/seir_age_sobol/output/
-!examples/seir_age_sobol/output/**
-examples/seir_age_sobol/output/designs/*/runs/
-examples/seir_age_sobol/output/manifest.json
-examples/seir_age_sobol/output/model.ir.json
+# examples/ — local-only working dir for ad-hoc model runs. The earlier
+# "keep analysis TSVs + figures" carve-out never produced committable
+# content; collapsed to full exclusion 2026-05-26 alongside removal of
+# 4.6 GB of stale March-vintage outputs. If a worked example is meant
+# to live in version control, put it under docs/ or its own repo
+# (e.g., camdl-book).
+examples/
 
 # Web
 web/node_modules/
