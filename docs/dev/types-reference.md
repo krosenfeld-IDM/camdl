@@ -210,13 +210,14 @@ side of the seam — algorithm-agnostic, declarative, validated.
 | Type | Role |
 |---|---|
 | **`FitConfigV2`** | Top of the fit.toml schema. Holds `model, data, scenario/enable/disable, ic_free, config (backend+dt), estimate (IndexMap), fixed, stages (IndexMap)`. |
-| `EstimateSpecV2` | Per-parameter inference spec: `bounds, transform, prior, start, ivp, rw_sd`. The `prior` field is `Option<ir::parameter::PriorDist>`. |
+| `EstimateSpecV2` | Per-parameter inference spec: `bounds, transform, prior, start, ivp, rw_sd`. The `prior` field is `Option<EstimatePriorSpec>` (gh#75 typed wrapper carrying `Dist(PriorDist)` or `Flat { flat = {} }` for the explicit-flat opt-in). |
+| `EstimatePriorSpec` | 2-variant typed wrapper (`config_v2.rs:518`): `Dist(PriorDist)` and `Flat { flat: FlatMarker }`. The `Flat` variant is fit-toml-only — there is no DSL `~ flat(...)` syntax. |
 | `ir::parameter::PriorDist` | 8-variant enum (Uniform, Normal, LogNormal, HalfNormal, Beta, Gamma, Exponential, Fixed) — the single workspace-wide prior wire format. Re-exported as `config_v2::PriorDist`. |
 | **`Transform`** | CLI's flavor: `Log | Logit | Identity`. |
 | `FixedParams` | Either inline values or a TOML file path (resolved at runtime). |
 | `DataSpec` | `observations: IndexMap<stream_name, file_path>`. |
 | `BackendConfig` | `backend, dt`. |
-| **`Stage`** | Tagged union (tag = method): `IF2 {chains, particles, iterations, cooling, starts_from, loglik_eval, gate}`, `PGAS {chains, particles, sweeps, ...}`, `PMMH {chains, particles, iterations, ...}`, `PFilter {particles, replicates, starts_from}`. |
+| **`Stage`** | Tagged union (tag = method): `IF2 {chains, particles, iterations, cooling, cooling_target_iters, init_mle, init, survey_path, survey_top_k_n, loglik_eval, gate}`, `PGAS {chains, particles, sweeps, init_mle, init, tempering, max_tree_depth, ...}`, `PMMH {chains, particles, iterations, ...}`, `PFilter {particles, replicates, init_mle}`. The wire keys `init_mle` (formerly `starts_from`) and `init` (formerly `init_method`) were renamed per proposal 2026-05-25-cli-init-and-params-ux; Rust field names follow in a later step. |
 | `StartsFrom` | `Default | StageName(String)` — references an earlier stage by name. |
 | `LoglikEvalConfig` | Clean-eval re-scoring config (n_particles, n_replicates). |
 | `GateConfig` | Compound scout-convergence gate (Â floor + decibans spread). |
@@ -630,10 +631,11 @@ Single conversion site: `Prior::from_ir(&ir::PriorDist) -> Prior`.
 
 ```
 resolve_prior(name, fit.estimate, model, default=Flat):
-    1. fit.toml's PriorDist (if set)        → Prior::from_ir
-    2. else IR's PriorDist (if set)         → Prior::from_ir
-    3. else IR's HierarchicalPrior (if set) → Prior::Hierarchical
-    4. else                                 → Prior::Flat
+    1. fit.toml's PriorDist (Dist variant)  → Prior::from_ir       (source: fit_toml)
+    2. fit.toml's flat = {} (Flat variant)  → Prior::Flat          (source: flat_explicit, gh#75)
+    3. else IR's PriorDist (if set)         → Prior::from_ir       (source: model_ir)
+    4. else IR's HierarchicalPrior (if set) → Prior::Hierarchical  (source: model_ir)
+    5. else                                 → Prior::Flat          (source: flat_fallback)
 ```
 
 The earlier four-way duplication (`config_v2::PriorSpec`,
@@ -643,6 +645,11 @@ plus the IR's `PriorDist`) was collapsed in
 `Hierarchical` runtime variant continues to be sourced from
 `ir::Parameter.hierarchical` (a separate field on `Parameter`)
 rather than from a hypothetical hierarchical `PriorDist` variant.
+
+The 5-tier ordering with the `flat_explicit` step was added by gh#75
+(`docs/dev/reviews/2026-05-26-week-audit-findings.md#h8`). Every
+chain stage's `run.json` now records a `resolved_priors` array
+naming the source tier per parameter for downstream audit.
 
 ### 5.4 IR `ObservationModel` → sim `MultiStreamObsModel`
 
@@ -772,25 +779,22 @@ Minimum fix: make these fields `Option<...>` and have the
 dispatcher require an explicit set. Bigger fix: pass them as
 `build()` arguments.
 
-### 6.6 PGAS / PMMH stage opts revert v1 knobs to defaults
+### 6.6 PGAS / PMMH stage opts revert v1 knobs to defaults — *resolved*
 
-After the v1 cleanup, several v1-only knobs (`tempering`,
-`max_treedepth`, `trajectory_warmup`, `csmc_sweeps_per_nuts`,
-`n_trajectories` for PGAS; analogous for PMMH) revert to defaults
-because v2's `Stage::PGAS` / `Stage::PMMH` doesn't surface them.
-Documented in the v1-cleanup commit message.
+Status: **resolved**. The v1-only knobs (`tempering`,
+`max_tree_depth`, `csmc_sweeps_per_nuts`, etc.) are now first-class
+fields on `Stage::PGAS` / `Stage::PMMH` in `config_v2.rs` — verify
+by grepping `tempering`, `max_tree_depth` in the `PGAS { ... }`
+variant. The `PgasStageOpts::from_stage` / `PmmhStageOpts::from_stage`
+adapters consume them. Feature-completeness gap closed.
 
-This is an outstanding feature-completeness gap, not a smell —
-listed here because the doc-survey will surface it. If anyone
-needs those knobs, surfacing them in `Stage::PGAS` / `Stage::PMMH`
-plus the `PgasStageOpts::from_stage` / `PmmhStageOpts::from_stage`
-adapters is mechanical.
+### 6.7 `DEFAULT_N_TRAJECTORIES` constant in pgas.rs — *resolved*
 
-### 6.7 `DEFAULT_N_TRAJECTORIES` constant in pgas.rs
-
-`pgas.rs` has `const DEFAULT_N_TRAJECTORIES: usize = 200;` set
-inline. After v1 cleanup it's the only knob path; should either
-be in `Stage::PGAS` or documented as fixed.
+Status: **resolved**. The constant no longer exists in either
+`rust/crates/cli/src/fit/pgas.rs` or `rust/crates/sim/src/inference/pgas.rs`
+(`rg DEFAULT_N_TRAJECTORIES rust/` returns no hits). The PGAS
+trajectory bookkeeping is now driven by `Stage::PGAS`-side
+configuration with no hardcoded fallback in the runner.
 
 ### 6.8 `--starts-from` is `Option<&str>` everywhere
 
@@ -833,5 +837,14 @@ big architectural decisions (CAS abstraction, FitConfigV2 as the
 single fit-config schema, kind-tagged `Run` envelope, identity vs
 extension hash split for resume) all hold up under the type-flow
 view. The four-`PriorSpec` situation (§6.1) was resolved in
-2026-04-30; everything else is either deferred-defer (§6.3, §6.4,
-§6.9, §6.10) or one-commit cleanup (§6.5, §6.7).
+2026-04-30; the PGAS v1-knobs gap (§6.6) and `DEFAULT_N_TRAJECTORIES`
+(§6.7) were both resolved subsequently; the explicit-flat-prior
+opt-in (gh#75) extended the §5.3 resolution chain to 5 tiers. The
+remaining items are either deferred-defer (§6.3, §6.4, §6.9,
+§6.10) or one-commit cleanup (§6.5).
+
+Doc freshness: load-bearing claims (struct fields, variant lists,
+schema shapes) verified against the codebase on 2026-05-26 during
+the move from repo root → `docs/dev/types-reference.md`. Function
+line numbers throughout the doc are likely to drift between
+verification passes; treat them as nudges, not contracts.

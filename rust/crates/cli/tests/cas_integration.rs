@@ -397,7 +397,7 @@ cooling = 0.7
 }
 
 /// `camdl list --kind fit` should hide sim rows entirely; `--kind sim`
-/// should hide fit rows. Covers cleanup.md:L2.
+/// should hide fit rows. Covers docs/dev/notes/2026-04-20-unified-output-tree-cleanup.md:L2.
 #[test]
 fn list_kind_filter_isolates_sections() {
     let Some(bin) = skip_if_missing_binary() else { return; };

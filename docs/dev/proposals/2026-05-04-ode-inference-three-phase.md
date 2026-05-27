@@ -1092,7 +1092,7 @@ tuple-schema migration of `Stage`. Everything else is reuse or extension.
 ## Speedup estimates (rough)
 
 Per typical workflow. **chain_binomial timings marked O are observed** (from
-typhoid SIRC vignette at typhoid-issues.md, gh#40 reproducer); deterministic
+typhoid SIRC vignette at docs/dev/notes/2026-05-01-typhoid-vignette-friction.md, gh#40 reproducer); deterministic
 timings marked P are projected from per-eval cost × estimated optimizer
 convergence count and have not yet been observed end-to-end (that's the
 diagnostic experiment).

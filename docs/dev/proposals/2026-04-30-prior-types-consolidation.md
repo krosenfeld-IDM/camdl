@@ -7,7 +7,7 @@ Status: proposed (pre-alpha cleanup)
 
 Four representations of "a prior distribution" exist in the workspace,
 with two parallel conversion paths to the runtime evaluator. Tracked
-in `TYPES-REFERENCE.md` §6.1 and `CLEANUP-prior-types.md`.
+in `docs/dev/types-reference.md` §6.1 and `CLEANUP-prior-types.md`.
 
 | Type | Where | Shape | Variants |
 |---|---|---|---|
@@ -88,7 +88,7 @@ and is unsupported in the new shape — bounds belong on the prior, not on
 
 - camdl-book (separate repo at `/Users/vsb/projects/work/camdl-book`): fit.toml examples in vignettes. Update `prior =` blocks to the new external-tagged form.
 - `docs/dev/proposals/`: any prose mentioning `dist = "..."` syntax.
-- `TYPES-REFERENCE.md` §6.1: update to reflect collapsed state.
+- `docs/dev/types-reference.md` §6.1: update to reflect collapsed state.
 - `CLEANUP-prior-types.md`: delete (work is done).
 
 ### What does NOT change
@@ -137,6 +137,6 @@ Suggested commit-by-commit order so each step compiles + tests:
 4. Replace `prior_spec_to_prior` calls with `Prior::from_ir`. Delete `prior_spec_to_prior`.
 5. Replace `cli::sampling::PriorSpec` with `ir::PriorDist` for `DesignParam.prior`.
 6. Update `format_prior` displays in `config_diff.rs` and `main.rs`'s `cmd_fit_new`.
-7. Final cleanup: delete `CLEANUP-prior-types.md`. Update `TYPES-REFERENCE.md` §6.1.
+7. Final cleanup: delete `CLEANUP-prior-types.md`. Update `docs/dev/types-reference.md` §6.1.
 
 Each commit must: build clean, pass tests, compile under `-D warnings`.

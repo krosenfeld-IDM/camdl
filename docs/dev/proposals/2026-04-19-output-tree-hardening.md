@@ -135,7 +135,7 @@ support via lockfile + partial-write recovery.
 **Problem.** When the upstream stage's `run.json` can't be read
 (`fit/mod.rs:1106-1116`), `stage_hash` falls back to empty string.
 The provenance chain then looks structurally intact but silently
-loses its backward reference. B1 in cleanup.md made this less bad
+loses its backward reference. B1 in docs/dev/notes/2026-04-20-unified-output-tree-cleanup.md made this less bad
 (we now *try* to read the upstream run.json first), but the
 error-path fallback is still a silent corruption.
 
@@ -192,7 +192,7 @@ CLI-generic"). Downstream's counter is stronger:
 - `FitConfigV2::fit_dir` default.
 - v1 `FitToml::fit.output_dir` default.
 - Help text in `main.rs` fit section.
-- Docstrings in `run_paths.rs`, `cleanup.md`.
+- Docstrings in `run_paths.rs`, `docs/dev/notes/2026-04-20-unified-output-tree-cleanup.md`.
 - Integration tests (`synthetic_fit_grid.rs`, `cas_integration.rs`)
   where the tempdir path assembles `output/`.
 - Book chapters — already clean (they set explicit `output_dir`),
