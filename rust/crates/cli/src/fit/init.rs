@@ -772,11 +772,23 @@ pub fn build_chain_starts_from_survey(
     }
 
     // Step 5: rank + take top-K.
+    //
+    // gh#NEW (2026-05-26 week-audit C1): this ranks by likelihood, not
+    // posterior. For Bayesian targets (PGAS, PMMH) the seeded chains
+    // will sit at likelihood maxima irrespective of prior mass — a
+    // silent bias when any estimated parameter has a non-flat prior.
+    // The proper v2 fix is two-step: (a) survey writer emits log_prior
+    // alongside loglik; (b) this site ranks by log_posterior with a
+    // prior_hash cross-check. Until then, fire a loud warning every
+    // time survey_top_k is used so the bias is at least visible.
     let mut ranked: Vec<&LandscapeRow> = filtered;
     ranked.sort_by(|a, b| {
         b.loglik.partial_cmp(&a.loglik).unwrap_or(std::cmp::Ordering::Equal)
     });
     let selected: &[&LandscapeRow] = &ranked[..top_k];
+
+    // Step 5.5: gh#NEW — surface the rank-by-likelihood bias.
+    emit_rank_by_likelihood_bias_warning();
 
     // Step 6: SE-aware warn on rank noise.
     emit_top_k_se_warning(selected);
@@ -916,6 +928,43 @@ fn cross_check_survey(
         let _ = name;
     }
     Ok(())
+}
+
+/// gh#NEW (2026-05-26 week-audit C1) — fires whenever `init =
+/// survey_top_k` is used. The current ranking is by likelihood
+/// alone; PGAS/PMMH chains target `posterior ∝ likelihood × prior`.
+/// For any non-flat prior the seeded chains sit at likelihood
+/// maxima irrespective of prior mass — a silent bias.
+///
+/// The warning is unconditional. For flat-prior fits it's technically
+/// noise (rank-by-likelihood and rank-by-posterior agree), but the
+/// alternative — only fire when at least one non-flat prior is
+/// resolved — would require threading priors through the call chain,
+/// which the audit's recommended v2 fix already restructures. Loud
+/// noise on the flat-prior path is the conservative defensive choice
+/// while the v2 fix is in flight; the noise becomes signal the
+/// moment a user adds a non-flat prior.
+fn emit_rank_by_likelihood_bias_warning() {
+    eprintln!("\x1b[33mwarning:\x1b[0m \
+        init = \"survey_top_k\" currently ranks survey rows by \
+        likelihood, not posterior. For any estimated parameter with \
+        a non-flat prior, this seeds PGAS/PMMH chains at likelihood \
+        maxima irrespective of prior mass — a silent bias.\n\
+        \n\
+        * If your fit uses flat priors only: no impact; this warning \
+          is decorative.\n\
+        * If your fit uses any non-flat prior (model `~` syntax or \
+          fit toml `[estimate.<param>.prior]`): the seeded chain inits \
+          may sit in regions the prior excludes; expect long burn-in \
+          or chains failing to mix.\n\
+        \n\
+        Workarounds until proper posterior-ranking ships:\n\
+        * Switch to `init = lhs` (`--init lhs`) — unbiased stratified \
+          coverage of the bound box, ignores the survey.\n\
+        * Or verify post-hoc that your `chain_starts.tsv` inits sit \
+          within the priors' high-density regions.\n\
+        \n\
+        Tracked: docs/dev/reviews/2026-05-26-week-audit-findings.md C1.");
 }
 
 fn emit_top_k_se_warning(top_k: &[&LandscapeRow]) {
