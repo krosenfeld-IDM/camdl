@@ -5,10 +5,13 @@
 //! advance particles — any simulation backend works (chain-binomial,
 //! tau-leap, etc.).
 
+use std::time::Instant;
+
 use rayon::prelude::*;
 
 use crate::rng::StatefulRng;
 use crate::error::SimError;
+use super::degeneracy::check_pf_degeneracy;
 use super::traits::{ProcessModel, ObservationModel, SMCConfig};
 use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, RESAMPLE_RNG_STREAM, init_particle_rngs};
 use super::resampling::systematic_resample;
@@ -135,6 +138,15 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
     };
 
     let mut t = config.t_start;
+
+    // gh#110. Wall-clock timer for the degeneracy watchdog. Started
+    // here, checked after each observation window via
+    // `check_pf_degeneracy`. The watchdog returns `Err(PFDegenerate)`
+    // which propagates through the existing `Err → NEG_INFINITY`
+    // collapse in `run_quick_pfilter_with_dt`; PMMH already rejects
+    // -∞ proposals, so no caller-side change is needed for the
+    // common path. Init-eval callers detect the bail explicitly.
+    let t0_call = Instant::now();
 
     // Resampling RNG — reserved stream index, never collides with particle streams.
     let mut resample_rng = StatefulRng::new_stream(seed, RESAMPLE_RNG_STREAM);
@@ -308,6 +320,24 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         }
         ll_increments.push(ll_increment);
         ess_trace.push(swarm.ess());
+
+        // gh#110. Degeneracy watchdog. Check AFTER pushing the current
+        // ESS — `check_pf_degeneracy` reads the K-window history off
+        // `ess_trace`. Fires on ESS collapse, wall-clock timeout, or
+        // every particle dead. The `obs_idx` and elapsed are
+        // captured into the error variant so the diagnostic can
+        // surface where the bail happened.
+        let dead_count = particle_dead.iter().filter(|&&d| d).count();
+        let elapsed = t0_call.elapsed();
+        if let Some(kind) = check_pf_degeneracy(
+            &ess_trace, elapsed, obs_idx, dead_count, n_particles,
+        ) {
+            return Err(SimError::PFDegenerate {
+                kind,
+                obs_window: obs_idx,
+                elapsed_s: elapsed.as_secs_f64(),
+            });
+        }
 
         // Resample via double-buffer
         let indices = systematic_resample(&swarm.log_weights, &mut resample_rng);
