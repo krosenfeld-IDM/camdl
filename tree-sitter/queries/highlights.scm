@@ -71,7 +71,7 @@
 ; ── Attributes — `#[lineage]` and any future #[…] ─────────────────────────────
 
 (attribute name: (identifier) @attribute)
-"#[" @punctuation.special
+(hash_lbracket) @punctuation.special
 
 ; ── Types / kinds ─────────────────────────────────────────────────────────────
 
