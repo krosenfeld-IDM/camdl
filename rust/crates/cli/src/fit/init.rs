@@ -773,7 +773,7 @@ pub fn build_chain_starts_from_survey(
 
     // Step 5: rank + take top-K.
     //
-    // gh#NEW (2026-05-26 week-audit C1): this ranks by likelihood, not
+    // gh#129 (2026-05-26 week-audit C1): this ranks by likelihood, not
     // posterior. For Bayesian targets (PGAS, PMMH) the seeded chains
     // will sit at likelihood maxima irrespective of prior mass — a
     // silent bias when any estimated parameter has a non-flat prior.
@@ -787,7 +787,7 @@ pub fn build_chain_starts_from_survey(
     });
     let selected: &[&LandscapeRow] = &ranked[..top_k];
 
-    // Step 5.5: gh#NEW — surface the rank-by-likelihood bias.
+    // Step 5.5: gh#129 — surface the rank-by-likelihood bias.
     emit_rank_by_likelihood_bias_warning();
 
     // Step 6: SE-aware warn on rank noise.
@@ -930,7 +930,7 @@ fn cross_check_survey(
     Ok(())
 }
 
-/// gh#NEW (2026-05-26 week-audit C1) — fires whenever `init =
+/// gh#129 (2026-05-26 week-audit C1) — fires whenever `init =
 /// survey_top_k` is used. The current ranking is by likelihood
 /// alone; PGAS/PMMH chains target `posterior ∝ likelihood × prior`.
 /// For any non-flat prior the seeded chains sit at likelihood
