@@ -110,12 +110,21 @@ fn profile_pmmh_log_posterior_includes_focal_and_nuisance_uniform_priors() {
     // fit.toml schema requires `[model]`, `[estimate]`, `[fixed]`, and
     // `[stages.*]` even though profile only consults `[estimate]` and
     // `[fixed]`. Dummy stage satisfies the loader.
+    // Asymmetric widths: focal width = 0.20, nuisance width = 0.25.
+    // The two contributions to the prior sum are then distinct
+    // (-ln(0.20) ≈ 1.6094 vs -ln(0.25) ≈ 1.3863) so a bug that
+    // double-counted EITHER side (focal twice or nuisance twice)
+    // produces an observed gap different from the expected
+    // 1.6094 + 1.3863 ≈ 2.9957. A symmetric-widths version of
+    // this test (the original) could not distinguish "added one
+    // side twice" from "added focal + nuisance" — caught by an
+    // independent code-review audit on 2026-05-27.
     std::fs::write(&fit_toml, format!(r#"
 [model]
 camdl = "{}"
 [estimate]
 beta  = {{ bounds = [0.20, 0.40], rw_sd = 0.02, prior = {{ uniform = {{ lower = 0.20, upper = 0.40 }} }} }}
-sigma = {{ bounds = [0.10, 0.30], rw_sd = 0.02, prior = {{ uniform = {{ lower = 0.10, upper = 0.30 }} }} }}
+sigma = {{ bounds = [0.10, 0.35], rw_sd = 0.02, prior = {{ uniform = {{ lower = 0.10, upper = 0.35 }} }} }}
 [fixed]
 gamma     = 0.1
 rho       = 0.5
@@ -163,13 +172,13 @@ cooling    = 0.5
         .expect("spawn camdl profile pmmh");
     assert!(status.success(), "pmmh profile run failed");
 
-    // Expected gap: focal (beta on [0.20, 0.40]) + nuisance (sigma on
-    // [0.10, 0.30]). Both Uniform inside support give a constant
-    // -log(width) contribution.
+    // Expected gap: focal (beta on [0.20, 0.40], width 0.20) +
+    // nuisance (sigma on [0.10, 0.35], width 0.25). Asymmetric widths
+    // so each contribution is distinct.
     let focal_width    = 0.40_f64 - 0.20_f64;   // 0.20
-    let nuisance_width = 0.30_f64 - 0.10_f64;   // 0.20
+    let nuisance_width = 0.35_f64 - 0.10_f64;   // 0.25
     let expected_gap   = -(focal_width.ln()) + -(nuisance_width.ln());
-    // ≈ 1.6094 + 1.6094 = 3.2189
+    // -ln(0.20) + -ln(0.25) ≈ 1.6094 + 1.3863 = 2.9957
 
     // Walk the seed_1 / points / start_0 / mle.toml tree and assert
     // the invariant on every cell.
@@ -211,20 +220,23 @@ cooling    = 0.5
                 mle_toml.display(), body));
 
         let observed_gap = final_log_posterior - final_loglik;
-        // Tolerance: 1e-4 covers float-printing precision in
-        // mle.toml (rounded to 4 decimals at the renderer) and the
-        // exact-arithmetic addition the wiring performs.
-        // PF noise does NOT enter — both quantities come from the
-        // same PMMH step, so the delta is exactly the prior sum
-        // by construction.
-        assert!((observed_gap - expected_gap).abs() < 1e-3,
+        // Tolerance: 1e-9. The wiring is exact-arithmetic addition
+        // (loglik + nuisance_log_prior + focal_log_prior_offset) and
+        // mle.toml writes f64 with `{}` formatter at full precision
+        // (profile.rs:2067, 2072). PF noise does NOT enter — both
+        // quantities come from the same PMMH step, so the delta is
+        // exactly the prior sum by construction. The 2026-05-27
+        // code-review audit flagged the previous 1e-3 tolerance as
+        // looser than needed; tightening to 1e-9 catches off-by-
+        // tiny-bias bugs that 1e-3 would hide.
+        assert!((observed_gap - expected_gap).abs() < 1e-9,
             "log_posterior invariant broken at {}:\n  \
-             final_loglik          = {:.6}\n  \
-             final_log_posterior   = {:.6}\n  \
-             observed gap          = {:.6}\n  \
-             expected gap          = {:.6} \
-             (focal Uniform[0.20,0.40] = -ln(0.20) ≈ 1.6094; \
-              nuisance Uniform[0.10,0.30] = -ln(0.20) ≈ 1.6094)\n  \
+             final_loglik          = {:.10}\n  \
+             final_log_posterior   = {:.10}\n  \
+             observed gap          = {:.10}\n  \
+             expected gap          = {:.10} \
+             (focal Uniform[0.20,0.40] contributes -ln(0.20) ≈ 1.6094; \
+              nuisance Uniform[0.10,0.35] contributes -ln(0.25) ≈ 1.3863)\n  \
              body:\n{}",
             mle_toml.display(),
             final_loglik, final_log_posterior, observed_gap, expected_gap,
