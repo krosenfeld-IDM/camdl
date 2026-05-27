@@ -22,15 +22,41 @@ auto-localization, no implicit scope rules. Every rate expression is a total
 propensity — the compiler never silently multiplies by a population count. If a
 rate is per-capita, the user writes the `* Pop` factor explicitly.
 
-**Model ≠ parameterization.** The `.camdl` file defines M (parameter space) and
-C (configuration). Parameter values come from external TOML files, CLI flags, or
-inference engines. The seed is always a CLI argument. This follows the grammar
-of model parameters (Buffalo 2026): the model is structurally stable across all
-analyses — forward simulation, calibration, scenario comparison, and forecasting
-all use the same `.camdl` file with different external configuration. This
-separation means the model file can be committed to git, shared in paper
-supplements, and reviewed independently of any particular parameter values or
-analysis choices.
+**Model + layered configuration.** A `.camdl` file is structurally stable
+across all analyses — forward simulation, calibration, scenario comparison,
+and forecasting all use the same file with different layered configuration on
+top. Two shapes are both first-class:
+
+- A **structural skeleton** that declares parameter names, kinds, and
+  dimensions only; values are supplied externally via TOML, CLI flags, or
+  inference engines. Useful for "model under inference" / library-style work.
+- A **self-contained reproducible model** that declares parameters and their
+  default values, default priors, a `baseline` scenario, even an `init`
+  block — so the file can be handed to a colleague (or shipped in a paper
+  supplement) and run end-to-end with no auxiliary inputs. This is the
+  preferred form for distribution and for the canonical examples shipped
+  with camdl.
+
+Both shapes coexist because external configuration always overrides values
+declared inside the file. The precedence chain is fixed (see
+`docs/inference.md` for the full ordering on the inference side and
+`camdl-run-spec.md` for forward simulation): `fit.toml` / `--param` / CLI
+arguments take precedence over `params.toml` (loaded at compile time), which
+takes precedence over `set = { ... }` inside scenarios, which takes
+precedence over defaults declared in `parameters { ... }`, `let`, or
+`init { ... }`. The seed is always a CLI argument.
+
+What this design preserves — and what the IR's hash discipline enforces — is
+that *structural* model identity (compartments, transitions, observation
+projections, intervention semantics) is captured by `model_hash`, while
+*value-bearing* content (base params, backend, dt) lives in `sim_hash`, the
+scenario delta in `scen_hash`, and inference inputs (priors, transforms,
+data, fit config) in `fit_hash`. So two analyses that share a structural
+model have the same `model_hash` even if one bakes in calibrated values and
+the other supplies them externally; changing a value is visible in
+`sim_hash` even when the underlying structure didn't change. The reviewer
+trying to tell "is this a structural change or a parameter sweep" reads the
+hash provenance, not the file shape.
 
 **Typed and checked.** Index dimensions, table shapes, compartment arities,
 parameter domains, and unit dimensions are compiler-checked with clear error
