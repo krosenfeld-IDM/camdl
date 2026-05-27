@@ -12,6 +12,7 @@
 //!   PMMH              — Particle Marginal Metropolis-Hastings (experimental)
 
 pub mod numerics;  // gh#audit-H3
+pub mod degeneracy;  // gh#110
 pub mod traits;
 pub mod obs_loglik;
 pub mod resampling;
