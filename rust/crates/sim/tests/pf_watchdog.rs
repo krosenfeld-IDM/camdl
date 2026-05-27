@@ -25,6 +25,7 @@ use sim::{
     compiled_model::CompiledModel,
     error::{PFDegenerateKind, SimError},
     inference::{
+        if2::{run_if2, IF2Config, EstimatedParam, Transform},
         obs_loglik::poisson_logpmf,
         particle_filter::bootstrap_filter,
         ChainBinomialProcess,
@@ -217,5 +218,72 @@ fn bootstrap_filter_bails_on_ess_collapse() {
             "expected PFDegenerate error; PF returned loglik={} with ESS trace {:?}",
             r.log_likelihood, r.ess_trace,
         ),
+    }
+}
+
+/// gh#110 acceptance: an IF2 chain with a bad init (R₀ ≈ 50 here)
+/// must return `Err(SimError::PFDegenerate)` from
+/// `run_if2_with_progress` within 5 seconds, not a hang. The shared
+/// `check_pf_degeneracy` helper is wired into IF2's inner per-iter
+/// PF loop independently of `bootstrap_filter` (IF2 doesn't call it).
+#[test]
+fn if2_bails_on_ess_collapse() {
+    let (compiled, params) = pathological_sir_model();
+    let compiled = Arc::new(compiled);
+    let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+
+    // Same pathology: huge R₀ vs flat-zero observations.
+    let obs_times: Vec<f64> = (1..=50).map(|k| k as f64).collect();
+    let observations: Vec<f64> = vec![0.0; 50];
+    let obs_model = PoissonOnIObs { observations, obs_times };
+
+    // Estimate beta. IF2 will perturb it but the init is already
+    // pathological — the very first iteration's PF eval should
+    // collapse before cooling has a chance to bring things down.
+    let beta_idx = compiled.param_index["beta"];
+    let if2_params = vec![EstimatedParam {
+        index: beta_idx,
+        name: "beta".into(),
+        initial: 5.0,
+        rw_sd: 0.1,
+        rw_sd_auto: false,
+        transform: Transform::Log { lo: 0.01, hi: 100.0 },
+        lower: 0.01,
+        upper: 100.0,
+        ivp: false,
+    }];
+
+    let config = IF2Config {
+        n_particles: 200,
+        n_iterations: 3,
+        cooling_fraction: 0.5,
+        cooling_target_iters: 10,
+        dt: 1.0,
+        t_start: 0.0,
+        simplex_groups: vec![],
+        skip_first_obs_from_loglik: false,
+    };
+
+    let t0 = Instant::now();
+    let res = run_if2(&process, &obs_model, &params, &if2_params, &config, 42);
+    let elapsed = t0.elapsed();
+
+    assert!(elapsed.as_secs() < 5,
+        "IF2 watchdog must bail within 5s; took {:?}", elapsed);
+
+    match res {
+        Err(SimError::PFDegenerate { kind, .. }) => {
+            // EssCollapsed or AllParticlesDead is acceptable; falling
+            // through to WallClockExceeded would mean the ESS detector
+            // isn't running in IF2's loop.
+            assert!(
+                matches!(kind, PFDegenerateKind::EssCollapsed { .. }
+                              | PFDegenerateKind::AllParticlesDead),
+                "expected EssCollapsed/AllParticlesDead; got {:?} (means IF2's \
+                 per-iter ESS detector didn't fire)",
+                kind);
+        }
+        Err(other) => panic!("expected SimError::PFDegenerate, got {:?}", other),
+        Ok(_) => panic!("IF2 returned Ok on a pathological model; watchdog didn't fire"),
     }
 }

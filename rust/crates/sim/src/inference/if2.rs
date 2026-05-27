@@ -13,10 +13,13 @@
 //! observation log-likelihood (dmeasure). This makes it compatible
 //! with any simulation backend.
 
+use std::time::Instant;
+
 use rayon::prelude::*;
 
 use crate::rng::StatefulRng;
 use crate::error::SimError;
+use super::degeneracy::check_pf_degeneracy;
 use super::traits::{ProcessModel, ObservationModel};
 use super::types::{ParticleState, log_sum_exp, normalize_log_weights, LOG_PROB_FLOOR, init_particle_rngs};
 use super::resampling::systematic_resample;
@@ -262,6 +265,16 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
     let mut iterations = Vec::with_capacity(config.n_iterations);
     let mut global_step: u64 = 0; // total filtering steps across all iterations
 
+    // gh#110. Wall-clock timer + ESS history for the degeneracy
+    // watchdog. The watchdog spans the entire IF2 run, not a single
+    // iteration: a pathological init that walks the cooling
+    // trajectory through degeneracy region produces an ESS history
+    // that crosses iteration boundaries. We push every obs window's
+    // ESS into one trace (across all iterations) so the K-window
+    // detector can fire as soon as the cumulative pattern is bad.
+    let t0_if2 = Instant::now();
+    let mut ess_history: Vec<f64> = Vec::with_capacity(config.n_iterations * n_obs);
+
     // Pre-allocate particle state, params, RNGs, and scratch buffers once.
     // Re-initialized from current_params at the start of each iteration.
     let mut states: Vec<ParticleState> = (0..n)
@@ -455,6 +468,45 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
                 } else {
                     n_skipped_obs += 1;
                 }
+            }
+
+            // gh#110. Degeneracy watchdog. Compute ESS via the same
+            // formula as `ParticleSwarm::ess()`: ESS = (Σ w)² / Σ w²
+            // on the max-shifted log-weights, with 0.0 returned when
+            // every weight is -∞ or NaN-poisoned. IF2's per-iter PF
+            // loop doesn't use ParticleSwarm directly, so the
+            // computation is inlined here. dead_count = 0 because IF2
+            // does NOT mark per-particle deaths — `process.step`
+            // errors propagate immediately. AllParticlesDead is
+            // therefore unreachable in this loop; ESS collapse or
+            // wall-clock will fire first.
+            let ess_now = {
+                let max_lw = log_weights.iter().cloned()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if !max_lw.is_finite() {
+                    0.0
+                } else {
+                    let sum_w: f64 = log_weights.iter()
+                        .map(|&lw| (lw - max_lw).exp()).sum();
+                    let sum_w2: f64 = log_weights.iter()
+                        .map(|&lw| (2.0 * (lw - max_lw)).exp()).sum();
+                    if !sum_w.is_finite() || !sum_w2.is_finite() || sum_w2 <= 0.0 {
+                        0.0
+                    } else {
+                        (sum_w * sum_w) / sum_w2
+                    }
+                }
+            };
+            ess_history.push(ess_now);
+            let elapsed = t0_if2.elapsed();
+            if let Some(kind) = check_pf_degeneracy(
+                &ess_history, elapsed, obs_idx, 0, n,
+            ) {
+                return Err(SimError::PFDegenerate {
+                    kind,
+                    obs_window: obs_idx,
+                    elapsed_s: elapsed.as_secs_f64(),
+                });
             }
 
             // Resample states AND parameters jointly via double-buffer (no allocation)
