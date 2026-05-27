@@ -460,11 +460,76 @@ pub fn run_stage(
 
     let t0 = std::time::Instant::now();
 
-    // Run chains in parallel
+    // Run chains in parallel. Each chain produces either Some(result)
+    // or None when its init-eval surfaces SimError::PFDegenerate
+    // (gh#110). None chains are skipped with a BadInit diagnostic and
+    // omitted from downstream R̂/ESS/MAP aggregation; surviving chains
+    // continue to completion. This is "skip + continue", explicitly
+    // chosen over whole-run failure so a 6-chain run with one
+    // bound-pathological survey_top_k init still gives the user 5
+    // chains worth of inference.
     let results: Vec<(usize, PMMHResult)> = (0..n_chains)
         .into_par_iter()
-        .map(|chain_id| {
+        .filter_map(|chain_id| {
             let chain_seed = crate::util::derive_chain_seed(seed, chain_id);
+
+            // gh#110 init-eval guard. Run a single PF at the chain's
+            // starting θ to verify it isn't in the PF-degenerate
+            // region (R₀ ≈ 50, σ at the upper bound, etc.). On
+            // Err(PFDegenerate) push a BadInit diagnostic and skip
+            // this chain. We only fire on the *first* eval — once
+            // the chain is past init, PMMH's MH ratio handles
+            // -∞ proposals via the existing reject path.
+            //
+            // Skip the guard on resume: the resumed θ already
+            // passed init once; rerunning the eval would waste a
+            // PF call and (if the chain had already diverged into
+            // a degenerate region during sampling) spuriously
+            // mark a working chain as bad.
+            if resume_states[chain_id].is_none() {
+                match runner::run_quick_pfilter_with_dt_typed(
+                    &config, &chain_starts[chain_id],
+                    n_particles, None, chain_seed,
+                ) {
+                    Err(sim::error::SimError::PFDegenerate { kind, obs_window, elapsed_s }) => {
+                        let reason = format!(
+                            "{:?} at obs_window={} after {:.2}s",
+                            kind, obs_window, elapsed_s,
+                        );
+                        let params: std::collections::BTreeMap<String, f64> =
+                            config.estimated_params.iter()
+                                .map(|spec| (
+                                    spec.name.clone(),
+                                    chain_starts[chain_id][spec.index],
+                                ))
+                                .collect();
+                        collector.push(DiagnosticKind::BadInit {
+                            chain_id, params, reason: reason.clone(),
+                        });
+                        eprintln!("  chain {}: \x1b[31m✗ BadInit\x1b[0m — {}",
+                            chain_id + 1, reason);
+                        if let Some(bar) = bars.get(chain_id) {
+                            bar.finish_with_message("skipped (bad init)".to_string());
+                        }
+                        return None;
+                    }
+                    Err(other) => {
+                        // Non-degeneracy structural error — surface as
+                        // a hard failure rather than a skip. These are
+                        // config bugs (UnknownCompartment, etc.) that
+                        // every chain would hit, so abort here.
+                        eprintln!("chain {} init-eval failed with structural error: {:?}",
+                            chain_id + 1, other);
+                        std::process::exit(1);
+                    }
+                    Ok(_) => {
+                        // Finite (or even -inf-but-not-degenerate)
+                        // initial loglik — PMMH can proceed. PMMH's
+                        // MH ratio handles uninformative inits via
+                        // the standard accept/reject path.
+                    }
+                }
+            }
 
             let pmmh_config = PMMHConfig {
                 n_steps,
@@ -607,9 +672,20 @@ pub fn run_stage(
                 let _ = std::fs::write(&resume_path, encoded);
             }
 
-            (chain_id, result)
+            Some((chain_id, result))
         })
         .collect();
+
+    // gh#110. Skip + continue: surface "ran K of N chains" so the
+    // user knows downstream R̂/ESS exclude skipped chains. This
+    // line is the load-bearing user-facing signal that bad inits
+    // were tolerated rather than silently dropped.
+    let n_good_chains = results.len();
+    if n_good_chains < n_chains {
+        eprintln!("\n\x1b[33mran {} of {} chains\x1b[0m \
+                   ({} skipped via BadInit; see diagnostics below)",
+            n_good_chains, n_chains, n_chains - n_good_chains);
+    }
 
     let elapsed = t0.elapsed();
 
@@ -652,7 +728,23 @@ pub fn run_stage(
         }
     }
 
-    // Find MAP across all chains
+    // gh#110. All chains skipped via BadInit — no MAP to report.
+    // Render diagnostics, persist them, and bail with a clear error
+    // rather than panicking on .unwrap() of an empty results vec.
+    if results.is_empty() {
+        collector.render_to_stderr();
+        let diag_path = stage_dir.join("diagnostics.json");
+        let _ = collector.write_json(&diag_path.to_string_lossy());
+        return Err(format!(
+            "pmmh stage `{}`: all {} chains failed init-eval with \
+             PFDegenerate. See `diagnostics.json` for per-chain BadInit \
+             diagnostics. Common causes: survey_top_k handed pathological \
+             bound-pinned points to every chain; check `init` method or \
+             widen parameter bounds.",
+            stage_name, n_chains));
+    }
+
+    // Find MAP across surviving chains
     let (map_chain, map_result) = results.iter()
         .max_by(|a, b| a.1.map_log_posterior.total_cmp(&b.1.map_log_posterior))
         .unwrap();
@@ -684,7 +776,11 @@ pub fn run_stage(
         initial_loglik: ll_mean,
         best_chain: *map_chain,
         n_chains,
-        n_good_chains: None,
+        // gh#110. Surface "ran K of N chains" through fit_state so
+        // downstream consumers (fit_summary, the book chapters) can
+        // print "ran K of N chains" without inferring it from
+        // missing chain dirs.
+        n_good_chains: if n_good_chains < n_chains { Some(n_good_chains) } else { None },
         start_values,
         rw_sd: HashMap::new(),
         loglik_type: Some("marginal".into()),

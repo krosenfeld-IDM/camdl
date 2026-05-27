@@ -732,6 +732,35 @@ pub fn run_quick_pfilter_with_dt(
     }
 }
 
+/// gh#110. Variant of `run_quick_pfilter_with_dt` that surfaces the
+/// raw `SimError` instead of collapsing every failure to
+/// `NEG_INFINITY`. Used by the PMMH / IF2 chain runners for the
+/// init-eval guard: we want to distinguish a genuine `PFDegenerate`
+/// bail (→ `BadInit` diagnostic, skip the chain) from a finite-but-
+/// uninformative loglik (→ chain proceeds, MH ratio handles it).
+///
+/// All other call sites continue to use `run_quick_pfilter_with_dt`
+/// — the collapse-to-NEG_INFINITY semantics is exactly what PMMH's
+/// iteration loop and IF2's perturbed-PF re-eval want.
+pub fn run_quick_pfilter_with_dt_typed(
+    config: &FitRunConfig,
+    params: &[f64],
+    n_particles: usize,
+    dt_override: Option<f64>,
+    seed: u64,
+) -> Result<f64, sim::error::SimError> {
+    let dt = dt_override.unwrap_or(config.if2_config.dt);
+    let process = config.build_process_with_dt(dt);
+    let obs_model = config.build_obs_model();
+    let smc_config = sim::inference::traits::SMCConfig {
+        n_particles,
+        dt,
+        ..config.smc_config()
+    };
+    sim::inference::bootstrap_filter(&process, &obs_model, params, &smc_config, seed)
+        .map(|r| r.log_likelihood)
+}
+
 /// Print preflight transform report to stderr, pushing diagnostics to collector.
 pub fn print_preflight(config: &FitRunConfig, collector: &DiagnosticCollector) {
     let n_auto = config.estimated_params.iter()

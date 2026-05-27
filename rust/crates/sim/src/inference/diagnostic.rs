@@ -67,6 +67,23 @@ pub enum DiagnosticKind {
         n_particles: usize,
     },
     InitialLoglikInfinite,
+    /// gh#110. The chain's *initial* PF evaluation at its starting
+    /// θ returned NEG_INFINITY (typically via Err(PFDegenerate)
+    /// collapsing through run_quick_pfilter_with_dt's Err→-∞ path).
+    /// The chain is skipped — other chains in a multi-chain run
+    /// continue normally. The reason string carries the upstream
+    /// diagnostic (e.g. "ESS collapsed at obs 7 after 0.4s") so
+    /// the user can tell which init was pathological.
+    BadInit {
+        chain_id: usize,
+        /// Estimated parameter name → starting value on the natural
+        /// scale, exactly as offered to the inference engine.
+        params: std::collections::BTreeMap<String, f64>,
+        /// One-line cause from the upstream PFDegenerateKind /
+        /// fallback message. Surface in the diagnostic so the user
+        /// can correlate with chain_starts.tsv.
+        reason: String,
+    },
 
     // ── NUTS ─────────────────────────────────────────────────────
     MaxTreeDepthHits {
@@ -169,6 +186,7 @@ impl DiagnosticKind {
     pub fn severity(&self) -> Severity {
         match self {
             Self::InitialLoglikInfinite => Severity::Error,
+            Self::BadInit { .. } => Severity::Error,
             Self::RhatHigh { rhat, .. } if *rhat > 1.5 => Severity::Error,
             Self::RhatHigh { .. } => Severity::Warning,
             Self::ConvergenceIncomplete { max_chain_agreement, .. } if *max_chain_agreement > 1.5 => Severity::Error,
@@ -218,6 +236,17 @@ impl DiagnosticKind {
                     ess_mean, ess_min, n_particles),
             Self::InitialLoglikInfinite =>
                 "Initial log-likelihood is -inf at starting parameters.".into(),
+            Self::BadInit { chain_id, params, reason } => {
+                let pretty = params.iter()
+                    .map(|(k, v)| format!("{}={:.4}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Chain {} starting parameters were pathological — skipped. \
+                     Reason: {}. Init: [{}].",
+                    chain_id + 1, reason, pretty,
+                )
+            }
             Self::MaxTreeDepthHits { n_hits, n_sweeps, max_depth, .. } =>
                 format!("{}/{} sweeps ({:.0}%) hit max tree depth {}.",
                     n_hits, n_sweeps,
@@ -288,6 +317,13 @@ impl DiagnosticKind {
             Self::InitialLoglikInfinite => vec![
                 "Check starting values are within parameter bounds",
                 "Run with --verbosity debug for per-substep diagnostics",
+            ],
+            Self::BadInit { .. } => vec![
+                "Inspect chain_starts.tsv to see which init was used",
+                "If using survey_top_k, the survey may be putting \
+                 bound-pinned points into the top-K; consider --init lhs",
+                "Other chains in this run completed normally; treat \
+                 the surviving chains as the result",
             ],
             Self::MaxTreeDepthHits { .. } => vec![
                 "Increase max_treedepth in [pgas] config",
