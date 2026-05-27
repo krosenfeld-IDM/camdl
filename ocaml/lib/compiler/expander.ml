@@ -4434,7 +4434,102 @@ let expand_scenarios ctx : Ir.preset list =
   let decl_map : (string * scenario_decl) list =
     List.map (fun sd -> (sd.scname, sd)) ctx.scenario_decls
   in
-  (* Pass 2: for each scenario, resolve parents then emit IR preset. *)
+
+  (* gh#115 / 2026-05-26 upstream OCaml-compiler review Critical #5:
+     scenario field names (enable / disable / compose / set / scale)
+     were never validated against declared interventions / scenarios /
+     parameters. A typo silently disabled nothing and ran as baseline
+     — a direct wrong counterfactual when the scenario is selected at
+     run time. Build the validation sets once and check every scenario
+     before the IR build below. *)
+  let intervention_names : (string, unit) Hashtbl.t =
+    let t = Hashtbl.create (List.length ctx.interv_decls) in
+    List.iter (fun (iv : intervention_decl) ->
+      Hashtbl.replace t iv.ivname ()
+    ) ctx.interv_decls;
+    t
+  in
+  let scenario_names : (string, unit) Hashtbl.t =
+    let t = Hashtbl.create (List.length ctx.scenario_decls) in
+    List.iter (fun (sd : scenario_decl) ->
+      Hashtbl.replace t sd.scname ()
+    ) ctx.scenario_decls;
+    t
+  in
+  let parameter_names : (string, unit) Hashtbl.t =
+    (* Accept both the family name ("N") and the fully-expanded
+       per-stratum name ("N_rural", "N_urban"). The expansion table
+       is populated by `build_lookup_tables` upstream of this call
+       site (verified at line ~741: `ctx.expanded_param_tbl <- ept`).
+       Multi-dim indexed params: `build_lookup_tables` populates the
+       expanded set only for single-dim indexed params today; a
+       multi-dim parameter's family name is still accepted via the
+       PIndexed branch below. That mirrors today's user-facing
+       behaviour and avoids false-positives on existing models. *)
+    let t = Hashtbl.create (List.length ctx.param_decls) in
+    List.iter (fun (pd : param_decl) ->
+      let n = match pd with
+        | PScalar  { pname; _ } -> pname
+        | PIndexed { pname; _ } -> pname
+      in
+      Hashtbl.replace t n ()
+    ) ctx.param_decls;
+    Hashtbl.iter (fun k () -> Hashtbl.replace t k ()) ctx.expanded_param_tbl;
+    t
+  in
+  let table_names tbl =
+    Hashtbl.fold (fun k () acc -> k :: acc) tbl [] |> List.sort compare
+  in
+  let report_unknown ~code ~field ~scope ~scenario_name name names_tbl =
+    Diagnostics.error ctx.diags
+      ~code
+      ~loc:Diagnostics.no_loc
+      ~message:(Printf.sprintf
+        "scenario '%s': %s names unknown %s '%s'"
+        scenario_name field scope name)
+      ~hint:(Printf.sprintf
+        "declare %s '%s' first, or fix the typo. Available %ss: %s"
+        scope name scope
+        (let ns = table_names names_tbl in
+         if ns = [] then "(none declared)" else String.concat ", " ns))
+      ()
+  in
+
+  (* Pass 2: validate every scenario's field references.
+     Performed on raw `own` (not after parent merge) so each error
+     names the scenario that authored the bad reference, not its
+     descendant — clearer for diagnostic-driven fixes. *)
+  List.iter (fun sd ->
+    let own = collect_own_fields sd in
+    let name = sd.scname in
+    List.iter (fun n ->
+      if not (Hashtbl.mem intervention_names n) then
+        report_unknown ~code:"E267" ~field:"enable"
+          ~scope:"intervention" ~scenario_name:name n intervention_names
+    ) own.rs_enable;
+    List.iter (fun n ->
+      if not (Hashtbl.mem intervention_names n) then
+        report_unknown ~code:"E267" ~field:"disable"
+          ~scope:"intervention" ~scenario_name:name n intervention_names
+    ) own.rs_disable;
+    List.iter (fun n ->
+      if not (Hashtbl.mem scenario_names n) then
+        report_unknown ~code:"E269" ~field:"compose"
+          ~scope:"scenario" ~scenario_name:name n scenario_names
+    ) own.rs_compose;
+    List.iter (fun (k, _) ->
+      if not (Hashtbl.mem parameter_names k) then
+        report_unknown ~code:"E268" ~field:"set"
+          ~scope:"parameter" ~scenario_name:name k parameter_names
+    ) own.rs_set;
+    List.iter (fun (k, _) ->
+      if not (Hashtbl.mem parameter_names k) then
+        report_unknown ~code:"E268" ~field:"scale"
+          ~scope:"parameter" ~scenario_name:name k parameter_names
+    ) own.rs_scale
+  ) ctx.scenario_decls;
+
+  (* Pass 3: for each scenario, resolve parents then emit IR preset. *)
   List.map (fun sd ->
     let own = collect_own_fields sd in
     let resolved = resolve_parents ctx decl_map own in

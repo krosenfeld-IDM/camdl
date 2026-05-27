@@ -1268,6 +1268,71 @@ let test_extends_e25z_depth_exceeds () =
     }
   |})
 
+(* gh#115 / 2026-05-26 upstream OCaml-compiler review Critical #5 — *)
+(* scenario enable/disable/compose/set/scale names must be validated. *)
+
+let scenario_validation_boilerplate = {|
+    time_unit = 'days
+    compartments { S, V }
+    parameters { x : rate  cov : probability }
+    transitions {}
+    init { S = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+    interventions {
+      sia : transfer(fraction = cov, from = S, to = V) at [1]
+    }
+  |}
+
+let test_scenario_enable_unknown_intervention_is_e267 () =
+  compile_expect_error_code ~code:"E267" ~contains:"sai"
+    (scenario_validation_boilerplate ^ {|
+    scenarios {
+      high_coverage { enable = [sai] }
+    }
+  |})
+
+let test_scenario_disable_unknown_intervention_is_e267 () =
+  compile_expect_error_code ~code:"E267" ~contains:"siaa"
+    (scenario_validation_boilerplate ^ {|
+    scenarios {
+      baseline {}
+      no_sia { extends = baseline   disable = [siaa] }
+    }
+  |})
+
+let test_scenario_set_unknown_param_is_e268 () =
+  compile_expect_error_code ~code:"E268" ~contains:"cvo"
+    (scenario_validation_boilerplate ^ {|
+    scenarios {
+      typo_cov { set = { cvo = 0.9 } }
+    }
+  |})
+
+let test_scenario_scale_unknown_param_is_e268 () =
+  compile_expect_error_code ~code:"E268" ~contains:"xxx"
+    (scenario_validation_boilerplate ^ {|
+    scenarios {
+      typo_scale { scale = { xxx = 2.0 } }
+    }
+  |})
+
+let test_scenario_compose_unknown_scenario_is_e269 () =
+  compile_expect_error_code ~code:"E269" ~contains:"missing"
+    (scenario_validation_boilerplate ^ {|
+    scenarios {
+      base { set = { x = 0.3 } }
+      composed { compose = [base, missing] }
+    }
+  |})
+
+let test_scenario_enable_known_intervention_compiles () =
+  let _m = compile_expect_ok
+    (scenario_validation_boilerplate ^ {|
+    scenarios {
+      high_coverage { enable = [sia] }
+    }
+  |}) in ()
+
 let test_extends_w310_on_enable_dedup () =
   (* Compile should succeed but emit a W310 warning naming the parent
      and showing the resolved enable list. *)
@@ -5025,6 +5090,13 @@ let () =
       Alcotest.test_case "E25x cycle detected with chain in message" `Quick test_extends_e25x_cycle;
       Alcotest.test_case "E25y unknown parent + edit-distance hint"  `Quick test_extends_e25y_unknown_with_suggestion;
       Alcotest.test_case "E25z chain depth > 5 errors"               `Quick test_extends_e25z_depth_exceeds;
+      (* gh#115 — scenario field name validation *)
+      Alcotest.test_case "E267 scenario enable typo"   `Quick test_scenario_enable_unknown_intervention_is_e267;
+      Alcotest.test_case "E267 scenario disable typo"  `Quick test_scenario_disable_unknown_intervention_is_e267;
+      Alcotest.test_case "E268 scenario set typo"      `Quick test_scenario_set_unknown_param_is_e268;
+      Alcotest.test_case "E268 scenario scale typo"    `Quick test_scenario_scale_unknown_param_is_e268;
+      Alcotest.test_case "E269 scenario compose typo"  `Quick test_scenario_compose_unknown_scenario_is_e269;
+      Alcotest.test_case "scenario enable known name"  `Quick test_scenario_enable_known_intervention_compiles;
       Alcotest.test_case "W310 fires on append-dedup collision"      `Quick test_extends_w310_on_enable_dedup;
     ];
     "l401_lint", [
