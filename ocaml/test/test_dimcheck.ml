@@ -1000,6 +1000,9 @@ let () =
         (test_error_golden "E302" "e302_iota_bare_const");
       Alcotest.test_case "e303_param_inconsistent"  `Quick
         (test_error_golden "E303" "e303_param_inconsistent");
+      (* gh#116 / 2026-05-26 upstream OCaml-compiler review Critical #6 *)
+      Alcotest.test_case "e304_binomial_p_is_count"  `Quick
+        (test_error_golden "E304" "e304_binomial_p_is_count");
     ];
 
     (* ── Property-based tests (QCheck) ─────────────────────────────── *)

@@ -710,11 +710,30 @@ let check_model (m : model) : result =
       propagate st ~ctx eq.derivative rate_total
     ) m.ode_equations;
 
-    (* Observations — permissive-dim: standard epi variance formulas
-       (He et al. 2010 eq 6: sqrt(rho*m*(1 + rho*psi^2*m))) are not
-       strictly dim-homogeneous under the P-counting convention.
-       Suppress E302/E304 here; downstream likelihood evaluation
-       treats observation expressions as pure floats regardless. *)
+    (* Observations — permissive-dim covers the *mean / rate / sd*
+       positions because standard epi variance formulas (He et al.
+       2010 eq 6: sqrt(rho*m*(1 + rho*psi^2*m))) are not strictly
+       dim-homogeneous under the P-counting convention. Suppress
+       E302/E304 there; downstream likelihood evaluation treats
+       those expressions as pure floats regardless.
+
+       gh#116 (2026-05-26 upstream OCaml-compiler review Critical
+       #6): the blanket-permissive coverage was too wide — arguments
+       with KNOWN dimensional contracts (Binomial.p, Bernoulli.p,
+       BetaBinomial.alpha/beta, NegBinomial.dispersion) silently
+       accepted dimension-incompatible expressions. A common
+       missing-`/N` bug (`binomial(n = N, p = projected)` where
+       `projected` is a count) compiled and ran with no signal,
+       turning a prevalence likelihood into a count-valued
+       probability.
+
+       The fix: keep permissive-dim ON for variance-formula-bearing
+       positions (mean / rate / sd) but STRICTLY check the
+       known-contract arguments. `constrain_known` inspects the
+       *resolved* dim; it fires E304 only when the inferred
+       dimension is Known and ≠ expected — so it doesn't false-
+       positive on Unknown / Any expressions where the user
+       legitimately leaned on inference. *)
     let prev_permissive = st.permissive_dim in
     st.permissive_dim <- true;
     List.iter (fun (obs : observation_model) ->
@@ -722,16 +741,49 @@ let check_model (m : model) : result =
       (match obs.likelihood with
        | NegBinomial nb ->
          ignore (infer st ~ctx nb.mean);
-         ignore (infer st ~ctx nb.dispersion);
-         propagate st ~ctx nb.dispersion dimensionless
+         let disp_dim = infer st ~ctx nb.dispersion in
+         (* Pre-existing constraint, kept for symmetry with the new
+            checks below. propagate handles Unknown binding;
+            constrain_known catches Known-mismatch. *)
+         propagate st ~ctx nb.dispersion dimensionless;
+         constrain_known st ~code:"E304"
+           ~message:(Printf.sprintf
+             "%s: NegBinomial `dispersion` must be dimensionless" ctx)
+           disp_dim dimensionless
        | Poisson p -> ignore (infer st ~ctx p.rate)
        | Normal n -> ignore (infer st ~ctx n.mean); ignore (infer st ~ctx n.sd)
-       | Binomial b -> ignore (infer st ~ctx b.n); ignore (infer st ~ctx b.p)
+       | Binomial b ->
+         ignore (infer st ~ctx b.n);
+         (* gh#116: `p` must be a probability (dimensionless on
+            [0, 1]). A count here is the textbook missing-`/N` bug. *)
+         let p_dim = infer st ~ctx b.p in
+         constrain_known st ~code:"E304"
+           ~message:(Printf.sprintf
+             "%s: Binomial `p` must be dimensionless (probability); \
+              a count here is almost certainly a missing `/N`." ctx)
+           p_dim dimensionless
        | BetaBinomial bb ->
          ignore (infer st ~ctx bb.n);
-         ignore (infer st ~ctx bb.alpha);
-         ignore (infer st ~ctx bb.beta)
-       | Bernoulli b -> ignore (infer st ~ctx b.p))
+         (* gh#116: alpha/beta are shape parameters of a Beta
+            distribution — both dimensionless by definition. *)
+         let a_dim = infer st ~ctx bb.alpha in
+         let b_dim = infer st ~ctx bb.beta in
+         constrain_known st ~code:"E304"
+           ~message:(Printf.sprintf
+             "%s: BetaBinomial `alpha` must be dimensionless" ctx)
+           a_dim dimensionless;
+         constrain_known st ~code:"E304"
+           ~message:(Printf.sprintf
+             "%s: BetaBinomial `beta` must be dimensionless" ctx)
+           b_dim dimensionless
+       | Bernoulli b ->
+         (* gh#116: same as Binomial.p — must be a probability. *)
+         let p_dim = infer st ~ctx b.p in
+         constrain_known st ~code:"E304"
+           ~message:(Printf.sprintf
+             "%s: Bernoulli `p` must be dimensionless (probability); \
+              a count here is almost certainly a missing `/N`." ctx)
+           p_dim dimensionless)
     ) m.observations;
     st.permissive_dim <- prev_permissive
   done;
