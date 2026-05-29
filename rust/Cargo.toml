@@ -32,3 +32,10 @@ ir = { path = "crates/ir" }
 # the binary modules. Dependency is on path only; no version pinning
 # because it's in the same workspace.
 external-harness = { path = "crates/external-harness" }
+
+# Profiling profile: release-grade codegen + line tables so `samply`/`perf`
+# can resolve symbols and source lines. Kept separate so the shipped
+# `release` profile stays lean. Build with `cargo build --profile profiling`.
+[profile.profiling]
+inherits = "release"
+debug = true

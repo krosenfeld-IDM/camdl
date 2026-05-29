@@ -110,6 +110,69 @@ update-golden: update-ocaml-golden
 sim: build-rust
 	$(CAMDL) simulate $(MODEL) $(ARGS)
 
+# ── Benchmarks & profiling (FOI scaling study) ────────────────────────────────
+#
+# See docs/dev/notes/2026-05-29-foi-scaling-bench.md. The toy model generator
+# is scripts/gen_scaling_models.py; macro sweep scripts/bench_scaling.py.
+
+.PHONY: bench-scaling bench-micro bench-micro-fixtures flamegraph-real flamegraph-bench
+
+CAMDLC_ABS := $(abspath $(CAMDLC))
+GEN        := scripts/gen_scaling_models.py
+FX         := rust/crates/sim/benches/fixtures/scaling
+PROFILE_CAMDL := rust/target/profiling/camdl
+
+# (P,A,coupling) grid for the micro-bench fixtures — matches GRID in scaling.rs.
+MICRO_GRID := 4/1/on 8/1/on 16/1/on 32/1/on 4/1/off 8/1/off 16/1/off 32/1/off \
+              8/7/on 16/7/on 32/7/on 8/7/off 16/7/off 32/7/off
+
+# Macro sweep: full compile→simulate pipeline across scales → TSV + plot.
+bench-scaling: build
+	CAMDLC="$(CAMDLC_ABS)" python3 scripts/bench_scaling.py
+	uv run --with matplotlib --with numpy scripts/plot_scaling.py
+
+# Generate the (gitignored) IR fixtures the micro-bench loads.
+bench-micro-fixtures: build
+	@mkdir -p $(FX)
+	@for spec in $(MICRO_GRID); do \
+	  P=$${spec%%/*}; rest=$${spec#*/}; A=$${rest%%/*}; C=$${rest##*/}; \
+	  out=$(FX)/P$${P}_A$${A}_$${C}_minimal.ir.json; \
+	  python3 $(GEN) -P $$P -A $$A --coupling $$C --grad minimal -o /tmp/_micro.camdl 2>/dev/null; \
+	  CAMDL_SKIP_VERSION_CHECK=1 CAMDLC="$(CAMDLC_ABS)" $(CAMDL) compile /tmp/_micro.camdl --no-dim-check -o $$out >/dev/null; \
+	done
+	@echo "fixtures → $(FX)"
+
+# Per-step eval / load micro-benchmarks (criterion). Only the `scaling` bench —
+# the sibling `inference.rs` bench is stale; see the findings note.
+bench-micro: bench-micro-fixtures
+	cd rust && cargo bench -p sim --bench scaling
+
+# Flamegraph the real-model regime: generate the anchor (P=44,A=21,coupling=on,
+# grad=full ≈ the Kano model), then profile `simulate`. Produces a static SVG
+# (macOS `sample` → inferno; no sudo) that serves cleanly over HTTP, plus a
+# samply profile for interactive exploration. Point at a different IR (e.g. the
+# real Kano model) to profile that instead.
+# Prereqs: `cargo install inferno samply`.
+FG_SVG := docs/dev/notes/assets/scaling/flamegraph_real.svg
+flamegraph-real: build-ocaml
+	cd rust && cargo build --profile profiling -p cli --bin camdl
+	python3 $(GEN) -P 44 -A 21 --coupling on --grad full -o /tmp/fg_anchor.camdl
+	CAMDL_SKIP_VERSION_CHECK=1 CAMDLC="$(CAMDLC_ABS)" $(PROFILE_CAMDL) \
+	  compile /tmp/fg_anchor.camdl --no-dim-check -o /tmp/fg_anchor.ir.json
+	@echo "sampling simulate (~12s)..."
+	@TMPDIR=/tmp CAMDL_SKIP_VERSION_CHECK=1 CAMDLC="$(CAMDLC_ABS)" $(PROFILE_CAMDL) \
+	   simulate /tmp/fg_anchor.ir.json --backend chain_binomial --scenario baseline \
+	   -o /tmp/fg_traj.tsv & \
+	 PID=$$!; sample $$PID 12 -file /tmp/camdl_sample.txt >/dev/null 2>&1; wait $$PID
+	inferno-collapse-sample /tmp/camdl_sample.txt | \
+	  inferno-flamegraph --title "camdl simulate anchor (P=44,A=21,on,full)" > $(FG_SVG)
+	@echo "wrote $(FG_SVG)  (also: samply record -- $(PROFILE_CAMDL) simulate … for interactive)"
+
+# Flamegraph the per-step hot path via the scaling bench binary.
+flamegraph-bench: bench-micro-fixtures
+	cd rust && cargo build --profile profiling -p sim --bench scaling
+	@echo "run: samply record -- rust/target/profiling/deps/scaling-* --bench --profile-time 10 eval_propensities"
+
 # ── Tree-sitter / Neovim ──────────────────────────────────────────────────────
 
 TS_DIR      := tree-sitter

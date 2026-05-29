@@ -1,0 +1,4 @@
+# Generated IR fixtures for the scaling micro-bench — regenerate with
+# `make bench-micro` (scripts/gen_scaling_models.py + camdl compile).
+# Can be tens of MB; never committed.
+*.ir.json
