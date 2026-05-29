@@ -16,6 +16,124 @@ non-goals:
 
 # Shared per-coordinate bindings + a reduction node in the IR
 
+## Adversarial review revisions (2026-05-29) — supersede the body below where they conflict
+
+Two independent reviewers read the code. Verdict: direction sound, **D genuinely
+low-risk and shippable**; **B1/B2 underscoped** with two silent-wrong-answer traps.
+Changes:
+
+### Two correctness traps to design out (both → a *different number*, not a crash)
+
+1. **Float reassociation via `normalize_expr` (the #1 risk).** Today
+   `normalize_expr` (`expander.ml:847-875`) collapses `Pop`/`PopSum` `Add`-chains
+   into a flat `PopSum`, which resolves to `IntPopSum`/`MixedPopSum`
+   (`resolved_expr.rs:239-251`) — and `MixedPopSum` sums **int terms then real
+   terms**, a specific fold order. If a binding body like `N[l]` (5 comps × 21
+   ages = 105 terms, possibly mixed int/real) is re-emitted as a *source-order*
+   `Reduce{Sum}`, the summation order changes → one ULP in `N` → flips a single
+   `rng.binomial(n_src, p_total)` at a probability boundary → the trajectory
+   diverges. Small goldens (`sir_spatial_sum` has a 3-term `N`) are
+   associativity-blind and would pass. **Rule:** binding bodies that are pure
+   `Pop`/`PopSum` additive chains MUST flow through `normalize_expr` and resolve
+   to `IntPopSum`/`MixedPopSum` (preserving int-then-real order), **not** `Reduce`.
+   Reserve `Reduce` for the spatial sum whose terms are `Mul`-trees (which
+   `normalize_expr` already declines to collapse, `expander.ml:1597`). Add a test:
+   an extracted `N[l]` binding resolves byte-identically to the inlined `PopSum`,
+   on a model with a mixed int/real, ≥8-term `N`.
+
+2. **Catch-all `match` arms silently mis-answer for `BindingRef` (guard bypass).**
+   Several functions have `_ => false`/`_ => {}` and would mis-classify a
+   `BindingRef`, **silently bypassing safety guards**:
+   - `compiled_model.rs:179 expr_is_time_dependent` (`_=>false`) — **most
+     dangerous**: a `BindingRef` to a binding that transitively reads `school(t)`
+     → "time-independent" → frozen at t=0 under Gillespie = silent wrong dynamics
+     (the function's own doc warns of exactly this).
+   - `resolved_expr.rs:78 references_state`, `compiled_model.rs:129
+     collect_int_comp_deps`, `cli/src/eval.rs:64 references_compartments`.
+   These operate on a single `Expr` with **no access to the bindings table**, so
+   they cannot answer for a `BindingRef` without an API change. **Fix:** precompute
+   per-binding flags (`references_state`, `is_time_dependent`, `param_refs`) once
+   at `CompiledModel::new` and have these sites consult them through a `BindingRef`.
+
+### Design corrections
+
+- **`BindingRef` must be by-NAME, not by-index.** Every existing IR cross-ref is
+  by-name in JSON, resolved to a `usize` slot at `CompiledModel::new`
+  (`Param→param_index`, `Pop→comp_index`, `TableLookup→table_index`); raw `usize`
+  lives only in `ResolvedExpr`. So: `Expr::BindingRef(String)` (JSON
+  `{"binding_ref":"F_kano_dala"}`) → `ResolvedExpr::BindingRef(slot)` via a new
+  `binding_index` map in `ResolveCtx`. By-index is fragile to the reorder B2's
+  grad-binding insertion performs, and `BindingRef(47)` is unreadable in goldens.
+- **The preamble is needed in ALL backends, not just `step_one`.** `step_one`
+  lives only in `chain_binomial.rs`; rates are evaluated by chain-binomial,
+  tau-leap, Gillespie, ODE, **and** `intervention.rs`/`observe`. `EvalCtx`
+  (`propensity.rs:13`) gains `bindings: &[f64]`, and every `EvalCtx` construction
+  site + each backend's main loop must compute the binding slots before evaluating
+  rates. (The test plan already asserts invariance on tau-leap — so this is
+  blocking, not optional.)
+- **Binding extraction needs a free-variable precondition.** "FOI bindings are
+  global per step" is true for Kano (`N[l]`, `I_lga[l]` are indexed only by `l`)
+  but **not guaranteed in general**: `expander.ml:1540` resolves an indexed-let
+  body against `inner_env @ env`, where `env` carries the *enclosing transition's*
+  indices, so a model author can let a transition-local index (the `a` of
+  `infection[l,a]`) leak into a `let X[l] = …` body. **Rule + new machinery:**
+  extract a `let` only if every free variable of its body is bound by the let's
+  own declared indices; otherwise keep it inlined. A free-var scan against
+  `lb.lindices` does not exist today and must be built (with a diagnostic).
+
+### Completeness checklist (a missed exhaustive arm = compile error; do atomically)
+
+New variants `Reduce` + `BindingRef` must be handled in **all**: OCaml — `ir.ml`,
+`serde.ml` (single file; both `expr_to_json`/`expr_of_json` **and** the model
+record for the new `bindings` field), `dimcheck.ml:246 infer` (decide: `Reduce`
+unifies its terms like `Add`; `BindingRef` takes the binding's inferred dim — so
+thread the bindings table into `infer`), `validate.ml`, `lineage.ml:97,152,174`
+(**semantic**: parent decomposition can't see through a state-bearing
+`BindingRef` — either inline bindings for `#[lineage]` transitions or reject
+extraction there), `pp_expr.ml:26` (the `camdl inspect` renderer), `autodiff.ml`.
+Rust — `expr.rs` (enum + the Fix-E hand-written `Deserialize` arm), `validate.rs`,
+`resolved_expr.rs` (`resolve_expr` + `eval_resolved` + `references_state`), **both**
+derivative evaluators (`propensity.rs:228 eval_expr_deriv` *and*
+`resolved_expr.rs:441 eval_resolved_deriv`), `inference/hierarchical.rs:82`,
+`inference/pgas.rs:1486 collect_param_refs` (**correctness-critical**: a param
+reachable only through a `BindingRef` must still be collected or NUTS sees a zero
+gradient for it). Plus `model.rs` + schema for the `bindings` field.
+
+### B2 (shared gradients) — reassess; likely unnecessary for the current model
+
+Production gradients use the OCaml-emitted `rate_grad` evaluated by `eval_resolved`
+(not the test-only `eval_resolved_deriv`). Crucially, `autodiff.ml:18-20` maps
+`Pop`/`PopSum → 0` (state is conditioned-on in the PGAS θ|X step). **Every binding
+in the Kano FOI is state-only ⇒ `d(binding)/dp ≡ 0` ⇒ the diamond can't
+double-count and B2's emitted-grad-DAG buys *nothing* on the gradient** — once B1
+shrinks the rate trees, the inlined grads are already tiny. So:
+- Add a gate: scan binding bodies for `Param`. If none (verified true today),
+  **skip B2** — keep gradients inlined (B1 row already allows this).
+- If a parameter ever enters a binding (fitted gravity exponent, etc.), prefer
+  **option 2** (runtime dual numbers via the FD-validated `eval_resolved_deriv`)
+  over option 1 — reviewer 1 judged option 1's emitted-grad bookkeeping the
+  *higher* correctness risk (two `simplify_fixpoint` passes can yield ULP-divergent
+  trees for the same `db/dp`; grad-slot topo order must be proven). The current
+  FD gradient check covers only `sir_basic` (non-spatial) — any B2 needs a
+  **spatial FD gradient check** added first, or it can land green while wrong.
+
+### Factual corrections to the body below
+
+- "`ResolvedExpr` mirrors `Expr` 1:1" is wrong: `Pop→{IntPop,RealPop}`,
+  `PopSum→{IntPopSum,MixedPopSum}` at resolve time. New variants need bespoke
+  `ResolvedExpr` twins + resolve arms.
+- Regen: `make update-expected` and `ir/expected/` **do not exist**; the target is
+  `make update-golden` (+ `update-ocaml-golden`), and there are **two** golden
+  trees (`ir/golden/`, `ocaml/golden/`). Version skew to resolve: `ir/VERSION`=`0.6`
+  but golden JSON carries `"version":"0.3"` and `golden_deser.rs:40` asserts `0.3`.
+- Add a **spatial model to `ir/golden/`** (or a P≈64 synthetic) to the
+  trajectory-invariance gate — the small goldens are associativity-blind and
+  would let trap #1 ship green.
+
+**Net:** proceed with **D** as scoped (it only needs the `Reduce` arms above; it
+kills the cliff and is trajectory-invariant by the left-fold rule). Re-scope
+**B1** against this checklist before implementing; treat **B2** as conditional.
+
 ## Required-reading checkpoint (receipts)
 
 Verified against the current tree, not from memory:
