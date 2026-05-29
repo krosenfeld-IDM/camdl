@@ -1069,7 +1069,7 @@ fn run_one_chain(
     per_chain_params: Option<&[EstimatedParam]>,
     pb: Option<&ProgressBar>,
     stage_dir: Option<&str>,
-) -> IF2Result {
+) -> Result<IF2Result, sim::error::SimError> {
     let chain_seed = crate::util::derive_chain_seed(config.seed, chain_id);
     let if2_params = per_chain_params.unwrap_or(&config.estimated_params);
 
@@ -1148,14 +1148,26 @@ fn run_one_chain(
         }
     };
 
-    let result = run_if2_with_progress(
+    // The chain runner (`run_chains_with_per_chain_params`) decides what a
+    // failure means: a PFDegenerate is skip-and-continue (one bad chain
+    // shouldn't kill a multi-chain fit), other errors are fatal. So we
+    // propagate the error rather than `process::exit`-ing here. Flush the
+    // streaming trace first so a bailed chain doesn't leave a truncated
+    // partial file.
+    let result = match run_if2_with_progress(
         &process, &obs_model, &config.base_params, if2_params,
         &config.if2_config, chain_seed,
         Some(&progress_cb),
-    ).unwrap_or_else(|e| {
-        eprintln!("chain {} error: {:?}", chain_id + 1, e);
-        std::process::exit(1);
-    });
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(cell) = &trace_writer {
+                use std::io::Write;
+                if let Ok(mut w) = cell.try_borrow_mut() { let _ = w.flush(); }
+            }
+            return Err(e);
+        }
+    };
 
     // Final flush so partial buffers don't leave the file truncated
     // if the post-hoc rewrite is delayed.
@@ -1172,7 +1184,7 @@ fn run_one_chain(
             chain_id + 1, n_iter, n_iter, result.final_loglik);
     }
 
-    result
+    Ok(result)
 }
 
 /// Run N chains with optional per-chain EstimatedParam overrides (for scout random starts).
@@ -1207,12 +1219,61 @@ pub fn run_chains_with_per_chain_params(
 
     let results: Vec<(usize, IF2Result)> = (0..config.n_chains)
         .into_par_iter()
-        .map(|chain_id| {
+        .filter_map(|chain_id| {
             let per_chain = per_chain_params.map(|pcp| &pcp[chain_id][..]);
-            let result = run_one_chain(chain_id, config, per_chain, Some(&bars[chain_id]), stage_dir);
-            (chain_id, result)
+            match run_one_chain(chain_id, config, per_chain, Some(&bars[chain_id]), stage_dir) {
+                Ok(result) => Some((chain_id, result)),
+                // gh#110 (IF2 follow-up): a chain whose IF2 search wandered
+                // into the PF-degenerate region is skipped with a BadInit
+                // diagnostic and omitted from downstream R̂/agreement/winner
+                // aggregation; the surviving chains continue. Mirrors PMMH's
+                // skip-and-continue (`pmmh.rs`) so one bad chain can't kill an
+                // otherwise-healthy multi-chain fit. The loud diagnostic
+                // (collector + stderr) keeps the skip visible — never silent.
+                Err(sim::error::SimError::PFDegenerate { kind, obs_window, elapsed_s }) => {
+                    let reason = format!(
+                        "{:?} at obs_window={} after {:.2}s", kind, obs_window, elapsed_s);
+                    let params: std::collections::BTreeMap<String, f64> =
+                        config.estimated_params.iter()
+                            .map(|spec| (
+                                spec.name.clone(),
+                                config.base_params.get(spec.index).copied().unwrap_or(f64::NAN),
+                            ))
+                            .collect();
+                    collector.push(DiagnosticKind::BadInit {
+                        chain_id, params, reason: reason.clone(),
+                    });
+                    eprintln!("  chain {}: \x1b[31m✗ skipped\x1b[0m — PF degenerate ({})",
+                        chain_id + 1, reason);
+                    if let Some(bar) = bars.get(chain_id) {
+                        bar.finish_with_message("skipped (PF degenerate)".to_string());
+                    }
+                    None
+                }
+                // Any non-degeneracy error is structural (config bug,
+                // unknown compartment, …) — every chain would hit it, so
+                // there is no survivor to fall back to. Fail loudly.
+                Err(other) => {
+                    eprintln!("chain {} error: {:?}", chain_id + 1, other);
+                    std::process::exit(1);
+                }
+            }
         })
         .collect();
+
+    // gh#110 (IF2 follow-up): if EVERY chain degenerated there is no
+    // inference to report. Fail with an actionable message rather than
+    // letting a later stage trip over an empty result set.
+    if results.is_empty() {
+        eprintln!(
+            "error: all {} IF2 chain(s) hit PF degeneracy — no usable chain.\n  \
+             The particle filter's effective sample size collapsed for every \
+             chain (commonly R0 driven to its bound, σ too large, or too few \
+             particles). Try: raise --particles, tighten parameter bounds, or \
+             recheck the data/model scale.",
+            config.n_chains);
+        std::process::exit(1);
+    }
 
     // Evaluate true (unperturbed) loglik at selected iterations for ALL chains.
     // Every 10 iterations, run a clean PF at the filter mean params.

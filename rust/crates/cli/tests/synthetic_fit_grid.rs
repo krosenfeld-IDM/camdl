@@ -191,6 +191,79 @@ cases = "{}"
         "summary.tsv should have at least 3 data rows: {}", text);
 }
 
+// ── gh#110 follow-up: IF2 skips a degenerate chain instead of aborting ──
+/// When one IF2 chain's search wanders into the PF-degenerate region, the
+/// runner must skip that chain (with a loud diagnostic) and finish the fit
+/// on the survivors — matching PMMH's gh#110 skip-and-continue. Previously
+/// the runner `process::exit(1)`-ed on the first chain error, killing the
+/// whole fit even when other chains were healthy.
+///
+/// Base seed 33 is chosen because its IF2 search deterministically collapses
+/// ESS around obs window 9 (verified); with several chains at least one
+/// survives, so a correct runner completes the fit.
+#[test]
+fn fit_run_skips_degenerate_if2_chain_and_continues() {
+    let Some(bin) = camdl_sim() else { return; };
+    if camdlc().is_none() { return; }
+    let tmp = tempdir("degenskip");
+    let (ir, _) = write_fixture(tmp.path());
+    let out = tmp.path().join("out");
+    let data_tsv = tmp.path().join("cases.tsv");
+    std::fs::write(&data_tsv, "time\tcases\n1\t5\n2\t7\n3\t12\n4\t18\n5\t25\n6\t30\n7\t28\n8\t22\n9\t15\n10\t10\n").unwrap();
+    let fit_toml = tmp.path().join("fit.toml");
+    std::fs::write(&fit_toml, format!(r#"
+output_dir = "{}"
+fit_seeds = [33]
+
+[model]
+camdl = "{}"
+
+[data.observations]
+cases = "{}"
+
+[estimate]
+beta  = {{ bounds = [0.01, 5.0], start = 1.0 }}
+gamma = {{ bounds = [0.01, 1.0], start = 0.3 }}
+
+[fixed]
+N0 = 1000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 6
+particles = 100
+iterations = 5
+cooling = 0.7
+"#, out.display(), ir.display(), data_tsv.display())).unwrap();
+
+    let res = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit_toml)
+        .args(["--progress", "none"])
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .output()
+        .expect("camdl fit run must invoke");
+    let stderr = String::from_utf8_lossy(&res.stderr);
+
+    // Acceptance 1: the fit completes despite a degenerate chain.
+    assert!(res.status.success(),
+        "fit must succeed when an IF2 chain hits PFDegenerate — the bad \
+         chain should be skipped, not abort the whole fit.\nstderr:\n{}",
+        stderr);
+
+    // Acceptance 2 (non-vacuity): a chain was actually skipped for
+    // degeneracy. Without this the test could pass without ever exercising
+    // the skip path (e.g. if no chain degenerated).
+    assert!(stderr.to_lowercase().contains("degenerate"),
+        "expected a degenerate-chain skip diagnostic in stderr — the test \
+         must actually exercise the skip path; got:\n{}", stderr);
+
+    // Acceptance 3: the surviving chains still produced the fit output.
+    let mle = find_fit_dir(&out, "fit").join("real").join("fit_33").join("mle");
+    assert!(mle.exists(),
+        "surviving chains must still write fit_33/mle/ at {}", mle.display());
+}
+
 // ── mode 3: synthetic generation — N datasets, synthetic/ prefix ───────
 #[test]
 fn synthetic_generates_n_datasets_and_fits() {
