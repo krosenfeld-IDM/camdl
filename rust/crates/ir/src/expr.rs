@@ -173,9 +173,22 @@ pub struct UncheckedDimWrap {
 // ── Expression ────────────────────────────────────────────────────────────────
 
 /// Pure, total, first-order expression language.  Each variant serialises to
-/// a JSON object whose sole key unambiguously identifies the variant, which
-/// allows an untagged serde enum to round-trip correctly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// a JSON object whose sole key unambiguously identifies the variant.
+///
+/// **Serialization** uses `#[serde(untagged)]`, which for a newtype-variant
+/// enum simply emits the inner wrapper — i.e. the single-key object
+/// (`{"const": …}`, `{"bin_op": …}`).
+///
+/// **Deserialization** is hand-written below (see `impl Deserialize`), *not*
+/// derived. Derived `untagged` deserialization buffers every node into an
+/// owned `serde::private::de::Content` value and trial-deserializes each
+/// variant in turn (clone + drop per node) — pathological for a deeply
+/// recursive AST: profiling a 2 GB IR showed ~50% of `simulate` wall time in
+/// `content_clone`/`Content` drop/malloc. The single map key already names the
+/// variant, so the manual impl dispatches on it in one streaming pass with no
+/// buffering. The emitted JSON is unchanged (golden round-trip tests pin it).
+/// See docs/dev/notes/2026-05-29-foi-scaling-bench.md (Fix E).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Expr {
     Const(ConstExpr),
@@ -223,5 +236,176 @@ impl Expr {
         Expr::UnOp(UnOpWrap {
             un_op: UnOpExpr { op, arg: Box::new(arg) },
         })
+    }
+}
+
+// ── Hand-written Deserialize (single-pass, no Content buffering) ──────────────
+//
+// Replaces the derived `#[serde(untagged)]` deserialization. Every `Expr` node
+// is a single-key object whose key names the variant, so we read that one key
+// and dispatch — no per-node buffer-allocate/clone/drop. See the doc comment on
+// `Expr` and docs/dev/notes/2026-05-29-foi-scaling-bench.md (Fix E).
+impl<'de> Deserialize<'de> for Expr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct ExprVisitor;
+
+        impl<'de> Visitor<'de> for ExprVisitor {
+            type Value = Expr;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str(
+                    "a camdl expression node: a single-key JSON object whose key names \
+                     the node kind (e.g. \"const\", \"pop\", \"bin_op\")",
+                )
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Expr, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let key: String = map.next_key()?.ok_or_else(|| {
+                    de::Error::custom(
+                        "expected a single-key expression object, found an empty object",
+                    )
+                })?;
+
+                // `()`-valued variants (time/dt/projected) serialise as null;
+                // deserialising into `()` enforces that the value is null.
+                let expr = match key.as_str() {
+                    "const" => Expr::Const(ConstExpr { value: map.next_value()? }),
+                    "param" => Expr::Param(ParamExpr { param: map.next_value()? }),
+                    "pop" => Expr::Pop(PopExpr { pop: map.next_value()? }),
+                    "pop_sum" => Expr::PopSum(PopSumExpr { pop_sum: map.next_value()? }),
+                    "time" => {
+                        map.next_value::<()>()?;
+                        Expr::Time(TimeExpr { time: () })
+                    }
+                    "dt" => {
+                        map.next_value::<()>()?;
+                        Expr::Dt(DtExpr { dt: () })
+                    }
+                    "bin_op" => Expr::BinOp(BinOpWrap { bin_op: map.next_value()? }),
+                    "un_op" => Expr::UnOp(UnOpWrap { un_op: map.next_value()? }),
+                    "cond" => Expr::Cond(CondWrap { cond: map.next_value()? }),
+                    "time_func" => {
+                        Expr::TimeFunc(TimeFuncWrap { time_func: map.next_value()? })
+                    }
+                    "table_lookup" => {
+                        Expr::TableLookup(TableLookupWrap { table_lookup: map.next_value()? })
+                    }
+                    "projected" => {
+                        map.next_value::<()>()?;
+                        Expr::Projected(ProjectedExpr { projected: () })
+                    }
+                    "unchecked_dim" => {
+                        Expr::UncheckedDim(UncheckedDimWrap { unchecked_dim: map.next_value()? })
+                    }
+                    other => {
+                        return Err(de::Error::custom(format!(
+                            "unknown expression node kind '{other}' (expected one of: const, \
+                             param, pop, pop_sum, time, dt, bin_op, un_op, cond, time_func, \
+                             table_lookup, projected, unchecked_dim)"
+                        )))
+                    }
+                };
+
+                // Single-key invariant: a second key means malformed IR. Reject
+                // rather than silently ignore it ("no loose semantics").
+                if let Some(extra) = map.next_key::<String>()? {
+                    return Err(de::Error::custom(format!(
+                        "expression node '{key}' has an unexpected extra key '{extra}'; \
+                         each expression object must have exactly one key"
+                    )));
+                }
+
+                Ok(expr)
+            }
+        }
+
+        deserializer.deserialize_map(ExprVisitor)
+    }
+}
+
+#[cfg(test)]
+mod deserialize_tests {
+    use super::*;
+
+    fn roundtrip(e: &Expr) {
+        let json = serde_json::to_string(e).expect("serialize");
+        let back: Expr = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(*e, back, "round-trip changed value; json was {json}");
+    }
+
+    #[test]
+    fn roundtrips_every_variant_and_a_deep_nesting() {
+        // Each leaf variant.
+        for e in [
+            Expr::const_(1.5),
+            Expr::const_(-0.0),
+            Expr::param("beta"),
+            Expr::pop("S_kano_dala_age_0_4"),
+            Expr::pop_sum(vec!["S".into(), "E".into(), "I".into()]),
+            Expr::time(),
+            Expr::dt(),
+            Expr::Projected(ProjectedExpr { projected: () }),
+            Expr::TimeFunc(TimeFuncWrap { time_func: TimeFuncRef { name: "school".into() } }),
+            Expr::TableLookup(TableLookupWrap {
+                table_lookup: TableLookupExpr { table: "W".into(), indices: vec![Expr::const_(3.0)] },
+            }),
+        ] {
+            roundtrip(&e);
+        }
+
+        // A deep tree exercising every compound variant (BinOp/UnOp/Cond/
+        // UncheckedDim) and recursion through Box<Expr>.
+        let cond = Expr::Cond(CondWrap {
+            cond: CondExpr {
+                pred: Box::new(Expr::bin_op(BinOp::Gt, Expr::pop("I"), Expr::const_(0.0))),
+                then: Box::new(Expr::bin_op(BinOp::Mul, Expr::param("gamma"), Expr::pop("I"))),
+                else_: Box::new(Expr::const_(0.0)),
+            },
+        });
+        let escaped = Expr::UncheckedDim(UncheckedDimWrap {
+            unchecked_dim: UncheckedDimExpr {
+                inner: Box::new(Expr::un_op(UnOp::Exp, Expr::time())),
+                dim: (1, -1),
+                reason: "test".into(),
+            },
+        });
+        let tree = Expr::bin_op(BinOp::Add, cond, escaped);
+        roundtrip(&tree);
+    }
+
+    #[test]
+    fn deserializes_existing_json_shapes() {
+        // The exact on-disk shapes the OCaml compiler emits.
+        assert_eq!(
+            serde_json::from_str::<Expr>(r#"{"const": 2.5}"#).unwrap(),
+            Expr::const_(2.5)
+        );
+        assert_eq!(serde_json::from_str::<Expr>(r#"{"time": null}"#).unwrap(), Expr::time());
+        assert_eq!(
+            serde_json::from_str::<Expr>(r#"{"bin_op":{"op":"mul","left":{"param":"R0"},"right":{"pop":"S"}}}"#).unwrap(),
+            Expr::bin_op(BinOp::Mul, Expr::param("R0"), Expr::pop("S"))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_nodes() {
+        // Unknown kind, empty object, and the single-key-invariant violation
+        // must all be hard errors (the derived untagged impl silently ignored
+        // the extra key on multi-key objects; this is intentionally stricter).
+        assert!(serde_json::from_str::<Expr>(r#"{"bogus": 1}"#).is_err(), "unknown key");
+        assert!(serde_json::from_str::<Expr>("{}").is_err(), "empty object");
+        assert!(
+            serde_json::from_str::<Expr>(r#"{"const": 1.0, "param": "x"}"#).is_err(),
+            "multi-key object"
+        );
     }
 }
