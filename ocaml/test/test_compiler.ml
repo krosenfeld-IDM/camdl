@@ -3373,6 +3373,29 @@ let test_forcing_without_unit_errors () =
   |} in
   compile_expect_error_code ~code:"E001" ~contains:"" src
 
+(** Comma-separated entries in a scenario `set`/`scale` block are rejected
+    with a separator hint. Entries are newline-separated; commas are reserved
+    for `[...]` lists and `(...)` argument lists. Pre-fix this surfaced as a
+    bare E001 pointing at the second key with no explanation; post-fix the
+    E001 message names the separator ("newlines, not commas") and shows the
+    corrected multi-line form. ("Error messages are a feature.") *)
+let test_scenario_set_comma_separator_hint () =
+  let src = {|
+    time_unit = 'days
+    compartments { S }
+    parameters {
+      mu : rate in [0.001, 10.0]
+      nu : rate in [0.001, 10.0]
+    }
+    init { S = 1000 }
+    transitions { death : S --> @ mu * S }
+    simulate { from = 0 'days  to = 20 'days }
+    scenarios {
+      baseline { set = { mu = 0.1, nu = 0.2 } }
+    }
+  |} in
+  compile_expect_error_code ~code:"E001" ~contains:"newlines, not commas" src
+
 (* ── DerivedExpr projection (GH #7 resolution, 2026-04-22) ──────────────── *)
 
 (** Bare arithmetic in `projected = ...` — the general form for pooled
@@ -5212,6 +5235,7 @@ let () =
       Alcotest.test_case "'ratio → dim (0,0)"                        `Quick test_sinusoidal_ratio_dim;
       Alcotest.test_case "'count → dim (1,0)"                        `Quick test_sinusoidal_count_dim;
       Alcotest.test_case "forcing without unit literal is an error" `Quick test_forcing_without_unit_errors;
+      Alcotest.test_case "comma in scenario set{} block hints newline separator" `Quick test_scenario_set_comma_separator_hint;
     ];
     "derived_expr_projections", [
       Alcotest.test_case "`projected = I_m + I_s` emits DerivedExpr"    `Quick test_projected_bare_sum_emits_derived_expr;

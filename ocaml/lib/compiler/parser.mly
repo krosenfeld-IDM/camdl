@@ -881,3 +881,25 @@ scenario_kv_item:
   | k = IDENT LBRACKET idxs = separated_nonempty_list(COMMA, IDENT) RBRACKET EQ v = expr
       { (String.concat "_" (k :: idxs), v) }
   | k = IDENT EQ v = expr { (k, v) }
+  (* Error production: entries in a scenario `set`/`scale` block are
+     separated by NEWLINES, not commas. Commas are reserved for `[...]`
+     lists and `(...)` argument lists. Without this clause a comma after
+     a complete entry (`set = { mu = 0.1, nu = 0.2 }`) hits no production
+     and surfaces as a bare E001 pointing at the next key, with no
+     explanation. We consume the stray comma so parsing recovers, and
+     buffer an E001 whose message names the separator and shows the fix.
+     "Error messages are a feature" — see CLAUDE.md. *)
+  | k = IDENT LBRACKET idxs = separated_nonempty_list(COMMA, IDENT) RBRACKET EQ v = expr COMMA
+      { Parser_errors.push_error ~sp:$startpos ~ep:$endpos
+          ~code:"E001"
+          ~msg:"syntax error: entries in a scenario `set`/`scale` block are \
+                separated by newlines, not commas. Write each assignment on \
+                its own line, e.g.\n  set = {\n    mu = 0.1\n    nu = 0.2\n  }";
+        (String.concat "_" (k :: idxs), v) }
+  | k = IDENT EQ v = expr COMMA
+      { Parser_errors.push_error ~sp:$startpos ~ep:$endpos
+          ~code:"E001"
+          ~msg:"syntax error: entries in a scenario `set`/`scale` block are \
+                separated by newlines, not commas. Write each assignment on \
+                its own line, e.g.\n  set = {\n    mu = 0.1\n    nu = 0.2\n  }";
+        (k, v) }
