@@ -40,6 +40,18 @@ struct ExperimentToml {
     sweep: HashMap<String, SweepSpec>,
     #[serde(default)]
     design: HashMap<String, DesignBlock>,
+    #[serde(default)]
+    obs: ObsSection,
+}
+
+/// `[obs]` section — synthetic observation output for the batch ensemble.
+/// `enabled = true` samples each run's observation streams and writes them
+/// into the CAS obs subtree (`seed_N/obs/{obs_hash}-{obs_seed}/<stream>.tsv`,
+/// the designed layout from `cas/mod.rs`). Resolves CLI review finding #4.
+#[derive(Debug, Deserialize, Default)]
+struct ObsSection {
+    #[serde(default)]
+    enabled: bool,
 }
 
 // ─── Design specification ─────────────────────────────────────────────────────
@@ -227,6 +239,82 @@ pub struct ScenarioEntry {
     pub enable: Vec<String>,
     #[serde(default)]
     pub disable: Vec<String>,
+}
+
+/// A `[[scenario]]` entry after resolution against the model's
+/// `scenarios{}` presets (CLI review finding #3).
+///
+/// `route` decides how the per-run `SimRun` is built:
+///   - `Some(preset_name)` → route through the named-preset branch of
+///     `params_resolver` (`scenario_name = Some(...)`), exactly as
+///     `simulate --scenario` does. The model preset is the source of
+///     truth for params/enable/disable/scale/compose.
+///   - `None` → ad-hoc patch (`scenario_name = None`) using the inline
+///     enable/disable/params.
+///
+/// `enable`/`disable`/`params` are the *hash-relevant* delta — for a
+/// preset they are read off the preset (mirroring `prepare_cas_ctx`) so
+/// the CAS path stays consistent with the single-run `--cas` layout.
+#[derive(Debug, Clone)]
+pub struct ResolvedEntry {
+    pub name: String,
+    pub route: Option<String>,
+    pub enable: Vec<String>,
+    pub disable: Vec<String>,
+    pub params: HashMap<String, f64>,
+}
+
+/// Resolve every `[[scenario]]` entry against the model's preset names
+/// using the shared [`crate::sim_job::resolve_scenario_ref`] semantics.
+/// Errors (unknown name, preset+inline collision) are user-facing and
+/// fatal — the batch must not silently run a mislabeled scenario.
+fn resolve_batch_scenarios(
+    entries: &[ScenarioEntry],
+    model: &ir::Model,
+) -> Result<Vec<ResolvedEntry>, String> {
+    use crate::sim_job::{resolve_scenario_ref, ResolvedScenario, ScenarioRef};
+    let preset_names: Vec<String> =
+        model.presets.iter().map(|p| p.name.clone()).collect();
+
+    entries
+        .iter()
+        .map(|sc| {
+            let params_im: indexmap::IndexMap<String, f64> =
+                sc.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            let sref = ScenarioRef::Inline {
+                name: sc.name.clone(),
+                enable: sc.enable.clone(),
+                disable: sc.disable.clone(),
+                params: params_im,
+            };
+            match resolve_scenario_ref(&sref, &preset_names)? {
+                ResolvedScenario::Preset { name } => {
+                    // Hash-relevant delta = the preset's own
+                    // enable/disable/params, matching prepare_cas_ctx
+                    // so batch and single-run --cas agree on layout.
+                    let preset = model.presets.iter()
+                        .find(|p| p.name == name)
+                        .expect("resolve_scenario_ref confirmed preset exists");
+                    Ok(ResolvedEntry {
+                        name,
+                        route: Some(preset.name.clone()),
+                        enable: preset.enable.clone(),
+                        disable: preset.disable.clone(),
+                        params: preset.params.clone(),
+                    })
+                }
+                ResolvedScenario::Adhoc { name, enable, disable, params } => {
+                    Ok(ResolvedEntry {
+                        name,
+                        route: None,
+                        enable,
+                        disable,
+                        params: params.into_iter().collect(),
+                    })
+                }
+            }
+        })
+        .collect()
 }
 
 // ─── Run planning ─────────────────────────────────────────────────────────────
@@ -480,11 +568,46 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
     let sweep_points = expand_sweep(&exp.sweep);
     let has_sweep = !exp.sweep.is_empty();
 
-    let scenarios: Vec<ScenarioEntry> = if exp.scenario.is_empty() {
+    let raw_scenarios: Vec<ScenarioEntry> = if exp.scenario.is_empty() {
         vec![ScenarioEntry { name: "baseline".to_string(), params: HashMap::new(), enable: vec![], disable: vec![] }]
     } else {
         exp.scenario
     };
+
+    // Resolve each [[scenario]] against the model's scenarios{} presets
+    // (CLI review #3). A name matching a preset routes through the same
+    // params_resolver preset path simulate --scenario uses; a name with
+    // inline patches is ad-hoc; an unknown name with no patches is a hard
+    // error. The model is parsed from the IR JSON already in hand.
+    let batch_model: ir::Model = ir::from_str(&ir_json).unwrap_or_else(|e| {
+        eprintln!("error: cannot parse model IR for scenario resolution: {}", e);
+        std::process::exit(1);
+    });
+    let resolved_scenarios = resolve_batch_scenarios(&raw_scenarios, &batch_model)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+    // Hash-only view: enable/disable/params are the resolved delta so the
+    // CAS path is byte-identical to single-run --cas for preset scenarios.
+    let scenarios: Vec<ScenarioEntry> = resolved_scenarios.iter().map(|r| ScenarioEntry {
+        name: r.name.clone(),
+        params: r.params.clone(),
+        enable: r.enable.clone(),
+        disable: r.disable.clone(),
+    }).collect();
+
+    // [obs] enabled (CLI review #4). When set, each run's observation
+    // streams are sampled and written into the CAS obs subtree. Validate
+    // up front that the model declares observation blocks — a silent
+    // no-op here would be a "looks like it works but produced nothing"
+    // trap.
+    let obs_enabled = exp.obs.enabled;
+    if obs_enabled && batch_model.observations.is_empty() {
+        eprintln!("error: [obs] enabled = true but the model declares no \
+                   observations {{}} block — nothing to sample.");
+        std::process::exit(1);
+    }
 
     let runs_dir = format!("{}/sims", output_dir);
 
@@ -496,7 +619,7 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
     if a.dry_run {
         print_batch_dry_run(
             &model_path, backend, dt, &output_dir, parallel,
-            &scenarios, &sweep_points, &seeds, &base_params,
+            &resolved_scenarios, &sweep_points, &seeds, &base_params,
             exp.config.params.as_deref(), &plans,
         );
         return;
@@ -536,118 +659,90 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
 
     let scenario_names: Vec<String> = scenarios.iter().map(|s| s.name.clone()).collect();
 
-    let counter = Arc::new(AtomicUsize::new(0));
     if parallel > 0 {
         let _ = rayon::ThreadPoolBuilder::new()
             .num_threads(parallel)
             .build_global();
     }
 
-    let results: Vec<Result<RunEntry, String>> = {
-        plans.par_iter().map(|plan| {
-            if plan.decision == RunDecision::CacheHit {
-                let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                eprintln!("[{}/{}] scenario={} seed={} (skipped — already exists)", n, total, plan.scenario, plan.seed);
-                return Ok(RunEntry {
-                    scenario: plan.scenario.clone(),
-                    seed: plan.seed,
-                    run_path: plan.run_path.clone(),
-                    sweep_point: plan.sweep_overrides.clone(),
-                });
-            }
+    // ── Build the SimulateJob and route through the unified engine ──────────
+    //
+    // `batch run` is now a thin TOML front-end over `engine::run_job` — the
+    // SAME engine `camdl simulate` uses (run-spec §3.1). The per-cell seed
+    // arithmetic and SimRun construction are shared; the CAS-tree output
+    // shape lives in `CasSink`, which reuses the existing `SimulateInputs`
+    // hashing so the on-disk layout / content-hashes stay byte-identical to
+    // the pre-unification batch path.
+    //
+    // Scenario routing: a resolved preset → `ScenarioRef::Named` (the
+    // params_resolver preset path); an ad-hoc patch → `ScenarioRef::Inline`.
+    use crate::sim_job::{ParamSource, ScenarioRef, Seeds, SimulateJob};
+    let job_scenarios: Vec<ScenarioRef> = resolved_scenarios.iter().map(|r| {
+        match &r.route {
+            Some(preset_name) => ScenarioRef::Named(preset_name.clone()),
+            None => ScenarioRef::Inline {
+                name: r.name.clone(),
+                enable: r.enable.clone(),
+                disable: r.disable.clone(),
+                params: r.params.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            },
+        }
+    }).collect();
 
-            // Build per-run overrides: sweep point (M layer) + scenario params (σ layer)
-            let sc = scenarios.iter().find(|s| s.name == plan.scenario).unwrap();
-            let mut overrides_map: HashMap<String, f64> = plan.sweep_overrides.clone();
-            // Scenario params overlay sweep params (scenario σ layer is after M layer)
-            overrides_map.extend(sc.params.iter().map(|(k, v)| (k.clone(), *v)));
-
-            let sim_run = SimRun {
-                ir_path: ir_path_resolved.clone(),
-                params_files: params_file_opt.as_ref().map(|p| vec![p.clone()]).unwrap_or_default(),
-                overrides: overrides_map,
-                scenario_name: None,
-                adhoc_enable: sc.enable.clone(),
-                adhoc_disable: sc.disable.clone(),
-                backend,
-                dt,
-                seed: plan.seed,
-                ..Default::default()
-            };
-
-            let run_t0 = std::time::Instant::now();
-            match run_simulation(&sim_run) {
-                Err(e) => {
-                    let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    eprintln!("[{}/{}] scenario={} seed={} ERROR: {}", n, total, plan.scenario, plan.seed, e);
-                    Err(format!("scenario={} seed={}: {}", plan.scenario, plan.seed, e))
-                }
-                Ok((traj, model)) => {
-                    if let Err(e) = std::fs::create_dir_all(&plan.run_dir) {
-                        return Err(format!("cannot create {}: {}", plan.run_dir, e));
-                    }
-                    if let Err(e) = write_traj_tsv(&format!("{}/traj.tsv", plan.run_dir), &model, &traj, false) {
-                        return Err(format!("cannot write traj.tsv in {}: {}", plan.run_dir, e));
-                    }
-                    let mut merged_params = plan.sweep_overrides.clone();
-                    merged_params.extend(sc.params.iter().map(|(k, v)| (k.clone(), *v)));
-                    // Build typed CAS inputs and let the trait dispatch
-                    // handle hash + run_kind composition. Batch never
-                    // launches from a fit MLE (it reads experiment
-                    // configs, not mle_params.toml), so from_fit_hash
-                    // stays None.
-                    let inputs = crate::cas::sim_inputs::SimulateInputs {
-                        model_path:           ir_path_resolved.clone(),
-                        model_stem:           crate::hashing::path_stem_slug(&ir_path_resolved),
-                        scenario:             plan.scenario.clone(),
-                        model_hash:           mhash.clone(),
-                        base_params_canonical: canonical_params(&base_params),
-                        backend,
-                        dt,
-                        enable:               sc.enable.clone(),
-                        disable:              sc.disable.clone(),
-                        scen_params:          merged_params,
-                        seed:                 plan.seed,
-                        from_fit_hash:        None,
-                        sweep_point:          plan.sweep_overrides.clone(),
-                    };
-                    use crate::cas::typed::CasInputs;
-                    let run_rec = crate::run_meta::Run {
-                        hash:              inputs.content_hash().full().to_string(),
-                        version:           version::VERSION_SHORT.to_string(),
-                        created_at:        cas::iso8601_utc(std::time::SystemTime::now()),
-                        argv:              std::env::args().collect(),
-                        status:            crate::run_meta::RunStatus::Completed {
-                            wall_time_seconds: run_t0.elapsed().as_secs_f64(),
-                        },
-                        label:             None,
-                        kind:              inputs.run_kind(),
-                    };
-                    run_rec.write(std::path::Path::new(&plan.run_dir))
-                        .map_err(|e| format!("cannot write run.json in {}: {}", plan.run_dir, e))?;
-
-                    let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    eprintln!("[{}/{}] scenario={} seed={}", n, total, plan.scenario, plan.seed);
-                    Ok(RunEntry {
-                        scenario: plan.scenario.clone(),
-                        seed: plan.seed,
-                        run_path: plan.run_path.clone(),
-                        sweep_point: plan.sweep_overrides.clone(),
-                    })
-                }
-            }
-        }).collect()
+    // ParamSource: a non-empty [sweep] → Sweep over the expanded points; an
+    // empty sweep → Point (the single null point). Batch base params come
+    // from the params file (M layer); sweep points override per cell.
+    let source = if has_sweep {
+        let points: Vec<indexmap::IndexMap<String, f64>> = sweep_points.iter()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .collect();
+        ParamSource::Sweep { points }
+    } else {
+        ParamSource::Point
     };
 
-    let mut errors: Vec<String> = Vec::new();
-    let mut completed_runs: Vec<RunEntry> = Vec::new();
-    for result in results {
-        match result {
-            Ok(entry) => completed_runs.push(entry),
-            Err(e)    => errors.push(e),
-        }
-    }
+    let job = SimulateJob {
+        model: ir_path_resolved.clone(),
+        params_files: params_file_opt.as_ref().map(|p| vec![p.clone()]).unwrap_or_default(),
+        backend,
+        dt,
+        source,
+        scenarios: job_scenarios,
+        // Batch seeds are always explicit (range / count / list).
+        seeds: Seeds::Explicit(seeds.clone()),
+        cli_overrides: Vec::new(),
+        set_vec_entries: Vec::new(),
+        table_files: Vec::new(),
+        // batch keeps its CAS-per-cell obs ensemble (CasSink), not the
+        // combined-file ObsOutput modes — leave None here.
+        obs: crate::sim_job::ObsOutput::None,
+        parallel,
+    };
 
+    let mut sink = CasSink {
+        resolved_scenarios: resolved_scenarios.clone(),
+        model_path: ir_path_resolved.clone(),
+        model_stem: model_stem.clone(),
+        model_hash: mhash.clone(),
+        base_params_canonical: canonical_params(&base_params),
+        backend,
+        dt,
+        runs_dir: runs_dir.clone(),
+        obs_enabled,
+        force: a.force,
+        total,
+        counter: 0,
+        completed_runs: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    crate::engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
+
+    let errors = sink.errors;
+    let completed_runs = sink.completed_runs;
     if !errors.is_empty() {
         eprintln!("Errors encountered:");
         for e in &errors { eprintln!("  {}", e); }
@@ -677,6 +772,174 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
 
     eprintln!("Done: {}/{} runs completed. Manifest: {}", completed, total, manifest_path);
     if !errors.is_empty() { std::process::exit(1); }
+}
+
+// ─── CasSink: batch's content-addressed output strategy ───────────────────────
+
+/// `RunSink` for `camdl batch run`: writes each cell into the
+/// content-addressed CAS tree (`sims/<sim>/<scen>-<scen_hash>/seed_N/`),
+/// reusing the existing [`crate::cas::sim_inputs::SimulateInputs`] hashing
+/// so the on-disk layout, `run.json` content-hash, and `kind.sweep_point`
+/// are byte-identical to the pre-unification batch path. Cache hits are
+/// skipped via `should_run` (the engine never simulates them).
+struct CasSink {
+    /// Resolved `[[scenario]]` entries, looked up by name for the
+    /// hash-relevant enable/disable/params delta.
+    resolved_scenarios: Vec<ResolvedEntry>,
+    model_path: String,
+    model_stem: Option<String>,
+    model_hash: String,
+    base_params_canonical: String,
+    backend: crate::args::types::Backend,
+    dt: f64,
+    /// Absolute `<output>/sims` subtree.
+    runs_dir: String,
+    obs_enabled: bool,
+    force: bool,
+    total: usize,
+    counter: usize,
+    completed_runs: Vec<RunEntry>,
+    errors: Vec<String>,
+}
+
+impl CasSink {
+    /// The resolved scenario delta + slug + sweep-merged params for a cell.
+    /// `scen_params = resolved.params ∪ sweep_point` — i.e. the sweep
+    /// override WINS over the resolved scenario params, byte-identical to
+    /// the pre-unification `plan_runs` (`merged_params = sc.params.clone();
+    /// merged_params.extend(sweep)`). Getting the order backwards collapses
+    /// distinct sweep betas into one `scen_hash` (regression cas_integration
+    /// `batch_sweep_records_sweep_point_in_run_json_and_manifest`).
+    fn cell_cas_inputs(
+        &self,
+        spec: &crate::engine::CellSpec,
+    ) -> crate::cas::sim_inputs::SimulateInputs {
+        let name = spec.scenario.name();
+        let resolved = self.resolved_scenarios.iter()
+            .find(|s| s.name == name || s.route.as_deref() == Some(name))
+            .expect("cell scenario must be one of the resolved batch scenarios");
+        let sweep: HashMap<String, f64> = spec.point_overrides.iter()
+            .map(|(k, v)| (k.clone(), *v)).collect();
+        let mut scen_params: HashMap<String, f64> = resolved.params.clone();
+        scen_params.extend(sweep.iter().map(|(k, v)| (k.clone(), *v)));
+        crate::cas::sim_inputs::SimulateInputs {
+            model_path: self.model_path.clone(),
+            model_stem: self.model_stem.clone(),
+            scenario: resolved.name.clone(),
+            model_hash: self.model_hash.clone(),
+            base_params_canonical: self.base_params_canonical.clone(),
+            backend: self.backend,
+            dt: self.dt,
+            enable: resolved.enable.clone(),
+            disable: resolved.disable.clone(),
+            scen_params,
+            seed: spec.process_seed,
+            from_fit_hash: None,
+            sweep_point: sweep,
+        }
+    }
+
+    /// The CAS run directory + relative path for a cell.
+    fn cell_dirs(&self, spec: &crate::engine::CellSpec) -> (String, String) {
+        let inputs = self.cell_cas_inputs(spec);
+        let rel = crate::run_paths::sim_run_rel(
+            inputs.model_stem.as_deref(),
+            &inputs.sim_hash_str(),
+            &inputs.scenario,
+            &inputs.scen_hash_str(),
+            spec.process_seed,
+        );
+        (format!("{}/{}", self.runs_dir, rel), rel)
+    }
+}
+
+impl crate::engine::RunSink for CasSink {
+    fn should_run(&mut self, spec: &crate::engine::CellSpec) -> bool {
+        if self.force {
+            return true;
+        }
+        let (run_dir, _) = self.cell_dirs(spec);
+        // Cache hit ⇔ traj.tsv already present.
+        !std::path::Path::new(&format!("{}/traj.tsv", run_dir)).exists()
+    }
+
+    fn on_skip(&mut self, spec: &crate::engine::CellSpec) {
+        let (_, rel) = self.cell_dirs(spec);
+        let name = spec.scenario.name().to_string();
+        self.counter += 1;
+        eprintln!("[{}/{}] scenario={} seed={} (skipped — already exists)",
+            self.counter, self.total, name, spec.process_seed);
+        self.completed_runs.push(RunEntry {
+            scenario: name,
+            seed: spec.process_seed,
+            run_path: rel,
+            sweep_point: spec.point_overrides.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        });
+    }
+
+    fn merge_cell(&mut self, cell: &crate::engine::CellResult) -> Result<(), String> {
+        let spec = &cell.spec;
+        let (run_dir, rel) = self.cell_dirs(spec);
+        let name = spec.scenario.name().to_string();
+        let run_t0 = std::time::Instant::now();
+
+        if let Err(e) = std::fs::create_dir_all(&run_dir) {
+            self.counter += 1;
+            self.errors.push(format!("scenario={} seed={}: cannot create {}: {}",
+                name, spec.process_seed, run_dir, e));
+            return Ok(());
+        }
+        if let Err(e) = write_traj_tsv(&format!("{}/traj.tsv", run_dir), &cell.model, &cell.traj, true) {
+            self.counter += 1;
+            self.errors.push(format!("scenario={} seed={}: cannot write traj.tsv in {}: {}",
+                name, spec.process_seed, run_dir, e));
+            return Ok(());
+        }
+        // Observation ensemble (CLI review #4). One TSV per stream under
+        // seed_N/obs/{obs_hash}-{obs_seed}/. obs_seed = process_seed (the
+        // single-realization case); the obs RNG derivation is the canonical
+        // process_seed ^ SEED_MIX_OBS, shared with simulate --obs.
+        if self.obs_enabled {
+            if let Err(e) = write_obs_into_cas(
+                std::path::Path::new(&run_dir), &cell.model, &cell.traj, spec.process_seed,
+            ) {
+                self.counter += 1;
+                self.errors.push(format!("scenario={} seed={}: cannot write obs ensemble in {}: {}",
+                    name, spec.process_seed, run_dir, e));
+                return Ok(());
+            }
+        }
+
+        let inputs = self.cell_cas_inputs(spec);
+        use crate::cas::typed::CasInputs;
+        let run_rec = crate::run_meta::Run {
+            hash: inputs.content_hash().full().to_string(),
+            version: version::VERSION_SHORT.to_string(),
+            created_at: cas::iso8601_utc(std::time::SystemTime::now()),
+            argv: std::env::args().collect(),
+            status: crate::run_meta::RunStatus::Completed {
+                wall_time_seconds: run_t0.elapsed().as_secs_f64(),
+            },
+            label: None,
+            kind: inputs.run_kind(),
+        };
+        if let Err(e) = run_rec.write(std::path::Path::new(&run_dir)) {
+            self.counter += 1;
+            self.errors.push(format!("scenario={} seed={}: cannot write run.json in {}: {}",
+                name, spec.process_seed, run_dir, e));
+            return Ok(());
+        }
+
+        self.counter += 1;
+        eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
+        self.completed_runs.push(RunEntry {
+            scenario: name,
+            seed: spec.process_seed,
+            run_path: rel,
+            sweep_point: spec.point_overrides.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        });
+        Ok(())
+    }
 }
 
 // ─── Design experiment execution ─────────────────────────────────────────────
@@ -820,7 +1083,7 @@ fn run_design_experiment(
                             eprintln!("error: cannot create {}: {}", plan.run_dir, e);
                             return;
                         }
-                        if let Err(e) = write_traj_tsv(&format!("{}/traj.tsv", plan.run_dir), &model, &traj, false) {
+                        if let Err(e) = write_traj_tsv(&format!("{}/traj.tsv", plan.run_dir), &model, &traj, true) {
                             eprintln!("error: cannot write traj.tsv in {}: {}", plan.run_dir, e);
                             return;
                         }
@@ -874,6 +1137,108 @@ fn build_priors_txt(params: &[(String, DesignParam)]) -> Option<String> {
     Some(txt)
 }
 
+// ─── Observation ensemble writer (CLI review #4) ───────────────────────────
+
+/// Sample synthetic observations for one completed run and write them into
+/// the CAS obs subtree: `run_dir/obs/{obs_hash[:8]}-{obs_seed}/<stream>.tsv`
+/// plus an `obs.json` provenance file (the layout designed in
+/// `cas/mod.rs`).
+///
+/// Reuses the *same* sampling primitives as `simulate --obs`
+/// (`compile_obs_sample_pf`, `project_all_obs_times`, `obs_schedule_times`,
+/// `snap_at`) and the canonical obs RNG derivation
+/// (`process_seed ^ SEED_MIX_OBS`), so a given seed produces the same
+/// observation bytes regardless of which entry point generated them. One
+/// file per stream means multi-cadence streams are handled correctly with
+/// no single-file kludge.
+///
+/// `process_seed` is the run's simulation seed; in this single-realization
+/// path it *is* the `obs_seed` recorded in the directory name (run-spec
+/// §"Gating risk": a future `[obs] replicates = K` fans the obs layer by
+/// mixing K distinct obs seeds, leaving the trajectory RNG untouched).
+fn write_obs_into_cas(
+    run_dir: &std::path::Path,
+    model: &ir::Model,
+    traj: &sim::Trajectory,
+    process_seed: u64,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    if model.observations.is_empty() {
+        return Ok(());
+    }
+
+    // obs_hash = hash of the resolved observation blocks only (run-spec:
+    // changing a reporting parameter re-samples obs without invalidating
+    // the cached trajectory). Canonical JSON of model.observations.
+    let obs_json = serde_json::to_string(&model.observations)
+        .map_err(|e| format!("cannot serialize observations for hashing: {}", e))?;
+    let obs_hash = crate::hashing::sha256_hex(obs_json.as_bytes());
+    let obs_seed = process_seed ^ crate::util::SEED_MIX_OBS;
+
+    let obs_dir = run_dir.join("obs").join(format!(
+        "{}-{}", &obs_hash[..8.min(obs_hash.len())], obs_seed,
+    ));
+    std::fs::create_dir_all(&obs_dir)
+        .map_err(|e| format!("cannot create {}: {}", obs_dir.display(), e))?;
+
+    let compiled = std::sync::Arc::new(
+        sim::CompiledModel::new(model.clone())
+            .map_err(|e| format!("model compile error for obs: {:?}", e))?,
+    );
+    let params = compiled.default_params.clone();
+    // One obs RNG, consumed in declaration order across streams — the same
+    // order simulate's --obs loop uses (main.rs).
+    let mut obs_rng = sim::rng::StatefulRng::new(obs_seed);
+
+    let mut stream_names: Vec<String> = Vec::new();
+    for obs_ir in &model.observations {
+        let sampler = sim::inference::obs_model::compile_obs_sample_pf(
+            obs_ir, compiled.clone(), &params,
+        );
+        let obs_times = crate::obs_schedule_times(
+            &obs_ir.schedule,
+            model.simulation.t_start,
+            model.simulation.t_end,
+        );
+        let projected = crate::project_all_obs_times(traj, obs_ir, model, &obs_times);
+
+        let path = obs_dir.join(format!("{}.tsv", obs_ir.name));
+        let mut out = std::io::BufWriter::new(
+            std::fs::File::create(&path)
+                .map_err(|e| format!("cannot create {}: {}", path.display(), e))?,
+        );
+        writeln!(out, "time\t{}", obs_ir.name).map_err(|e| e.to_string())?;
+        for (ti, &obs_t) in obs_times.iter().enumerate() {
+            let snap = crate::snap_at(traj, obs_t);
+            let draw = sampler(projected[ti], obs_t, &snap.int_state.counts, &mut obs_rng);
+            if draw == draw.round() && draw.abs() < 1e15 {
+                writeln!(out, "{}\t{}", obs_t, draw as i64).map_err(|e| e.to_string())?;
+            } else {
+                writeln!(out, "{}\t{:.6}", obs_t, draw).map_err(|e| e.to_string())?;
+            }
+        }
+        out.flush().map_err(|e| e.to_string())?;
+        stream_names.push(obs_ir.name.clone());
+    }
+
+    // obs.json provenance: the inputs that produced this obs draw.
+    let obs_meta = serde_json::json!({
+        "obs_hash": obs_hash,
+        "obs_seed": obs_seed,
+        "process_seed": process_seed,
+        "streams": stream_names,
+        "version": version::VERSION_SHORT,
+    });
+    std::fs::write(
+        obs_dir.join("obs.json"),
+        serde_json::to_string_pretty(&obs_meta).unwrap_or_default(),
+    )
+    .map_err(|e| format!("cannot write obs.json: {}", e))?;
+
+    Ok(())
+}
+
 // ─── cmd_batch_status ───────────────────────────────────────────────────
 
 pub fn cmd_batch_status(a: &crate::args::BatchStatusArgs) {
@@ -909,10 +1274,24 @@ pub fn cmd_batch_status(a: &crate::args::BatchStatusArgs) {
                     .and_then(|p| load_params_toml(p).ok())
                     .unwrap_or_default();
                 let shash   = sim_hash(&mhash, &canonical_params(&base_params), exp.config.backend.as_str(), exp.config.dt);
-                let scenarios: Vec<ScenarioEntry> = if exp.scenario.is_empty() {
+                let raw_scenarios: Vec<ScenarioEntry> = if exp.scenario.is_empty() {
                     vec![ScenarioEntry { name: "baseline".to_string(), params: HashMap::new(), enable: vec![], disable: vec![] }]
                 } else {
                     exp.scenario
+                };
+                // Resolve presets so the cache-hit count uses the same
+                // scen_hash the run path was written under (CLI review #3).
+                let scenarios: Vec<ScenarioEntry> = match ir::from_str(&ir_json) {
+                    Ok(model) => match resolve_batch_scenarios(&raw_scenarios, &model) {
+                        Ok(resolved) => resolved.iter().map(|r| ScenarioEntry {
+                            name: r.name.clone(),
+                            params: r.params.clone(),
+                            enable: r.enable.clone(),
+                            disable: r.disable.clone(),
+                        }).collect(),
+                        Err(_) => raw_scenarios,
+                    },
+                    Err(_) => raw_scenarios,
                 };
                 let seeds   = exp.config.seeds.resolve().unwrap_or_default();
                 let sweep_points = expand_sweep(&exp.sweep);
@@ -944,7 +1323,7 @@ fn print_batch_dry_run(
     dt: f64,
     output_dir: &str,
     parallel: usize,
-    scenarios: &[ScenarioEntry],
+    scenarios: &[ResolvedEntry],
     sweep_points: &[HashMap<String, f64>],
     seeds: &[u64],
     base_params: &HashMap<String, f64>,
@@ -960,11 +1339,17 @@ fn print_batch_dry_run(
     eprintln!("  parallel:    {}", parallel);
     eprintln!();
 
-    // Scenarios
+    // Scenarios. For a named preset, show the RESOLVED enable/disable/set
+    // read off the model (CLI review #3): pre-fix this printed
+    // "baseline (baseline)", implying a resolution that never happened.
     eprintln!("Scenarios ({}):", scenarios.len());
     for sc in scenarios {
+        let route_tag = match &sc.route {
+            Some(_) => "[model preset]",
+            None => "[ad-hoc]",
+        };
         let marker = if sc.enable.is_empty() && sc.disable.is_empty() && sc.params.is_empty() {
-            "(baseline)".to_string()
+            "(no patch — baseline identity)".to_string()
         } else {
             let mut parts = Vec::new();
             if !sc.enable.is_empty()  { parts.push(format!("enable={}",  sc.enable.join(","))); }
@@ -977,7 +1362,7 @@ fn print_batch_dry_run(
             }
             parts.join(" ")
         };
-        eprintln!("  {:24} {}", sc.name, marker);
+        eprintln!("  {:24} {} {}", sc.name, route_tag, marker);
     }
     eprintln!();
 
@@ -1060,6 +1445,22 @@ fn print_batch_dry_run(
     eprintln!("Cache status:");
     eprintln!("  {} cache hits  → skipped", hits);
     eprintln!("  {} cache misses → would simulate", misses);
+    eprintln!();
+
+    // Output destinations — the content-addressed relative path each cell
+    // would land in (first few). Confirms the sim×scen×seed hashing the
+    // CasSink uses without running anything.
+    eprintln!("Output paths (sims/<run_path>):");
+    for plan in plans.iter().take(6) {
+        let tag = match plan.decision {
+            RunDecision::CacheHit  => "hit ",
+            RunDecision::CacheMiss => "miss",
+        };
+        eprintln!("  [{}] {}", tag, plan.run_path);
+    }
+    if plans.len() > 6 {
+        eprintln!("  ... ({} more)", plans.len() - 6);
+    }
     eprintln!();
     eprintln!("(dry run — no simulation, no files written.)");
 }

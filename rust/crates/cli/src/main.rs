@@ -7,6 +7,8 @@ mod run_paths;      // canonical output-path helpers
 mod cas;
 mod browse;
 mod sampling;
+mod sim_job;       // SimulateJob / ParamSource / Seeds / ScenarioRef / ObsOutput (run-spec §3)
+mod engine;        // run_job: the single engine behind simulate + batch run (run-spec §3.1)
 mod batch;
 mod eval;
 mod pfilter;        // used internally by fit runner for data loading
@@ -402,8 +404,15 @@ fn main() {
 // seeds from the base seed via XOR mixing. The specific values don't matter
 // as long as they're distinct and nonzero — they ensure different (draw, rep)
 // pairs get non-overlapping RNG streams.
+// The per-(draw, replicate) seed-mixing constants moved into the unified
+// engine (`engine::process_seed_for`) as part of the simulate/batch
+// `run_job` convergence; the copies here remain only for the inline
+// `seed_derivation_deterministic` test (cfg(test)).
+#[cfg(test)]
 const SEED_MIX_DRAW: u64 = 0x9e3779b97f4a7c15; // golden ratio fractional bits
+#[cfg(test)]
 const SEED_MIX_REP: u64  = 0x517cc1b727220a95; // more golden ratio mixing
+#[cfg(test)]
 use util::SEED_MIX_OBS;     // canonical home: util.rs
 const SEED_MIX_UNIFORM: u64 = 0xd4a5_b1ce;      // uniform draws RNG
 const SEED_MIX_PRIOR: u64  = 0x0014_b1ce;      // prior draws RNG
@@ -444,6 +453,7 @@ fn run_simulate(a: &args::SimulateArgs) {
     let mut obs_path: Option<String> = a.obs.as_ref().map(|p| p.to_string_lossy().into_owned());
     let mut obs_dir: Option<String>  = a.obs_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
     let obs_only: Option<String>     = a.obs_only.as_ref().map(|p| p.to_string_lossy().into_owned());
+    let obs_only_dir: Option<String> = a.obs_only_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
     let replicates: usize            = a.replicates.unwrap_or(1);
     let draws_path: Option<String>   = a.draws.clone();
     let n_draws_arg: Option<usize>   = a.n_draws;
@@ -464,7 +474,17 @@ fn run_simulate(a: &args::SimulateArgs) {
             obs_path = Some(path.clone());
         }
     }
-    let suppress_trajectory = obs_only.is_some();
+    // --obs-only-dir is the explicit, unambiguous dir form (run-spec §3.1.1
+    // ObsOutput::OnlyDir). Unlike --obs-only it never infers file-vs-dir from
+    // the path: one TSV per stream, always, and trajectory suppressed.
+    if let Some(ref path) = obs_only_dir {
+        if obs_path.is_some() || obs_dir.is_some() {
+            eprintln!("error: --obs-only-dir cannot be combined with --obs, --obs-dir, or --obs-only");
+            std::process::exit(1);
+        }
+        obs_dir = Some(path.clone());
+    }
+    let suppress_trajectory = obs_only.is_some() || obs_only_dir.is_some();
 
     if replicates < 1 {
         eprintln!("error: --replicates must be >= 1");
@@ -616,7 +636,9 @@ fn run_simulate(a: &args::SimulateArgs) {
                     .map(|o| format!("{}: {:?}", o.name, o.schedule))
                     .collect();
                 eprintln!("error: observation streams have different schedules ({}).\n\
-                           Use --obs-dir to produce one file per stream.",
+                           A single wide TSV cannot hold multi-cadence streams.\n\
+                           Use --obs-dir (one file per stream, keeps trajectory) or\n\
+                           --obs-only-dir (one file per stream, suppresses trajectory).",
                     descs.join(", "));
                 std::process::exit(1);
             }
@@ -702,25 +724,6 @@ fn run_simulate(a: &args::SimulateArgs) {
         }
     }
 
-    // ── Trajectory output setup ─────────────────────────────────────────────
-    // When --cas is active, we buffer trajectory bytes via RunBuffer so we
-    // can write them to both the user's destination and the CAS at end.
-    let cas_buffer: Option<cas::RunBuffer> = cas_ctx.as_ref().map(|_| cas::RunBuffer::new());
-    let mut traj_out: Option<Box<dyn Write>> = if !suppress_trajectory {
-        Some(match (&cas_buffer, &output_path) {
-            (Some(buf), _) => Box::new(buf.clone()),
-            (None, Some(path)) => {
-                let f = std::fs::File::create(path)
-                    .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
-                Box::new(std::io::BufWriter::new(f))
-            }
-            (None, None) => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
-        })
-    } else {
-        None
-    };
-    let mut traj_header_written = false;
-
     // ── Load draws if --draws is specified ─────────────────────────────────
     let draws: Vec<HashMap<String, f64>> = if let Some(ref source) = draws_path {
         if source == "uniform" {
@@ -801,199 +804,124 @@ fn run_simulate(a: &args::SimulateArgs) {
         return;
     }
 
-    // ── Observation accumulators ────────────────────────────────────────────
-    struct ObsRow { time: f64, replicate: usize, draw: usize, scenario: String, value: f64 }
-    let mut obs_data: Vec<Vec<ObsRow>> = Vec::new(); // per-stream
-    let mut obs_stream_names: Vec<String> = Vec::new();
-    let mut obs_times_cache: Vec<Vec<f64>> = Vec::new();
-    // --dates: (origin, time_unit) captured from the model inside the loop so
-    // the post-loop obs writers can render the calendar column (the per-run
-    // `model` is out of scope by then). Set once; identical across runs.
-    let mut dates_render: Option<(String, String)> = None;
+    // ── Build the SimulateJob and route through the unified engine ──────────
+    //
+    // `simulate` and `batch run` converge on `engine::run_job` (run-spec
+    // §3.1). The wide-format trajectory + combined-obs output shape lives
+    // in `StreamSink`; the engine owns the cell loop, seed arithmetic, and
+    // per-cell SimRun construction (determinism PIN: tests/determinism_pin.rs).
+    //
+    // Scenario mapping (mirrors the pre-unification per-cell SimRun):
+    //   - `--scenario a,b`  → [Named("a"), Named("b")]  (preset path).
+    //   - no `--scenario`   → a single ad-hoc Inline carrying the CLI
+    //     --enable/--disable (or empty), so the baseline path keeps
+    //     `scenario_name = None` exactly as before.
+    use crate::sim_job::{ObsOutput, ParamSource, ScenarioRef, Seeds, SimulateJob};
+    let scenarios: Vec<ScenarioRef> = if scenario_names.is_empty() {
+        vec![ScenarioRef::Inline {
+            name: "baseline".to_string(),
+            enable: base_sim_run.adhoc_enable.clone(),
+            disable: base_sim_run.adhoc_disable.clone(),
+            params: indexmap::IndexMap::new(),
+        }]
+    } else {
+        scenario_names.iter().map(|n| ScenarioRef::Named(n.clone())).collect()
+    };
 
-    // ── Main loop: scenarios × draws × replicates ─────────────────────────
-    let mut run_idx = 0usize;
-    for scenario in &scenario_list {
-    for (draw_idx, draw_overrides) in draws.iter().enumerate() {
-        for rep in 0..replicates {
-            let process_seed = if seeds_spec_given {
-                seeds[rep] // explicit seeds
-            } else if total_runs == 1 {
-                seed
-            } else {
-                seed ^ ((draw_idx as u64).wrapping_mul(SEED_MIX_DRAW))
-                     ^ ((rep as u64).wrapping_mul(SEED_MIX_REP))
-            };
-            let obs_seed = process_seed ^ SEED_MIX_OBS;
+    // ParamSource: --draws yields Draws rows; otherwise a single Point.
+    let source = if draws_path.is_some() {
+        let rows: Vec<indexmap::IndexMap<String, f64>> = draws.iter()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .collect();
+        ParamSource::Draws { rows, replicates }
+    } else {
+        ParamSource::Point
+    };
 
-            // Merge draw overrides with CLI --param overrides
-            let mut combined_overrides = base_sim_run.overrides.clone();
-            combined_overrides.extend(draw_overrides.iter().map(|(k, v)| (k.clone(), *v)));
+    // Seeds: explicit --seeds list, else single base seed (replicates
+    // derive via the XOR mix inside the engine).
+    let job_seeds = if seeds_spec_given {
+        Seeds::Explicit(seeds.clone())
+    } else {
+        Seeds::Single(seed)
+    };
 
-            let mut sim_run = util::SimRun { seed: process_seed, ..Default::default() };
-            sim_run.ir_path = base_sim_run.ir_path.clone();
-            sim_run.params_files = base_sim_run.params_files.clone();
-            sim_run.overrides = combined_overrides;
-            sim_run.set_vec_entries = base_sim_run.set_vec_entries.clone();
-            sim_run.table_files = base_sim_run.table_files.clone();
-            sim_run.scenario_name = scenario.clone();
-            sim_run.adhoc_enable = base_sim_run.adhoc_enable.clone();
-            sim_run.adhoc_disable = base_sim_run.adhoc_disable.clone();
-            sim_run.backend = base_sim_run.backend.clone();
-            sim_run.dt = base_sim_run.dt;
+    // ObsOutput from the resolved obs_path/obs_dir + suppression. (The
+    // --obs-only / --obs-only-dir flags were already normalised into
+    // obs_path/obs_dir + `suppress_trajectory` above.)
+    let obs_mode = if let Some(ref p) = obs_path {
+        if suppress_trajectory { ObsOutput::OnlyFile(p.into()) } else { ObsOutput::File(p.into()) }
+    } else if let Some(ref d) = obs_dir {
+        if suppress_trajectory { ObsOutput::OnlyDir(d.into()) } else { ObsOutput::Dir(d.into()) }
+    } else {
+        ObsOutput::None
+    };
 
-        let (traj, model) = util::run_simulation(&sim_run).unwrap_or_else(|e| {
-            eprintln!("error: {}", e);
-            std::process::exit(1);
-        });
+    let job = SimulateJob {
+        model: ir_path.clone(),
+        params_files: base_sim_run.params_files.clone(),
+        backend,
+        dt,
+        source,
+        scenarios,
+        seeds: job_seeds,
+        cli_overrides: base_sim_run.overrides.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        set_vec_entries: base_sim_run.set_vec_entries.clone(),
+        table_files: base_sim_run.table_files.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        obs: obs_mode,
+        // simulate keeps its historical sequential, in-order streaming
+        // (combined wide-format output is order-sensitive). Parallelism is
+        // the batch path's concern.
+        parallel: 1,
+    };
 
-        // Write diagnostics (first run only)
-        if run_idx == 0 && !traj.transition_diagnostics.is_empty() {
-            match write_diagnostics_tsv("diagnostics.tsv", &traj.transition_diagnostics) {
-                Ok(zero_count) => {
-                    if zero_count > 0 { warn_zero_firings(&traj.transition_diagnostics); }
-                }
-                Err(e) => eprintln!("warning: could not write diagnostics.tsv: {}", e),
+    // The trajectory writer: stdout / -o file / CAS buffer (single-run --cas).
+    // Trajectory suppression is driven by `job.obs` (run-spec §3.1.1).
+    let cas_buffer: Option<cas::RunBuffer> = cas_ctx.as_ref().map(|_| cas::RunBuffer::new());
+    let traj_out: Option<Box<dyn Write>> = if !job.obs.suppresses_trajectory() {
+        Some(match (&cas_buffer, &output_path) {
+            (Some(buf), _) => Box::new(buf.clone()),
+            (None, Some(path)) => {
+                let f = std::fs::File::create(path)
+                    .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
+                Box::new(std::io::BufWriter::new(f))
             }
-        }
+            (None, None) => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
+        })
+    } else {
+        None
+    };
 
-        // ── Trajectory output ───────────────────────────────────────────────
-        if let Some(ref mut out) = traj_out {
-            let int_names: Vec<&str> = model.compartments.iter()
-                .filter(|c| c.kind == ir::model::CompartmentKind::Integer)
-                .map(|c| c.name.as_str()).collect();
-            let real_names: Vec<&str> = model.compartments.iter()
-                .filter(|c| c.kind == ir::model::CompartmentKind::Real)
-                .map(|c| c.name.as_str()).collect();
-            let tr_names: Vec<&str> = model.transitions.iter().map(|t| t.name.as_str()).collect();
+    // The combined-obs sink fields are derived from `job.obs` so the
+    // SimulateJob's ObsOutput is the single source of truth (run-spec
+    // §3.1.1). `wants_obs()` gates obs sampling; `file_path`/`dir_path`
+    // select the writer.
+    let mut sink = StreamSink {
+        traj_out,
+        traj_header_written: false,
+        dates: a.dates,
+        dates_render: None,
+        obs_path: job.obs.file_path().map(|p| p.to_string_lossy().into_owned()),
+        obs_dir: job.obs.dir_path().map(|p| p.to_string_lossy().into_owned()),
+        obs_data: Vec::new(),
+        obs_stream_names: Vec::new(),
+        obs_times_cache: Vec::new(),
+        total_runs: 1,
+        n_scenarios: 1,
+        n_draws: 1,
+    };
 
-            // --dates: an additive calendar column rendered from the model
-            // origin + time_unit (2026-05-22 §6.7). Numeric `t` stays canonical.
-            let date_origin: Option<&str> = if a.dates {
-                match model.origin.as_deref() {
-                    Some(o) => {
-                        if dates_render.is_none() {
-                            dates_render = Some((o.to_string(), model.time_unit.clone()));
-                        }
-                        Some(o)
-                    }
-                    None => {
-                        eprintln!("error: --dates requires the model to declare an `origin` \
-                                   (e.g. `origin = date(\"2020-01-01\")`).");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                None
-            };
+    engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
 
-            if !traj_header_written {
-                writeln!(out, "# {}", version::VERSION).unwrap();
-                if total_runs > 1 { write!(out, "replicate\t").unwrap(); }
-                if n_scenarios > 1 { write!(out, "scenario\t").unwrap(); }
-                if n_draws > 1 { write!(out, "draw\t").unwrap(); }
-                write!(out, "t").unwrap();
-                if date_origin.is_some() { write!(out, "\tdate").unwrap(); }
-                for n in &int_names  { write!(out, "\t{}", n).unwrap(); }
-                for n in &real_names { write!(out, "\t{}", n).unwrap(); }
-                for n in &tr_names   { write!(out, "\tflow_{}", n).unwrap(); }
-                writeln!(out).unwrap();
-                traj_header_written = true;
-            }
-
-            for snap in &traj.snapshots {
-                if total_runs > 1 { write!(out, "{}\t", run_idx + 1).unwrap(); }
-                if n_scenarios > 1 { write!(out, "{}\t", scenario.as_deref().unwrap_or("baseline")).unwrap(); }
-                if n_draws > 1 { write!(out, "{}\t", draw_idx + 1).unwrap(); }
-                write!(out, "{}", snap.t).unwrap();
-                if let Some(o) = date_origin {
-                    let d = ir::caltime::internal_to_date(o, snap.t, &model.time_unit)
-                        .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
-                    write!(out, "\t{}", d).unwrap();
-                }
-                for &c in &snap.int_state.counts  { write!(out, "\t{}", c).unwrap(); }
-                for &v in &snap.real_state.values { write!(out, "\t{:.4}", v).unwrap(); }
-                for &f in &snap.flows.counts      { write!(out, "\t{}", f).unwrap(); }
-                writeln!(out).unwrap();
-            }
-        }
-
-        // ── Observation sampling ───────────��────────────────────────────────
-        if want_obs {
-            // Capture (origin, time_unit) for the post-loop --dates obs writers
-            // while `model` is in scope. Validate origin presence up front.
-            if a.dates && dates_render.is_none() {
-                match model.origin.as_deref() {
-                    Some(o) => dates_render = Some((o.to_string(), model.time_unit.clone())),
-                    None => {
-                        eprintln!("error: --dates requires the model to declare an `origin` \
-                                   (e.g. `origin = date(\"2020-01-01\")`).");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            let compiled = std::sync::Arc::new(
-                sim::CompiledModel::new(model.clone()).unwrap_or_else(|e| {
-                    eprintln!("error compiling model for obs: {:?}", e);
-                    std::process::exit(1);
-                })
-            );
-            let params = compiled.default_params.clone();
-            let mut obs_rng = sim::rng::StatefulRng::new(obs_seed);
-
-            // Initialize stream names and obs data on first run
-            if run_idx == 0 {
-                for obs_model in &model.observations {
-                    obs_stream_names.push(obs_model.name.clone());
-                    obs_data.push(Vec::new());
-                    let times = obs_schedule_times(
-                        &obs_model.schedule,
-                        model.simulation.t_start,
-                        model.simulation.t_end,
-                    );
-                    obs_times_cache.push(times);
-                }
-            }
-
-            for (si, obs_ir) in model.observations.iter().enumerate() {
-                let sampler = sim::inference::obs_model::compile_obs_sample_pf(
-                    obs_ir, compiled.clone(), &params,
-                );
-                let obs_times = &obs_times_cache[si];
-                let projected_values = project_all_obs_times(
-                    &traj, obs_ir, &model, obs_times,
-                );
-
-                for (ti, &obs_t) in obs_times.iter().enumerate() {
-                    // GH #6 fix: pass the actual compartment state at
-                    // the obs time so the likelihood p/mean expressions
-                    // can resolve references like `N = S + I + R` —
-                    // otherwise the sampler uses a zero-filled scratch
-                    // and PopSum-valued denominators explode to NaN.
-                    let snap = snap_at(&traj, obs_t);
-                    let draw = sampler(
-                        projected_values[ti], obs_t, &snap.int_state.counts, &mut obs_rng,
-                    );
-                    obs_data[si].push(ObsRow {
-                        time: obs_t,
-                        replicate: run_idx + 1,
-                        draw: draw_idx + 1,
-                        scenario: scenario.as_deref().unwrap_or("baseline").to_string(),
-                        value: draw,
-                    });
-                }
-            }
-        }
-
-            run_idx += 1;
-        } // end replicates
-    } // end draws
-    } // end scenarios
-
-    // Flush trajectory output
-    drop(traj_out);
+    // Flush trajectory output before the post-loop writers / CAS write read it.
+    let _ = sink.traj_out.take();
     if let Some(ref path) = output_path {
-        eprintln!("trajectory written to {}", path);
+        if !suppress_trajectory && cas_buffer.is_none() {
+            eprintln!("trajectory written to {}", path);
+        }
     }
 
     // ── CAS write (single-run --cas on cache miss) ─────────────────────────
@@ -1027,47 +955,224 @@ fn run_simulate(a: &args::SimulateArgs) {
         eprintln!("{} {}", "cached:".bright_green().bold(), ctx.relative.cyan());
     }
 
-    // ── Write observation output ────────────���───────────────────────────────
-    if want_obs && !obs_data.is_empty() {
-        let multi_rep = total_runs > 1;
+    // ── Write combined observation output ───────────────────────────────────
+    sink.write_obs_output();
+}
 
-        // --obs: single wide-format file
-        if let Some(ref path) = obs_path {
+/// One sampled observation row in the combined-obs accumulator.
+struct ObsRow { time: f64, replicate: usize, draw: usize, scenario: String, value: f64 }
+
+/// `RunSink` for `camdl simulate`: streams the combined wide-format
+/// trajectory TSV (replicate/scenario/draw columns gated on the grid
+/// shape) and accumulates synthetic observations for a post-loop combined
+/// write. Reproduces the pre-unification `run_simulate` output byte-for-byte.
+struct StreamSink {
+    traj_out: Option<Box<dyn std::io::Write>>,
+    traj_header_written: bool,
+    dates: bool,
+    dates_render: Option<(String, String)>,
+    obs_path: Option<String>,
+    obs_dir: Option<String>,
+    obs_data: Vec<Vec<ObsRow>>,
+    obs_stream_names: Vec<String>,
+    obs_times_cache: Vec<Vec<f64>>,
+    // Grid shape, captured in `on_start`, used by the column-gating logic
+    // and the post-loop combined-obs writer.
+    total_runs: usize,
+    n_scenarios: usize,
+    n_draws: usize,
+}
+
+impl engine::RunSink for StreamSink {
+    fn on_start(&mut self, grid: &engine::Grid) {
+        self.total_runs = grid.total_runs;
+        self.n_scenarios = grid.n_scenarios;
+        self.n_draws = grid.n_points;
+    }
+
+    fn merge_cell(&mut self, cell: &engine::CellResult) -> Result<(), String> {
+        use std::io::Write;
+        let traj = &cell.traj;
+        let model = &cell.model;
+        let run_idx = cell.spec.run_idx;
+        let draw_idx = cell.spec.point_idx;
+        let total_runs = self.total_runs;
+        let n_scenarios = self.n_scenarios;
+        let n_draws = self.n_draws;
+        let scenario_label = cell.spec.scenario.name().to_string();
+
+        // Diagnostics (first run only).
+        if run_idx == 0 && !traj.transition_diagnostics.is_empty() {
+            match write_diagnostics_tsv("diagnostics.tsv", &traj.transition_diagnostics) {
+                Ok(zero_count) => {
+                    if zero_count > 0 { warn_zero_firings(&traj.transition_diagnostics); }
+                }
+                Err(e) => eprintln!("warning: could not write diagnostics.tsv: {}", e),
+            }
+        }
+
+        // ── Trajectory output ───────────────────────────────────────────────
+        if let Some(ref mut out) = self.traj_out {
+            let int_names: Vec<&str> = model.compartments.iter()
+                .filter(|c| c.kind == ir::model::CompartmentKind::Integer)
+                .map(|c| c.name.as_str()).collect();
+            let real_names: Vec<&str> = model.compartments.iter()
+                .filter(|c| c.kind == ir::model::CompartmentKind::Real)
+                .map(|c| c.name.as_str()).collect();
+            let tr_names: Vec<&str> = model.transitions.iter().map(|t| t.name.as_str()).collect();
+
+            let date_origin: Option<&str> = if self.dates {
+                match model.origin.as_deref() {
+                    Some(o) => {
+                        if self.dates_render.is_none() {
+                            self.dates_render = Some((o.to_string(), model.time_unit.clone()));
+                        }
+                        Some(o)
+                    }
+                    None => return Err(
+                        "--dates requires the model to declare an `origin` \
+                         (e.g. `origin = date(\"2020-01-01\")`).".to_string()),
+                }
+            } else {
+                None
+            };
+
+            if !self.traj_header_written {
+                writeln!(out, "# {}", version::VERSION).map_err(|e| e.to_string())?;
+                if total_runs > 1 { write!(out, "replicate\t").map_err(|e| e.to_string())?; }
+                if n_scenarios > 1 { write!(out, "scenario\t").map_err(|e| e.to_string())?; }
+                if n_draws > 1 { write!(out, "draw\t").map_err(|e| e.to_string())?; }
+                write!(out, "t").map_err(|e| e.to_string())?;
+                if date_origin.is_some() { write!(out, "\tdate").map_err(|e| e.to_string())?; }
+                for n in &int_names  { write!(out, "\t{}", n).map_err(|e| e.to_string())?; }
+                for n in &real_names { write!(out, "\t{}", n).map_err(|e| e.to_string())?; }
+                for n in &tr_names   { write!(out, "\tflow_{}", n).map_err(|e| e.to_string())?; }
+                writeln!(out).map_err(|e| e.to_string())?;
+                self.traj_header_written = true;
+            }
+
+            for snap in &traj.snapshots {
+                if total_runs > 1 { write!(out, "{}\t", run_idx + 1).map_err(|e| e.to_string())?; }
+                if n_scenarios > 1 { write!(out, "{}\t", scenario_label).map_err(|e| e.to_string())?; }
+                if n_draws > 1 { write!(out, "{}\t", draw_idx + 1).map_err(|e| e.to_string())?; }
+                write!(out, "{}", snap.t).map_err(|e| e.to_string())?;
+                if let Some(o) = date_origin {
+                    let d = ir::caltime::internal_to_date(o, snap.t, &model.time_unit)
+                        .map_err(|e| format!("error rendering date: {}", e))?;
+                    write!(out, "\t{}", d).map_err(|e| e.to_string())?;
+                }
+                for &c in &snap.int_state.counts  { write!(out, "\t{}", c).map_err(|e| e.to_string())?; }
+                for &v in &snap.real_state.values { write!(out, "\t{:.4}", v).map_err(|e| e.to_string())?; }
+                for &f in &snap.flows.counts      { write!(out, "\t{}", f).map_err(|e| e.to_string())?; }
+                writeln!(out).map_err(|e| e.to_string())?;
+            }
+        }
+
+        // ── Observation sampling ────────────────────────────────────────────
+        if self.obs_path.is_some() || self.obs_dir.is_some() {
+            if self.dates && self.dates_render.is_none() {
+                match model.origin.as_deref() {
+                    Some(o) => self.dates_render = Some((o.to_string(), model.time_unit.clone())),
+                    None => return Err(
+                        "--dates requires the model to declare an `origin` \
+                         (e.g. `origin = date(\"2020-01-01\")`).".to_string()),
+                }
+            }
+            let compiled = std::sync::Arc::new(
+                sim::CompiledModel::new(model.clone())
+                    .map_err(|e| format!("error compiling model for obs: {:?}", e))?,
+            );
+            let params = compiled.default_params.clone();
+            let mut obs_rng = sim::rng::StatefulRng::new(cell.spec.obs_seed);
+
+            if run_idx == 0 {
+                for obs_model in &model.observations {
+                    self.obs_stream_names.push(obs_model.name.clone());
+                    self.obs_data.push(Vec::new());
+                    let times = obs_schedule_times(
+                        &obs_model.schedule,
+                        model.simulation.t_start,
+                        model.simulation.t_end,
+                    );
+                    self.obs_times_cache.push(times);
+                }
+            }
+
+            for (si, obs_ir) in model.observations.iter().enumerate() {
+                let sampler = sim::inference::obs_model::compile_obs_sample_pf(
+                    obs_ir, compiled.clone(), &params,
+                );
+                let obs_times = self.obs_times_cache[si].clone();
+                let projected_values = project_all_obs_times(
+                    traj, obs_ir, model, &obs_times,
+                );
+                for (ti, &obs_t) in obs_times.iter().enumerate() {
+                    // GH #6 fix: pass the actual compartment state at the obs
+                    // time so the likelihood p/mean expressions can resolve
+                    // references like `N = S + I + R`.
+                    let snap = snap_at(traj, obs_t);
+                    let draw = sampler(
+                        projected_values[ti], obs_t, &snap.int_state.counts, &mut obs_rng,
+                    );
+                    self.obs_data[si].push(ObsRow {
+                        time: obs_t,
+                        replicate: run_idx + 1,
+                        draw: draw_idx + 1,
+                        scenario: scenario_label.clone(),
+                        value: draw,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl StreamSink {
+    /// Write the combined synthetic-observation output after all cells are
+    /// merged. Reproduces the pre-unification post-loop obs writers.
+    fn write_obs_output(&self) {
+        use std::io::Write;
+        if (self.obs_path.is_none() && self.obs_dir.is_none()) || self.obs_data.is_empty() {
+            return;
+        }
+        let total_runs = self.total_runs;
+        let n_scenarios = self.n_scenarios;
+        let n_draws = self.n_draws;
+        let multi_rep = total_runs > 1;
+        let date_render = self.dates_render.as_ref();
+
+        // --obs / --obs-only: single wide-format file.
+        if let Some(ref path) = self.obs_path {
             let f = std::fs::File::create(path)
                 .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
             let mut out = std::io::BufWriter::new(f);
 
-            // --dates: additive calendar column (same policy as trajectory),
-            // rendered from the captured (origin, time_unit).
-            let date_render = dates_render.as_ref();
-
-            // Header
             if multi_rep { write!(out, "replicate\t").unwrap(); }
             if n_scenarios > 1 { write!(out, "scenario\t").unwrap(); }
             if n_draws > 1 { write!(out, "draw\t").unwrap(); }
             write!(out, "time").unwrap();
             if date_render.is_some() { write!(out, "\tdate").unwrap(); }
-            for name in &obs_stream_names { write!(out, "\t{}", name).unwrap(); }
+            for name in &self.obs_stream_names { write!(out, "\t{}", name).unwrap(); }
             writeln!(out).unwrap();
 
-            // All streams share the same schedule (validated above).
-            // Rows: iterate over (replicate, time), collect values across streams.
-            let n_times = obs_times_cache[0].len();
+            let n_times = self.obs_times_cache[0].len();
             for run in 0..total_runs {
                 for ti in 0..n_times {
                     let row_idx = run * n_times + ti;
                     if multi_rep { write!(out, "{}\t", run + 1).unwrap(); }
-                    if n_scenarios > 1 { write!(out, "{}\t", obs_data[0][row_idx].scenario).unwrap(); }
-                    if n_draws > 1 { write!(out, "{}\t", obs_data[0][row_idx].draw).unwrap(); }
-                    let t_val = obs_data[0][row_idx].time;
+                    if n_scenarios > 1 { write!(out, "{}\t", self.obs_data[0][row_idx].scenario).unwrap(); }
+                    if n_draws > 1 { write!(out, "{}\t", self.obs_data[0][row_idx].draw).unwrap(); }
+                    let t_val = self.obs_data[0][row_idx].time;
                     write!(out, "{}", t_val).unwrap();
                     if let Some((o, tu)) = date_render {
                         let d = ir::caltime::internal_to_date(o, t_val, tu)
                             .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
                         write!(out, "\t{}", d).unwrap();
                     }
-                    for si in 0..obs_stream_names.len() {
-                        let val = obs_data[si][row_idx].value;
+                    for si in 0..self.obs_stream_names.len() {
+                        let val = self.obs_data[si][row_idx].value;
                         if val == val.round() && val.abs() < 1e15 {
                             write!(out, "\t{}", val as i64).unwrap();
                         } else {
@@ -1081,10 +1186,9 @@ fn run_simulate(a: &args::SimulateArgs) {
             eprintln!("observations written to {}", path);
         }
 
-        // --obs-dir: one file per stream
-        if let Some(ref dir) = obs_dir {
-            let date_render = dates_render.as_ref();
-            for (si, name) in obs_stream_names.iter().enumerate() {
+        // --obs-dir / --obs-only-dir: one file per stream.
+        if let Some(ref dir) = self.obs_dir {
+            for (si, name) in self.obs_stream_names.iter().enumerate() {
                 let path = format!("{}/{}.tsv", dir, name);
                 let f = std::fs::File::create(&path)
                     .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
@@ -1099,7 +1203,7 @@ fn run_simulate(a: &args::SimulateArgs) {
                     writeln!(out, "time\t{}", name).unwrap();
                 }
 
-                for row in &obs_data[si] {
+                for row in &self.obs_data[si] {
                     if multi_rep { write!(out, "{}\t", row.replicate).unwrap(); }
                     if n_scenarios > 1 { write!(out, "{}\t", row.scenario).unwrap(); }
                     if n_draws > 1 { write!(out, "{}\t", row.draw).unwrap(); }
@@ -1402,7 +1506,7 @@ fn resolve_comp_local(model: &ir::Model, obs_name: &str, comp_name: &str) -> Com
     std::process::exit(1);
 }
 
-fn snap_at(traj: &sim::Trajectory, obs_t: f64) -> &sim::Snapshot {
+pub(crate) fn snap_at(traj: &sim::Trajectory, obs_t: f64) -> &sim::Snapshot {
     traj.snapshots.iter().rev()
         .find(|s| s.t <= obs_t + 1e-9)
         .unwrap_or_else(|| {

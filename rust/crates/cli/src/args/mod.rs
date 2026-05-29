@@ -507,8 +507,14 @@ pub struct SimulateArgs {
     pub obs_dir: Option<PathBuf>,
 
     /// Like --obs but suppress trajectory output
-    #[arg(long, conflicts_with_all = ["obs", "obs_dir", "output"])]
+    #[arg(long, conflicts_with_all = ["obs", "obs_dir", "output", "obs_only_dir"])]
     pub obs_only: Option<PathBuf>,
+
+    /// Like --obs-dir (one TSV per stream) but suppress trajectory output.
+    /// The multi-cadence-safe sibling of --obs-only (run-spec §3.1.1,
+    /// ObsOutput::OnlyDir).
+    #[arg(long, conflicts_with_all = ["obs", "obs_dir", "obs_only", "output"])]
+    pub obs_only_dir: Option<PathBuf>,
 
     /// Add a calendar `date` column (rendered from the model `origin` +
     /// `time_unit`) alongside the numeric `t`/`time` column in trajectory

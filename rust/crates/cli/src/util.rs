@@ -1268,6 +1268,7 @@ pub fn print_observations_summary(model: &ir::Model) {
 // ─── SimRun / SimOutput ───────────────────────────────────────────────────────
 
 /// All inputs needed to run one simulation.
+#[derive(Clone)]
 pub struct SimRun {
     pub ir_path: String,
     pub params_files: Vec<String>,
