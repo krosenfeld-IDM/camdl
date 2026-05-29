@@ -22,6 +22,51 @@ Two independent reviewers read the code. Verdict: direction sound, **D genuinely
 low-risk and shippable**; **B1/B2 underscoped** with two silent-wrong-answer traps.
 Changes:
 
+### Scope guard & landing conditions (read first — applies to any implementer)
+
+- **Implement D, then B1. DO NOT implement B2 (shared/emitted binding-gradients).**
+  B2 is **out of scope for this proposal** and must not be built without a fresh
+  decision. Reason: production gradients are the OCaml-emitted `rate_grad`, and
+  `autodiff` maps `Pop`/`PopSum → 0` (state is conditioned-on in PGAS). **Every
+  binding in the current FOI is state-only ⇒ `d(binding)/dp ≡ 0`**, so B2's
+  machinery buys nothing on the gradient once B1 shrinks the rate trees. If a
+  future model ever puts an estimated `Param` inside a binding body, *stop and
+  re-open this decision* — and prefer the dual-number path (option 2, reuses the
+  FD-validated `eval_resolved_deriv`) plus a new **spatial** FD gradient check
+  (today's covers only non-spatial `sir_basic`).
+- **Landing condition — all backends, byte-identical.** A phase may land only if
+  every golden simulates to a **byte-identical `Trajectory`** (fixed seed) under
+  **all four backends — chain-binomial, tau-leap, Gillespie, ODE** — before and
+  after. The binding preamble + `EvalCtx.bindings` must be wired into all of them
+  (and `intervention.rs`/`observe`), not just `chain_binomial::step_one`. A green
+  chain-binomial run is *not* sufficient to land.
+- **Compile gate.** All exhaustive `Expr`/`ResolvedExpr` match sites (the
+  completeness checklist below) handle the new variants; the four catch-all guard
+  sites consult per-binding flags. Both are blocking, not follow-ups.
+- **Cliff gate (D).** A P≥64 spatial model that fails to parse today must parse
+  after D.
+
+### Test/golden coverage to build BEFORE B1 (current goldens have blind spots)
+
+The existing spatial goldens are *associativity-blind* (`sir_spatial_sum`'s
+`N = S+I+R` is 3 terms — every fold order is bit-identical, so a reassociation
+regression is undetectable). Build these first; they are the gate, not an extra:
+
+1. **Large mixed int/real aggregate** — a model with a `≥8`-term sum mixing
+   integer and **real** compartments (e.g. an environmental-reservoir total), so
+   `MixedPopSum`'s int-then-real fold order is actually exercised and trap #1
+   would fail the gate. (MixedPopSum is likely *untested* by current goldens.)
+2. **Forcing inside a binding** — a `let` whose body transitively reads
+   `school(t)`, referenced by a rate, run under **Gillespie**, to catch trap #2
+   (`expr_is_time_dependent` mis-classifying a `BindingRef` → frozen dynamics).
+3. **All-backend matrix** — one binding+reduction model run under chain-binomial,
+   tau-leap, Gillespie, ODE, asserting byte-identical trajectories (the landing
+   condition above).
+4. **Cliff probe** — a P≥64 model as a parse test (too large to commit as a
+   golden; lives in the scaling bench), proving D removes the cliff.
+   Note overlap: real-compartments-under-chain-binomial is *also* engine bug
+   #2/#13, so a real-comp golden may surface that separately — coordinate.
+
 ### Two correctness traps to design out (both → a *different number*, not a crash)
 
 1. **Float reassociation via `normalize_expr` (the #1 risk).** Today
