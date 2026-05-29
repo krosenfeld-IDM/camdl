@@ -233,7 +233,8 @@ the real 10× for the spatial/fit workload (proposal-gated).
    | P32_A7_on (34 MB IR) | 128 ms | 35.8 ms | 3.6× |
 
    The win **grows with tree size** (untagged buffering scales with depth), all
-   `p < 0.05`. End-to-end on the ~2 GB anchor (`P44_A21_on_full`),
+   `p < 0.05` — see [`assets/scaling/deser_load_before_after.png`](assets/scaling/deser_load_before_after.png).
+   End-to-end on the ~2 GB anchor (`P44_A21_on_full`),
    `simulate`-from-IR: **9.32 s → ~4.7 s (~2.0×)** — parse was ~65% of the run and
    drops ~3.5×, leaving stepping + resolve as the new floor (which is where B
    comes in). This is per-process load cost paid by *every* model and *every*

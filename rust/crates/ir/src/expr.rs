@@ -245,6 +245,16 @@ impl Expr {
 // is a single-key object whose key names the variant, so we read that one key
 // and dispatch — no per-node buffer-allocate/clone/drop. See the doc comment on
 // `Expr` and docs/dev/notes/2026-05-29-foi-scaling-bench.md (Fix E).
+//
+// MAINTENANCE: adding or renaming an `Expr` variant now requires updating the
+// match arm below *in addition to* the enum (Serialize is still derived). This
+// is one extra same-file edit on top of the cross-language IR changes a new
+// variant already needs (OCaml `ir.ml` + `ir/schema.json`). The omission is
+// loud, not silent: a missing arm makes that node's key fall to the `other =>`
+// hard error, and the `roundtrips_every_variant_*` test fails (Serialize emits
+// a key the Deserialize then rejects). A future externally-tagged refactor
+// (rename variants, drop the wrapper structs) would let the derive handle both
+// directions again and remove this second location — see the note's Fix E.
 impl<'de> Deserialize<'de> for Expr {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
