@@ -37,9 +37,18 @@ Changes:
 - **Landing condition — all backends, byte-identical.** A phase may land only if
   every golden simulates to a **byte-identical `Trajectory`** (fixed seed) under
   **all four backends — chain-binomial, tau-leap, Gillespie, ODE** — before and
-  after. The binding preamble + `EvalCtx.bindings` must be wired into all of them
-  (and `intervention.rs`/`observe`), not just `chain_binomial::step_one`. A green
-  chain-binomial run is *not* sufficient to land.
+  after. A green chain-binomial run is *not* sufficient to land.
+- **Binding-fill granularity (the validity invariant).** The slots must be filled
+  from the *same state the rate evaluation reads*, **every time rates are
+  evaluated** — not "once per step." That granularity differs by backend:
+  fixed-step (chain-binomial, tau-leap) = once per step; **Gillespie = after every
+  event** (re-eval); **ODE = every RK4 stage**. "Once per step" is *wrong* for the
+  latter two (stale slots → silent wrong dynamics). **Implementation rule:** tie
+  the slot-fill to `eval_propensities` (fill from the current `EvalCtx` state at
+  the top of every propensity evaluation), so each backend gets the correct
+  granularity automatically. `EvalCtx` (`propensity.rs:13`) gains `bindings:
+  &[f64]`; every `EvalCtx` construction site across all backends +
+  `intervention.rs`/`observe` is in scope.
 - **Compile gate.** All exhaustive `Expr`/`ResolvedExpr` match sites (the
   completeness checklist below) handle the new variants; the four catch-all guard
   sites consult per-binding flags. Both are blocking, not follow-ups.
