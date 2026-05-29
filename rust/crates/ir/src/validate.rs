@@ -230,6 +230,11 @@ fn check_expr(expr: &Expr, ctx: &RefCtx<'_>, allow_projected: bool, errors: &mut
             // resolution.
             check_expr(&w.unchecked_dim.inner, ctx, allow_projected, errors);
         }
+        Expr::Reduce(w) => {
+            for t in &w.reduce {
+                check_expr(t, ctx, allow_projected, errors);
+            }
+        }
     }
 }
 

@@ -105,6 +105,17 @@ pub struct PopSumExpr {
     pub pop_sum: Vec<String>,
 }
 
+/// `{"reduce": [<expr>, …]}` — n-ary sum over already-substituted terms (Fix D,
+/// proposal 2026-05-29-shared-bindings-and-reduction). Replaces the deep
+/// left-nested `BinOp(Add)` chain that `sum(...)` over a dimension lowered to,
+/// which tripped serde's recursion limit past ~50 patches. Evaluated as a
+/// left-fold to match the OCaml `List.fold_left (+)` order bit-for-bit. Sum
+/// semantics only; product is deferred.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReduceWrap {
+    pub reduce: Vec<Expr>,
+}
+
 /// `{"time": null}` — unit value serialises to JSON null.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimeExpr {
@@ -204,6 +215,7 @@ pub enum Expr {
     TableLookup(TableLookupWrap),
     Projected(ProjectedExpr),
     UncheckedDim(UncheckedDimWrap),
+    Reduce(ReduceWrap),
 }
 
 // ── Convenience constructors ──────────────────────────────────────────────────
@@ -236,6 +248,9 @@ impl Expr {
         Expr::UnOp(UnOpWrap {
             un_op: UnOpExpr { op, arg: Box::new(arg) },
         })
+    }
+    pub fn reduce(terms: Vec<Expr>) -> Self {
+        Expr::Reduce(ReduceWrap { reduce: terms })
     }
 }
 
@@ -316,11 +331,12 @@ impl<'de> Deserialize<'de> for Expr {
                     "unchecked_dim" => {
                         Expr::UncheckedDim(UncheckedDimWrap { unchecked_dim: map.next_value()? })
                     }
+                    "reduce" => Expr::Reduce(ReduceWrap { reduce: map.next_value()? }),
                     other => {
                         return Err(de::Error::custom(format!(
                             "unknown expression node kind '{other}' (expected one of: const, \
                              param, pop, pop_sum, time, dt, bin_op, un_op, cond, time_func, \
-                             table_lookup, projected, unchecked_dim)"
+                             table_lookup, projected, unchecked_dim, reduce)"
                         )))
                     }
                 };
@@ -368,6 +384,8 @@ mod deserialize_tests {
             Expr::TableLookup(TableLookupWrap {
                 table_lookup: TableLookupExpr { table: "W".into(), indices: vec![Expr::const_(3.0)] },
             }),
+            Expr::reduce(vec![Expr::const_(1.0), Expr::param("kappa"), Expr::pop("I_p1")]),
+            Expr::reduce(vec![]), // empty sum (= 0)
         ] {
             roundtrip(&e);
         }

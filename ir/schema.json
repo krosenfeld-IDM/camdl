@@ -205,6 +205,13 @@
             "projected": { "type": "null" }
           },
           "additionalProperties": false
+        },
+        {
+          "required": ["reduce"],
+          "properties": {
+            "reduce": { "type": "array", "items": { "$ref": "#/definitions/expr" } }
+          },
+          "additionalProperties": false
         }
       ]
     },

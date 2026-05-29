@@ -109,6 +109,7 @@ let rec expr_to_json (e : expr) : Yojson.Safe.t =
   | Param p      -> obj [("param", str p)]
   | Pop   p      -> obj [("pop",   str p)]
   | PopSum ps    -> obj [("pop_sum", arr (List.map str ps))]
+  | Reduce terms -> obj [("reduce", arr (List.map expr_to_json terms))]
   | Time         -> obj [("time", null)]
   | Dt           -> obj [("dt", null)]
   | Projected    -> obj [("projected", null)]
@@ -165,6 +166,7 @@ let rec expr_of_json (j : Yojson.Safe.t) : expr =
     | ["param"]        -> Param (as_string (List.assoc "param" kvs))
     | ["pop"]          -> Pop   (as_string (List.assoc "pop" kvs))
     | ["pop_sum"]      -> PopSum (List.map as_string (as_list (List.assoc "pop_sum" kvs)))
+    | ["reduce"]       -> Reduce (List.map expr_of_json (as_list (List.assoc "reduce" kvs)))
     | ["time"]         -> Time
     | ["dt"]           -> Dt
     | ["projected"]    -> Projected

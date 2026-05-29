@@ -2620,6 +2620,7 @@ let classify_and_resolve_prior_spec ?(loc = Diagnostics.no_loc) ctx ~pname
       | Ir.TimeFunc _ -> ()
       | Ir.TableLookup (_, args) -> List.iter check_refs args
       | Ir.UncheckedDim u -> check_refs u.inner
+      | Ir.Reduce terms -> List.iter check_refs terms
     in
     List.iter (fun (_, e) -> check_refs e) resolved_args;
     `Hierarchical {
@@ -3005,6 +3006,7 @@ let resolve_comp_name ctx env e =
       | Ir.Projected  -> "a projected value"
       | Ir.Pop _      -> "a compartment" (* unreachable by pattern *)
       | Ir.UncheckedDim _ -> "a dimensional-escape expression"
+      | Ir.Reduce _   -> "a sum (reduce)"
     in
     Diagnostics.error ctx.diags
       ~code:"E264"
@@ -4663,6 +4665,8 @@ let build_model_structure ctx expanded_trs =
       List.fold_left collect_numerator_pops acc args
     | Ir.Const _ | Ir.Param _ | Ir.Time | Ir.Dt | Ir.Projected | Ir.TimeFunc _ -> acc
     | Ir.UncheckedDim u -> collect_numerator_pops acc u.inner
+    (* Every term of a sum is a numerator contribution (like Add). *)
+    | Ir.Reduce terms -> List.fold_left collect_numerator_pops acc terms
   in
   let seen_tr  = Hashtbl.create 4 in
   let seen_inf = Hashtbl.create 4 in
@@ -4712,6 +4716,7 @@ let rec expr_contains_param_or_pop = function
     || expr_contains_param_or_pop else_
   | Ir.UncheckedDim u -> expr_contains_param_or_pop u.inner
   | Ir.TableLookup (_, args) -> List.exists expr_contains_param_or_pop args
+  | Ir.Reduce terms -> List.exists expr_contains_param_or_pop terms
   | Ir.Const _ | Ir.Time | Ir.Dt | Ir.Projected | Ir.TimeFunc _ -> false
 
 (* Treat `UncheckedDim { inner = Const c; ... }` (the IR form of unit
@@ -4778,6 +4783,7 @@ let rec walk_expr_for_l401 ~on_match e =
   | Ir.UncheckedDim u -> walk_expr_for_l401 ~on_match u.inner
   | Ir.TableLookup (_, args) ->
     List.iter (walk_expr_for_l401 ~on_match) args
+  | Ir.Reduce terms -> List.iter (walk_expr_for_l401 ~on_match) terms
   | Ir.Const _ | Ir.Param _ | Ir.Pop _ | Ir.PopSum _
   | Ir.Time | Ir.Dt | Ir.Projected | Ir.TimeFunc _ -> ()
 

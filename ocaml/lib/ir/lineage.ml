@@ -137,6 +137,10 @@ let classify_parents ~(sources : string list) (rate : expr) : classification =
       walk ~in_denom ~in_nonlinear:true ~enclosing:e pred;
       walk ~in_denom ~in_nonlinear:true ~enclosing:e then_;
       walk ~in_denom ~in_nonlinear:true ~enclosing:e else_
+    | Reduce terms ->
+      (* A sum is linear (like Add): a parent inside any term is a linear
+         parent candidate, in the same denom/nonlinear context. *)
+      List.iter (walk ~in_denom ~in_nonlinear ~enclosing) terms
   in
   walk ~in_denom:false ~in_nonlinear:false ~enclosing:rate rate;
   { parents = List.rev !parents; nonlinear = !nonlinear }
@@ -196,6 +200,9 @@ let rec deriv_num_wrt_pop (comp : string) (e : expr) : expr =
        Divs, so this only fires for a nested normalizer in the
        numerator factoring — still frozen. *)
     BinOp { op = Div; left = deriv_num_wrt_pop comp left; right }
+  | Reduce terms ->
+    (* d/dcount (Σ tᵢ) = Σ d/dcount tᵢ (linear, like Add). *)
+    Reduce (List.map (deriv_num_wrt_pop comp) terms)
   | BinOp _ | UnOp _ | Cond _ ->
     (* Nonlinear constructs cannot contain a linear parent in the
        numerator (classify_parents would have rejected the rate), so

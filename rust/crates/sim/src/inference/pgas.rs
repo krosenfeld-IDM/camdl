@@ -1504,6 +1504,11 @@ pub fn run_pgas(
                     }
                 }
                 ir::expr::Expr::UncheckedDim(w) => collect_param_refs(&w.unchecked_dim.inner, out),
+                // A param reachable only through a Reduce must still be collected,
+                // or NUTS silently sees a zero gradient for it.
+                ir::expr::Expr::Reduce(w) => {
+                    for t in &w.reduce { collect_param_refs(t, out); }
+                }
             }
         }
         let mut obs_param_refs: HashSet<String> = HashSet::new();

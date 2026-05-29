@@ -24,6 +24,13 @@ and expr =
   | Cond   of cond_expr
   | TimeFunc of string           (* name of the time function *)
   | TableLookup of string * expr list  (* table name, index exprs *)
+  (* n-ary sum over already-substituted terms (proposal
+     2026-05-29-shared-bindings-and-reduction, Fix D). Replaces the deep
+     left-nested Add chain that `sum(...)` over a dimension used to lower to,
+     which tripped serde's recursion limit past ~50 patches. Sum semantics only;
+     Prod is deferred (the FOI needs only sum, and a half-built Prod is worse
+     than none — documented deviation from the proposal's {op,terms} shape). *)
+  | Reduce of expr list
   | Projected                    (* refers to projection output in likelihoods *)
   (* Per-expression dimensional escape: asserts the wrapped subexpression
      has dimension `(dim_p, dim_t)` without the checker verifying. The

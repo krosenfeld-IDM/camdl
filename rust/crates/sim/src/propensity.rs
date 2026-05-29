@@ -216,6 +216,15 @@ pub fn eval_expr(expr: &Expr, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
             // expression and pass its value through unchanged.
             eval_expr(&w.unchecked_dim.inner, ctx)
         }
+        Expr::Reduce(w) => {
+            // n-ary sum; left-fold (acc starts at 0.0) to match the OCaml
+            // `List.fold_left (+)` Add-chain order bit-for-bit.
+            let mut acc = 0.0;
+            for t in &w.reduce {
+                acc += eval_expr(t, ctx)?;
+            }
+            Ok(acc)
+        }
     }
 }
 
@@ -288,6 +297,10 @@ pub fn eval_expr_deriv(expr: &Expr, wrt: usize, ctx: &EvalCtx<'_>) -> f64 {
             // Derivative propagates through the escape — runtime
             // gradients don't care about dim assertions.
             eval_expr_deriv(&w.unchecked_dim.inner, wrt, ctx)
+        }
+        Expr::Reduce(w) => {
+            // d/dp (Σ tᵢ) = Σ d/dp tᵢ (linear).
+            w.reduce.iter().map(|t| eval_expr_deriv(t, wrt, ctx)).sum()
         }
     }
 }

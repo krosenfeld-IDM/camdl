@@ -70,6 +70,9 @@ pub enum ResolvedExpr {
     /// `inner`). The asserted dim is a compile-time concern only and
     /// isn't stored here — the dim-checker has already consumed it.
     UncheckedDim { inner: Box<ResolvedExpr> },
+    /// n-ary sum over already-resolved terms (Fix D). Evaluated as a left-fold
+    /// to match the OCaml Add-chain order bit-for-bit.
+    Reduce(Vec<ResolvedExpr>),
 }
 
 /// Returns true if the expression references compartment state (Pop, PopSum).
@@ -88,6 +91,7 @@ pub fn references_state(expr: &ResolvedExpr) -> bool {
             references_state(pred) || references_state(then_) || references_state(else_),
         ResolvedExpr::TableLookup { index, .. } => references_state(index),
         ResolvedExpr::UncheckedDim { inner } => references_state(inner),
+        ResolvedExpr::Reduce(terms) => terms.iter().any(references_state),
         _ => false,
     }
 }
@@ -214,6 +218,12 @@ pub fn resolve_expr(expr: &Expr, ctx: &ResolveCtx<'_>) -> Result<ResolvedExpr, S
         Expr::UncheckedDim(w) => {
             let inner = resolve_expr(&w.unchecked_dim.inner, ctx)?;
             Ok(ResolvedExpr::UncheckedDim { inner: Box::new(inner) })
+        }
+        Expr::Reduce(w) => {
+            let terms = w.reduce.iter()
+                .map(|e| resolve_expr(e, ctx))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ResolvedExpr::Reduce(terms))
         }
     }
 }
@@ -380,6 +390,9 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
             // compile time by the dim-checker.
             eval_resolved(inner, ctx)
         }
+        // Left-fold (sum() folds from 0.0) → bit-identical to the OCaml
+        // `((t0+t1)+…)` Add-chain (0.0 + t0 == t0). NaN propagates naturally.
+        ResolvedExpr::Reduce(terms) => terms.iter().map(|t| eval_resolved(t, ctx)).sum(),
     }
 }
 
@@ -504,5 +517,7 @@ pub fn eval_resolved_deriv(expr: &ResolvedExpr, wrt: usize, ctx: &EvalCtx<'_>) -
         ResolvedExpr::UncheckedDim { inner } => {
             eval_resolved_deriv(inner, wrt, ctx)
         }
+        ResolvedExpr::Reduce(terms) =>
+            terms.iter().map(|t| eval_resolved_deriv(t, wrt, ctx)).sum(),
     }
 }

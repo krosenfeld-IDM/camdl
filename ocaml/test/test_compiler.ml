@@ -653,6 +653,7 @@ let rec collect_pops = function
   | Ir.TimeFunc _ -> []
   | Ir.TableLookup (_, idx) -> List.concat_map collect_pops idx
   | Ir.UncheckedDim u -> collect_pops u.inner
+  | Ir.Reduce terms -> List.concat_map collect_pops terms
 
 let test_let_binding_is_inlined () =
   let src = {|
@@ -1430,6 +1431,7 @@ let test_l401_no_fire_when_dt_used () =
         contains_dt pred || contains_dt then_ || contains_dt else_
       | Ir.UncheckedDim u -> contains_dt u.inner
       | Ir.TableLookup (_, args) -> List.exists contains_dt args
+      | Ir.Reduce terms -> List.exists contains_dt terms
       | Ir.Const _ | Ir.Param _ | Ir.Pop _ | Ir.PopSum _
       | Ir.Time | Ir.Projected | Ir.TimeFunc _ -> false
     in

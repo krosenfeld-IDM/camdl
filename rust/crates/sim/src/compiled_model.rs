@@ -160,6 +160,11 @@ fn collect_int_comp_deps(
                 collect_int_comp_deps(idx_expr, comp_index, global_to_int, deps);
             }
         }
+        Expr::Reduce(w) => {
+            for t in &w.reduce {
+                collect_int_comp_deps(t, comp_index, global_to_int, deps);
+            }
+        }
         // Const, Param, Time, TimeFunc: no compartment dependencies
         _ => {}
     }
@@ -188,6 +193,9 @@ fn expr_is_time_dependent(expr: &Expr) -> bool {
                 || expr_is_time_dependent(&w.cond.else_)
         }
         Expr::TableLookup(w) => w.table_lookup.indices.iter().any(expr_is_time_dependent),
+        // A binding/sum that transitively reads a time function must count as
+        // time-dependent, or Gillespie freezes it at t=0 (silent wrong dynamics).
+        Expr::Reduce(w) => w.reduce.iter().any(expr_is_time_dependent),
         _ => false,
     }
 }

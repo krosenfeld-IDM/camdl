@@ -70,6 +70,7 @@ fn references_compartments(expr: &Expr) -> Option<String> {
         Expr::Cond(w) => references_compartments(&w.cond.pred)
             .or_else(|| references_compartments(&w.cond.then))
             .or_else(|| references_compartments(&w.cond.else_)),
+        Expr::Reduce(w) => w.reduce.iter().find_map(|t| references_compartments(t)),
         _ => None,
     }
 }

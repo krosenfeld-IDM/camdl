@@ -102,6 +102,7 @@ let rec differentiate (e : expr) (param : string) : expr =
         | TimeFunc _    -> false
         | TableLookup (_, args) -> List.exists (mentions p) args
         | UncheckedDim u -> mentions p u.inner
+        | Reduce terms -> List.exists (mentions p) terms
       in
       if mentions param b.left || mentions param b.right then
         failwith (Printf.sprintf
@@ -184,6 +185,9 @@ let rec differentiate (e : expr) (param : string) : expr =
   | Cond c -> Cond { pred  = c.pred;
                      then_ = differentiate c.then_ param;
                      else_ = differentiate c.else_ param }
+
+  (* Sum is linear: d/dp (Σ tᵢ) = Σ d/dp tᵢ. *)
+  | Reduce terms -> Reduce (List.map (fun t -> differentiate t param) terms)
 
 
 (** Algebraic simplification: constant folding and identity elimination.

@@ -27,6 +27,7 @@ let prec_expr : Ir.expr -> int = function
   | Ir.Const _ | Ir.Param _ | Ir.Pop _ | Ir.PopSum _
   | Ir.Time | Ir.Dt | Ir.TimeFunc _ | Ir.TableLookup _ | Ir.Projected -> 10
   | Ir.UncheckedDim _ -> 10   (* function-call-like, atomic *)
+  | Ir.Reduce _ -> 10         (* rendered self-parenthesized, atomic *)
   | Ir.BinOp { op; _ } -> prec_binop op
   | Ir.UnOp  _         -> 9
   | Ir.Cond  _         -> 1
@@ -159,6 +160,13 @@ and pp_inner ~mode ~split ~ascii ppf = function
     Fmt.pf ppf "unchecked_dim(";
     pp ~mode ~split ~ascii ppf u.inner;
     Fmt.pf ppf ", dim = (%d,%d))" u.dim_p u.dim_t
+  | Ir.Reduce terms ->
+    Fmt.pf ppf "(";
+    List.iteri (fun i t ->
+      if i > 0 then Fmt.pf ppf " + ";
+      pp ~mode ~split ~ascii ppf t
+    ) terms;
+    Fmt.pf ppf ")"
 
 (** Render an IR expression to a plain (ASCII, IR-name) string. Used by
     diagnostics that need to quote a sub-expression in error text. *)
