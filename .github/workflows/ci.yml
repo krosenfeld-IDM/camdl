@@ -74,7 +74,10 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Rust tests
-        run: cd rust && cargo test
+        # --no-fail-fast: run every test binary even after one fails, so a
+        # single early failure can't mask the rest of the suite (gh#110's
+        # PF-degeneracy breakage hid behind the first red binary for days).
+        run: cd rust && cargo test --no-fail-fast
 
       # ── Integration ────────────────────────────────────
       - name: Update golden files
