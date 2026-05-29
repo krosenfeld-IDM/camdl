@@ -399,21 +399,10 @@ fn main() {
     }
 }
 
-// Seed derivation constants for independent RNG streams.
-// These are arbitrary coprime constants used to derive per-(draw, replicate)
-// seeds from the base seed via XOR mixing. The specific values don't matter
-// as long as they're distinct and nonzero — they ensure different (draw, rep)
-// pairs get non-overlapping RNG streams.
-// The per-(draw, replicate) seed-mixing constants moved into the unified
-// engine (`engine::process_seed_for`) as part of the simulate/batch
-// `run_job` convergence; the copies here remain only for the inline
-// `seed_derivation_deterministic` test (cfg(test)).
-#[cfg(test)]
-const SEED_MIX_DRAW: u64 = 0x9e3779b97f4a7c15; // golden ratio fractional bits
-#[cfg(test)]
-const SEED_MIX_REP: u64  = 0x517cc1b727220a95; // more golden ratio mixing
-#[cfg(test)]
-use util::SEED_MIX_OBS;     // canonical home: util.rs
+// Per-(point, replicate) seed derivation lives in one place,
+// `util::mix_cell_seed` (with `util::SEED_MIX_OBS` for the obs stream);
+// `engine::run_job` and `survey` both route through it. The constants
+// below are for the *other*, unrelated RNG streams owned by this module.
 const SEED_MIX_UNIFORM: u64 = 0xd4a5_b1ce;      // uniform draws RNG
 const SEED_MIX_PRIOR: u64  = 0x0014_b1ce;      // prior draws RNG
 
@@ -2500,15 +2489,16 @@ mod tests {
 
     #[test]
     fn seed_derivation_deterministic() {
+        use util::{mix_cell_seed, SEED_MIX_OBS};
         let seed = 42u64;
         let draw_idx = 3u64;
         let rep = 7u64;
-        let s1 = seed ^ draw_idx.wrapping_mul(SEED_MIX_DRAW) ^ rep.wrapping_mul(SEED_MIX_REP);
-        let s2 = seed ^ draw_idx.wrapping_mul(SEED_MIX_DRAW) ^ rep.wrapping_mul(SEED_MIX_REP);
+        let s1 = mix_cell_seed(seed, draw_idx, rep);
+        let s2 = mix_cell_seed(seed, draw_idx, rep);
         assert_eq!(s1, s2, "same inputs must produce same seed");
 
         // Different draw_idx → different seed
-        let s3 = seed ^ 4u64.wrapping_mul(SEED_MIX_DRAW) ^ rep.wrapping_mul(SEED_MIX_REP);
+        let s3 = mix_cell_seed(seed, 4, rep);
         assert_ne!(s1, s3);
 
         // Obs seed independent

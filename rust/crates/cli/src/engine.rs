@@ -39,13 +39,6 @@ use rayon::prelude::*;
 use crate::sim_job::{ScenarioRef, SimulateJob};
 use crate::util::{self, SimRun, SEED_MIX_OBS};
 
-// Seed-mixing constants for independent RNG streams. Arbitrary coprime
-// constants; the only requirement is distinct + nonzero so (point, rep)
-// pairs get non-overlapping streams. Verbatim from the pre-unification
-// `main.rs` so the reroute is byte-identical.
-const SEED_MIX_DRAW: u64 = 0x9e3779b97f4a7c15; // golden ratio fractional bits
-const SEED_MIX_REP: u64 = 0x517cc1b727220a95; // more golden ratio mixing
-
 /// Derive the process seed for one cell, reproducing `main.rs:833-841`.
 ///
 /// * `explicit_seeds` — `Some(&[..])` when `--seeds` / batch `seeds`
@@ -68,9 +61,7 @@ pub fn process_seed_for(
     } else if total_runs == 1 {
         base_seed
     } else {
-        base_seed
-            ^ (point_idx as u64).wrapping_mul(SEED_MIX_DRAW)
-            ^ (rep as u64).wrapping_mul(SEED_MIX_REP)
+        util::mix_cell_seed(base_seed, point_idx as u64, rep as u64)
     }
 }
 
@@ -348,9 +339,10 @@ mod tests {
         let s00 = process_seed_for(None, base, 0, 0, 6);
         let s01 = process_seed_for(None, base, 0, 1, 6);
         let s10 = process_seed_for(None, base, 1, 0, 6);
+        // The multi-run branch must route through the canonical mix.
         assert_eq!(s00, base); // point 0 rep 0 ⇒ base ^ 0 ^ 0
-        assert_eq!(s01, base ^ SEED_MIX_REP);
-        assert_eq!(s10, base ^ SEED_MIX_DRAW);
+        assert_eq!(s01, util::mix_cell_seed(base, 0, 1));
+        assert_eq!(s10, util::mix_cell_seed(base, 1, 0));
         assert_ne!(s01, s10);
     }
 }

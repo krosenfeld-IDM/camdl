@@ -1171,14 +1171,10 @@ fn eval_point_simulate(
     }
 }
 
-/// Per-(point, rep) seed mixer. ChaCha8 maps seeds to streams uniformly,
-/// so any pairwise-distinct mixing is fine; we pick one inspired by
-/// the rest of camdl's seed derivation (golden-ratio constants).
+/// Per-(point, rep) seed mixer — the canonical cell-seed mix shared with
+/// `engine::run_job` (see [`crate::util::mix_cell_seed`]).
 fn derive_point_seed(base: u64, point_id: usize, rep: usize) -> u64 {
-    const SEED_MIX_POINT: u64 = 0x9e37_79b9_7f4a_7c15;
-    const SEED_MIX_REP:   u64 = 0x517c_c1b7_2722_0a95;
-    base ^ (point_id as u64).wrapping_mul(SEED_MIX_POINT)
-         ^ (rep as u64).wrapping_mul(SEED_MIX_REP)
+    crate::util::mix_cell_seed(base, point_id as u64, rep as u64)
 }
 
 // ─── TSV writer ──────────────────────────────────────────────────────────────
