@@ -43,6 +43,38 @@ runtime finds the compiler via `CAMDLC=<abs path to camdlc.exe>`.
 
 ![scaling curves](assets/scaling/scaling_curves.png)
 
+## Optimization results — landed (benchmarks)
+
+Two of the four prioritized fixes (below) are implemented and verified
+byte-identical. Comparison figures:
+[`assets/scaling/deser_load_before_after.png`](assets/scaling/deser_load_before_after.png)
+(Fix E load) and
+[`assets/scaling/d_reduce_ir_cliff.png`](assets/scaling/d_reduce_ir_cliff.png)
+(Fix D IR-size + cliff).
+
+| fix | change | before → after | correctness gate | status |
+| --- | --- | --- | --- | --- |
+| **E** | `Expr` deserialize: drop `#[serde(untagged)]` buffering | model load **3.4–5.8× faster** (grows with size); anchor `simulate`-from-IR **9.32 s → ~4.7 s (2.0×)** | golden round-trip equality | landed on `main` |
+| **D** | `sum(…)` → flat n-ary `Reduce` node | IR size **1.3×→2.3× smaller** (grows with P); **parse cliff removed** — P>50 now parses (P=64/88 were hard `recursion limit` failures) | 88-baseline trajectory gate byte-identical, all backends | landed on `perf/ir-reduce-node` |
+| **B** | shared per-coordinate bindings (compute `N[l]`,`I_agg[l]`,`F[l]` once/step) | the **asymptotic** O(P²·A²)→O(P·A) IR + O(P²·A)→O(P·A+P²) eval | trajectory gate | not started |
+
+![Fix D — IR size + cliff](assets/scaling/d_reduce_ir_cliff.png)
+
+| P (A=1, on) | IR before (Add-chain) | IR after (Reduce) | factor |
+| --- | --- | --- | --- |
+| 8  | 142,779 B | 106,159 B | 1.3× |
+| 16 | 627,538 B | 334,918 B | 1.9× |
+| 32 | 2,674,220 B | 1,204,678 B | 2.2× |
+| 44 | 5,148,038 B | 2,217,406 B | 2.3× |
+| 64 | **parse failure** (serde recursion limit) | 4,590,730 B | — |
+| 88 | **parse failure** | 8,569,702 B | — |
+
+Honest framing: **D is a constant-factor + cliff fix, not asymptotic** — the
+spatial sum still has P terms, just stored flat instead of as a P-deep `Add`
+chain. The asymptotic shrink (so the 774-patch national model is *tractable*,
+not merely *parseable*) is **B**, which preserves the per-patch aggregates as
+computed-once bindings instead of re-expanding them P·A times.
+
 ## Baseline (the real model, reproduced)
 
 `camdl simulate kano_lga_seirv.camdl --backend chain_binomial --scenario baseline`

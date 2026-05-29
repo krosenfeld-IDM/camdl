@@ -1,0 +1,7 @@
+P	before_bytes	after_bytes	note
+8	142779	106159
+16	627538	334918
+32	2674220	1204678
+44	5148038	2217406	last P that parses pre-Reduce
+64		4590730	pre-Reduce: serde recursion-limit parse failure
+88		8569702	pre-Reduce: serde recursion-limit parse failure
