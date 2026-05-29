@@ -1594,11 +1594,23 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
       let terms = List.map (fun vv ->
         resolve_expr ctx ((v, vv) :: env) body
       ) vals in
-      (* Use plain Add — do NOT normalize here; normalize_expr only collapses
-         all-Pop Add-trees, but sum terms are typically Mul-trees. *)
-      List.fold_left (fun acc t ->
-        Ir.BinOp { op = Ir.Add; left = acc; right = t }
-      ) (List.hd terms) (List.tl terms)
+      (* Fix D, increment 2. If the terms are all Pop/PopSum-additive (e.g. a
+         per-patch total `N = sum(a, S+E+I+R)`), build the Add-chain and let
+         normalize_expr collapse it to a flat PopSum — preserving the
+         IntPopSum/MixedPopSum fold order bit-for-bit (the reassociation trap:
+         a source-order Reduce of a ~100-term mixed sum would flip a draw).
+         Otherwise the terms are Mul-trees (the spatial coupling sum); emit a
+         flat n-ary Reduce instead of a deep left-nested Add chain, which tripped
+         serde's recursion limit past ~50 patches. Both forms evaluate as the
+         same left-fold, so trajectories stay byte-identical (gate-verified). *)
+      let add_chain =
+        List.fold_left (fun acc t ->
+          Ir.BinOp { op = Ir.Add; left = acc; right = t }
+        ) (List.hd terms) (List.tl terms)
+      in
+      (match normalize_expr add_chain with
+       | Ir.PopSum _ as collapsed -> collapsed
+       | _ -> Ir.Reduce terms)
   | EFuncCall ("date", args) ->
     let date_str = match args with
       | [("", EIdent (s, _))] -> s

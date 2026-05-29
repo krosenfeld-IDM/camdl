@@ -31,9 +31,8 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
                     "op": "div",
                     "left": {
@@ -55,7 +54,7 @@
                     }
                   }
                 },
-                "right": {
+                {
                   "bin_op": {
                     "op": "div",
                     "left": {
@@ -77,68 +76,584 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_child",
           "dest_compartment": "E_child"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_child" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "div",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_child" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "mul",
+                          "op": "div",
                           "left": {
-                            "table_lookup": {
-                              "table": "C_age",
-                              "indices": [ { "const": 0.0 } ]
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "table_lookup": {
+                                  "table": "C_age",
+                                  "indices": [ { "const": 0.0 } ]
+                                }
+                              },
+                              "right": { "pop": "I_child" }
                             }
                           },
-                          "right": { "pop": "I_child" }
+                          "right": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          }
                         }
                       },
-                      "right": {
-                        "pop_sum": [
-                          "S_child", "E_child", "I_child", "R_child"
-                        ]
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "table_lookup": {
+                                  "table": "C_age",
+                                  "indices": [ { "const": 1.0 } ]
+                                }
+                              },
+                              "right": { "pop": "I_adult" }
+                            }
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_child" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "add",
+                                      "left": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": { "const": 0.0 },
+                                          "right": { "pop": "I_child" }
+                                        }
+                                      },
+                                      "right": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": {
+                                            "table_lookup": {
+                                              "table": "C_age",
+                                              "indices": [ { "const": 0.0 } ]
+                                            }
+                                          },
+                                          "right": { "const": 0.0 }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_child", "E_child", "I_child",
+                                      "R_child"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 0.0 } ]
+                                        }
+                                      },
+                                      "right": { "pop": "I_child" }
+                                    }
+                                  },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "add",
+                                      "left": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": { "const": 0.0 },
+                                          "right": { "pop": "I_adult" }
+                                        }
+                                      },
+                                      "right": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": {
+                                            "table_lookup": {
+                                              "table": "C_age",
+                                              "indices": [ { "const": 1.0 } ]
+                                            }
+                                          },
+                                          "right": { "const": 0.0 }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_adult", "E_adult", "I_adult",
+                                      "R_adult"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 1.0 } ]
+                                        }
+                                      },
+                                      "right": { "pop": "I_adult" }
+                                    }
+                                  },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "sigma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_child" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
                       "left": {
                         "bin_op": {
-                          "op": "mul",
+                          "op": "sub",
                           "left": {
-                            "table_lookup": {
-                              "table": "C_age",
-                              "indices": [ { "const": 1.0 } ]
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_child" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 0.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              }
                             }
                           },
-                          "right": { "pop": "I_adult" }
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 0.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_child" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
                         }
                       },
                       "right": {
-                        "pop_sum": [
-                          "S_adult", "E_adult", "I_adult", "R_adult"
-                        ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_adult" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 1.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 1.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_adult" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_child" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_child" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 0.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 0.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_child" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_adult" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 1.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 1.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_adult" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -158,9 +673,8 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
                     "op": "div",
                     "left": {
@@ -182,7 +696,7 @@
                     }
                   }
                 },
-                "right": {
+                {
                   "bin_op": {
                     "op": "div",
                     "left": {
@@ -204,68 +718,584 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_adult",
           "dest_compartment": "E_adult"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_adult" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "div",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_adult" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "mul",
+                          "op": "div",
                           "left": {
-                            "table_lookup": {
-                              "table": "C_age",
-                              "indices": [ { "const": 2.0 } ]
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "table_lookup": {
+                                  "table": "C_age",
+                                  "indices": [ { "const": 2.0 } ]
+                                }
+                              },
+                              "right": { "pop": "I_child" }
                             }
                           },
-                          "right": { "pop": "I_child" }
+                          "right": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          }
                         }
                       },
-                      "right": {
-                        "pop_sum": [
-                          "S_child", "E_child", "I_child", "R_child"
-                        ]
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "table_lookup": {
+                                  "table": "C_age",
+                                  "indices": [ { "const": 3.0 } ]
+                                }
+                              },
+                              "right": { "pop": "I_adult" }
+                            }
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_adult" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "add",
+                                      "left": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": { "const": 0.0 },
+                                          "right": { "pop": "I_child" }
+                                        }
+                                      },
+                                      "right": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": {
+                                            "table_lookup": {
+                                              "table": "C_age",
+                                              "indices": [ { "const": 2.0 } ]
+                                            }
+                                          },
+                                          "right": { "const": 0.0 }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_child", "E_child", "I_child",
+                                      "R_child"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 2.0 } ]
+                                        }
+                                      },
+                                      "right": { "pop": "I_child" }
+                                    }
+                                  },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "add",
+                                      "left": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": { "const": 0.0 },
+                                          "right": { "pop": "I_adult" }
+                                        }
+                                      },
+                                      "right": {
+                                        "bin_op": {
+                                          "op": "mul",
+                                          "left": {
+                                            "table_lookup": {
+                                              "table": "C_age",
+                                              "indices": [ { "const": 3.0 } ]
+                                            }
+                                          },
+                                          "right": { "const": 0.0 }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_adult", "E_adult", "I_adult",
+                                      "R_adult"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 3.0 } ]
+                                        }
+                                      },
+                                      "right": { "pop": "I_adult" }
+                                    }
+                                  },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "sigma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_adult" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
                       "left": {
                         "bin_op": {
-                          "op": "mul",
+                          "op": "sub",
                           "left": {
-                            "table_lookup": {
-                              "table": "C_age",
-                              "indices": [ { "const": 3.0 } ]
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_child" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 2.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              }
                             }
                           },
-                          "right": { "pop": "I_adult" }
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 2.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_child" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
                         }
                       },
                       "right": {
-                        "pop_sum": [
-                          "S_adult", "E_adult", "I_adult", "R_adult"
-                        ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_adult" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 3.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 3.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_adult" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_adult" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_child" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 2.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_child", "E_child", "I_child", "R_child"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 2.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_child" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_child", "E_child", "I_child", "R_child"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "add",
+                                  "left": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": { "const": 0.0 },
+                                      "right": { "pop": "I_adult" }
+                                    }
+                                  },
+                                  "right": {
+                                    "bin_op": {
+                                      "op": "mul",
+                                      "left": {
+                                        "table_lookup": {
+                                          "table": "C_age",
+                                          "indices": [ { "const": 3.0 } ]
+                                        }
+                                      },
+                                      "right": { "const": 0.0 }
+                                    }
+                                  }
+                                }
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_adult", "E_adult", "I_adult", "R_adult"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": {
+                                    "table_lookup": {
+                                      "table": "C_age",
+                                      "indices": [ { "const": 3.0 } ]
+                                    }
+                                  },
+                                  "right": { "pop": "I_adult" }
+                                }
+                              },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_adult", "E_adult", "I_adult", "R_adult"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -434,8 +1464,8 @@
         "R": [ "age" ]
       },
       "base_compartments": [ "S", "E", "I", "R" ],
-      "transmission_transitions": [ "infection" ],
-      "infectious_compartments": [ "I" ]
+      "transmission_transitions": [],
+      "infectious_compartments": []
     }
   }
 }

@@ -38,68 +38,48 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
-                    "op": "add",
-                    "left": {
-                      "bin_op": {
-                        "op": "add",
-                        "left": {
-                          "bin_op": {
-                            "op": "add",
-                            "left": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_0_5" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                  ]
-                                }
-                              }
-                            },
-                            "right": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_5_15" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_5_15", "I_age_5_15", "R_age_5_15"
-                                  ]
-                                }
-                              }
-                            }
-                          }
-                        },
-                        "right": {
-                          "bin_op": {
-                            "op": "div",
-                            "left": { "pop": "I_age_15_50" },
-                            "right": {
-                              "pop_sum": [
-                                "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                              ]
-                            }
-                          }
-                        }
-                      }
-                    },
+                    "op": "div",
+                    "left": { "pop": "I_age_0_5" },
                     "right": {
-                      "bin_op": {
-                        "op": "div",
-                        "left": { "pop": "I_age_50_65" },
-                        "right": {
-                          "pop_sum": [
-                            "S_age_50_65", "I_age_50_65", "R_age_50_65"
-                          ]
-                        }
-                      }
+                      "pop_sum": [ "S_age_0_5", "I_age_0_5", "R_age_0_5" ]
                     }
                   }
                 },
-                "right": {
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_5_15" },
+                    "right": {
+                      "pop_sum": [ "S_age_5_15", "I_age_5_15", "R_age_5_15" ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_15_50" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_50_65" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                      ]
+                    }
+                  }
+                },
+                {
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_age_65p" },
@@ -108,71 +88,59 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_age_0_5",
           "dest_compartment": "I_age_0_5"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_age_0_5" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "add",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_age_0_5" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "add",
-                          "left": {
-                            "bin_op": {
-                              "op": "add",
-                              "left": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_0_5" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                    ]
-                                  }
-                                }
-                              },
-                              "right": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_5_15" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_5_15", "I_age_5_15",
-                                      "R_age_5_15"
-                                    ]
-                                  }
-                                }
-                              }
-                            }
-                          },
+                          "op": "div",
+                          "left": { "pop": "I_age_0_5" },
                           "right": {
-                            "bin_op": {
-                              "op": "div",
-                              "left": { "pop": "I_age_15_50" },
-                              "right": {
-                                "pop_sum": [
-                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                                ]
-                              }
-                            }
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
                           }
                         }
                       },
-                      "right": {
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_5_15" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_15_50" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      },
+                      {
                         "bin_op": {
                           "op": "div",
                           "left": { "pop": "I_age_50_65" },
@@ -182,19 +150,717 @@
                             ]
                           }
                         }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_65p" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_age_0_5" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_0_5" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_5_15", "I_age_5_15",
+                                      "R_age_5_15"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_5_15" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_15_50", "I_age_15_50",
+                                      "R_age_15_50"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_15_50" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_50_65", "I_age_50_65",
+                                      "R_age_50_65"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_50_65" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_65p", "I_age_65p", "R_age_65p"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_65p" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_0_5" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
-                      "left": { "pop": "I_age_65p" },
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
                       "right": {
-                        "pop_sum": [ "S_age_65p", "I_age_65p", "R_age_65p" ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "mu": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_0_5" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -214,68 +880,48 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
-                    "op": "add",
-                    "left": {
-                      "bin_op": {
-                        "op": "add",
-                        "left": {
-                          "bin_op": {
-                            "op": "add",
-                            "left": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_0_5" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                  ]
-                                }
-                              }
-                            },
-                            "right": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_5_15" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_5_15", "I_age_5_15", "R_age_5_15"
-                                  ]
-                                }
-                              }
-                            }
-                          }
-                        },
-                        "right": {
-                          "bin_op": {
-                            "op": "div",
-                            "left": { "pop": "I_age_15_50" },
-                            "right": {
-                              "pop_sum": [
-                                "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                              ]
-                            }
-                          }
-                        }
-                      }
-                    },
+                    "op": "div",
+                    "left": { "pop": "I_age_0_5" },
                     "right": {
-                      "bin_op": {
-                        "op": "div",
-                        "left": { "pop": "I_age_50_65" },
-                        "right": {
-                          "pop_sum": [
-                            "S_age_50_65", "I_age_50_65", "R_age_50_65"
-                          ]
-                        }
-                      }
+                      "pop_sum": [ "S_age_0_5", "I_age_0_5", "R_age_0_5" ]
                     }
                   }
                 },
-                "right": {
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_5_15" },
+                    "right": {
+                      "pop_sum": [ "S_age_5_15", "I_age_5_15", "R_age_5_15" ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_15_50" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_50_65" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                      ]
+                    }
+                  }
+                },
+                {
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_age_65p" },
@@ -284,71 +930,59 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_age_5_15",
           "dest_compartment": "I_age_5_15"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_age_5_15" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "add",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_age_5_15" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "add",
-                          "left": {
-                            "bin_op": {
-                              "op": "add",
-                              "left": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_0_5" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                    ]
-                                  }
-                                }
-                              },
-                              "right": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_5_15" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_5_15", "I_age_5_15",
-                                      "R_age_5_15"
-                                    ]
-                                  }
-                                }
-                              }
-                            }
-                          },
+                          "op": "div",
+                          "left": { "pop": "I_age_0_5" },
                           "right": {
-                            "bin_op": {
-                              "op": "div",
-                              "left": { "pop": "I_age_15_50" },
-                              "right": {
-                                "pop_sum": [
-                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                                ]
-                              }
-                            }
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
                           }
                         }
                       },
-                      "right": {
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_5_15" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_15_50" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      },
+                      {
                         "bin_op": {
                           "op": "div",
                           "left": { "pop": "I_age_50_65" },
@@ -358,19 +992,717 @@
                             ]
                           }
                         }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_65p" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_age_5_15" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_0_5" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_5_15", "I_age_5_15",
+                                      "R_age_5_15"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_5_15" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_15_50", "I_age_15_50",
+                                      "R_age_15_50"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_15_50" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_50_65", "I_age_50_65",
+                                      "R_age_50_65"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_50_65" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_65p", "I_age_65p", "R_age_65p"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_65p" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_5_15" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
-                      "left": { "pop": "I_age_65p" },
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
                       "right": {
-                        "pop_sum": [ "S_age_65p", "I_age_65p", "R_age_65p" ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "mu": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_5_15" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -390,68 +1722,48 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
-                    "op": "add",
-                    "left": {
-                      "bin_op": {
-                        "op": "add",
-                        "left": {
-                          "bin_op": {
-                            "op": "add",
-                            "left": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_0_5" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                  ]
-                                }
-                              }
-                            },
-                            "right": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_5_15" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_5_15", "I_age_5_15", "R_age_5_15"
-                                  ]
-                                }
-                              }
-                            }
-                          }
-                        },
-                        "right": {
-                          "bin_op": {
-                            "op": "div",
-                            "left": { "pop": "I_age_15_50" },
-                            "right": {
-                              "pop_sum": [
-                                "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                              ]
-                            }
-                          }
-                        }
-                      }
-                    },
+                    "op": "div",
+                    "left": { "pop": "I_age_0_5" },
                     "right": {
-                      "bin_op": {
-                        "op": "div",
-                        "left": { "pop": "I_age_50_65" },
-                        "right": {
-                          "pop_sum": [
-                            "S_age_50_65", "I_age_50_65", "R_age_50_65"
-                          ]
-                        }
-                      }
+                      "pop_sum": [ "S_age_0_5", "I_age_0_5", "R_age_0_5" ]
                     }
                   }
                 },
-                "right": {
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_5_15" },
+                    "right": {
+                      "pop_sum": [ "S_age_5_15", "I_age_5_15", "R_age_5_15" ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_15_50" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_50_65" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                      ]
+                    }
+                  }
+                },
+                {
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_age_65p" },
@@ -460,71 +1772,59 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_age_15_50",
           "dest_compartment": "I_age_15_50"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_age_15_50" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "add",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_age_15_50" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "add",
-                          "left": {
-                            "bin_op": {
-                              "op": "add",
-                              "left": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_0_5" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                    ]
-                                  }
-                                }
-                              },
-                              "right": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_5_15" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_5_15", "I_age_5_15",
-                                      "R_age_5_15"
-                                    ]
-                                  }
-                                }
-                              }
-                            }
-                          },
+                          "op": "div",
+                          "left": { "pop": "I_age_0_5" },
                           "right": {
-                            "bin_op": {
-                              "op": "div",
-                              "left": { "pop": "I_age_15_50" },
-                              "right": {
-                                "pop_sum": [
-                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                                ]
-                              }
-                            }
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
                           }
                         }
                       },
-                      "right": {
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_5_15" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_15_50" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      },
+                      {
                         "bin_op": {
                           "op": "div",
                           "left": { "pop": "I_age_50_65" },
@@ -534,19 +1834,717 @@
                             ]
                           }
                         }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_65p" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_age_15_50" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_0_5" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_5_15", "I_age_5_15",
+                                      "R_age_5_15"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_5_15" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_15_50", "I_age_15_50",
+                                      "R_age_15_50"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_15_50" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_50_65", "I_age_50_65",
+                                      "R_age_50_65"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_50_65" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_65p", "I_age_65p", "R_age_65p"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_65p" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_15_50" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
-                      "left": { "pop": "I_age_65p" },
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
                       "right": {
-                        "pop_sum": [ "S_age_65p", "I_age_65p", "R_age_65p" ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "mu": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_15_50" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -566,68 +2564,48 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
-                    "op": "add",
-                    "left": {
-                      "bin_op": {
-                        "op": "add",
-                        "left": {
-                          "bin_op": {
-                            "op": "add",
-                            "left": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_0_5" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                  ]
-                                }
-                              }
-                            },
-                            "right": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_5_15" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_5_15", "I_age_5_15", "R_age_5_15"
-                                  ]
-                                }
-                              }
-                            }
-                          }
-                        },
-                        "right": {
-                          "bin_op": {
-                            "op": "div",
-                            "left": { "pop": "I_age_15_50" },
-                            "right": {
-                              "pop_sum": [
-                                "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                              ]
-                            }
-                          }
-                        }
-                      }
-                    },
+                    "op": "div",
+                    "left": { "pop": "I_age_0_5" },
                     "right": {
-                      "bin_op": {
-                        "op": "div",
-                        "left": { "pop": "I_age_50_65" },
-                        "right": {
-                          "pop_sum": [
-                            "S_age_50_65", "I_age_50_65", "R_age_50_65"
-                          ]
-                        }
-                      }
+                      "pop_sum": [ "S_age_0_5", "I_age_0_5", "R_age_0_5" ]
                     }
                   }
                 },
-                "right": {
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_5_15" },
+                    "right": {
+                      "pop_sum": [ "S_age_5_15", "I_age_5_15", "R_age_5_15" ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_15_50" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_50_65" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                      ]
+                    }
+                  }
+                },
+                {
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_age_65p" },
@@ -636,71 +2614,59 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_age_50_65",
           "dest_compartment": "I_age_50_65"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_age_50_65" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "add",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_age_50_65" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "add",
-                          "left": {
-                            "bin_op": {
-                              "op": "add",
-                              "left": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_0_5" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                    ]
-                                  }
-                                }
-                              },
-                              "right": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_5_15" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_5_15", "I_age_5_15",
-                                      "R_age_5_15"
-                                    ]
-                                  }
-                                }
-                              }
-                            }
-                          },
+                          "op": "div",
+                          "left": { "pop": "I_age_0_5" },
                           "right": {
-                            "bin_op": {
-                              "op": "div",
-                              "left": { "pop": "I_age_15_50" },
-                              "right": {
-                                "pop_sum": [
-                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                                ]
-                              }
-                            }
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
                           }
                         }
                       },
-                      "right": {
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_5_15" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_15_50" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      },
+                      {
                         "bin_op": {
                           "op": "div",
                           "left": { "pop": "I_age_50_65" },
@@ -710,19 +2676,717 @@
                             ]
                           }
                         }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_65p" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_age_50_65" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_0_5" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_5_15", "I_age_5_15",
+                                      "R_age_5_15"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_5_15" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_15_50", "I_age_15_50",
+                                      "R_age_15_50"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_15_50" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_50_65", "I_age_50_65",
+                                      "R_age_50_65"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_50_65" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_65p", "I_age_65p", "R_age_65p"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_65p" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_50_65" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
-                      "left": { "pop": "I_age_65p" },
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
                       "right": {
-                        "pop_sum": [ "S_age_65p", "I_age_65p", "R_age_65p" ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "mu": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_50_65" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -742,68 +3406,48 @@
               }
             },
             "right": {
-              "bin_op": {
-                "op": "add",
-                "left": {
+              "reduce": [
+                {
                   "bin_op": {
-                    "op": "add",
-                    "left": {
-                      "bin_op": {
-                        "op": "add",
-                        "left": {
-                          "bin_op": {
-                            "op": "add",
-                            "left": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_0_5" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                  ]
-                                }
-                              }
-                            },
-                            "right": {
-                              "bin_op": {
-                                "op": "div",
-                                "left": { "pop": "I_age_5_15" },
-                                "right": {
-                                  "pop_sum": [
-                                    "S_age_5_15", "I_age_5_15", "R_age_5_15"
-                                  ]
-                                }
-                              }
-                            }
-                          }
-                        },
-                        "right": {
-                          "bin_op": {
-                            "op": "div",
-                            "left": { "pop": "I_age_15_50" },
-                            "right": {
-                              "pop_sum": [
-                                "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                              ]
-                            }
-                          }
-                        }
-                      }
-                    },
+                    "op": "div",
+                    "left": { "pop": "I_age_0_5" },
                     "right": {
-                      "bin_op": {
-                        "op": "div",
-                        "left": { "pop": "I_age_50_65" },
-                        "right": {
-                          "pop_sum": [
-                            "S_age_50_65", "I_age_50_65", "R_age_50_65"
-                          ]
-                        }
-                      }
+                      "pop_sum": [ "S_age_0_5", "I_age_0_5", "R_age_0_5" ]
                     }
                   }
                 },
-                "right": {
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_5_15" },
+                    "right": {
+                      "pop_sum": [ "S_age_5_15", "I_age_5_15", "R_age_5_15" ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_15_50" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "I_age_50_65" },
+                    "right": {
+                      "pop_sum": [
+                        "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                      ]
+                    }
+                  }
+                },
+                {
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_age_65p" },
@@ -812,71 +3456,59 @@
                     }
                   }
                 }
-              }
+              ]
             }
           }
         },
         "metadata": {
-          "origin_kind": "transmission",
+          "origin_kind": "intrinsic",
           "source_compartment": "S_age_65p",
           "dest_compartment": "I_age_65p"
         },
         "rate_grad": {
           "beta": {
             "bin_op": {
-              "op": "mul",
-              "left": { "pop": "S_age_65p" },
-              "right": {
+              "op": "add",
+              "left": {
                 "bin_op": {
-                  "op": "add",
-                  "left": {
-                    "bin_op": {
-                      "op": "add",
-                      "left": {
+                  "op": "mul",
+                  "left": { "pop": "S_age_65p" },
+                  "right": {
+                    "reduce": [
+                      {
                         "bin_op": {
-                          "op": "add",
-                          "left": {
-                            "bin_op": {
-                              "op": "add",
-                              "left": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_0_5" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
-                                    ]
-                                  }
-                                }
-                              },
-                              "right": {
-                                "bin_op": {
-                                  "op": "div",
-                                  "left": { "pop": "I_age_5_15" },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_age_5_15", "I_age_5_15",
-                                      "R_age_5_15"
-                                    ]
-                                  }
-                                }
-                              }
-                            }
-                          },
+                          "op": "div",
+                          "left": { "pop": "I_age_0_5" },
                           "right": {
-                            "bin_op": {
-                              "op": "div",
-                              "left": { "pop": "I_age_15_50" },
-                              "right": {
-                                "pop_sum": [
-                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
-                                ]
-                              }
-                            }
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
                           }
                         }
                       },
-                      "right": {
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_5_15" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_15_50" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      },
+                      {
                         "bin_op": {
                           "op": "div",
                           "left": { "pop": "I_age_50_65" },
@@ -886,19 +3518,717 @@
                             ]
                           }
                         }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": { "pop": "I_age_65p" },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
+                    ]
+                  }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "param": "beta" },
+                      "right": { "pop": "S_age_65p" }
                     }
                   },
                   "right": {
+                    "reduce": [
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_0_5" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_5_15", "I_age_5_15",
+                                      "R_age_5_15"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_5_15" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_15_50", "I_age_15_50",
+                                      "R_age_15_50"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_15_50" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_50_65", "I_age_50_65",
+                                      "R_age_50_65"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_50_65" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "bin_op": {
+                          "op": "div",
+                          "left": {
+                            "bin_op": {
+                              "op": "sub",
+                              "left": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "const": 0.0 },
+                                  "right": {
+                                    "pop_sum": [
+                                      "S_age_65p", "I_age_65p", "R_age_65p"
+                                    ]
+                                  }
+                                }
+                              },
+                              "right": {
+                                "bin_op": {
+                                  "op": "mul",
+                                  "left": { "pop": "I_age_65p" },
+                                  "right": { "const": 0.0 }
+                                }
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "gamma": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_65p" }
+                }
+              },
+              "right": {
+                "reduce": [
+                  {
                     "bin_op": {
                       "op": "div",
-                      "left": { "pop": "I_age_65p" },
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
                       "right": {
-                        "pop_sum": [ "S_age_65p", "I_age_65p", "R_age_65p" ]
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
                       }
                     }
                   }
+                ]
+              }
+            }
+          },
+          "mu": {
+            "bin_op": {
+              "op": "mul",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "param": "beta" },
+                  "right": { "pop": "S_age_65p" }
                 }
+              },
+              "right": {
+                "reduce": [
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_0_5" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_0_5", "I_age_0_5", "R_age_0_5"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_5_15" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_5_15", "I_age_5_15", "R_age_5_15"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_15_50" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_15_50", "I_age_15_50", "R_age_15_50"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_50_65" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_50_65", "I_age_50_65", "R_age_50_65"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "bin_op": {
+                      "op": "div",
+                      "left": {
+                        "bin_op": {
+                          "op": "sub",
+                          "left": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "const": 0.0 },
+                              "right": {
+                                "pop_sum": [
+                                  "S_age_65p", "I_age_65p", "R_age_65p"
+                                ]
+                              }
+                            }
+                          },
+                          "right": {
+                            "bin_op": {
+                              "op": "mul",
+                              "left": { "pop": "I_age_65p" },
+                              "right": { "const": 0.0 }
+                            }
+                          }
+                        }
+                      },
+                      "right": {
+                        "bin_op": {
+                          "op": "mul",
+                          "left": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          },
+                          "right": {
+                            "pop_sum": [
+                              "S_age_65p", "I_age_65p", "R_age_65p"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -1699,8 +5029,8 @@
       ],
       "compartment_dims": { "S": [ "age" ], "I": [ "age" ], "R": [ "age" ] },
       "base_compartments": [ "S", "I", "R" ],
-      "transmission_transitions": [ "infection" ],
-      "infectious_compartments": [ "I" ]
+      "transmission_transitions": [],
+      "infectious_compartments": []
     }
   }
 }
