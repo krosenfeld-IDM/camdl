@@ -168,9 +168,25 @@ fn eval_version_output(
 /// Subsequent calls are instant (OnceLock).
 static CAMDLC_CHECKED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
+/// Whether the camdlc↔camdl version check should be skipped.
+///
+/// The check is a *deployment-hygiene* guard: it exists so a production
+/// `camdl` binary refuses to run against a stale globally-installed
+/// `camdlc` (the mismatch silently changes compiled IR). It has no meaning
+/// during the crate's own unit tests, where there is no install to be stale
+/// against — and there it is actively harmful: the mismatch path calls
+/// `std::process::exit(1)`, which aborts the *entire test binary* (every
+/// subsequent test in the process is skipped, masking real results) the
+/// moment a stale `camdlc` sits on PATH ahead of the build under test. So
+/// `cfg!(test)` short-circuits the check for the bin's unit tests, exactly
+/// as `CAMDL_SKIP_VERSION_CHECK=1` does for integration tests and operators.
+fn version_check_disabled() -> bool {
+    cfg!(test) || std::env::var("CAMDL_SKIP_VERSION_CHECK").is_ok()
+}
+
 fn check_camdlc_version_once(camdlc: &std::path::Path) {
     CAMDLC_CHECKED.get_or_init(|| {
-        if std::env::var("CAMDL_SKIP_VERSION_CHECK").is_ok() {
+        if version_check_disabled() {
             return;
         }
         match std::process::Command::new(camdlc)
@@ -248,7 +264,7 @@ fn find_camdlc() -> Result<std::path::PathBuf, String> {
                 .map(|d| d.join(camdlc_name()))
                 .find(|c| c.is_file()));
         CAMDLC_CHECKED.get_or_init(|| {
-            if std::env::var("CAMDL_SKIP_VERSION_CHECK").is_ok() { return; }
+            if version_check_disabled() { return; }
             let hint = resolved.as_deref().and_then(detect_camdl_shadowing);
             if let Err(msg) = eval_version_output(
                 &out.stdout,
