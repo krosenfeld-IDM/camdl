@@ -21,11 +21,6 @@ fn camdl_bin() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-fn fixtures() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    Path::new(&manifest).join("tests/fixtures")
-}
-
 fn seed_timing_ir() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     Path::new(&manifest).join("../sim/tests/fixtures/seed_timing.ir.json")
@@ -370,16 +365,58 @@ fn multitz_offsets_collapse_to_civil_date() {
     let tmp = tempdir("multitz");
     let model = model_with_origin(&tmp, "2020-02-28");
 
-    let with_tz = fixtures().join("dated_multitz.tsv");
-    let naive = fixtures().join("dated_multitz_naive.tsv");
+    // The dates land in the seeded epidemic window (the model seeds at
+    // tau=30), so the filter is non-degenerate and the loglik is finite
+    // AND date-sensitive. Earlier this fixture put all five rows on one
+    // *pre-seeding* civil date (2020-03-15): the filter degenerated to
+    // -inf, and comparing two -inf values is vacuous — it would pass even
+    // if the offsets were parsed wrongly. (gh#110's watchdog later turned
+    // that silent -inf into a hard error, surfacing the latent problem.)
+    //
+    // Each row carries a different tz-offset form (+01:00, +06:00, -03:00,
+    // Z, +05:45). A daily-cadence loader must DROP the offset and keep the
+    // civil date, so the offset-bearing file and the naive file resolve to
+    // the same internal times and the same loglik. origin = 2020-02-28;
+    // day-numbers: 2020-04-06→38, -11→43, -16→48, -21→53, -26→58.
+    let tz = tmp.join("tz.tsv");
+    std::fs::write(&tz,
+        "time\tcases\n\
+         2020-04-06+01:00\t4\n\
+         2020-04-11+06:00\t64\n\
+         2020-04-16-03:00\t174\n\
+         2020-04-21Z\t144\n\
+         2020-04-26+05:45\t75\n").unwrap();
+    let naive = tmp.join("naive.tsv");
+    std::fs::write(&naive,
+        "time\tcases\n2020-04-06\t4\n2020-04-11\t64\n2020-04-16\t174\n\
+         2020-04-21\t144\n2020-04-26\t75\n").unwrap();
+    // Negative control: one civil date shifted a single day. Used only to
+    // prove the loglik genuinely depends on the parsed dates — so the
+    // tz == naive equality below is meaningful, not a vacuous -inf == -inf.
+    let shifted = tmp.join("shifted.tsv");
+    std::fs::write(&shifted,
+        "time\tcases\n2020-04-07\t4\n2020-04-11\t64\n2020-04-16\t174\n\
+         2020-04-21\t144\n2020-04-26\t75\n").unwrap();
 
-    // All 5 rows are 2020-03-15 (same civil date) → identical internal time.
-    // Multi-stream-style equal times are accepted; the loglik is well-defined
-    // and must be identical whether or not the offsets were present.
-    let ll_tz = parse_loglik(&pfilter_loglik(&camdl, &model, &with_tz, &[]));
+    let ll_tz = parse_loglik(&pfilter_loglik(&camdl, &model, &tz, &[]));
     let ll_naive = parse_loglik(&pfilter_loglik(&camdl, &model, &naive, &[]));
+    let ll_shifted = parse_loglik(&pfilter_loglik(&camdl, &model, &shifted, &[]));
+
+    // Anti-vacuity guard 1: the loglik must be finite, else the equality
+    // below proves nothing (any two -inf are equal).
+    assert!(ll_naive.is_finite(),
+        "loglik must be finite for the offset-collapse check to be \
+         meaningful; got {ll_naive}");
+    // The property under test: tz offsets are dropped, civil dates kept, so
+    // the offset-bearing data scores identically to the naive sibling.
     assert_eq!(ll_tz, ll_naive,
-        "offset-bearing dates must collapse to the same civil date as the naive sibling");
+        "offset-bearing dates must collapse to the same civil date as the \
+         naive sibling");
+    // Anti-vacuity guard 2: shifting a date by one day *does* change the
+    // loglik — so the equality above is a real test of date resolution.
+    assert_ne!(ll_shifted, ll_naive,
+        "a one-day date shift must change the loglik; if it doesn't, the \
+         loglik is insensitive to dates and the equality above is vacuous");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
