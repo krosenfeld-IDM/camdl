@@ -107,13 +107,25 @@ fn dated_loglik_matches_numeric() {
     let tmp = tempdir("byteid");
     let model = model_with_origin(&tmp, "2020-02-28");
 
+    // The data must land inside the seeded epidemic (the model seeds at
+    // tau=30, so it predicts ~0 cases before day 33). Earlier this fixture
+    // placed the data at days 2..23 — before seeding — where every count is
+    // near-impossible, the particle filter's ESS collapses, and the loglik
+    // is -inf. That made the byte-identity check *vacuous*: -inf == -inf
+    // holds even if the date→day-number conversion were wrong. The gh#110
+    // degeneracy watchdog (2026-05-26) then turned that silent -inf into a
+    // hard PFDegenerate error, surfacing the latent problem. Placing the
+    // data in the epidemic window (days 40..55) gives a finite, time-
+    // sensitive loglik (~-53.1 at 500 particles), so the test now actually
+    // exercises the conversion.
+    //
     // origin = 2020-02-28. Dates → day-numbers:
-    //   2020-03-01 → 2, 2020-03-08 → 9, 2020-03-15 → 16, 2020-03-22 → 23
+    //   2020-04-08 → 40, 2020-04-13 → 45, 2020-04-18 → 50, 2020-04-23 → 55
     let dated = tmp.join("dated.tsv");
     std::fs::write(&dated,
-        "time\tcases\n2020-03-01\t3\n2020-03-08\t40\n2020-03-15\t120\n2020-03-22\t60\n").unwrap();
+        "time\tcases\n2020-04-08\t11\n2020-04-13\t75\n2020-04-18\t212\n2020-04-23\t73\n").unwrap();
     let numeric = tmp.join("numeric.tsv");
-    std::fs::write(&numeric, "time\tcases\n2\t3\n9\t40\n16\t120\n23\t60\n").unwrap();
+    std::fs::write(&numeric, "time\tcases\n40\t11\n45\t75\n50\t212\n55\t73\n").unwrap();
 
     let ll_dated = parse_loglik(&pfilter_loglik(&camdl, &model, &dated, &[]));
     let ll_numeric = parse_loglik(&pfilter_loglik(&camdl, &model, &numeric, &[]));

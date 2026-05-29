@@ -78,8 +78,16 @@ fn write_dated_data(dir: &Path) -> PathBuf {
 }
 
 /// Tiny IF2 fit.toml estimating `tau` (the instant estimand). 2 chains,
-/// 4 iterations, 40 particles — seconds to run, structural not
-/// statistical.
+/// 4 iterations, 300 particles — sub-second, structural not statistical.
+///
+/// Particle count is load-bearing for the test passing, not just for speed:
+/// the gh#110 PF-degeneracy watchdog makes a chain whose effective sample
+/// size collapses a hard `PFDegenerate` error, and IF2 aborts the whole
+/// `fit run` when any chain errors. On this 10-point dataset a starved
+/// filter degenerates at obs window 2 — empirically at ≤100 particles, but
+/// not at ≥200 (it is particle starvation, not a structural impossibility).
+/// 300 keeps a comfortable margin while still running sub-second. Do not
+/// lower it to "speed up the test": that reintroduces the degeneracy.
 fn write_fit_toml(dir: &Path, ir: &Path, data: &Path, output_dir: &Path) -> PathBuf {
     let fit_toml = dir.join("fit.toml");
     let body = format!(
@@ -108,7 +116,7 @@ k      = 10.0
 algorithm  = "if2"
 backend    = "chain_binomial"
 chains     = 2
-particles  = 40
+particles  = 300
 iterations = 4
 cooling    = 0.7
 "#,
