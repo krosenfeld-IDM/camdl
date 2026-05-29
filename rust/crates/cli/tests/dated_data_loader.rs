@@ -130,6 +130,34 @@ fn dated_loglik_matches_numeric() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// An observation file with a header but no data rows must produce a
+/// clean, actionable error — not a panic. Regression: a header-only TSV
+/// built a `MultiStreamObsModel` with empty `obs_times`, and the bootstrap
+/// filter then indexed `obs_times[0]` in `mean()`, panicking with
+/// `index out of bounds: the len is 0 but the index is 0`.
+#[test]
+fn empty_observation_file_errors_cleanly() {
+    let Some(camdl) = camdl_bin() else { return };
+    let tmp = tempdir("emptyobs");
+    let model = model_with_origin(&tmp, "2020-02-28");
+    let empty = tmp.join("empty.tsv");
+    std::fs::write(&empty, "time\tcases\n").unwrap(); // header only
+
+    let out = pfilter_loglik(&camdl, &model, &empty, &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(),
+        "pfilter on an empty observation file must fail, not succeed");
+    // The clean error names the problem and is actionable.
+    assert!(stderr.to_lowercase().contains("no observation"),
+        "error should explain there are no observations; got:\n{stderr}");
+    // And it must NOT be the old index-out-of-bounds panic.
+    assert!(!stderr.contains("index out of bounds") && !stderr.to_lowercase().contains("panic"),
+        "must be a clean error, not a panic; got:\n{stderr}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// §9.4 origin-missing: dated cells against a model with no origin → error.
 #[test]
 fn dated_without_origin_errors() {

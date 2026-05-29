@@ -280,6 +280,21 @@ impl MultiStreamObsModel {
             ));
         }
         let obs_times = stream_specs[0].obs_times.clone();
+        // An empty observation series is meaningless for a filter and,
+        // left unchecked, panics downstream: `mean()`/`sample()` index
+        // `obs_times[obs_idx]` and the bootstrap filter would hit
+        // `obs_times[0]` on a zero-length vec (index-out-of-bounds). Reject
+        // it here with an actionable message — the earliest shared seam, so
+        // pfilter / fit / if2 all get the clean error instead of the panic.
+        if obs_times.is_empty() {
+            return Err(crate::error::SimError::Validation(format!(
+                "observation stream '{}' has no observations — the data file \
+                 has a header row but no data rows. A particle filter needs at \
+                 least one observation; check that the --data file is non-empty \
+                 and that its time/value columns parse.",
+                stream_specs[0].ir_model.name
+            )));
+        }
         for (si, spec) in stream_specs.iter().enumerate().skip(1) {
             if spec.obs_times != obs_times {
                 return Err(crate::error::SimError::Validation(format!(
