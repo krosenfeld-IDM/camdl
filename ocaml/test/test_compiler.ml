@@ -103,6 +103,7 @@ let rec collect_table_lookups expr =
     collect_table_lookups pred
     @ collect_table_lookups then_
     @ collect_table_lookups else_
+  | Reduce terms -> List.concat_map collect_table_lookups terms
   | _ -> []
 
 let compile_seir_age () =
