@@ -2050,14 +2050,20 @@ Generates one observation stream per patch.
 
 ### 12.4 Sampling vs Scoring
 
-> **v0.1 status**: the `observations {}` block is compiled and included in the
-> IR. In the current Rust backend, the projection and likelihood are not yet
-> evaluated at runtime and no observations output file is written. This is
-> scheduled for v0.2 (inference support). The syntax is final.
+The `observations {}` block is evaluated at runtime in both directions.
 
-In forward simulation (v0.2+): runtime evaluates projection, **samples** from
-likelihood → synthetic data. In inference (v0.2+): runtime **scores** observed
-data against likelihood → log p(y|θ).
+- **Forward simulation** (`camdl simulate`): the runtime evaluates each
+  stream's projection on the schedule (`every = ...`) and **samples** from
+  the declared likelihood family to produce synthetic observations.
+  Synthetic-observation files are written when `--obs`,
+  `--obs-dir`, or `--obs-only` is passed (see §21); no observation file is
+  emitted by default. Trajectories are written independently via
+  `--output` / stdout.
+- **Inference** (`camdl fit` and friends): the runtime **scores** observed
+  data against the same likelihood family, producing log p(y | θ).
+  PGAS, IF2, particle filtering, and PMMH all consume the
+  `observations {}` declarations via the compiled `dmeasure` / `rmeasure`
+  paths.
 
 Monthly incidence can be obtained natively by setting `every = 30 'days` (or
 `every = 1 'months` once time-unit arithmetic is implemented).
@@ -2432,6 +2438,18 @@ aggregate helper for proportional allocation is future sugar (v0.2).
 
 Each sub-block produces a **separate file** with its own schema. Different
 output types have different shapes — they are never kludged into one TSV.
+
+> **Default (no `output {}` block).** Declaring `output {}` is optional. If
+> omitted, the compiler emits a default trajectory schedule: snapshots every
+> `1` in the model's `time_unit`, format `tsv`, covering
+> `[min(0, t_start), t_end]` — where the window is taken from the
+> `simulate {}` block (or `(0, 100)` if `simulate {}` is also omitted).
+> No `flows`, `summary`, or `synthetic` sub-blocks are materialized.
+> File emission is still CLI-controlled (see §21): the simulate command
+> writes the trajectory to `--output` (or stdout) and only writes
+> observation files when `--obs` / `--obs-dir` / `--obs-only` is passed.
+> Declare `output {}` explicitly to change cadence or format, or to emit
+> named quantities, flows, or summary scalars.
 
 ```camdl
 output {
