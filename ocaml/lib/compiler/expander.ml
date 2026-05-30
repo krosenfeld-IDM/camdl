@@ -46,7 +46,7 @@ type context = {
      (every index-position variable is bound by the let's own declared
      indices or an enclosing `sum`) is hoisted ONCE into `model.bindings`
      and referenced by `Ir.BindingRef` instead of inlined at every use
-     site. This is what shrinks the Kano FOI from O(P²A²) IR to O(P²+PA). *)
+     site. This is what shrinks the spatial FOI from O(P²A²) IR to O(P²+PA). *)
   mutable hoist_memo      : (string, bool) Hashtbl.t;   (* let name -> hoistable? (memoized) *)
   mutable hoisted_tbl     : (string, unit) Hashtbl.t;   (* concrete binding name -> already registered *)
   mutable hoisted_rev     : (string * Ir.expr) list;    (* registered bindings, reverse-topological (deps last) *)

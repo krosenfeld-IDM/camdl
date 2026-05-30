@@ -390,7 +390,7 @@ mod deserialize_tests {
             Expr::const_(1.5),
             Expr::const_(-0.0),
             Expr::param("beta"),
-            Expr::pop("S_kano_dala_age_0_4"),
+            Expr::pop("S_patch1_age_0_4"),
             Expr::pop_sum(vec!["S".into(), "E".into(), "I".into()]),
             Expr::time(),
             Expr::dt(),
@@ -401,7 +401,7 @@ mod deserialize_tests {
             }),
             Expr::reduce(vec![Expr::const_(1.0), Expr::param("kappa"), Expr::pop("I_p1")]),
             Expr::reduce(vec![]), // empty sum (= 0)
-            Expr::binding_ref("N_kano_dala"),
+            Expr::binding_ref("N_patch1"),
         ] {
             roundtrip(&e);
         }
