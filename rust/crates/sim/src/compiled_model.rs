@@ -223,6 +223,41 @@ fn expr_is_time_dependent(expr: &Expr, bindings: &HashMap<&str, &Expr>) -> bool 
     }
 }
 
+/// Fix B safety net: true if `expr` directly references an estimated `Param`.
+///
+/// Shared bindings must be **state-only** (`d(binding)/dp ≡ 0`): `autodiff`
+/// maps `BindingRef → 0` and `pgas::collect_param_refs` returns `{}` for a
+/// `BindingRef`, both correct *only* under that invariant. A `Param` inside a
+/// binding body would silently zero a real gradient. Exhaustively matched (no
+/// `_` arm) so a future `Expr` variant forces a decision here rather than
+/// defaulting to "no param". Does **not** recurse through `BindingRef`: every
+/// binding is checked independently by the caller, so a `Param` reachable only
+/// via another binding is caught when that binding is itself checked.
+fn expr_refs_param(expr: &Expr) -> bool {
+    match expr {
+        Expr::Param(_) => true,
+        Expr::BinOp(w) => expr_refs_param(&w.bin_op.left) || expr_refs_param(&w.bin_op.right),
+        Expr::UnOp(w) => expr_refs_param(&w.un_op.arg),
+        Expr::Cond(w) => {
+            expr_refs_param(&w.cond.pred)
+                || expr_refs_param(&w.cond.then)
+                || expr_refs_param(&w.cond.else_)
+        }
+        Expr::TableLookup(w) => w.table_lookup.indices.iter().any(expr_refs_param),
+        Expr::Reduce(w) => w.reduce.iter().any(expr_refs_param),
+        Expr::UncheckedDim(w) => expr_refs_param(&w.unchecked_dim.inner),
+        // Leaves / non-param nodes. BindingRef: not traversed (see doc above).
+        Expr::Const(_)
+        | Expr::Pop(_)
+        | Expr::PopSum(_)
+        | Expr::Time(_)
+        | Expr::Dt(_)
+        | Expr::TimeFunc(_)
+        | Expr::Projected(_)
+        | Expr::BindingRef(_) => false,
+    }
+}
+
 /// Evaluate a table value expression using only params (no compartment state).
 ///
 /// This is a construction-time evaluator used before `CompiledModel` is fully
@@ -556,6 +591,21 @@ impl CompiledModel {
         // a BindingRef to the compartments the binding reads.
         let binding_bodies: HashMap<&str, &Expr> = model.bindings.iter()
             .map(|b| (b.name.as_str(), &b.expr)).collect();
+        // Fix B safety net: bindings must be state-only (no estimated Param) —
+        // the invariant autodiff (`BindingRef → 0`) and `collect_param_refs`
+        // (`{}`) silently rely on. The OCaml extraction guard enforces it for
+        // compiler output; reject a hand-written/future IR that smuggles a
+        // Param into a binding body rather than zeroing its gradient in silence.
+        for b in &model.bindings {
+            if expr_refs_param(&b.expr) {
+                return Err(SimError::Validation(format!(
+                    "binding '{}' references a parameter: bindings must be state-only \
+                     (d(binding)/dp must be 0, else the gradient is silently wrong). \
+                     Inline this expression at its use sites instead of hoisting it.",
+                    b.name
+                )));
+            }
+        }
         for (tr_idx, tr) in model.transitions.iter().enumerate() {
             let mut deps = std::collections::HashSet::new();
             collect_int_comp_deps(&tr.rate, &comp_index, &global_to_int, &binding_bodies, &mut deps);
