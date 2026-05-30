@@ -53,7 +53,7 @@ def _w_matrix(P: int) -> str:
     return "[" + indent.join(rows) + "]"
 
 
-def gen_camdl(P: int, A: int, coupling: str, grad: str) -> str:
+def gen_camdl(P: int, A: int, coupling: str, grad: str, observe: bool = False) -> str:
     assert coupling in ("on", "off")
     assert grad in ("full", "minimal")
     if coupling == "on" and P < 2:
@@ -145,6 +145,25 @@ def gen_camdl(P: int, A: int, coupling: str, grad: str) -> str:
     L.append("}")
     L.append("")
 
+    # Observation model (opt-in via --observe) — a single weekly stream over
+    # *total* infectious prevalence. Bare `I` sums over all strata (spec §11
+    # "bare = sum over ALL strata"); we use `prevalence(I)` rather than
+    # `incidence(infection)` because the latter currently fails to resolve a
+    # base (pre-expansion) transition name in a stratified model (E507). For
+    # inference *profiling* the observable is irrelevant — the particle filter
+    # steps the full model regardless. Literal reporting params (rho=0.5, NB
+    # dispersion r=5) keep scaling benches byte-identical without --observe;
+    # PMMH/PGAS estimate the existing free FOI params (R0, gamma, …).
+    if observe:
+        L.append("observations {")
+        L.append("  weekly_cases : {")
+        L.append("    projected  = prevalence(I)")
+        L.append("    every      = 7 'days")
+        L.append("    likelihood = neg_binomial(mean = 0.5 * projected, r = 5.0)")
+        L.append("  }")
+        L.append("}")
+        L.append("")
+
     # ── Init (all positive so every source group is active → full eval cost) ──
     L.append("init {")
     L.append("  S[l in patch, a in age] = 900")
@@ -186,11 +205,15 @@ def main() -> int:
     ap.add_argument("--ages", "-A", type=int, required=True)
     ap.add_argument("--coupling", choices=("on", "off"), default="on")
     ap.add_argument("--grad", choices=("full", "minimal"), default="full")
+    ap.add_argument("--observe", action="store_true",
+                    help="add a weekly_cases observation block (for PMMH/PGAS "
+                         "inference profiling); off by default so scaling "
+                         "benches stay byte-identical")
     ap.add_argument("-o", "--out", type=Path, default=None,
                     help="output .camdl path (default: stdout)")
     args = ap.parse_args()
 
-    text = gen_camdl(args.patches, args.ages, args.coupling, args.grad)
+    text = gen_camdl(args.patches, args.ages, args.coupling, args.grad, args.observe)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(text)
