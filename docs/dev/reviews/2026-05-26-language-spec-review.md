@@ -543,12 +543,36 @@ inference code must use IDs, not parsed names.
 
 **Severity** — Critical
 
-> **Verification (2026-05-26):** §4.3 explicitly says "the compiler always
-> mangles to `N0_urban` in the IR". The example level names `kano_dala`,
-> `borno_maiduguri` contain underscores. Collision is a real concern. Overlaps
-> with `docs/dev/proposals/2026-05-26-typed-indexed-reference-resolver.md`
-> (compiler-side); the IR + Rust side still needs an addendum proposal for the
-> coordinate-metadata change the reviewer recommends. Confirmed.
+> **Verification (2026-05-29, supersedes 2026-05-26):**
+> `confirmed-code-protected-but-spec-stale`. The *encoding* is non-injective as
+> the reviewer says — §4.3 says "the compiler always mangles to `N0_urban` in the
+> IR", and level names like `kano_dala` / `borno_maiduguri` contain underscores.
+> **But the collision is not a silent footgun: the compiler rejects it at compile
+> time.** A model with `d1 = [a, a_b]`, `d2 = [c, b_c]` — so `S[a, b_c]` and
+> `S[a_b, c]` both mangle to `S_a_b_c` — fails to compile:
+>
+> ```
+> error[E500]: duplicate compartment after expansion: 'S_a_b_c'
+>   = hint: stratification produced two compartments with the same name
+> error[E501]: duplicate transition after expansion: 'decay_a_b_c'
+>   = hint: stratification produced two transitions with the same name
+> ```
+>
+> Source: the post-expansion uniqueness check `ocaml/lib/ir/validate.ml:73`
+> (`uniq_check` over expanded compartment/transition names), rendered as E500/E501
+> with the collision hint in `ocaml/lib/compiler/compiler.ml:99-106`. Repro:
+> `camdlc` on a 2-dimension model whose level names collide under `_`. Because no
+> two cells can share a name in a *compilable* model, the downstream "observation
+> projections / scenario patches bind the wrong cell" failure mode the reviewer
+> lists **cannot occur silently** — it is a hard error first.
+>
+> Residual (why "spec-stale", not refuted): E500/E501 guarantees *uniqueness*, not
+> *reversibility* — `S_a_b_c` is still not self-describing (recovering coordinates
+> needs the dimension registry), and §4.3 documents mangling with no escaping
+> rules. The reviewer's "carry IDs + coords in the IR" recommendation remains a
+> legitimate robustness/spec-hygiene improvement, but it is **not Critical and not
+> a silent-collision bug** — downgrade severity accordingly. Overlaps
+> `docs/dev/proposals/2026-05-26-typed-indexed-reference-resolver.md` (compiler-side).
 
 ## 10. Math functions silently repair invalid values
 
