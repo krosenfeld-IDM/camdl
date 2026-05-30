@@ -1,0 +1,71 @@
+# Gate fixture: a >=8-term aggregate mixing INTEGER and REAL compartments,
+# so MixedPopSum's int-then-real fold order is actually exercised.
+#
+# The rest of the golden corpus aggregates either integer-only compartments
+# (S+I+R, exact in f64 regardless of order) or <=4 terms, so a float
+# reassociation regression in Fix-B binding extraction would ship green.
+# This model's `let Total` is 3 integer (S,I,R) + 5 real (W1..W5) = 8 terms,
+# used in the infection propensity, so a single-ULP change in the sum can
+# flip a binomial draw and diverge the trajectory.
+#
+# See docs/dev/proposals/2026-05-29-shared-bindings-and-reduction.md, trap #1:
+# binding bodies that are pure Pop/PopSum additive chains must resolve to
+# IntPopSum/MixedPopSum (preserving int-then-real order), NOT a source-order
+# Reduce.
+time_unit = 'days
+
+compartments { S, I, R, W1 : real, W2 : real, W3 : real, W4 : real, W5 : real }
+
+# 8 terms, mixed integer + real -> MixedPopSum (int terms then real terms).
+let Total = S + I + R + W1 + W2 + W3 + W4 + W5
+
+parameters {
+  beta    : rate   in [0.001, 2.0]
+  gamma   : rate   in [0.001, 1.0]
+  xi      : rate   in [0.001, 10.0]
+  delta   : rate   in [0.001, 5.0]
+  N0      : count  in [100, 100000]
+  I0      : count  in [1, 1000]
+}
+
+transitions {
+  infection : S --> I @ beta * S * (I / Total)
+  recovery  : I --> R @ gamma * I
+}
+
+ode {
+  W1 = xi * I - delta * W1
+  W2 = xi * I - delta * W2
+  W3 = xi * I - delta * W3
+  W4 = xi * I - delta * W4
+  W5 = xi * I - delta * W5
+}
+
+init {
+  S = N0 - I0
+  I = I0
+  W1 = 0
+  W2 = 0
+  W3 = 0
+  W4 = 0
+  W5 = 0
+}
+
+simulate {
+  from = 0 'days
+  to   = 60 'days
+}
+
+scenarios {
+  baseline {
+    label = "mixed int/real aggregate gate"
+    set = {
+      beta  = 0.3
+      gamma = 0.1
+      xi    = 1.0
+      delta = 0.5
+      N0    = 1000
+      I0    = 10
+    }
+  }
+}
