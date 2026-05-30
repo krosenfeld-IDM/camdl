@@ -57,11 +57,12 @@ let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : strin
     Lexer.pending_warnings := [];
     (* Drain parser-action errors collected from semantic actions that
        used to `failwith` (n3 in the 2026-04-19 compiler review). *)
-    List.iter (fun (sp, ep, code, msg) ->
+    List.iter (fun (sp, ep, code, msg, hint) ->
       Diagnostics.error ctx.diags
         ~code
         ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
         ~message:msg
+        ?hint
         ()
     ) (List.rev !Parser_errors.pending_errors);
     Parser_errors.pending_errors := [];

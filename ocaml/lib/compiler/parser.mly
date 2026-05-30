@@ -343,7 +343,22 @@ transition_decl:
           trloc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* block form: [#[lineage]] name[...] : srcs --> dsts { rate = ...; tag = ... } *)
   | lin = lineage_attr_opt name = IDENT ibs = index_bindings_opt COLON srcs = stoich_ref_list ARROW dsts = stoich_ref_list LBRACE tbody = transition_body RBRACE
-      { let (rate, guard, tag) = tbody in
+      { let (rate_opt, guard, tag) = tbody in
+        (* A block-form transition with no `rate = …` (and no `@ …`) is a
+           hard error, not a silent zero-rate transition. Pushing a
+           diagnostic and substituting a placeholder rate lets parsing
+           continue so the user sees all errors at once. *)
+        let rate = match rate_opt with
+          | Some e -> e
+          | None ->
+            Parser_errors.push_error_hint ~sp:$startpos(name) ~ep:$endpos(name)
+              ~code:"E213"
+              ~msg:(Printf.sprintf
+                "transition '%s' is missing a rate" name)
+              ~hint:"add `rate = <expr>` inside the block, or use the \
+                     inline form `... --> ... @ <expr>`";
+            EConst 0.0
+        in
         { trname = name; trindices = ibs;
           trsrc = srcs; trdst = DstSum dsts;
           trrate = rate; trguard = guard; trtag = tag; trlineage = lin;
@@ -401,11 +416,15 @@ let_shape_opt:
 
 transition_body:
   | kvs = list(transition_body_entry)
-      { let rate  = ref (EConst 0.0) in
+      { (* `rate` is `expr option`: `None` means no `rate = …` entry was
+           given. The block-form production (above) turns that `None` into
+           a hard E213 diagnostic — a missing rate must NOT silently
+           default to a zero-rate (never-firing) transition. *)
+        let rate  = ref None in
         let guard = ref None in
         let tag   = ref None in
         List.iter (function
-          | `Rate e  -> rate := e
+          | `Rate e  -> rate := Some e
           | `Guard g -> guard := Some g
           | `Tag s   -> tag := Some s
         ) kvs;

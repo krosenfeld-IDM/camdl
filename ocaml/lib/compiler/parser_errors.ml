@@ -10,10 +10,16 @@
    a bare stack trace. *)
 
 let pending_errors
-  : (Lexing.position * Lexing.position * string * string) list ref = ref []
+  : (Lexing.position * Lexing.position * string * string * string option) list ref
+  = ref []
 
 let push_error ~sp ~ep ~code ~msg =
-  pending_errors := (sp, ep, code, msg) :: !pending_errors
+  pending_errors := (sp, ep, code, msg, None) :: !pending_errors
+
+(* Like [push_error] but carries hint text. Kept as a separate entry point
+   so the many existing [push_error] call sites need no change. *)
+let push_error_hint ~sp ~ep ~code ~msg ~hint =
+  pending_errors := (sp, ep, code, msg, Some hint) :: !pending_errors
 
 (* Helper for parser semantic actions: convert menhir $startpos/$endpos
    into an Ast.loc suitable for stashing in decl records so the

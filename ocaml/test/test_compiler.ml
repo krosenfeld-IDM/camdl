@@ -1084,6 +1084,21 @@ let test_recurring_at_times_still_works () =
       Alcotest.(check int) "three pulses" 3 (List.length ts)
     | _ -> Alcotest.fail "expected AtTimes"
 
+let test_block_transition_missing_rate_e213 () =
+  (* Upstream review Finding #3: a block-form transition with no `rate = …`
+     (and no inline `@ …`) must be a hard E213 error, not a silent zero-rate
+     (never-firing) transition. The diagnostic must name the offending
+     transition ("infection"), per "error messages are a feature". *)
+  compile_expect_error_code ~code:"E213" ~contains:"infection" {|
+    time_unit = 'days
+    compartments { S, I }
+    transitions {
+      infection : S --> I { tag = "transmission" }
+    }
+    init { S = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
 let test_recurring_e240_zero_every () =
   compile_expect_error_code ~code:"E240" ~contains:"'every' must be positive" {|
     time_unit = 'days
@@ -5102,6 +5117,7 @@ let () =
       Alcotest.test_case "add(...) { every, from, until } in events" `Quick test_recurring_add_action;
       Alcotest.test_case "from / until default to simulation bounds" `Quick test_recurring_default_from_until;
       Alcotest.test_case "at [...] form still compiles (regression)" `Quick test_recurring_at_times_still_works;
+      Alcotest.test_case "E213 block transition missing rate is rejected" `Quick test_block_transition_missing_rate_e213;
       Alcotest.test_case "E240 every = 0 is rejected"               `Quick test_recurring_e240_zero_every;
       Alcotest.test_case "E241 from > until is rejected"            `Quick test_recurring_e241_inverted_range;
       Alcotest.test_case "E242 expanded schedule too long"          `Quick test_recurring_e242_schedule_too_long;
