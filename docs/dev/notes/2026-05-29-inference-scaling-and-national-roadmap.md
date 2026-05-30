@@ -95,7 +95,7 @@ methods on *total* fit time.
 
 | # | lever | type | est. gain | cost | status |
 |---|---|---|---|---|---|
-| 1 | **Sparse coupling** (dense `W` → neighbour/gravity/radiation + long-range): O(P²)→O(P·k) | algorithmic | **~50×** @ national | DSL + IR + eval | deferred non-goal of the bindings proposal — **now promoted** |
+| 1 | **Sparse coupling** (sparse `W` literal + a constant-fold pass dropping zero-weight terms): O(P²)→O(P·k) | algorithmic, **byte-identical** | **~50×** @ national | small–medium (a fold pass + compile-time kernel fns; **no sparse IR/eval** — see below) | deferred non-goal of the bindings proposal — **now promoted & de-risked** |
 | 2 | **Per-step binding cache** (compute `N[l]`,`I_agg[l]` once/step) | constant, byte-identical | ~2–4× | small | the preamble Fix B skipped; scoped |
 | 3 | **SIMD / flattened eval** (vectorise the propensity walk) | constant | ~2–8× | medium | `eval_resolved` is an interpreted tree-walk |
 | 4 | **Right method = PGAS** (cheap per-sweep + iteration-efficient; IF2 for MLE, PMMH only as fallback) | statistical + constant | fewer iters **and** cheaper per-sweep (measured) | low (PGAS is already production) | bench: PGAS ≪ IF2-refine per iter, both O(P^1.5) |
@@ -123,17 +123,46 @@ hypothesis**, not just a perf knob. The dense all-to-all `W` is *one* model
   actually supports, via the existing `camdl compare` (elpd / CRPS / PIT).
 
 So this is "the middle layer is the program": make coupling a swappable
-component. Concretely, **carefully-designed DSL helpers** that *generate* a
-sparse `W` — e.g. `gravity_kernel(pop, dist, …)`, `radiation_kernel(…)`,
-`knn(coords, k)`, `corridors([(a,b,w), …])`, composable into one coupling matrix
-— keep the surface human-first (a health-ministry modeller reads `knn(coords, 8)
-+ corridors(air_links)` and knows exactly the mixing assumed). The compiler emits
-a sparse FOI sum (over each row's nonzeros only) instead of the dense `sum(q in
-patch, …)`. This needs its **own proposal** (DSL grammar, sparse `W` IR
-representation, sparse-FOI eval, dimcheck). The cross-method bench confirms this
-is **method-independent** — IF2, PGAS and PMMH all inherit the O(P²) coupling
-cost — so it is the single highest-leverage lift *regardless of sampler*, and the
-one that makes national scale tractable.
+component. And — verified against the compiler — **most of the lift is the
+compiler's, not new surface.**
+
+**The mechanism (existing primitives + one fold pass).** `expander.ml:1706`
+already lowers `sum(q in patch, W[l,q]·…)` to an n-ary `Reduce` of P terms, each
+with `W[l,q]` a `TableLookup` over *constant literal indices* into the literal
+`W` table — but `normalize_expr` (866–894) does no constant-folding, so the zeros
+survive. Add a fold/peephole pass that resolves a constant-indexed `TableLookup`
+of a literal table to its scalar, folds `0·x→0`, and **drops `Const 0.0` terms
+from a `Reduce`**. A dense P-term row collapses to a k-term row → **O(P²)→O(P·k)**,
+with *no* new IR node and *no* sparse runtime evaluator (the runtime already evals
+`Reduce`, just with fewer terms). It is **byte-identical** — dropping a `+0.0`
+from the left-fold is the additive identity, and the FOI's existing `Cond`
+div-guard keeps the dropped term exactly 0 (`0·Cond(N>0, I/N, 0)=0`) — so it ships
+under the trajectory gate, same as Fix B/D. The earlier "needs a sparse IR
+representation + sparse-FOI eval" framing was therefore **overstated**: it doesn't.
+
+**Compile-time `W` is the enabling design rule.** The fold only fires when `W` is
+a **compile-time literal** — so the coupling matrix should be supplied *at
+compilation*, not loaded from a runtime data file. (A runtime-loaded `W` falls
+back to the dense O(P²) sum; that real-sparse-eval case is optional and separate.)
+This is a clean rule to surface to users: **pass the coupling structure to the
+compiler and you get the O(P·k) IR for free.**
+
+**The DSL ergonomics functions (wanted — they read clearer).** Layer the
+human-first surface on top as **compile-time table-producing functions**:
+`W : patch × patch = knn(coords, 8) + corridors(air_links)` reads exactly the
+mixing assumed, evaluates to a literal `W` at compile time, and the fold pass then
+prunes it. That's a constant-position function evaluator (`gravity_kernel`,
+`radiation_kernel`, `knn`, `corridors`) — a *small* addition, not a sparse-IR
+rewrite. (The same matrices can also be emitted offline as a literal table via a
+Makefile data step — committed, with provenance — but the in-DSL form is preferred
+for readability and is the maintainer's call.)
+
+The cross-method bench confirms this is **method-independent** — IF2, PGAS and
+PMMH all inherit the O(P²) coupling — so it is the single highest-leverage lift
+*regardless of sampler*, and now also the **lowest-risk** (byte-identical,
+gate-tested). It still warrants a short proposal, but a far smaller one:
+(1) the constant-fold pass + its gate, (2) the compile-time kernel functions,
+(3) the compile-time-`W` design rule. No sparse IR type, no sparse runtime eval.
 
 ## Method: PGAS is the vehicle (measured, corrected)
 
@@ -191,8 +220,12 @@ Each step is gated by a re-profile — no speculative optimisation.
   sample size and compare *total* wall — the only fair ranking (the
   iterations-to-converge axis, currently unmeasured). Includes a **bare-IF2
   bench** (the refine-stage number here is confounded).
-- A proposal for the **sparse-coupling DSL + IR + eval** — the big lift, the one
-  thing that makes national scale tractable on *any* method.
+- A (now *small*) proposal for **sparse coupling**: a byte-identical constant-fold
+  pass that drops zero-weight `Reduce` terms + compile-time kernel functions
+  (`knn`/`gravity_kernel`/`corridors`) + the compile-time-`W` rule. **No sparse IR
+  type, no sparse runtime eval** (verified: `expander.ml:1706` already emits the
+  `Reduce`; only the fold is missing). The one thing that makes national scale
+  tractable on *any* method.
 - Land the **binding cache** (small, scoped) and re-profile.
 - Settle **particles-vs-state-dimension** (does national need proportionally more
   particles? — re-run with a degeneracy diagnostic).
