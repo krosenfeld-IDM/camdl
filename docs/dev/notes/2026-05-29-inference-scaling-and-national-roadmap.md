@@ -18,8 +18,10 @@ coupling DSL, binding cache) get their own proposals.
 ## Measured scaling (this is data, not a model)
 
 Harness: `scripts/gen_scaling_models.py --observe` → `camdl profile --algorithm
-pmmh` under a profiler / timer. Figures: `assets/scaling/flamegraph_pmmh.svg`,
-`assets/scaling/pmmh_scale.png`.
+pmmh` (flamegraph) and `camdl fit run` per method (cross-method timing). Figures:
+`assets/scaling/flamegraph_pmmh.svg`, `assets/scaling/pmmh_scale.png`,
+`assets/scaling/method_scale.png`. The per-step-eval finding is method-
+independent — every sampler runs the same particle filter / propensity eval.
 
 - **Per-step-eval-bound — verified.** Flamegraph of a PMMH run (P=16, A=7):
   **~72% in `sim::resolved_expr::eval_resolved`** (rate-tree walking), ~9%
@@ -41,22 +43,53 @@ pmmh` under a profiler / timer. Figures: `assets/scaling/flamegraph_pmmh.svg`,
 
 **So: `wall ≈ (iterations) × (particles) × O(P²·A)`, on a fixed core count.**
 
-## Big-run estimates (projected — order of magnitude, not 3 sig figs)
+## Cross-method bench + big-run estimates
 
-Extrapolated from the tiny-config sweep, scaled linearly in particles/iters
-(well-founded) and ×3 for A=7→21 (uncertain), single chain, 1000 particles:
+A direct IF2-vs-PGAS sweep (`assets/scaling/method_scale.png`; `fit run` per
+method, A=7, 50 particles, 10 iters/sweeps, P=4–32) **corrected a wrong
+assumption in an earlier draft of this note** — that PGAS would be *heavier* per
+iteration because of gradients. It is the opposite:
 
-| scale | IF2 (~100 iters) | PMMH (~10k steps) |
+| P | PGAS (per sweep) | IF2-refine (per iter) |
 |---|---|---|
-| Kano (P=44, A=21) | ~50 min | ~3.5 days |
-| **national (P=774, A=21)** | **~5 days** | **~1 year** |
+| 4 | 0.4 s | 4.5 s |
+| 16 | 2.9 s | 39 s |
+| 32 | 9.3 s | 134 s |
 
-National PMMH ≈ **310× Kano** (the (774/44)² patch factor). **No stack of
-constant-factor wins reaches 200× — the quadratic must be beaten.** Caveat
-beyond the extrapolation noise: national models have ~18× more compartments, and
-a bootstrap filter likely needs *more particles* to avoid degeneracy as state
-dimension grows — a real factor that could make national worse than the pure-P²
-projection (statistical, not compute; flagged for follow-up).
+- **PGAS benches cleanly** (fixed sweep count → deterministic), slope **1.51**,
+  and is *cheap* per sweep. Particle-Gibbs + one NUTS-on-θ step is lighter than a
+  bare perturb-filter pass, and gradient-informed proposals mix better → fewer
+  sweeps. It wins on *both* axes — matching the tool's own verdict (`fit
+  methods`: PGAS is `[stable]` "production Bayesian path"; PMMH is
+  `[experimental]`, "degrades for T > 500 observations").
+- **The IF2 number here is confounded** — run via a `refine` stage whose
+  dt-convergence machinery does a *data-dependent* number of extra filter passes
+  (a near-identical P=4 config took 1.0 s in one run and 45 s here). Discard the
+  IF2 *absolutes*; a bare-IF2 bench is a TODO.
+- **Both scale ~O(P^1.5→2)** — model-size scaling is method-independent (the
+  whole point; see the lever ranking).
+
+National posterior estimate, from the *measured* PGAS per-sweep (×(774/32)^1.5 in
+P, ×3 for A=7→21; 50 particles, ~500 post-burn-in sweeps):
+
+| coupling | national PGAS per-sweep | national posterior |
+|---|---|---|
+| dense (current default) | ~3400 s | **~20 days** — over the <5-day bar |
+| sparse (÷~50) | ~70 s | **~hours–a few days** — feasible |
+
+So **national PGAS in <5 days is reachable, but only with sparse coupling** — the
+same conclusion the PMMH analysis reached, now confirmed on the production
+method. Choosing PGAS buys a healthy constant factor and is the right engine; it
+does **not** beat the quadratic. (For reference, the PMMH extrapolation that
+opened this investigation put national PMMH at ~1 year — `pmmh_scale.png`.)
+
+Caveats so "days" isn't over-trusted: the sweep *count* to a converged national
+posterior is unmeasured (PGAS default burn-in is 2000), 50 particles is
+optimistic (bigger national state → more particles to avoid filter degeneracy),
+and the P-slope ~1.5 is overhead-deflated toward 2 at scale. The robust claim is
+the *direction* — sparse coupling moves national PGAS from weeks-to-months down
+to days — not the exact figure. A fixed-ESS study (below) is needed to rank
+methods on *total* fit time.
 
 ## ROI-ranked levers
 
@@ -65,17 +98,18 @@ projection (statistical, not compute; flagged for follow-up).
 | 1 | **Sparse coupling** (dense `W` → neighbour/gravity/radiation + long-range): O(P²)→O(P·k) | algorithmic | **~50×** @ national | DSL + IR + eval | deferred non-goal of the bindings proposal — **now promoted** |
 | 2 | **Per-step binding cache** (compute `N[l]`,`I_agg[l]` once/step) | constant, byte-identical | ~2–4× | small | the preamble Fix B skipped; scoped |
 | 3 | **SIMD / flattened eval** (vectorise the propensity walk) | constant | ~2–8× | medium | `eval_resolved` is an interpreted tree-walk |
-| 4 | **Right method per task** (IF2 MLE, PGAS posteriors, PMMH fallback) | statistical | ~10× fewer iters | medium | PGAS mixes far better than gradient-free RW PMMH |
+| 4 | **Right method = PGAS** (cheap per-sweep + iteration-efficient; IF2 for MLE, PMMH only as fallback) | statistical + constant | fewer iters **and** cheaper per-sweep (measured) | low (PGAS is already production) | bench: PGAS ≪ IF2-refine per iter, both O(P^1.5) |
 | 5 | **GPU particle batching** | hardware | ~100–1000× | large | future, costed (below) |
 | — | ~~more CPU threads~~ | — | already spent | — | rayon per-particle is live |
 
 ### Minimal viable stack for < 5-day national fits
 
-**Sparse coupling (~50×) × binding cache (~3×) ≈ 150×** → national PMMH from
-~1 year to **~2–3 days**; IF2 to hours; PGAS posteriors comfortably inside a day.
-Sparse coupling *also* shrinks the IR (fewer FOI terms), so it fixes the
-national-scale **compile** (which otherwise won't fit in memory). Levers 1+2 are
-sufficient; 3/4/5 are headroom, not prerequisites.
+**PGAS (the right method) on sparse coupling** is the path: measured PGAS at
+national scale is ~20 days dense → **~hours–days with sparse coupling (÷~50)**.
+The binding cache (~3×) and SIMD (lever 3) are headroom on top. Sparse coupling
+*also* shrinks the IR (fewer FOI terms), fixing the national-scale **compile**
+(which otherwise won't fit in memory). **Sparse coupling is the one
+non-negotiable; PGAS is the vehicle; binding cache / SIMD / GPU are headroom.**
 
 ## Coupling structure as a first-class, comparable model
 
@@ -96,22 +130,33 @@ sparse `W` — e.g. `gravity_kernel(pop, dist, …)`, `radiation_kernel(…)`,
 + corridors(air_links)` and knows exactly the mixing assumed). The compiler emits
 a sparse FOI sum (over each row's nonzeros only) instead of the dense `sum(q in
 patch, …)`. This needs its **own proposal** (DSL grammar, sparse `W` IR
-representation, sparse-FOI eval, dimcheck); it is the single highest-leverage
-lift and the one that makes national scale tractable.
+representation, sparse-FOI eval, dimcheck). The cross-method bench confirms this
+is **method-independent** — IF2, PGAS and PMMH all inherit the O(P²) coupling
+cost — so it is the single highest-leverage lift *regardless of sampler*, and the
+one that makes national scale tractable.
 
-## Method: right tool per task
+## Method: PGAS is the vehicle (measured, corrected)
 
-- **IF2** — fast MLE / point estimates (~100 iters). Cheapest path to a national
-  point fit.
-- **PGAS** — production posteriors; gradient-based, mixes far better than PMMH,
-  so ~10× fewer iterations for an equivalent ESS. The right national-scale
-  *posterior* engine.
-- **PMMH** — robust, gradient-free fallback (no `rate_grad` needed); valuable
-  where gradients are unavailable/unreliable, but the most iteration-hungry — so
-  *not* the method to push to national scale if a posterior is the goal.
+The cross-method bench corrected an earlier assumption that PGAS would be
+*heavier* (gradients). It is the opposite:
 
-The roadmap should recommend per-task, not center PMMH. "Fewer iterations" (lever
-4) is as valuable as a compute win and is partly free via method choice.
+- **PGAS** — the production posterior engine, and *measured cheapest*: ~9 s/sweep
+  at P=32 (A=7, 50p), cleanly O(P^1.5). Particle-Gibbs + one NUTS-on-θ step is
+  lighter than a perturb-filter pass, and gradient-informed proposals mix better
+  → fewer sweeps. Wins on per-sweep cost *and* iterations. Push **this** to
+  national scale.
+- **IF2** — fast MLE / point estimates; the gradient-free perturb-filter loop.
+  Its cost here was confounded by the `refine` stage's convergence machinery (see
+  above); a bare-IF2 bench is needed before ranking it against PGAS.
+- **PMMH** — robust gradient-free fallback, but `[experimental]` and degrades for
+  T > 500 observations (`fit methods`) — *not* the method for national
+  posteriors. It was the right place to *start* the scaling investigation (gradient-
+  free, simplest), but not the destination.
+
+So: center the national-scale path on **PGAS**, use **IF2** for cheap point
+estimates, keep **PMMH** as a fallback. The remaining unmeasured axis is
+*iterations-to-converge* per method (per-iter cost × iters = total fit time); the
+fixed-ESS study (below) is the disciplined way to settle the ranking.
 
 ## GPU (future, costed)
 
@@ -140,10 +185,16 @@ Each step is gated by a re-profile — no speculative optimisation.
 
 ## Next
 
-- Confirm particle linearity — **done** (`pmmh_scale.png`).
-- A proposal for the **sparse-coupling DSL + IR + eval** (the big lift).
+- Particle linearity — **done** (`pmmh_scale.png`); IF2-vs-PGAS bench — **done**
+  (`method_scale.png`).
+- A **fixed-ESS cross-method study**: run IF2/PGAS/PMMH to the same effective
+  sample size and compare *total* wall — the only fair ranking (the
+  iterations-to-converge axis, currently unmeasured). Includes a **bare-IF2
+  bench** (the refine-stage number here is confounded).
+- A proposal for the **sparse-coupling DSL + IR + eval** — the big lift, the one
+  thing that makes national scale tractable on *any* method.
 - Land the **binding cache** (small, scoped) and re-profile.
-- Settle the **particles-vs-state-dimension** question (does national need
-  proportionally more particles? — re-run with a degeneracy diagnostic).
-- A clean, committed `bench-pmmh-scale` harness (the sweeps here were ad-hoc in
-  `/tmp`) so the curve is reproducible and trackable as levers land.
+- Settle **particles-vs-state-dimension** (does national need proportionally more
+  particles? — re-run with a degeneracy diagnostic).
+- A clean, committed `bench-inference-scale` harness (the sweeps here were ad-hoc
+  in `/tmp`) so the curves are reproducible and trackable as levers land.
