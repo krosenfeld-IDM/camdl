@@ -55,8 +55,9 @@ byte-identical. Comparison figures:
 | fix | change | before → after | correctness gate | status |
 | --- | --- | --- | --- | --- |
 | **E** | `Expr` deserialize: drop `#[serde(untagged)]` buffering | model load **3.4–5.8× faster** (grows with size); anchor `simulate`-from-IR **9.32 s → ~4.7 s (2.0×)** | golden round-trip equality | landed on `main` |
-| **D** | `sum(…)` → flat n-ary `Reduce` node | IR size **1.3×→2.3× smaller** (grows with P); **parse cliff removed** — P>50 now parses (P=64/88 were hard `recursion limit` failures) | 88-baseline trajectory gate byte-identical, all backends | landed on `perf/ir-reduce-node` |
-| **B** | shared per-coordinate bindings (compute `N[l]`,`I_agg[l]`,`F[l]` once/step) | the **asymptotic** O(P²·A²)→O(P·A) IR + O(P²·A)→O(P·A+P²) eval | trajectory gate | not started |
+| **D** | `sum(…)` → flat n-ary `Reduce` node | IR size **1.3×→2.3× smaller** (grows with P); **parse cliff removed** — P>50 now parses (P=64/88 were hard `recursion limit` failures) | 88-baseline trajectory gate byte-identical, all backends | landed on `main` |
+| **B1** | hoist the per-coordinate pop-sum aggregates (`N[l]`,`I_agg[l]`) into `model.bindings`, referenced by `BindingRef` | Kano P=44: IR **3.5×** smaller (3708→1070 MB), peak RSS **5.2×** (15.6→3.0 GB), one-shot `simulate` **6.9×** (17.7→2.6 s). Constant-factor (slope ≈2 before/after), parse/load-dominated — **not** asymptotic; per-step eval unchanged (bindings recomputed on-demand); `F[l]` not hoisted | 4-backend trajectory gate byte-identical | landed on `perf/ir-bindings` |
+| **B2** | emitted shared binding-gradients | asymptotic gradient IR | gradient round-trip vs FD | deferred (state-only bindings ⇒ d/dp ≡ 0; buys nothing now) |
 
 ![Fix D — IR size + cliff](assets/scaling/d_reduce_ir_cliff.png)
 
@@ -71,9 +72,23 @@ byte-identical. Comparison figures:
 
 Honest framing: **D is a constant-factor + cliff fix, not asymptotic** — the
 spatial sum still has P terms, just stored flat instead of as a P-deep `Add`
-chain. The asymptotic shrink (so the 774-patch national model is *tractable*,
-not merely *parseable*) is **B**, which preserves the per-patch aggregates as
-computed-once bindings instead of re-expanding them P·A times.
+chain.
+
+**B1 (landed) is also constant-factor, not asymptotic** — and not a per-step
+compute win, despite the original framing here. It hoists the per-coordinate
+pop-sum aggregates (`N[l]`, `I_agg[l]`) so they are *serialized* once instead
+of inlined at all P·A use sites: a large IR/RAM/parse shrink (figure below).
+But the bindings are recomputed **on-demand** at each reference, not cached
+once per step, so the per-step inner loop (`eval_propensities`/`step_one`) is
+unchanged; and the spatial force `F[l]` (which references other bindings) is
+**not** hoisted, so the O(P²) term is untouched. Consequently the 6.9×
+`simulate` win is parse/load-dominated (one-shot `simulate` from IR), not a
+per-step speedup — inference, which parses once and steps millions of times,
+benefits far less. The genuine asymptotic shrink (sharing `F[l]` so the
+774-patch national model is *tractable*, not merely *parseable*) remains
+future work.
+
+![Fix B — IR/RSS/simulate before vs after](assets/scaling/fix_b_before_after.png)
 
 ## Baseline (the real model, reproduced)
 
