@@ -1219,19 +1219,17 @@ birth[p in patch] : --> S[child, p]
 # Outflow: no destination
 death_S[a in age, p in patch] : S[a,p] -->  @ mu_age[a] * S[a,p]
 
-# Block form for additional properties
+# Block form: rate on its own line (may also carry a `where` guard)
 infection_water : S --> I {
   rate = S * beta_W * W / (K + W)
-  tag  = "waterborne"
 }
 ```
 
 **Block form properties:**
 
 - `rate` (required): the total propensity expression
-- `tag` (optional): a string label that compiles to the IR `metadata` field.
-  Used for output filtering, visualization grouping, and documentation. Has no
-  effect on simulation dynamics.
+- `where <guard>` (optional): an index-variable guard, identical to the inline
+  `... @ <rate> where <guard>` form
 
 **Inflows** (`-->` with nothing on the left) model individuals entering the
 system from outside: births, importation, immigration. There is no source

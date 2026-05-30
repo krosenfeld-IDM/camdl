@@ -36,7 +36,7 @@
 %token INIT TIMEPOINTS SCENARIOS EXTENDS STRATIFY LET FROM TO WHERE SUM
 %token CONSECUTIVE IN BY DIMENSIONS ONLY REAL INTEGER RATE PROBABILITY POSITIVE COUNT
 %token INSTANT DURATION
-%token AND OR NOT IF THEN ELSE EVERY UNTIL AT_KW FORMAT DESCRIPTION TAG NULL TRANSFER LIKELIHOOD ORIGIN BALANCE EVENTS ADD AT_DAY
+%token AND OR NOT IF THEN ELSE EVERY UNTIL AT_KW FORMAT DESCRIPTION NULL TRANSFER LIKELIHOOD ORIGIN BALANCE EVENTS ADD AT_DAY
 %token PIPE
 
 %token EOF
@@ -339,11 +339,11 @@ transition_decl:
   | lin = lineage_attr_opt name = IDENT ibs = index_bindings_opt COLON srcs = stoich_ref_list ARROW dsts = stoich_ref_list AT rate = expr guard = where_clause_opt
       { { trname = name; trindices = ibs;
           trsrc = srcs; trdst = DstSum dsts;
-          trrate = rate; trguard = guard; trtag = None; trlineage = lin;
+          trrate = rate; trguard = guard; trlineage = lin;
           trloc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
-  (* block form: [#[lineage]] name[...] : srcs --> dsts { rate = ...; tag = ... } *)
+  (* block form: [#[lineage]] name[...] : srcs --> dsts { rate = ...; where ... } *)
   | lin = lineage_attr_opt name = IDENT ibs = index_bindings_opt COLON srcs = stoich_ref_list ARROW dsts = stoich_ref_list LBRACE tbody = transition_body RBRACE
-      { let (rate_opt, guard, tag) = tbody in
+      { let (rate_opt, guard) = tbody in
         (* A block-form transition with no `rate = …` (and no `@ …`) is a
            hard error, not a silent zero-rate transition. Pushing a
            diagnostic and substituting a placeholder rate lets parsing
@@ -361,13 +361,13 @@ transition_decl:
         in
         { trname = name; trindices = ibs;
           trsrc = srcs; trdst = DstSum dsts;
-          trrate = rate; trguard = guard; trtag = tag; trlineage = lin;
+          trrate = rate; trguard = guard; trlineage = lin;
           trloc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* branching: [#[lineage]] name[...] : srcs --> { D1 : w1, ... } @ rate where guard *)
   | lin = lineage_attr_opt name = IDENT ibs = index_bindings_opt COLON srcs = stoich_ref_list ARROW LBRACE branches = separated_nonempty_list(COMMA, branch_entry) RBRACE AT rate = expr guard = where_clause_opt
       { { trname = name; trindices = ibs;
           trsrc = srcs; trdst = DstBranch branches;
-          trrate = rate; trguard = guard; trtag = None; trlineage = lin;
+          trrate = rate; trguard = guard; trlineage = lin;
           trloc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
 
 (* Optional transition attribute. Only `#[lineage]` is recognized in
@@ -422,18 +422,15 @@ transition_body:
            default to a zero-rate (never-firing) transition. *)
         let rate  = ref None in
         let guard = ref None in
-        let tag   = ref None in
         List.iter (function
           | `Rate e  -> rate := Some e
           | `Guard g -> guard := Some g
-          | `Tag s   -> tag := Some s
         ) kvs;
-        (!rate, !guard, !tag) }
+        (!rate, !guard) }
 
 transition_body_entry:
   | RATE EQ e = expr { `Rate e }
   | WHERE g = guard_expr { `Guard g }
-  | TAG EQ s = STRING { `Tag s }
 
 guard_expr:
   | g = guard_atom { g }

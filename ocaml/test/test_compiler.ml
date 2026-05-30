@@ -1093,7 +1093,7 @@ let test_block_transition_missing_rate_e213 () =
     time_unit = 'days
     compartments { S, I }
     transitions {
-      infection : S --> I { tag = "transmission" }
+      infection : S --> I { }
     }
     init { S = 1 }
     simulate { from = 0 'days  to = 10 'days }

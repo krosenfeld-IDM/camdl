@@ -106,7 +106,6 @@
       "at",            AT_KW;
       "format",        FORMAT;
       "description",   DESCRIPTION;
-      "tag",           TAG;
       "null",          NULL;
       "transfer",      TRANSFER;
       "balance",       BALANCE;
