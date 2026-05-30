@@ -21,9 +21,9 @@
 use std::path::PathBuf;
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig, TauLeapConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim, OdeSim, TauLeapSim,
 };
 
 const SEED: u64 = 42;
@@ -183,6 +183,37 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("sirv_anchored_calendar", "gillespie", 0xec592cdf358a308e),
     ("sirv_anchored_calendar", "tau_leap", 0xdf8d3f99b0d42cab),
     ("sirv_anchored_calendar", "chain_binomial", 0x557cef37b9b035b1),
+    // ODE backend (deterministic; added per the four-backend landing
+    // condition). Captured against the post-Fix-B compiler/runtime.
+    ("bimolecular", "ode", 0x9b78f38544509e31),
+    ("branching_si_symp_asym", "ode", 0x49c0178b07ff5a11),
+    ("malaria_two_species", "ode", 0xa196af484eabfada),
+    ("polio_age", "ode", 0x8666c2e727620de6),
+    ("polio_spatial_5", "ode", 0x81ed3b07bb11e95a),
+    ("ross_macdonald", "ode", 0xabf137964976a29a),
+    ("seir_age", "ode", 0xe751bceb05d6d96f),
+    ("seir_age_table_rates", "ode", 0x939b7744fa70ca36),
+    ("seir_defines_adj", "ode", 0x572dd8daf4bf4a11),
+    ("seir_defines_patch", "ode", 0x673d152ffc0d0062),
+    ("seir_erlang", "ode", 0x9b29cf1f075449e3),
+    ("seir_erlang_staged", "ode", 0x0c24c269bfbacab6),
+    ("seir_observations", "ode", 0x7a508de2aa682947),
+    ("seir_seasonal_patch", "ode", 0x4c239067cbb27691),
+    ("seir_vaccine", "ode", 0xe4e6cdeb29305f53),
+    ("seir_vaccine_seasonal", "ode", 0x8e29acb2da8ea04d),
+    ("sir_basic", "ode", 0xb2fa9101b5997ef6),
+    ("sir_coupling", "ode", 0xdaa46bf899ced8ec),
+    ("sir_demography", "ode", 0xaace1bf8fd9af151),
+    ("sir_dim_annotated", "ode", 0xd4eabe748e47ff65),
+    ("sir_five_age", "ode", 0x512ca373f1110261),
+    ("sir_init_table", "ode", 0x635f90433ba03360),
+    ("sir_patches_5", "ode", 0xef155405de7c8672),
+    ("sir_priors", "ode", 0xb2fa9101b5997ef6),
+    ("sir_reservoir", "ode", 0xfc216d83dd10cc5f),
+    ("sir_reservoir_mixed", "ode", 0x9f6524558df9a394),
+    ("sir_spatial_sum", "ode", 0x4a4e770716cd1bad),
+    ("sir_two_patch", "ode", 0xdf3aace63920506c),
+    ("sirv_anchored_calendar", "ode", 0xc72bec34c422826d),
 ];
 
 #[test]
@@ -215,16 +246,24 @@ fn gate_golden_trajectories_are_byte_identical() {
         let t_start = model.simulation.t_start;
         let t_end = model.simulation.t_end.min(30.0);
 
+        // ODE is included to satisfy the Fix-B/D landing condition ("byte-
+        // identical under all four backends"): the proposal requires ODE
+        // coverage, but the gate previously pinned only the three stochastic
+        // backends. ODE is deterministic (seed ignored); capability-skip drops
+        // models it can't run (e.g. overdispersion), and the run-error
+        // `continue` below drops any it errors on.
         let backends: &[(&str, SimConfig)] = &[
             ("gillespie", SimConfig::Gillespie(GillespieConfig { t_start, t_end, output_dt: None })),
             ("tau_leap", SimConfig::TauLeap(TauLeapConfig { t_start, t_end, dt: 0.5 })),
             ("chain_binomial", SimConfig::ChainBinomial(ChainBinomialConfig { t_start, t_end, dt: 1.0 })),
+            ("ode", SimConfig::Ode(OdeConfig { t_start, t_end, dt: 1.0 })),
         ];
         let required = compiled.required_capabilities();
         for (backend, config) in backends {
             let sim: &dyn Simulate = match *backend {
                 "gillespie" => &GillespieSim,
                 "tau_leap" => &TauLeapSim,
+                "ode" => &OdeSim,
                 _ => &ChainBinomialSim,
             };
             if !(required - sim.capabilities()).is_empty() {
