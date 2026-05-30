@@ -142,8 +142,7 @@ bench-micro-fixtures: build
 	done
 	@echo "fixtures → $(FX)"
 
-# Per-step eval / load micro-benchmarks (criterion). Only the `scaling` bench —
-# the sibling `inference.rs` bench is stale; see the findings note.
+# Per-step eval / load micro-benchmarks (criterion): the `scaling` bench.
 bench-micro: bench-micro-fixtures
 	cd rust && cargo bench -p sim --bench scaling
 
