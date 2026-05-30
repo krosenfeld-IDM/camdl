@@ -40,7 +40,7 @@
 
 use std::time::Duration;
 
-use crate::error::PFDegenerateKind;
+use crate::error::{PFDegenerateKind, SimError};
 
 /// gh#110. Effective sample size below this value at an observation
 /// window counts as "collapsed" for that window. Floor of 1.0 is
@@ -159,6 +159,22 @@ pub fn check_pf_degeneracy(
     }
 
     None
+}
+
+/// gh#133. Map a watchdog bail (the `kind` from [`check_pf_degeneracy`]) to
+/// the right `SimError`. `WallClockExceeded` is a *resource* limit and gets
+/// its own [`SimError::PFWallclockTimeout`], distinct from the statistical
+/// `PFDegenerate` pathologies (EssCollapsed/AllParticlesDead). Both are
+/// whole-call bails, so call-site behaviour is preserved — only the type and
+/// message differ. The single branch point keeps the two filter loops
+/// (`if2`, `bootstrap_filter`) agreeing.
+pub fn pf_bail_error(kind: PFDegenerateKind, obs_window: usize, elapsed_s: f64) -> SimError {
+    match kind {
+        PFDegenerateKind::WallClockExceeded => {
+            SimError::PFWallclockTimeout { obs_window, elapsed_s }
+        }
+        other => SimError::PFDegenerate { kind: other, obs_window, elapsed_s },
+    }
 }
 
 #[cfg(test)]
@@ -307,5 +323,24 @@ mod tests {
         // Unparseable override falls through to the scaled default — it
         // must NOT silently disable the guard.
         assert_eq!(resolve_wallclock_budget_s(Some("nonsense"), 1500), Some(750));
+    }
+
+    /// gh#133. The wall-clock bail maps to the resource-limit error type
+    /// (`PFWallclockTimeout`), while the statistical pathologies stay under
+    /// `PFDegenerate`.
+    #[test]
+    fn wallclock_bail_is_a_timeout_not_degeneracy() {
+        assert!(matches!(
+            pf_bail_error(PFDegenerateKind::WallClockExceeded, 5, 130.0),
+            SimError::PFWallclockTimeout { .. }
+        ));
+        assert!(matches!(
+            pf_bail_error(PFDegenerateKind::AllParticlesDead, 5, 1.0),
+            SimError::PFDegenerate { .. }
+        ));
+        assert!(matches!(
+            pf_bail_error(PFDegenerateKind::EssCollapsed { last_ess: vec![1.0] }, 5, 1.0),
+            SimError::PFDegenerate { .. }
+        ));
     }
 }

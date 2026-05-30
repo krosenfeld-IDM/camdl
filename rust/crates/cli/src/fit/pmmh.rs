@@ -491,11 +491,21 @@ pub fn run_stage(
                     &config, &chain_starts[chain_id],
                     n_particles, None, chain_seed,
                 ) {
-                    Err(sim::error::SimError::PFDegenerate { kind, obs_window, elapsed_s }) => {
-                        let reason = format!(
-                            "{:?} at obs_window={} after {:.2}s",
-                            kind, obs_window, elapsed_s,
-                        );
+                    Err(e @ (sim::error::SimError::PFDegenerate { .. }
+                           | sim::error::SimError::PFWallclockTimeout { .. })) => {
+                        // gh#133: a wall-clock timeout is a resource limit, not
+                        // statistical degeneracy — same skip-and-continue, but an
+                        // accurate reason.
+                        let reason = match &e {
+                            sim::error::SimError::PFDegenerate { kind, obs_window, elapsed_s } =>
+                                format!("{:?} at obs_window={} after {:.2}s",
+                                    kind, obs_window, elapsed_s),
+                            sim::error::SimError::PFWallclockTimeout { obs_window, elapsed_s } =>
+                                format!("WallClockExceeded (timeout, gh#133) at obs_window={} after \
+                                    {:.2}s — slow not stuck; reduce --particles or raise the budget \
+                                    (CAMDL_PF_WALLCLOCK_TIMEOUT_S)", obs_window, elapsed_s),
+                            _ => unreachable!(),
+                        };
                         let params: std::collections::BTreeMap<String, f64> =
                             config.estimated_params.iter()
                                 .map(|spec| (

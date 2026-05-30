@@ -336,6 +336,7 @@ impl CasInputs for ProfileInputs {
 }
 
 pub fn cmd_profile(a: &crate::args::ProfileArgs) {
+    crate::args::apply_pf_wallclock_env(&a.inference);  // gh#133
     // Validate (algorithm, backend) early, before any expensive setup.
     let algo_name = a.algorithm.as_deref().unwrap_or("if2");
     let backend_name = a.backend.as_deref().unwrap_or("chain_binomial");

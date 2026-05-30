@@ -1230,9 +1230,22 @@ pub fn run_chains_with_per_chain_params(
                 // skip-and-continue (`pmmh.rs`) so one bad chain can't kill an
                 // otherwise-healthy multi-chain fit. The loud diagnostic
                 // (collector + stderr) keeps the skip visible — never silent.
-                Err(sim::error::SimError::PFDegenerate { kind, obs_window, elapsed_s }) => {
-                    let reason = format!(
-                        "{:?} at obs_window={} after {:.2}s", kind, obs_window, elapsed_s);
+                Err(e @ (sim::error::SimError::PFDegenerate { .. }
+                       | sim::error::SimError::PFWallclockTimeout { .. })) => {
+                    // gh#133: a wall-clock timeout is a resource limit, not
+                    // statistical degeneracy — same skip-and-continue, accurate
+                    // reason.
+                    let (reason, label) = match &e {
+                        sim::error::SimError::PFDegenerate { kind, obs_window, elapsed_s } =>
+                            (format!("{:?} at obs_window={} after {:.2}s", kind, obs_window, elapsed_s),
+                             "PF degenerate"),
+                        sim::error::SimError::PFWallclockTimeout { obs_window, elapsed_s } =>
+                            (format!("WallClockExceeded (timeout, gh#133) at obs_window={} after \
+                                {:.2}s — slow not stuck; reduce --particles or raise the budget \
+                                (CAMDL_PF_WALLCLOCK_TIMEOUT_S)", obs_window, elapsed_s),
+                             "PF wall-clock timeout"),
+                        _ => unreachable!(),
+                    };
                     let params: std::collections::BTreeMap<String, f64> =
                         config.estimated_params.iter()
                             .map(|spec| (
@@ -1243,10 +1256,10 @@ pub fn run_chains_with_per_chain_params(
                     collector.push(DiagnosticKind::BadInit {
                         chain_id, params, reason: reason.clone(),
                     });
-                    eprintln!("  chain {}: \x1b[31m✗ skipped\x1b[0m — PF degenerate ({})",
-                        chain_id + 1, reason);
+                    eprintln!("  chain {}: \x1b[31m✗ skipped\x1b[0m — {} ({})",
+                        chain_id + 1, label, reason);
                     if let Some(bar) = bars.get(chain_id) {
-                        bar.finish_with_message("skipped (PF degenerate)".to_string());
+                        bar.finish_with_message(format!("skipped ({label})"));
                     }
                     None
                 }

@@ -332,11 +332,11 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         if let Some(kind) = check_pf_degeneracy(
             &ess_trace, elapsed, obs_idx, dead_count, n_particles,
         ) {
-            return Err(SimError::PFDegenerate {
-                kind,
-                obs_window: obs_idx,
-                elapsed_s: elapsed.as_secs_f64(),
-            });
+            // gh#133: WallClockExceeded → PFWallclockTimeout (resource limit),
+            // the rest → PFDegenerate (statistical). Single mapping helper.
+            return Err(super::degeneracy::pf_bail_error(
+                kind, obs_idx, elapsed.as_secs_f64(),
+            ));
         }
 
         // Resample via double-buffer

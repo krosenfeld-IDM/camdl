@@ -96,6 +96,18 @@ pub enum SimError {
         obs_window: usize,
         elapsed_s: f64,
     },
+
+    /// gh#133. The particle filter's per-call wall-clock budget was
+    /// exceeded — a *resource/timeout* limit, surfaced distinctly from the
+    /// statistical `PFDegenerate` pathologies (EssCollapsed/AllParticlesDead).
+    /// A slow-but-healthy big filter trips this; the remedy is fewer
+    /// particles or a larger/disabled budget, NOT more particles. Like
+    /// `PFDegenerate` it is a whole-call bail (not per-particle-recoverable).
+    #[error("particle filter wall-clock budget exceeded at obs_window {obs_window}, elapsed {elapsed_s:.2}s (gh#133: a slow-but-healthy filter — reduce --particles, or raise/disable the budget via --pf-wallclock-timeout / CAMDL_PF_WALLCLOCK_TIMEOUT_S=<secs|0>)")]
+    PFWallclockTimeout {
+        obs_window: usize,
+        elapsed_s: f64,
+    },
 }
 
 /// gh#audit-C6 / S1. Specific numerical-degeneracy mode that

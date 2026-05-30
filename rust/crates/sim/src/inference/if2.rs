@@ -502,11 +502,11 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
             if let Some(kind) = check_pf_degeneracy(
                 &ess_history, elapsed, obs_idx, 0, n,
             ) {
-                return Err(SimError::PFDegenerate {
-                    kind,
-                    obs_window: obs_idx,
-                    elapsed_s: elapsed.as_secs_f64(),
-                });
+                // gh#133: WallClockExceeded → PFWallclockTimeout (resource
+                // limit), the rest → PFDegenerate (statistical pathology).
+                return Err(super::degeneracy::pf_bail_error(
+                    kind, obs_idx, elapsed.as_secs_f64(),
+                ));
             }
 
             // Resample states AND parameters jointly via double-buffer (no allocation)
