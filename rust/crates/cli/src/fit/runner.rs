@@ -1266,11 +1266,13 @@ pub fn run_chains_with_per_chain_params(
     // letting a later stage trip over an empty result set.
     if results.is_empty() {
         eprintln!(
-            "error: all {} IF2 chain(s) hit PF degeneracy — no usable chain.\n  \
-             The particle filter's effective sample size collapsed for every \
-             chain (commonly R0 driven to its bound, σ too large, or too few \
-             particles). Try: raise --particles, tighten parameter bounds, or \
-             recheck the data/model scale.",
+            "error: all {} IF2 chain(s) bailed via the PF watchdog — no usable chain.\n  \
+             The remedy depends on which trigger fired (see the per-chain errors above):\n  \
+             - EssCollapsed (R0 at its bound, σ too large, or too few particles): \
+             raise --particles or tighten parameter bounds.\n  \
+             - WallClockExceeded (gh#133 — a healthy filter that was merely slow, e.g. \
+             uniform cross-chain progress): REDUCE --particles, or raise/disable the \
+             wall-clock budget via CAMDL_PF_WALLCLOCK_TIMEOUT_S=<secs|0>.",
             config.n_chains);
         std::process::exit(1);
     }

@@ -71,11 +71,14 @@ pub enum SimError {
     ///   `ESS_FLOOR` (= 2.0) for `ESS_COLLAPSE_WINDOWS` (= 3)
     ///   consecutive observation windows. Sustained collapse — not a
     ///   single-window dip during epidemic peaks.
-    /// - `WallClockExceeded`: per-call elapsed time has exceeded
-    ///   `WALLCLOCK_TIMEOUT_S` (= 120). A healthy PF eval on production
-    ///   models is seconds-to-tens-of-seconds; 2 minutes is generous
-    ///   enough to never false-positive and tight enough that a
-    ///   multi-chain run can't lose 40+ minutes to one bad chain.
+    /// - `WallClockExceeded`: per-call elapsed time exceeded the
+    ///   wall-clock budget — `max(WALLCLOCK_FLOOR_S = 120, n_particles ·
+    ///   per-particle)`, overridable via `CAMDL_PF_WALLCLOCK_TIMEOUT_S`
+    ///   (`0` disables it). gh#133: this is a *resource/timeout* limit, not
+    ///   a statistical pathology — a slow-but-healthy big filter trips it,
+    ///   so the remedy is fewer particles or a larger/disabled budget, NOT
+    ///   more particles. (A future split would surface this as a distinct
+    ///   non-degenerate error; for now it rides `PFDegenerate`.)
     /// - `AllParticlesDead`: every particle hit a per-particle-recoverable
     ///   error (NumericalCollapse / NegativeCount{BinomialOvershoot}) —
     ///   the limit case of ESS collapse, but cheap to detect and

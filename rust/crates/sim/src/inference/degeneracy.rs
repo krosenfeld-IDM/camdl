@@ -25,12 +25,13 @@
 //! }
 //! ```
 //!
-//! Thresholds are hardcoded (no CLI flag). The acceptance criterion
-//! on gh#110 is explicit: no `--allow-pf-degeneracy` opt-out until
-//! a user demands an override. `WALLCLOCK_TIMEOUT_S = 120` per-call
-//! is generous on healthy production models (seconds to tens of
-//! seconds) and tight enough to bail before a multi-chain run loses
-//! tens of minutes to one bad chain. `ESS_FLOOR = 2.0` over
+//! The ESS thresholds are hardcoded; the wall-clock budget is
+//! workload-scaled and overridable (gh#133 — a user demanded it after a
+//! healthy-but-slow 1500-particle fit was killed as "degenerate"). The
+//! budget is `max(WALLCLOCK_FLOOR_S = 120, n_particles · per-particle)`,
+//! overridable via `CAMDL_PF_WALLCLOCK_TIMEOUT_S` (`0` disables it); the
+//! CLI `--pf-wallclock-timeout` / fit.toml field layer on top (same
+//! precedence chain). `ESS_FLOOR = 2.0` over
 //! `ESS_COLLAPSE_WINDOWS = 3` consecutive obs windows on a 200-obs
 //! SEIR fit means we bail only if the filter is producing one usable
 //! particle across 1.5% of the observation series — generous
@@ -52,12 +53,47 @@ pub const ESS_FLOOR: f64 = 2.0;
 /// peaks; sustained collapse is the pathology this watchdog catches.
 pub const ESS_COLLAPSE_WINDOWS: usize = 3;
 
-/// gh#110. Per-call wall-clock timeout. A healthy PF eval on
-/// production models is seconds-to-tens-of-seconds; 2 minutes is
-/// generous enough to never false-positive on legitimate slow
-/// models and tight enough that a 6-chain run can't lose 40+
-/// minutes to one bad chain.
-pub const WALLCLOCK_TIMEOUT_S: u64 = 120;
+/// gh#110/gh#133. Floor for the per-call wall-clock budget. Small filters
+/// still bail fast if genuinely stuck in `step()`; large filters get a
+/// workload-scaled budget on top (see [`resolve_wallclock_budget_s`]) so a
+/// slow-but-healthy big swarm is not false-flagged as degenerate.
+pub const WALLCLOCK_FLOOR_S: u64 = 120;
+
+/// gh#133. Per-particle contribution to the wall-clock budget. A healthy
+/// 1500-particle filter on a moderate model legitimately needs
+/// minutes/eval, so the budget scales with swarm size above the floor.
+/// Deliberately generous — false-killing a real fit is the worse failure;
+/// the env override / CLI flag handle the cases this heuristic misses.
+const WALLCLOCK_PER_PARTICLE_S: f64 = 0.5;
+
+/// gh#133. Env override for the wall-clock budget, in whole seconds.
+/// `0` disables the wall-clock check entirely; unset or unparseable →
+/// the workload-scaled default.
+pub const WALLCLOCK_ENV: &str = "CAMDL_PF_WALLCLOCK_TIMEOUT_S";
+
+/// Resolve the per-call wall-clock budget in seconds, or `None` to disable
+/// the check. `override_secs` is the raw override string (the env var
+/// today; the CLI flag / fit.toml field will pass through this same path)
+/// — taken as a parameter so the precedence logic is unit-testable without
+/// touching process env. Precedence: a parseable override wins (`0` ⇒
+/// disabled); otherwise scale with particle count above the floor.
+fn resolve_wallclock_budget_s(override_secs: Option<&str>, n_particles: usize) -> Option<u64> {
+    if let Some(raw) = override_secs {
+        if let Ok(secs) = raw.trim().parse::<u64>() {
+            return if secs == 0 { None } else { Some(secs) };
+        }
+        // Unparseable override → fall through to the scaled default rather
+        // than silently disabling the guard.
+    }
+    let scaled = (n_particles as f64 * WALLCLOCK_PER_PARTICLE_S) as u64;
+    Some(WALLCLOCK_FLOOR_S.max(scaled))
+}
+
+/// The effective wall-clock budget for this call, reading the env
+/// override. `None` ⇒ the wall-clock check is disabled.
+fn pf_wallclock_budget_s(n_particles: usize) -> Option<u64> {
+    resolve_wallclock_budget_s(std::env::var(WALLCLOCK_ENV).ok().as_deref(), n_particles)
+}
 
 /// gh#110. Return the degeneracy mode if the filter has bailed at
 /// this observation window, otherwise `None`.
@@ -97,12 +133,15 @@ pub fn check_pf_degeneracy(
         return Some(PFDegenerateKind::AllParticlesDead);
     }
 
-    // WallClockExceeded: independent of swarm state. A filter that
-    // runs >120s/call is either grossly under-particled or stuck on
-    // an absorbing dynamic; either way the chain runner needs to
-    // hear about it before the user loses meaningful wall-clock.
-    if elapsed.as_secs() >= WALLCLOCK_TIMEOUT_S {
-        return Some(PFDegenerateKind::WallClockExceeded);
+    // WallClockExceeded: independent of swarm state. A filter still
+    // running past its budget is stuck in `step()` — *or* over-particled
+    // for the budget (gh#133). The budget scales with swarm size above the
+    // floor and is overridable (env / CLI), so a slow-but-healthy big
+    // filter is not false-flagged. `None` budget ⇒ the check is disabled.
+    if let Some(budget_s) = pf_wallclock_budget_s(n_particles) {
+        if elapsed.as_secs() >= budget_s {
+            return Some(PFDegenerateKind::WallClockExceeded);
+        }
     }
 
     // EssCollapsed: K consecutive obs windows at or below the floor.
@@ -176,23 +215,38 @@ mod tests {
         assert!(matches!(kind, PFDegenerateKind::EssCollapsed { .. }));
     }
 
-    /// Wall-clock at or above WALLCLOCK_TIMEOUT_S → WallClockExceeded,
-    /// even with healthy ESS. The filter might be stuck in step().
+    /// Wall-clock at or above the budget → WallClockExceeded, even with
+    /// healthy ESS (the filter might be stuck in step()). Small swarm, so
+    /// the floor (120 s) is the budget.
     #[test]
     fn wall_clock_timeout_triggers() {
         let ess = vec![800.0, 750.0]; // healthy
-        let elapsed = Duration::from_secs(WALLCLOCK_TIMEOUT_S);
-        let kind = check_pf_degeneracy(&ess, elapsed, 1, 0, 1000)
+        let elapsed = Duration::from_secs(WALLCLOCK_FLOOR_S);
+        let kind = check_pf_degeneracy(&ess, elapsed, 1, 0, 100)
             .expect("should bail on wall-clock");
         assert!(matches!(kind, PFDegenerateKind::WallClockExceeded));
     }
 
-    /// Wall-clock just under the timeout must NOT trigger.
+    /// Wall-clock just under the budget must NOT trigger (small swarm →
+    /// floor budget).
     #[test]
     fn wall_clock_just_under_does_not_trigger() {
         let ess = vec![800.0];
-        let elapsed = Duration::from_secs(WALLCLOCK_TIMEOUT_S - 1);
-        assert!(check_pf_degeneracy(&ess, elapsed, 0, 0, 1000).is_none());
+        let elapsed = Duration::from_secs(WALLCLOCK_FLOOR_S - 1);
+        assert!(check_pf_degeneracy(&ess, elapsed, 0, 0, 100).is_none());
+    }
+
+    /// gh#133. A large-but-healthy swarm is slow, not stuck — the budget
+    /// must scale with particle count so it does not false-positive as
+    /// WallClockExceeded just past the old fixed 120 s. (Repro: a 1500-
+    /// particle IF2 fit killed at 120 s with uniform cross-chain progress.)
+    #[test]
+    fn large_swarm_slow_but_healthy_does_not_false_trigger() {
+        let ess = vec![800.0, 750.0, 820.0]; // healthy ESS
+        assert!(
+            check_pf_degeneracy(&ess, Duration::from_secs(200), 50, 0, 1500).is_none(),
+            "a slow-but-healthy 1500-particle filter must not be killed as degenerate"
+        );
     }
 
     /// All particles dead → AllParticlesDead, even with no ESS
@@ -236,5 +290,22 @@ mod tests {
             "test assumes K-window threshold >= 2");
         let short: Vec<f64> = (0..ESS_COLLAPSE_WINDOWS - 1).map(|_| 0.5).collect();
         assert!(check_pf_degeneracy(&short, Duration::from_secs(0), 0, 0, 1000).is_none());
+    }
+
+    /// gh#133. Budget resolution: scaled default, env disable, positive
+    /// override, and unparseable-falls-through — tested without touching
+    /// process env (the precedence is a pure function of its arg).
+    #[test]
+    fn wallclock_budget_resolution() {
+        // Scaled default: small swarm floored at 120; large swarm scaled.
+        assert_eq!(resolve_wallclock_budget_s(None, 100), Some(WALLCLOCK_FLOOR_S));
+        assert_eq!(resolve_wallclock_budget_s(None, 1500), Some(750)); // 1500 * 0.5
+        // Override `0` disables the wall-clock check.
+        assert_eq!(resolve_wallclock_budget_s(Some("0"), 1500), None);
+        // A positive override wins over the scaled default (trimmed).
+        assert_eq!(resolve_wallclock_budget_s(Some(" 45 "), 1500), Some(45));
+        // Unparseable override falls through to the scaled default — it
+        // must NOT silently disable the guard.
+        assert_eq!(resolve_wallclock_budget_s(Some("nonsense"), 1500), Some(750));
     }
 }
