@@ -1,4 +1,4 @@
-# Large, regenerable profiling artifact — produced by `make flamegraph-real`.
-# The committed figure is scaling_curves.png; the flamegraph is too big (~4 MB)
-# and goes stale, so regenerate it on demand rather than tracking it.
-flamegraph_real.svg
+# Large, regenerable profiling artifacts — flamegraphs from `make flamegraph-real`
+# / `make profile-pmmh`. Too big (~4–8 MB) and they go stale, so regenerate on
+# demand rather than tracking. The committed figures are the PNGs.
+flamegraph_*.svg
