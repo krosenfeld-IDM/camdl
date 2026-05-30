@@ -1,6 +1,18 @@
 //! Deserialise all golden IR files and assert no errors.
 //!
 //! Run with:  cd rust && cargo test --test golden_deser
+//!
+//! `ir/golden/` is a **frozen v0.3 cross-language deserialisation contract**
+//! (hence the `version == "0.3"` assertion below). It predates the Fix-B
+//! shared-bindings work and is deliberately *not* regenerated to the current
+//! compiler's form — it pins that the Rust deserialiser still reads the older
+//! inlined IR. Consequently these fixtures carry no `bindings` field and
+//! exercise zero binding/reduce deser paths. That coverage lives elsewhere and
+//! is asserted, not assumed: `binding_bearing_model_round_trips` below
+//! (model-level `bindings` + `BindingRef`, against an ocaml/golden model that
+//! actually carries them) and `expr.rs::roundtrips_every_variant_and_a_deep_nesting`
+//! (the `Reduce`/`BindingRef` Expr variants). Regenerating `ir/golden/` to v0.6
+//! is a separate contract decision, not a coverage patch.
 
 use std::fs;
 use std::path::Path;
@@ -61,3 +73,36 @@ fn deser_golden(name: &str) {
 // + date_range. Provides cross-language regression coverage for the typed-
 // time surface in 2026-05-22-typed-time-and-dsl-ergonomics.md (Phase 1+2).
 #[test] fn golden_sirv_anchored_calendar() { deser_golden("sirv_anchored_calendar"); }
+
+/// Fix B deser coverage that `ir/golden/` (frozen v0.3, no bindings) cannot
+/// provide: a binding-bearing model must survive a JSON round-trip with its
+/// model-level `bindings` and the `BindingRef` nodes that read them intact.
+/// Sourced from `ocaml/golden/` (v0.6) since that is where bindings exist.
+#[test]
+fn binding_bearing_model_round_trips() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ocaml/golden/sir_reservoir_mixed.ir.json");
+    let contents = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+
+    let model = ir::from_str(&contents)
+        .unwrap_or_else(|e| panic!("failed to deserialise binding model: {}", e));
+
+    // Non-vacuous guards: the fixture must actually exercise the binding paths,
+    // else a future fixture swap could silently make this test prove nothing.
+    assert!(
+        !model.bindings.is_empty(),
+        "fixture must carry model-level bindings"
+    );
+
+    let json2 = ir::to_string_pretty(&model).expect("serialise binding model");
+    assert!(
+        json2.contains("binding_ref"),
+        "fixture must reference a binding from a rate (BindingRef), else the \
+         reference path is untested"
+    );
+
+    let model2 = ir::from_str(&json2).expect("round-trip deserialise binding model");
+    assert_eq!(model, model2, "binding-bearing model round-trip changed structure");
+    assert!(!model2.bindings.is_empty(), "bindings dropped on round-trip");
+}
