@@ -58,6 +58,7 @@ let check_expr_refs ~comps ~params ~tables ~tfs errors e =
       List.iter go idxs
     | UncheckedDim u -> go u.inner
     | Reduce terms -> List.iter go terms
+    | BindingRef _ -> ()   (* leaf; binding name resolution happens at CompiledModel::new *)
   in
   go e
 

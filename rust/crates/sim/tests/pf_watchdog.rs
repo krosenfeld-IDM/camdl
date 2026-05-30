@@ -136,6 +136,7 @@ fn pathological_sir_model() -> (CompiledModel, Vec<f64>) {
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![
             Parameter { name: "beta".into(), value: Some(beta), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
             Parameter { name: "gamma".into(), value: Some(gamma), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },

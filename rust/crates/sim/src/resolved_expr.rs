@@ -73,6 +73,9 @@ pub enum ResolvedExpr {
     /// n-ary sum over already-resolved terms (Fix D). Evaluated as a left-fold
     /// to match the OCaml Add-chain order bit-for-bit.
     Reduce(Vec<ResolvedExpr>),
+    /// Fix B: reference to a model-level binding by slot. Evaluated on-demand
+    /// from `ctx.model.resolved.bindings[slot]`.
+    BindingRef(usize),
 }
 
 /// Returns true if the expression references compartment state (Pop, PopSum).
@@ -92,6 +95,8 @@ pub fn references_state(expr: &ResolvedExpr) -> bool {
         ResolvedExpr::TableLookup { index, .. } => references_state(index),
         ResolvedExpr::UncheckedDim { inner } => references_state(inner),
         ResolvedExpr::Reduce(terms) => terms.iter().any(references_state),
+        // Hoisted bindings are state-derived (N/I_agg/F read compartments).
+        ResolvedExpr::BindingRef(_) => true,
         _ => false,
     }
 }
@@ -109,6 +114,9 @@ pub struct ResolveCtx<'a> {
     pub global_to_real: &'a [Option<usize>],
     /// Per-table: (oob_policy, cached_values_len).
     pub table_meta: &'a [(OobPolicy, usize)],
+    /// Fix B: model-level binding name → slot. `BindingRef(name)` resolves to
+    /// `ResolvedExpr::BindingRef(slot)`, like Param/Pop/TableLookup.
+    pub binding_index: &'a HashMap<String, usize>,
 }
 
 /// Resolve an `Expr` tree into a `ResolvedExpr` tree.
@@ -224,6 +232,12 @@ pub fn resolve_expr(expr: &Expr, ctx: &ResolveCtx<'_>) -> Result<ResolvedExpr, S
                 .map(|e| resolve_expr(e, ctx))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ResolvedExpr::Reduce(terms))
+        }
+        Expr::BindingRef(w) => {
+            let slot = *ctx.binding_index.get(w.binding_ref.as_str())
+                .ok_or_else(|| SimError::Validation(
+                    format!("reference to unknown binding '{}'", w.binding_ref)))?;
+            Ok(ResolvedExpr::BindingRef(slot))
         }
     }
 }
@@ -393,6 +407,9 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
         // Left-fold (sum() folds from 0.0) → bit-identical to the OCaml
         // `((t0+t1)+…)` Add-chain (0.0 + t0 == t0). NaN propagates naturally.
         ResolvedExpr::Reduce(terms) => terms.iter().map(|t| eval_resolved(t, ctx)).sum(),
+        // On-demand: evaluate the binding's body. Topologically ordered (a binding
+        // only references earlier ones), so this recursion terminates.
+        ResolvedExpr::BindingRef(slot) => eval_resolved(&ctx.model.resolved.bindings[*slot], ctx),
     }
 }
 
@@ -519,5 +536,7 @@ pub fn eval_resolved_deriv(expr: &ResolvedExpr, wrt: usize, ctx: &EvalCtx<'_>) -
         }
         ResolvedExpr::Reduce(terms) =>
             terms.iter().map(|t| eval_resolved_deriv(t, wrt, ctx)).sum(),
+        // Hoisted bindings are param-free (state-only): d/dp = 0.
+        ResolvedExpr::BindingRef(_) => 0.0,
     }
 }

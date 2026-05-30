@@ -285,6 +285,7 @@ let rec infer st ~ctx (e : expr) : dim =
   | UnOp u -> infer_unop st ~ctx u
   | Cond c -> infer_cond st ~ctx c
   | Reduce terms -> infer st ~ctx (reduce_add_chain terms)
+  | BindingRef _ -> fresh_var st   (* inc1a placeholder; inc1b: the binding's inferred dim *)
 
 and is_bare_const = function
   | Const _ -> true
@@ -441,6 +442,7 @@ let rec propagate st ~ctx (e : expr) (expected : dim_vec) : unit =
     propagate st ~ctx c.then_ expected;
     propagate st ~ctx c.else_ expected
   | Reduce terms -> propagate st ~ctx (reduce_add_chain terms) expected
+  | BindingRef _ -> ()   (* leaf; inc1b may propagate the expectation into the binding *)
 
 (* Flatten a multiplicative chain into (numerator_factors, denominator_factors).
    E.g. Div(Mul(Mul(a,b),c), d) → ([a;b;c], [d]) *)
@@ -578,6 +580,7 @@ let rec read_dim st (e : expr) : dim =
     let _de = read_dim st c.else_ in
     dt  (* branches already unified during inference *)
   | Reduce terms -> read_dim st (reduce_add_chain terms)
+  | BindingRef _ -> Unknown (-1)   (* inc1a placeholder sentinel *)
 
 and read_dim_binop st (b : bin_op_expr) : dim =
   let dl = read_dim st b.left in
@@ -678,6 +681,7 @@ let rec expr_to_short_string (e : expr) : string =
       (expr_to_short_string c.else_)
   | Reduce terms ->
     "(" ^ String.concat " + " (List.map expr_to_short_string terms) ^ ")"
+  | BindingRef n -> n
 
 (* ── Main check ─────────────────────────────────────────────────────────── *)
 

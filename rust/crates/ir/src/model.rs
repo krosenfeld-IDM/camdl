@@ -151,6 +151,11 @@ pub struct Model {
     pub interventions:      Vec<Intervention>,
     pub observations:       Vec<ObservationModel>,
     pub parameters:         Vec<Parameter>,
+    /// Fix B: shared per-coordinate bindings, topologically ordered. `default`
+    /// so pre-Fix-B IR (no field) deserializes to empty; `skip_serializing_if`
+    /// so an empty list adds no JSON noise (inc1a emits none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings:           Vec<Binding>,
     pub initial_conditions: InitialConditions,
     pub output:             OutputConfig,
     pub simulation:         SimulationConfig,
@@ -167,4 +172,14 @@ pub struct Model {
     /// statically inert. Cached here so the runtime does not recompute it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identity_tracked_compartments: Vec<String>,
+}
+
+/// A model-level shared binding (Fix B): a named value (e.g. N[l], I_agg[l],
+/// spatial force F[l]) referenced by `Expr::BindingRef`, defined once instead of
+/// inlined into every (patch,age) rate. Topologically ordered — a binding's body
+/// may reference earlier bindings via `BindingRef`. Evaluated on-demand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Binding {
+    pub name: String,
+    pub expr: Expr,
 }

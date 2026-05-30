@@ -235,6 +235,8 @@ fn check_expr(expr: &Expr, ctx: &RefCtx<'_>, allow_projected: bool, errors: &mut
                 check_expr(t, ctx, allow_projected, errors);
             }
         }
+        // Leaf: binding-name resolution happens at CompiledModel::new (binding_index).
+        Expr::BindingRef(_) => {}
     }
 }
 

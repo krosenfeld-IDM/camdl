@@ -36,6 +36,7 @@ fn model_with_periodic(period: f64, values: Vec<f64>) -> CompiledModel {
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![],
         initial_conditions: InitialConditions::Parameterized(HashMap::new()),
         output: OutputConfig {
@@ -150,6 +151,7 @@ fn model_with_kind(kind: TimeFuncKind) -> CompiledModel {
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![],
         initial_conditions: InitialConditions::Parameterized(HashMap::new()),
         output: OutputConfig {

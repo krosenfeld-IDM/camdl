@@ -73,6 +73,7 @@ fn periodic_xfer_model(at_day: f64, period: f64, end: f64, model_dt: Option<f64>
         tables: vec![],
         interventions: vec![intervention],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![],
         initial_conditions: InitialConditions::Parameterized(HashMap::new()),
         output: OutputConfig {

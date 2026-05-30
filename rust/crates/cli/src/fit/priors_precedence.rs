@@ -262,6 +262,7 @@ mod tests {
             tables: vec![],
             interventions: vec![],
             observations: vec![],
+            bindings: vec![],
             parameters,
             initial_conditions: ir::model::InitialConditions::Explicit(HashMap::new()),
             output: ir::model::OutputConfig {

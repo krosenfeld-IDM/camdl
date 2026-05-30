@@ -2347,6 +2347,7 @@ mod tests {
             ],
             ode_equations: vec![], time_functions: vec![], tables: vec![],
             interventions: vec![], observations: vec![],
+            bindings: vec![],
             parameters: vec![
                 Parameter { name: "beta".into(), value: Some(0.3), bounds: Some((0.01, 2.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
                 Parameter { name: "gamma".into(), value: Some(0.1), bounds: Some((0.01, 1.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
@@ -2518,6 +2519,7 @@ mod tests {
             transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], interventions: vec![],
             observations: vec![],
+            bindings: vec![],
             parameters: vec![Parameter {
                 name: "beta".into(), value: Some(0.0), bounds: Some((0.0, 10.0)),
                 prior: None, transform: None, initial_value: None,
@@ -2623,6 +2625,7 @@ mod tests {
             transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], interventions: vec![],
             observations: vec![],
+            bindings: vec![],
             parameters: vec![Parameter {
                 name: "R0".into(), value: Some(0.0), bounds: Some((1.0, 200.0)),
                 prior: None, transform: None, initial_value: None,
@@ -2772,6 +2775,7 @@ mod tests {
             description: None, origin: None, origin_rata_die: None,
             compartments: vec![], transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], interventions: vec![], observations: vec![],
+            bindings: vec![],
             parameters: vec![beta_with_ir_prior, gamma_no_prior],
             initial_conditions: ir::model::InitialConditions::Explicit(HashMap::new()),
             output: ir::model::OutputConfig {
@@ -3318,6 +3322,7 @@ dt = 1.0
             transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], interventions: vec![],
             observations: vec![],
+            bindings: vec![],
             parameters: vec![Parameter {
                 name: name.into(), value: Some((lo + hi) * 0.5),
                 bounds: Some((lo, hi)), prior: None, transform: None,

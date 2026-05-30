@@ -101,6 +101,7 @@ fn sir_model() -> (CompiledModel, Vec<f64>) {
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![
             Parameter { name: "beta".into(), value: Some(0.3), bounds: Some((0.01, 2.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
             Parameter { name: "gamma".into(), value: Some(0.1), bounds: Some((0.01, 1.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },

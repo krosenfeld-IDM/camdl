@@ -38,6 +38,7 @@ fn minimal_model(compartments: Vec<Compartment>, params: Vec<Parameter>) -> Mode
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: params,
         initial_conditions: InitialConditions::Parameterized(HashMap::new()),
         output: OutputConfig {
@@ -82,6 +83,7 @@ fn resolve_ctx_from(model: &CompiledModel) -> ResolveCtx<'_> {
         table_index: &model.table_index,
         global_to_int: &model.global_to_int,
         global_to_real: &model.global_to_real,
+        binding_index: &model.binding_index,
         table_meta,
     }
 }

@@ -56,6 +56,7 @@ fn pure_death_model() -> (Arc<CompiledModel>, Vec<f64>) {
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![
             Parameter { name: "mu".into(), value: Some(0.01), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
         ],

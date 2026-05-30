@@ -36,6 +36,7 @@ fn minimal_model_with_interventions(
         tables: vec![],
         interventions,
         observations: vec![],
+        bindings: vec![],
         parameters: params,
         initial_conditions: InitialConditions::Parameterized(HashMap::new()),
         output: OutputConfig {
@@ -166,6 +167,7 @@ fn chain_binomial_fires_scheduled_intervention_exactly_once() {
         time_functions: vec![],
         tables: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![],
         initial_conditions: InitialConditions::Explicit(init),
         output: OutputConfig {

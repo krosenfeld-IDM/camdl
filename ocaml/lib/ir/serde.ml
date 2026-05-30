@@ -110,6 +110,7 @@ let rec expr_to_json (e : expr) : Yojson.Safe.t =
   | Pop   p      -> obj [("pop",   str p)]
   | PopSum ps    -> obj [("pop_sum", arr (List.map str ps))]
   | Reduce terms -> obj [("reduce", arr (List.map expr_to_json terms))]
+  | BindingRef n -> obj [("binding_ref", str n)]
   | Time         -> obj [("time", null)]
   | Dt           -> obj [("dt", null)]
   | Projected    -> obj [("projected", null)]
@@ -167,6 +168,7 @@ let rec expr_of_json (j : Yojson.Safe.t) : expr =
     | ["pop"]          -> Pop   (as_string (List.assoc "pop" kvs))
     | ["pop_sum"]      -> PopSum (List.map as_string (as_list (List.assoc "pop_sum" kvs)))
     | ["reduce"]       -> Reduce (List.map expr_of_json (as_list (List.assoc "reduce" kvs)))
+    | ["binding_ref"]  -> BindingRef (as_string (List.assoc "binding_ref" kvs))
     | ["time"]         -> Time
     | ["dt"]           -> Dt
     | ["projected"]    -> Projected
@@ -981,6 +983,12 @@ let model_structure_of_json j = {
 
 (* ── Top-level model ─────────────────────────────────────────────────────── *)
 
+let binding_to_json (b : binding) : Yojson.Safe.t =
+  obj [("name", str b.bname); ("expr", expr_to_json b.bexpr)]
+
+let binding_of_json (j : Yojson.Safe.t) : binding =
+  { bname = as_string (member "name" j); bexpr = expr_of_json (member "expr" j) }
+
 let model_to_json (m : model) : Yojson.Safe.t =
   obj ([
     ("name",               str m.name);
@@ -1011,6 +1019,9 @@ let model_to_json (m : model) : Yojson.Safe.t =
     @ (match m.identity_tracked_compartments with
        | [] -> []
        | cs -> [("identity_tracked_compartments", arr (List.map str cs))])
+    @ (match m.bindings with
+       | [] -> []
+       | bs -> [("bindings", arr (List.map binding_to_json bs))])
   )
 
 let model_of_json (j : Yojson.Safe.t) : model =
@@ -1028,6 +1039,8 @@ let model_of_json (j : Yojson.Safe.t) : model =
     interventions      = List.map intervention_of_json     (as_list (member "interventions"  j));
     observations       = List.map observation_model_of_json (as_list (member "observations"  j));
     parameters         = List.map parameter_of_json        (as_list (member "parameters"     j));
+    bindings           = (match member_opt "bindings" j with
+                          | Some (`List v) -> List.map binding_of_json v | _ -> []);
     initial_conditions = initial_conditions_of_json (member "initial_conditions" j);
     output             = output_config_of_json     (member "output"     j);
     simulation         = simulation_config_of_json (member "simulation" j);

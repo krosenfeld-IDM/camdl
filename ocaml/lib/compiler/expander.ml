@@ -2633,6 +2633,7 @@ let classify_and_resolve_prior_spec ?(loc = Diagnostics.no_loc) ctx ~pname
       | Ir.TableLookup (_, args) -> List.iter check_refs args
       | Ir.UncheckedDim u -> check_refs u.inner
       | Ir.Reduce terms -> List.iter check_refs terms
+      | Ir.BindingRef _ -> ()
     in
     List.iter (fun (_, e) -> check_refs e) resolved_args;
     `Hierarchical {
@@ -3019,6 +3020,7 @@ let resolve_comp_name ctx env e =
       | Ir.Pop _      -> "a compartment" (* unreachable by pattern *)
       | Ir.UncheckedDim _ -> "a dimensional-escape expression"
       | Ir.Reduce _   -> "a sum (reduce)"
+      | Ir.BindingRef _ -> "a binding reference"
     in
     Diagnostics.error ctx.diags
       ~code:"E264"
@@ -4679,6 +4681,7 @@ let build_model_structure ctx expanded_trs =
     | Ir.UncheckedDim u -> collect_numerator_pops acc u.inner
     (* Every term of a sum is a numerator contribution (like Add). *)
     | Ir.Reduce terms -> List.fold_left collect_numerator_pops acc terms
+    | Ir.BindingRef _ -> acc
   in
   let seen_tr  = Hashtbl.create 4 in
   let seen_inf = Hashtbl.create 4 in
@@ -4729,6 +4732,7 @@ let rec expr_contains_param_or_pop = function
   | Ir.UncheckedDim u -> expr_contains_param_or_pop u.inner
   | Ir.TableLookup (_, args) -> List.exists expr_contains_param_or_pop args
   | Ir.Reduce terms -> List.exists expr_contains_param_or_pop terms
+  | Ir.BindingRef _ -> false
   | Ir.Const _ | Ir.Time | Ir.Dt | Ir.Projected | Ir.TimeFunc _ -> false
 
 (* Treat `UncheckedDim { inner = Const c; ... }` (the IR form of unit
@@ -4796,6 +4800,7 @@ let rec walk_expr_for_l401 ~on_match e =
   | Ir.TableLookup (_, args) ->
     List.iter (walk_expr_for_l401 ~on_match) args
   | Ir.Reduce terms -> List.iter (walk_expr_for_l401 ~on_match) terms
+  | Ir.BindingRef _ -> ()
   | Ir.Const _ | Ir.Param _ | Ir.Pop _ | Ir.PopSum _
   | Ir.Time | Ir.Dt | Ir.Projected | Ir.TimeFunc _ -> ()
 
@@ -4925,6 +4930,7 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     Ir.interventions      = expand_interventions ctx;
     Ir.observations       = expand_observations ctx;
     Ir.parameters         = expand_parameters ctx;
+    Ir.bindings           = [];   (* inc1a: expander does not hoist yet; inc1b emits hoisted bindings *)
     Ir.initial_conditions = expand_init ctx;
     Ir.output             = expand_output ctx;
     Ir.simulation         = expand_simulate ctx;

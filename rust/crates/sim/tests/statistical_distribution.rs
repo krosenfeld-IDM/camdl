@@ -199,6 +199,7 @@ fn test_overdispersion_variance_tau_leap() {
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![
             Parameter { name: "beta".into(), value: Some(0.01), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
             Parameter { name: "sigma_sq".into(), value: Some(0.5), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
@@ -297,6 +298,7 @@ fn test_fraction_transfer_edge_cases() {
             tables: vec![],
             interventions: vec![iv],
             observations: vec![],
+            bindings: vec![],
             parameters: vec![],
             initial_conditions: InitialConditions::Parameterized(HashMap::new()),
             output: OutputConfig {

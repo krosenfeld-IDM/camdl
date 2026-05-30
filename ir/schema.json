@@ -67,6 +67,19 @@
       "items": { "$ref": "#/definitions/parameter" }
     },
 
+    "bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "expr"],
+        "properties": {
+          "name": { "type": "string" },
+          "expr": { "$ref": "#/definitions/expr" }
+        },
+        "additionalProperties": false
+      }
+    },
+
     "initial_conditions": { "$ref": "#/definitions/initial_conditions" },
 
     "output": { "$ref": "#/definitions/output_config" },
@@ -210,6 +223,13 @@
           "required": ["reduce"],
           "properties": {
             "reduce": { "type": "array", "items": { "$ref": "#/definitions/expr" } }
+          },
+          "additionalProperties": false
+        },
+        {
+          "required": ["binding_ref"],
+          "properties": {
+            "binding_ref": { "type": "string" }
           },
           "additionalProperties": false
         }

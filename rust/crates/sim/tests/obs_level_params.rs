@@ -77,6 +77,7 @@ fn model_with_obs_param() -> (Arc<CompiledModel>, Vec<f64>) {
                 }),
             },
         ],
+        bindings: vec![],
         parameters: vec![
             Parameter { name: "mu".into(), value: Some(0.01), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
             Parameter { name: "k".into(), value: Some(10.0), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },

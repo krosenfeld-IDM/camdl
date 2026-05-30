@@ -31,6 +31,12 @@ and expr =
      Prod is deferred (the FOI needs only sum, and a half-built Prod is worse
      than none — documented deviation from the proposal's {op,terms} shape). *)
   | Reduce of expr list
+  (* Reference to a model-level binding by name (Fix B, shared per-coordinate
+     bindings). Resolved to a slot at CompiledModel::new (like Param/Pop) and
+     evaluated on-demand from the binding's body. Hoisted FOI aggregates
+     (N[l], I_agg[l], spatial force F[l]) are defined once in `model.bindings`
+     instead of being inlined into every (patch,age) rate. *)
+  | BindingRef of string
   | Projected                    (* refers to projection output in likelihoods *)
   (* Per-expression dimensional escape: asserts the wrapped subexpression
      has dimension `(dim_p, dim_t)` without the checker verifying. The
@@ -396,6 +402,16 @@ type balance_spec = {
 
 (* ── Top-level model ─────────────────────────────────────────────────────────── *)
 
+(* A model-level shared binding (Fix B): a named value (e.g. N[l], I_agg[l],
+   spatial force F[l]) referenced by Expr.BindingRef, defined once instead of
+   inlined into every (patch,age) rate. Topologically ordered — a binding's body
+   may reference earlier bindings. Evaluated on-demand in B-inc1; a later
+   increment may cache values per step. *)
+type binding = {
+  bname: string;
+  bexpr: expr;
+}
+
 type model = {
   name:               string;
   version:            string;
@@ -414,6 +430,7 @@ type model = {
   interventions:      intervention list;
   observations:       observation_model list;
   parameters:         parameter list;
+  bindings:           binding list;       (* Fix B: shared per-coordinate bindings, topo-ordered *)
   initial_conditions: initial_conditions;
   output:             output_config;
   simulation:         simulation_config;

@@ -28,6 +28,7 @@ let prec_expr : Ir.expr -> int = function
   | Ir.Time | Ir.Dt | Ir.TimeFunc _ | Ir.TableLookup _ | Ir.Projected -> 10
   | Ir.UncheckedDim _ -> 10   (* function-call-like, atomic *)
   | Ir.Reduce _ -> 10         (* rendered self-parenthesized, atomic *)
+  | Ir.BindingRef _ -> 10     (* a name, atomic *)
   | Ir.BinOp { op; _ } -> prec_binop op
   | Ir.UnOp  _         -> 9
   | Ir.Cond  _         -> 1
@@ -167,6 +168,8 @@ and pp_inner ~mode ~split ~ascii ppf = function
       pp ~mode ~split ~ascii ppf t
     ) terms;
     Fmt.pf ppf ")"
+  | Ir.BindingRef n ->
+    Term_style.param Fmt.string ppf n
 
 (** Render an IR expression to a plain (ASCII, IR-name) string. Used by
     diagnostics that need to quote a sub-expression in error text. *)

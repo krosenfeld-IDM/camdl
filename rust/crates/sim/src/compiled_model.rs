@@ -165,6 +165,10 @@ fn collect_int_comp_deps(
                 collect_int_comp_deps(t, comp_index, global_to_int, deps);
             }
         }
+        // inc1a: leaf. inc1b note: a BindingRef to a state-reading binding hides
+        // its compartment deps from Gillespie sparse updates; the all-backend
+        // trajectory gate (incl. Gillespie) is the check that this is sufficient.
+        Expr::BindingRef(_) => {}
         // Const, Param, Time, TimeFunc: no compartment dependencies
         _ => {}
     }
@@ -196,6 +200,10 @@ fn expr_is_time_dependent(expr: &Expr) -> bool {
         // A binding/sum that transitively reads a time function must count as
         // time-dependent, or Gillespie freezes it at t=0 (silent wrong dynamics).
         Expr::Reduce(w) => w.reduce.iter().any(expr_is_time_dependent),
+        // Conservative: mark a binding-bearing rate time-dependent so Gillespie
+        // re-evaluates it at boundaries (never freezes). Hoisted FOI bindings are
+        // actually time-independent, so this is safe (idempotent recompute).
+        Expr::BindingRef(_) => true,
         _ => false,
     }
 }
@@ -281,6 +289,8 @@ pub struct CompiledModel {
 
     /// parameter name → index in the params slice passed to simulate
     pub param_index: HashMap<String, usize>,
+    /// Fix B: model-level binding name → slot (index into `resolved.bindings`).
+    pub binding_index: HashMap<String, usize>,
 
     /// time_function name → index in model.time_functions
     pub time_func_index: HashMap<String, usize>,
@@ -381,6 +391,9 @@ pub struct ResolvedBalance {
 pub struct ResolvedModel {
     /// Per-transition resolved rate expression.
     pub rates: Vec<ResolvedExpr>,
+    /// Fix B: resolved shared-binding bodies, indexed by slot (matches
+    /// `CompiledModel.binding_index`). Evaluated on-demand by `BindingRef`.
+    pub bindings: Vec<ResolvedExpr>,
     /// Per-transition resolved overdispersion σ² (None for Poisson/Deterministic).
     pub overdispersion: Vec<Option<ResolvedExpr>>,
     /// Per-transition resolved rate gradients: Vec of (param_name, resolved_expr).
@@ -731,6 +744,10 @@ impl CompiledModel {
             .map(|(t, cached)| (t.out_of_bounds.clone(), cached.len()))
             .collect();
 
+        // Fix B: binding name -> slot (index into resolved.bindings).
+        let binding_index: HashMap<String, usize> = model.bindings.iter()
+            .enumerate().map(|(i, b)| (b.name.clone(), i)).collect();
+
         let resolve_ctx = ResolveCtx {
             comp_index: &comp_index,
             param_index: &param_index,
@@ -739,6 +756,7 @@ impl CompiledModel {
             global_to_int: &global_to_int,
             global_to_real: &global_to_real,
             table_meta: &table_meta,
+            binding_index: &binding_index,
         };
 
         // Resolve balance constraint
@@ -758,6 +776,11 @@ impl CompiledModel {
         // Resolve transition rates + overdispersion + rate_grad
         let rates: Vec<ResolvedExpr> = model.transitions.iter()
             .map(|tr| resolve_expr(&tr.rate, &resolve_ctx))
+            .collect::<Result<_, _>>()?;
+
+        // Fix B: resolve shared-binding bodies (slot order matches binding_index).
+        let resolved_bindings: Vec<ResolvedExpr> = model.bindings.iter()
+            .map(|b| resolve_expr(&b.expr, &resolve_ctx))
             .collect::<Result<_, _>>()?;
 
         let overdispersion: Vec<Option<ResolvedExpr>> = model.transitions.iter()
@@ -871,6 +894,7 @@ impl CompiledModel {
 
         let resolved = ResolvedModel {
             rates,
+            bindings: resolved_bindings,
             overdispersion,
             rate_grads,
             rate_grads_indexed,
@@ -883,6 +907,7 @@ impl CompiledModel {
             model: Arc::new(model),
             comp_index,
             param_index,
+            binding_index,
             time_func_index,
             table_index,
             int_comp_indices,

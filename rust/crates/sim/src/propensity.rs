@@ -225,6 +225,16 @@ pub fn eval_expr(expr: &Expr, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
             }
             Ok(acc)
         }
+        Expr::BindingRef(w) => {
+            // On-demand: find the binding by name, evaluate its body. Slow path
+            // (eval_resolved uses the resolved slot); never hit when no model
+            // emits bindings (inc1a).
+            let b = ctx.model.model.bindings.iter()
+                .find(|b| b.name == w.binding_ref)
+                .ok_or_else(|| SimError::Validation(
+                    format!("reference to unknown binding '{}'", w.binding_ref)))?;
+            eval_expr(&b.expr, ctx)
+        }
     }
 }
 
@@ -302,6 +312,8 @@ pub fn eval_expr_deriv(expr: &Expr, wrt: usize, ctx: &EvalCtx<'_>) -> f64 {
             // d/dp (Σ tᵢ) = Σ d/dp tᵢ (linear).
             w.reduce.iter().map(|t| eval_expr_deriv(t, wrt, ctx)).sum()
         }
+        // Hoisted bindings are param-free (state-only): d/dp = 0.
+        Expr::BindingRef(_) => 0.0,
     }
 }
 

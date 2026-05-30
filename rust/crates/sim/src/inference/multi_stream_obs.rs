@@ -149,6 +149,7 @@ impl StreamProjection {
                     global_to_int: &compiled.global_to_int,
                     global_to_real: &compiled.global_to_real,
                     table_meta: &table_meta,
+                    binding_index: &compiled.binding_index,
                 };
                 let resolved = resolve_expr(expr, &ctx).map_err(|e| format!(
                     "observation '{}': cannot resolve state-snapshot expression: {:?}",

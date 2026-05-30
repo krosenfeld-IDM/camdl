@@ -2058,6 +2058,7 @@ mod tests {
             description: None, origin: None, origin_rata_die: None,
             compartments: vec![], transitions: vec![], ode_equations: vec![],
             time_functions: vec![], tables: vec![], observations: vec![],
+            bindings: vec![],
             parameters: vec![],
             initial_conditions: ir::model::InitialConditions::Explicit(
                 std::collections::HashMap::new()),
@@ -2257,6 +2258,7 @@ mod tests {
             tables: Vec::new(),
             interventions: Vec::new(),
             observations: Vec::new(),
+            bindings: vec![],
             parameters: vec![ir::parameter::Parameter {
                 name: "x".into(),
                 value,

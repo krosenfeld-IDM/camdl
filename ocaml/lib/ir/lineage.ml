@@ -141,6 +141,9 @@ let classify_parents ~(sources : string list) (rate : expr) : classification =
       (* A sum is linear (like Add): a parent inside any term is a linear
          parent candidate, in the same denom/nonlinear context. *)
       List.iter (walk ~in_denom ~in_nonlinear ~enclosing) terms
+    | BindingRef _ -> ()
+      (* leaf; inc1b: a state-bearing BindingRef in a #[lineage] rate hides
+         parent pools — hoisting must be disabled for lineage transitions. *)
   in
   walk ~in_denom:false ~in_nonlinear:false ~enclosing:rate rate;
   { parents = List.rev !parents; nonlinear = !nonlinear }
@@ -203,6 +206,7 @@ let rec deriv_num_wrt_pop (comp : string) (e : expr) : expr =
   | Reduce terms ->
     (* d/dcount (Σ tᵢ) = Σ d/dcount tᵢ (linear, like Add). *)
     Reduce (List.map (deriv_num_wrt_pop comp) terms)
+  | BindingRef _ -> Const 0.0   (* inc1a placeholder; lineage+bindings deferred *)
   | BinOp _ | UnOp _ | Cond _ ->
     (* Nonlinear constructs cannot contain a linear parent in the
        numerator (classify_parents would have rejected the rate), so

@@ -116,6 +116,16 @@ pub struct ReduceWrap {
     pub reduce: Vec<Expr>,
 }
 
+/// `{"binding_ref": "<name>"}` — reference to a model-level `Binding` by name
+/// (Fix B). Resolved to a slot at `CompiledModel::new` (like `Param`/`Pop`) and
+/// evaluated on-demand from the binding's body. Hoisted FOI aggregates (N[l],
+/// I_agg[l], spatial force F[l]) are defined once in `Model.bindings` instead of
+/// being inlined into every (patch,age) rate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BindingRefWrap {
+    pub binding_ref: String,
+}
+
 /// `{"time": null}` — unit value serialises to JSON null.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimeExpr {
@@ -216,6 +226,7 @@ pub enum Expr {
     Projected(ProjectedExpr),
     UncheckedDim(UncheckedDimWrap),
     Reduce(ReduceWrap),
+    BindingRef(BindingRefWrap),
 }
 
 // ── Convenience constructors ──────────────────────────────────────────────────
@@ -251,6 +262,9 @@ impl Expr {
     }
     pub fn reduce(terms: Vec<Expr>) -> Self {
         Expr::Reduce(ReduceWrap { reduce: terms })
+    }
+    pub fn binding_ref(name: impl Into<String>) -> Self {
+        Expr::BindingRef(BindingRefWrap { binding_ref: name.into() })
     }
 }
 
@@ -332,11 +346,12 @@ impl<'de> Deserialize<'de> for Expr {
                         Expr::UncheckedDim(UncheckedDimWrap { unchecked_dim: map.next_value()? })
                     }
                     "reduce" => Expr::Reduce(ReduceWrap { reduce: map.next_value()? }),
+                    "binding_ref" => Expr::BindingRef(BindingRefWrap { binding_ref: map.next_value()? }),
                     other => {
                         return Err(de::Error::custom(format!(
                             "unknown expression node kind '{other}' (expected one of: const, \
                              param, pop, pop_sum, time, dt, bin_op, un_op, cond, time_func, \
-                             table_lookup, projected, unchecked_dim, reduce)"
+                             table_lookup, projected, unchecked_dim, reduce, binding_ref)"
                         )))
                     }
                 };
@@ -386,6 +401,7 @@ mod deserialize_tests {
             }),
             Expr::reduce(vec![Expr::const_(1.0), Expr::param("kappa"), Expr::pop("I_p1")]),
             Expr::reduce(vec![]), // empty sum (= 0)
+            Expr::binding_ref("N_kano_dala"),
         ] {
             roundtrip(&e);
         }

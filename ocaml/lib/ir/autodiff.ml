@@ -103,6 +103,7 @@ let rec differentiate (e : expr) (param : string) : expr =
         | TableLookup (_, args) -> List.exists (mentions p) args
         | UncheckedDim u -> mentions p u.inner
         | Reduce terms -> List.exists (mentions p) terms
+        | BindingRef _ -> false   (* hoisted bindings are param-free (state-only) *)
       in
       if mentions param b.left || mentions param b.right then
         failwith (Printf.sprintf
@@ -188,6 +189,11 @@ let rec differentiate (e : expr) (param : string) : expr =
 
   (* Sum is linear: d/dp (Σ tᵢ) = Σ d/dp tᵢ. *)
   | Reduce terms -> Reduce (List.map (fun t -> differentiate t param) terms)
+
+  (* Hoisted FOI bindings are param-free (state-only): d/dp BindingRef = 0.
+     A binding body that referenced an estimated param would not be hoisted
+     (Fix B-inc1b restriction); B2 would emit shared binding-gradients. *)
+  | BindingRef _ -> Const 0.0
 
 
 (** Algebraic simplification: constant folding and identity elimination.

@@ -62,6 +62,7 @@ fn compile_fourier(period: f64, harmonics: &[(f64, f64)]) -> CompiledTimeFuncKin
         tables: vec![],
         interventions: vec![],
         observations: vec![],
+        bindings: vec![],
         parameters: vec![],
         initial_conditions: ir::model::InitialConditions::Parameterized(HashMap::new()),
         output: ir::model::OutputConfig {

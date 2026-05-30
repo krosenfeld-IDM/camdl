@@ -1509,6 +1509,8 @@ pub fn run_pgas(
                 ir::expr::Expr::Reduce(w) => {
                     for t in &w.reduce { collect_param_refs(t, out); }
                 }
+                // Hoisted bindings are param-free; no params to collect.
+                ir::expr::Expr::BindingRef(_) => {}
             }
         }
         let mut obs_param_refs: HashSet<String> = HashSet::new();
