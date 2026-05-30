@@ -39,7 +39,7 @@
                 "right": { "pop": "I_v" }
               }
             },
-            "right": { "pop_sum": [ "S_h", "I_h" ] }
+            "right": { "binding_ref": "H" }
           }
         },
         "metadata": {
@@ -67,14 +67,14 @@
                       "right": { "pop": "I_v" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "binding_ref": "H" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "binding_ref": "H" },
+                  "right": { "binding_ref": "H" }
                 }
               }
             }
@@ -98,14 +98,14 @@
                       "right": { "pop": "I_v" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "binding_ref": "H" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "binding_ref": "H" },
+                  "right": { "binding_ref": "H" }
                 }
               }
             }
@@ -154,7 +154,7 @@
                 "right": { "pop": "I_h" }
               }
             },
-            "right": { "pop_sum": [ "S_h", "I_h" ] }
+            "right": { "binding_ref": "H" }
           }
         },
         "metadata": {
@@ -182,14 +182,14 @@
                       "right": { "pop": "I_h" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "binding_ref": "H" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "binding_ref": "H" },
+                  "right": { "binding_ref": "H" }
                 }
               }
             }
@@ -213,14 +213,14 @@
                       "right": { "pop": "I_h" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "binding_ref": "H" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "binding_ref": "H" },
+                  "right": { "binding_ref": "H" }
                 }
               }
             }
@@ -339,7 +339,7 @@
                       "bin_op": {
                         "op": "div",
                         "left": { "projected": null },
-                        "right": { "pop_sum": [ "S_h", "I_h" ] }
+                        "right": { "binding_ref": "H" }
                       }
                     }
                   }
@@ -362,7 +362,7 @@
                           "bin_op": {
                             "op": "div",
                             "left": { "projected": null },
-                            "right": { "pop_sum": [ "S_h", "I_h" ] }
+                            "right": { "binding_ref": "H" }
                           }
                         }
                       }
@@ -570,6 +570,7 @@
       "base_compartments": [ "S_h", "I_h", "S_v", "E_v", "I_v" ],
       "transmission_transitions": [ "bite", "infect_v" ],
       "infectious_compartments": [ "I_v", "I_h" ]
-    }
+    },
+    "bindings": [ { "name": "H", "expr": { "pop_sum": [ "S_h", "I_h" ] } } ]
   }
 }

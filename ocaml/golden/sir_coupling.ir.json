@@ -45,9 +45,7 @@
                         "right": { "pop": "I_young" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [ "S_young", "I_young", "R_young" ]
-                    }
+                    "right": { "binding_ref": "N_young" }
                   }
                 },
                 {
@@ -65,7 +63,7 @@
                         "right": { "pop": "I_old" }
                       }
                     },
-                    "right": { "pop_sum": [ "S_old", "I_old", "R_old" ] }
+                    "right": { "binding_ref": "N_old" }
                   }
                 }
               ]
@@ -102,9 +100,7 @@
                               "right": { "pop": "I_young" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "right": { "binding_ref": "N_young" }
                         }
                       },
                       {
@@ -122,9 +118,7 @@
                               "right": { "pop": "I_old" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     ]
@@ -176,11 +170,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_young", "I_young", "R_young"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_young" }
                                 }
                               },
                               "right": {
@@ -206,16 +196,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_young" },
+                              "right": { "binding_ref": "N_young" }
                             }
                           }
                         }
@@ -253,9 +235,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [ "S_old", "I_old", "R_old" ]
-                                  }
+                                  "right": { "binding_ref": "N_old" }
                                 }
                               },
                               "right": {
@@ -281,12 +261,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "left": { "binding_ref": "N_old" },
+                              "right": { "binding_ref": "N_old" }
                             }
                           }
                         }
@@ -342,11 +318,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_young" }
                             }
                           },
                           "right": {
@@ -372,12 +344,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "left": { "binding_ref": "N_young" },
+                          "right": { "binding_ref": "N_young" }
                         }
                       }
                     }
@@ -415,9 +383,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "right": { "binding_ref": "N_old" }
                             }
                           },
                           "right": {
@@ -443,12 +409,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "left": { "binding_ref": "N_old" },
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     }
@@ -502,11 +464,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_young" }
                             }
                           },
                           "right": {
@@ -532,12 +490,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "left": { "binding_ref": "N_young" },
+                          "right": { "binding_ref": "N_young" }
                         }
                       }
                     }
@@ -575,9 +529,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "right": { "binding_ref": "N_old" }
                             }
                           },
                           "right": {
@@ -603,12 +555,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "left": { "binding_ref": "N_old" },
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     }
@@ -662,11 +610,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_young" }
                             }
                           },
                           "right": {
@@ -692,12 +636,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "left": { "binding_ref": "N_young" },
+                          "right": { "binding_ref": "N_young" }
                         }
                       }
                     }
@@ -735,9 +675,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "right": { "binding_ref": "N_old" }
                             }
                           },
                           "right": {
@@ -763,12 +701,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "left": { "binding_ref": "N_old" },
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     }
@@ -809,9 +743,7 @@
                         "right": { "pop": "I_young" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [ "S_young", "I_young", "R_young" ]
-                    }
+                    "right": { "binding_ref": "N_young" }
                   }
                 },
                 {
@@ -829,7 +761,7 @@
                         "right": { "pop": "I_old" }
                       }
                     },
-                    "right": { "pop_sum": [ "S_old", "I_old", "R_old" ] }
+                    "right": { "binding_ref": "N_old" }
                   }
                 }
               ]
@@ -866,9 +798,7 @@
                               "right": { "pop": "I_young" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "right": { "binding_ref": "N_young" }
                         }
                       },
                       {
@@ -886,9 +816,7 @@
                               "right": { "pop": "I_old" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     ]
@@ -940,11 +868,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_young", "I_young", "R_young"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_young" }
                                 }
                               },
                               "right": {
@@ -970,16 +894,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_young" },
+                              "right": { "binding_ref": "N_young" }
                             }
                           }
                         }
@@ -1017,9 +933,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [ "S_old", "I_old", "R_old" ]
-                                  }
+                                  "right": { "binding_ref": "N_old" }
                                 }
                               },
                               "right": {
@@ -1045,12 +959,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "left": { "binding_ref": "N_old" },
+                              "right": { "binding_ref": "N_old" }
                             }
                           }
                         }
@@ -1106,11 +1016,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_young" }
                             }
                           },
                           "right": {
@@ -1136,12 +1042,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "left": { "binding_ref": "N_young" },
+                          "right": { "binding_ref": "N_young" }
                         }
                       }
                     }
@@ -1179,9 +1081,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "right": { "binding_ref": "N_old" }
                             }
                           },
                           "right": {
@@ -1207,12 +1107,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "left": { "binding_ref": "N_old" },
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     }
@@ -1266,11 +1162,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_young" }
                             }
                           },
                           "right": {
@@ -1296,12 +1188,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "left": { "binding_ref": "N_young" },
+                          "right": { "binding_ref": "N_young" }
                         }
                       }
                     }
@@ -1339,9 +1227,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "right": { "binding_ref": "N_old" }
                             }
                           },
                           "right": {
@@ -1367,12 +1253,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "left": { "binding_ref": "N_old" },
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     }
@@ -1426,11 +1308,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_young", "I_young", "R_young"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_young" }
                             }
                           },
                           "right": {
@@ -1456,12 +1334,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_young", "I_young", "R_young" ]
-                          }
+                          "left": { "binding_ref": "N_young" },
+                          "right": { "binding_ref": "N_young" }
                         }
                       }
                     }
@@ -1499,9 +1373,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [ "S_old", "I_old", "R_old" ]
-                              }
+                              "right": { "binding_ref": "N_old" }
                             }
                           },
                           "right": {
@@ -1527,12 +1399,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          },
-                          "right": {
-                            "pop_sum": [ "S_old", "I_old", "R_old" ]
-                          }
+                          "left": { "binding_ref": "N_old" },
+                          "right": { "binding_ref": "N_old" }
                         }
                       }
                     }
@@ -1690,6 +1558,16 @@
       "base_compartments": [ "S", "I", "R" ],
       "transmission_transitions": [],
       "infectious_compartments": []
-    }
+    },
+    "bindings": [
+      {
+        "name": "N_young",
+        "expr": { "pop_sum": [ "S_young", "I_young", "R_young" ] }
+      },
+      {
+        "name": "N_old",
+        "expr": { "pop_sum": [ "S_old", "I_old", "R_old" ] }
+      }
+    ]
   }
 }

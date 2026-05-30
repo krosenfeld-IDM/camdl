@@ -37,7 +37,7 @@
                 "right": { "pop": "I" }
               }
             },
-            "right": { "pop_sum": [ "S", "I", "R" ] }
+            "right": { "binding_ref": "N" }
           }
         },
         "metadata": {
@@ -65,14 +65,14 @@
                       "right": { "pop": "I" }
                     }
                   },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "right": { "binding_ref": "N" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S", "I", "R" ] },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "left": { "binding_ref": "N" },
+                  "right": { "binding_ref": "N" }
                 }
               }
             }
@@ -96,14 +96,14 @@
                       "right": { "pop": "I" }
                     }
                   },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "right": { "binding_ref": "N" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S", "I", "R" ] },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "left": { "binding_ref": "N" },
+                  "right": { "binding_ref": "N" }
                 }
               }
             }
@@ -275,6 +275,7 @@
       "base_compartments": [ "S", "I", "R" ],
       "transmission_transitions": [ "infection" ],
       "infectious_compartments": [ "I" ]
-    }
+    },
+    "bindings": [ { "name": "N", "expr": { "pop_sum": [ "S", "I", "R" ] } } ]
   }
 }

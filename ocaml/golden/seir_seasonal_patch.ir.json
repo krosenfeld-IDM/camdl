@@ -36,9 +36,7 @@
                 "right": { "pop": "I_urban" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_urban", "E_urban", "I_urban", "R_urban" ]
-            }
+            "right": { "binding_ref": "N_urban" }
           }
         },
         "metadata": {
@@ -66,9 +64,7 @@
                 "right": { "pop": "I_rural" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_rural", "E_rural", "I_rural", "R_rural" ]
-            }
+            "right": { "binding_ref": "N_rural" }
           }
         },
         "metadata": {
@@ -322,6 +318,16 @@
       "base_compartments": [ "S", "E", "I", "R" ],
       "transmission_transitions": [ "infection" ],
       "infectious_compartments": [ "I" ]
-    }
+    },
+    "bindings": [
+      {
+        "name": "N_urban",
+        "expr": { "pop_sum": [ "S_urban", "E_urban", "I_urban", "R_urban" ] }
+      },
+      {
+        "name": "N_rural",
+        "expr": { "pop_sum": [ "S_rural", "E_rural", "I_rural", "R_rural" ] }
+      }
+    ]
   }
 }

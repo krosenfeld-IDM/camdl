@@ -35,7 +35,7 @@
                     "right": { "pop_sum": [ "I_symp", "I_asym" ] }
                   }
                 },
-                "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                "right": { "binding_ref": "N" }
               }
             }
           }
@@ -63,14 +63,14 @@
                           "right": { "pop_sum": [ "I_symp", "I_asym" ] }
                         }
                       },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "right": { "binding_ref": "N" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S", "I_symp", "I_asym" ] },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "left": { "binding_ref": "N" },
+                      "right": { "binding_ref": "N" }
                     }
                   }
                 }
@@ -93,7 +93,7 @@
                   "right": { "pop_sum": [ "I_symp", "I_asym" ] }
                 }
               },
-              "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+              "right": { "binding_ref": "N" }
             }
           }
         }
@@ -127,7 +127,7 @@
                     "right": { "pop_sum": [ "I_symp", "I_asym" ] }
                   }
                 },
-                "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                "right": { "binding_ref": "N" }
               }
             }
           }
@@ -161,14 +161,14 @@
                           "right": { "pop_sum": [ "I_symp", "I_asym" ] }
                         }
                       },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "right": { "binding_ref": "N" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S", "I_symp", "I_asym" ] },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "left": { "binding_ref": "N" },
+                      "right": { "binding_ref": "N" }
                     }
                   }
                 }
@@ -195,7 +195,7 @@
                       "right": { "pop_sum": [ "I_symp", "I_asym" ] }
                     }
                   },
-                  "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                  "right": { "binding_ref": "N" }
                 }
               }
             }
@@ -295,6 +295,9 @@
       "base_compartments": [ "S", "I_symp", "I_asym" ],
       "transmission_transitions": [ "infection" ],
       "infectious_compartments": [ "I_symp", "I_asym" ]
-    }
+    },
+    "bindings": [
+      { "name": "N", "expr": { "pop_sum": [ "S", "I_symp", "I_asym" ] } }
+    ]
   }
 }

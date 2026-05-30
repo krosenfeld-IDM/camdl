@@ -124,6 +124,7 @@ fn collect_int_comp_deps(
     expr: &Expr,
     comp_index: &HashMap<String, usize>,
     global_to_int: &[Option<usize>],
+    bindings: &HashMap<&str, &Expr>,
     deps: &mut std::collections::HashSet<usize>,
 ) {
     match expr {
@@ -144,31 +145,38 @@ fn collect_int_comp_deps(
             }
         }
         Expr::BinOp(w) => {
-            collect_int_comp_deps(&w.bin_op.left, comp_index, global_to_int, deps);
-            collect_int_comp_deps(&w.bin_op.right, comp_index, global_to_int, deps);
+            collect_int_comp_deps(&w.bin_op.left, comp_index, global_to_int, bindings, deps);
+            collect_int_comp_deps(&w.bin_op.right, comp_index, global_to_int, bindings, deps);
         }
         Expr::UnOp(w) => {
-            collect_int_comp_deps(&w.un_op.arg, comp_index, global_to_int, deps);
+            collect_int_comp_deps(&w.un_op.arg, comp_index, global_to_int, bindings, deps);
         }
         Expr::Cond(w) => {
-            collect_int_comp_deps(&w.cond.pred, comp_index, global_to_int, deps);
-            collect_int_comp_deps(&w.cond.then, comp_index, global_to_int, deps);
-            collect_int_comp_deps(&w.cond.else_, comp_index, global_to_int, deps);
+            collect_int_comp_deps(&w.cond.pred, comp_index, global_to_int, bindings, deps);
+            collect_int_comp_deps(&w.cond.then, comp_index, global_to_int, bindings, deps);
+            collect_int_comp_deps(&w.cond.else_, comp_index, global_to_int, bindings, deps);
         }
         Expr::TableLookup(w) => {
             for idx_expr in &w.table_lookup.indices {
-                collect_int_comp_deps(idx_expr, comp_index, global_to_int, deps);
+                collect_int_comp_deps(idx_expr, comp_index, global_to_int, bindings, deps);
             }
         }
         Expr::Reduce(w) => {
             for t in &w.reduce {
-                collect_int_comp_deps(t, comp_index, global_to_int, deps);
+                collect_int_comp_deps(t, comp_index, global_to_int, bindings, deps);
             }
         }
-        // inc1a: leaf. inc1b note: a BindingRef to a state-reading binding hides
-        // its compartment deps from Gillespie sparse updates; the all-backend
-        // trajectory gate (incl. Gillespie) is the check that this is sufficient.
-        Expr::BindingRef(_) => {}
+        // Fix B: a BindingRef's compartment dependencies are exactly those of
+        // the binding body. Recurse into it so Gillespie's sparse propensity
+        // updates recompute this transition whenever any compartment the
+        // binding reads changes (else stale propensities → silent wrong
+        // dynamics). Bindings are topologically ordered (acyclic), so this
+        // terminates.
+        Expr::BindingRef(w) => {
+            if let Some(body) = bindings.get(w.binding_ref.as_str()) {
+                collect_int_comp_deps(body, comp_index, global_to_int, bindings, deps);
+            }
+        }
         // Const, Param, Time, TimeFunc: no compartment dependencies
         _ => {}
     }
@@ -184,26 +192,33 @@ fn collect_int_comp_deps(
 /// rate that depends on bare `t` is frozen at its `t=0` value under Gillespie,
 /// silently producing wrong dynamics (the chain-binomial / tau-leap backends
 /// re-evaluate every substep regardless, so they are unaffected).
-fn expr_is_time_dependent(expr: &Expr) -> bool {
+fn expr_is_time_dependent(expr: &Expr, bindings: &HashMap<&str, &Expr>) -> bool {
     match expr {
         Expr::Time(_) | Expr::TimeFunc(_) => true,
         Expr::BinOp(w) => {
-            expr_is_time_dependent(&w.bin_op.left) || expr_is_time_dependent(&w.bin_op.right)
+            expr_is_time_dependent(&w.bin_op.left, bindings)
+                || expr_is_time_dependent(&w.bin_op.right, bindings)
         }
-        Expr::UnOp(w) => expr_is_time_dependent(&w.un_op.arg),
+        Expr::UnOp(w) => expr_is_time_dependent(&w.un_op.arg, bindings),
         Expr::Cond(w) => {
-            expr_is_time_dependent(&w.cond.pred)
-                || expr_is_time_dependent(&w.cond.then)
-                || expr_is_time_dependent(&w.cond.else_)
+            expr_is_time_dependent(&w.cond.pred, bindings)
+                || expr_is_time_dependent(&w.cond.then, bindings)
+                || expr_is_time_dependent(&w.cond.else_, bindings)
         }
-        Expr::TableLookup(w) => w.table_lookup.indices.iter().any(expr_is_time_dependent),
+        Expr::TableLookup(w) => w.table_lookup.indices.iter()
+            .any(|e| expr_is_time_dependent(e, bindings)),
         // A binding/sum that transitively reads a time function must count as
         // time-dependent, or Gillespie freezes it at t=0 (silent wrong dynamics).
-        Expr::Reduce(w) => w.reduce.iter().any(expr_is_time_dependent),
-        // Conservative: mark a binding-bearing rate time-dependent so Gillespie
-        // re-evaluates it at boundaries (never freezes). Hoisted FOI bindings are
-        // actually time-independent, so this is safe (idempotent recompute).
-        Expr::BindingRef(_) => true,
+        Expr::Reduce(w) => w.reduce.iter().any(|e| expr_is_time_dependent(e, bindings)),
+        // Fix B: a BindingRef is time-dependent iff its body is. State-only FOI
+        // aggregates (N, I_lga) are NOT time-dependent, so a rate that uses them
+        // keeps the exact pre-extraction classification — Gillespie stays
+        // byte-identical. A binding that transitively reads a forcing correctly
+        // propagates time-dependence. Bindings are acyclic → this terminates.
+        Expr::BindingRef(w) => match bindings.get(w.binding_ref.as_str()) {
+            Some(body) => expr_is_time_dependent(body, bindings),
+            None => false,
+        },
         _ => false,
     }
 }
@@ -537,13 +552,17 @@ impl CompiledModel {
         let n_int_comps = int_local_to_global.len();
         let mut comp_to_transitions: Vec<Vec<usize>> = vec![vec![]; n_int_comps];
         let mut time_dep_transitions: Vec<usize> = Vec::new();
+        // Fix B: binding name → body, so collect_int_comp_deps can see through
+        // a BindingRef to the compartments the binding reads.
+        let binding_bodies: HashMap<&str, &Expr> = model.bindings.iter()
+            .map(|b| (b.name.as_str(), &b.expr)).collect();
         for (tr_idx, tr) in model.transitions.iter().enumerate() {
             let mut deps = std::collections::HashSet::new();
-            collect_int_comp_deps(&tr.rate, &comp_index, &global_to_int, &mut deps);
+            collect_int_comp_deps(&tr.rate, &comp_index, &global_to_int, &binding_bodies, &mut deps);
             for local_idx in deps {
                 comp_to_transitions[local_idx].push(tr_idx);
             }
-            if expr_is_time_dependent(&tr.rate) {
+            if expr_is_time_dependent(&tr.rate, &binding_bodies) {
                 time_dep_transitions.push(tr_idx);
             }
         }
@@ -1017,6 +1036,7 @@ impl CompiledModel {
 mod tests {
     use super::expr_is_time_dependent;
     use ir::expr::{BinOp, Expr, UnOp};
+    use std::collections::HashMap;
 
     /// Regression: a bare `Time` reference must classify as time-dependent.
     /// Before the fix, only `TimeFunc` (named forcings) matched, so a rate like
@@ -1024,8 +1044,9 @@ mod tests {
     /// `time_dep_transitions` and Gillespie froze its propensity at `t=0`.
     #[test]
     fn bare_time_is_time_dependent() {
+        let nb: HashMap<&str, &Expr> = HashMap::new();
         // t
-        assert!(expr_is_time_dependent(&Expr::time()));
+        assert!(expr_is_time_dependent(&Expr::time(), &nb));
         // -(t - tau) / w  — the logistic-pulse exponent: Time nested under
         // BinOp/UnOp must still be detected.
         let exponent = Expr::bin_op(
@@ -1033,27 +1054,28 @@ mod tests {
             Expr::un_op(UnOp::Neg, Expr::bin_op(BinOp::Sub, Expr::time(), Expr::param("tau"))),
             Expr::param("w"),
         );
-        assert!(expr_is_time_dependent(&exponent));
+        assert!(expr_is_time_dependent(&exponent, &nb));
         // lambda / (1 + exp(exponent))
         let pulse = Expr::bin_op(
             BinOp::Div,
             Expr::param("lambda"),
             Expr::bin_op(BinOp::Add, Expr::const_(1.0), Expr::un_op(UnOp::Exp, exponent)),
         );
-        assert!(expr_is_time_dependent(&pulse));
+        assert!(expr_is_time_dependent(&pulse, &nb));
     }
 
     /// A rate with no time reference (only params/consts) is not time-dependent.
     #[test]
     fn time_free_rate_is_not_time_dependent() {
+        let nb: HashMap<&str, &Expr> = HashMap::new();
         // beta * S * I / N  has no time term (Pop/Param/Const only)
         let rate = Expr::bin_op(
             BinOp::Mul,
             Expr::param("beta"),
             Expr::bin_op(BinOp::Mul, Expr::pop("S"), Expr::pop("I")),
         );
-        assert!(!expr_is_time_dependent(&rate));
+        assert!(!expr_is_time_dependent(&rate, &nb));
         // `dt` is the step size, a constant — not time-varying.
-        assert!(!expr_is_time_dependent(&Expr::dt()));
+        assert!(!expr_is_time_dependent(&Expr::dt(), &nb));
     }
 }

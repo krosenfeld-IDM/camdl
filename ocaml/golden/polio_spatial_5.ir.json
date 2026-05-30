@@ -59,11 +59,7 @@
                 "right": { "pop": "I_north" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_north", "E_north", "I_north", "R_north", "V_north"
-              ]
-            }
+            "right": { "binding_ref": "N_north" }
           }
         },
         "metadata": {
@@ -91,26 +87,14 @@
                       "right": { "pop": "I_north" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_north" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
                 }
               }
             }
@@ -134,26 +118,14 @@
                       "right": { "pop": "I_north" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_north" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
                 }
               }
             }
@@ -185,11 +157,7 @@
                 "right": { "pop": "I_south" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_south", "E_south", "I_south", "R_south", "V_south"
-              ]
-            }
+            "right": { "binding_ref": "N_south" }
           }
         },
         "metadata": {
@@ -217,26 +185,14 @@
                       "right": { "pop": "I_south" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_south" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
                 }
               }
             }
@@ -260,26 +216,14 @@
                       "right": { "pop": "I_south" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_south" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
                 }
               }
             }
@@ -311,9 +255,7 @@
                 "right": { "pop": "I_east" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_east", "E_east", "I_east", "R_east", "V_east" ]
-            }
+            "right": { "binding_ref": "N_east" }
           }
         },
         "metadata": {
@@ -341,26 +283,14 @@
                       "right": { "pop": "I_east" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_east" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_east" },
+                  "right": { "binding_ref": "N_east" }
                 }
               }
             }
@@ -384,26 +314,14 @@
                       "right": { "pop": "I_east" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_east" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_east" },
+                  "right": { "binding_ref": "N_east" }
                 }
               }
             }
@@ -435,9 +353,7 @@
                 "right": { "pop": "I_west" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_west", "E_west", "I_west", "R_west", "V_west" ]
-            }
+            "right": { "binding_ref": "N_west" }
           }
         },
         "metadata": {
@@ -465,26 +381,14 @@
                       "right": { "pop": "I_west" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_west" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_west" },
+                  "right": { "binding_ref": "N_west" }
                 }
               }
             }
@@ -508,26 +412,14 @@
                       "right": { "pop": "I_west" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_west" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_west" },
+                  "right": { "binding_ref": "N_west" }
                 }
               }
             }
@@ -559,11 +451,7 @@
                 "right": { "pop": "I_center" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_center", "E_center", "I_center", "R_center", "V_center"
-              ]
-            }
+            "right": { "binding_ref": "N_center" }
           }
         },
         "metadata": {
@@ -591,29 +479,14 @@
                       "right": { "pop": "I_center" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_center" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_center" },
+                  "right": { "binding_ref": "N_center" }
                 }
               }
             }
@@ -637,29 +510,14 @@
                       "right": { "pop": "I_center" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_center" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_center" },
+                  "right": { "binding_ref": "N_center" }
                 }
               }
             }
@@ -696,11 +554,7 @@
                 "right": { "pop": "I_south" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_south", "E_south", "I_south", "R_south", "V_south"
-              ]
-            }
+            "right": { "binding_ref": "N_south" }
           }
         },
         "metadata": {
@@ -733,26 +587,14 @@
                       "right": { "pop": "I_south" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_south" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
                 }
               }
             }
@@ -789,9 +631,7 @@
                 "right": { "pop": "I_east" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_east", "E_east", "I_east", "R_east", "V_east" ]
-            }
+            "right": { "binding_ref": "N_east" }
           }
         },
         "metadata": {
@@ -824,26 +664,14 @@
                       "right": { "pop": "I_east" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_east" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_east" },
+                  "right": { "binding_ref": "N_east" }
                 }
               }
             }
@@ -880,9 +708,7 @@
                 "right": { "pop": "I_west" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_west", "E_west", "I_west", "R_west", "V_west" ]
-            }
+            "right": { "binding_ref": "N_west" }
           }
         },
         "metadata": {
@@ -915,26 +741,14 @@
                       "right": { "pop": "I_west" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_west" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_west" },
+                  "right": { "binding_ref": "N_west" }
                 }
               }
             }
@@ -971,11 +785,7 @@
                 "right": { "pop": "I_center" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_center", "E_center", "I_center", "R_center", "V_center"
-              ]
-            }
+            "right": { "binding_ref": "N_center" }
           }
         },
         "metadata": {
@@ -1008,29 +818,14 @@
                       "right": { "pop": "I_center" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_center" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_center" },
+                  "right": { "binding_ref": "N_center" }
                 }
               }
             }
@@ -1067,11 +862,7 @@
                 "right": { "pop": "I_north" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_north", "E_north", "I_north", "R_north", "V_north"
-              ]
-            }
+            "right": { "binding_ref": "N_north" }
           }
         },
         "metadata": {
@@ -1104,26 +895,14 @@
                       "right": { "pop": "I_north" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_north" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
                 }
               }
             }
@@ -1160,9 +939,7 @@
                 "right": { "pop": "I_east" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_east", "E_east", "I_east", "R_east", "V_east" ]
-            }
+            "right": { "binding_ref": "N_east" }
           }
         },
         "metadata": {
@@ -1195,26 +972,14 @@
                       "right": { "pop": "I_east" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_east" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_east" },
+                  "right": { "binding_ref": "N_east" }
                 }
               }
             }
@@ -1251,9 +1016,7 @@
                 "right": { "pop": "I_west" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_west", "E_west", "I_west", "R_west", "V_west" ]
-            }
+            "right": { "binding_ref": "N_west" }
           }
         },
         "metadata": {
@@ -1286,26 +1049,14 @@
                       "right": { "pop": "I_west" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_west" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_west" },
+                  "right": { "binding_ref": "N_west" }
                 }
               }
             }
@@ -1342,11 +1093,7 @@
                 "right": { "pop": "I_center" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_center", "E_center", "I_center", "R_center", "V_center"
-              ]
-            }
+            "right": { "binding_ref": "N_center" }
           }
         },
         "metadata": {
@@ -1379,29 +1126,14 @@
                       "right": { "pop": "I_center" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_center" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_center" },
+                  "right": { "binding_ref": "N_center" }
                 }
               }
             }
@@ -1438,11 +1170,7 @@
                 "right": { "pop": "I_north" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_north", "E_north", "I_north", "R_north", "V_north"
-              ]
-            }
+            "right": { "binding_ref": "N_north" }
           }
         },
         "metadata": {
@@ -1475,26 +1203,14 @@
                       "right": { "pop": "I_north" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_north" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
                 }
               }
             }
@@ -1531,11 +1247,7 @@
                 "right": { "pop": "I_south" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_south", "E_south", "I_south", "R_south", "V_south"
-              ]
-            }
+            "right": { "binding_ref": "N_south" }
           }
         },
         "metadata": {
@@ -1568,26 +1280,14 @@
                       "right": { "pop": "I_south" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_south" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
                 }
               }
             }
@@ -1624,9 +1324,7 @@
                 "right": { "pop": "I_west" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_west", "E_west", "I_west", "R_west", "V_west" ]
-            }
+            "right": { "binding_ref": "N_west" }
           }
         },
         "metadata": {
@@ -1659,26 +1357,14 @@
                       "right": { "pop": "I_west" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_west" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_west" },
+                  "right": { "binding_ref": "N_west" }
                 }
               }
             }
@@ -1715,11 +1401,7 @@
                 "right": { "pop": "I_center" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_center", "E_center", "I_center", "R_center", "V_center"
-              ]
-            }
+            "right": { "binding_ref": "N_center" }
           }
         },
         "metadata": {
@@ -1752,29 +1434,14 @@
                       "right": { "pop": "I_center" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_center" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_center" },
+                  "right": { "binding_ref": "N_center" }
                 }
               }
             }
@@ -1811,11 +1478,7 @@
                 "right": { "pop": "I_north" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_north", "E_north", "I_north", "R_north", "V_north"
-              ]
-            }
+            "right": { "binding_ref": "N_north" }
           }
         },
         "metadata": {
@@ -1848,26 +1511,14 @@
                       "right": { "pop": "I_north" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_north" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
                 }
               }
             }
@@ -1904,11 +1555,7 @@
                 "right": { "pop": "I_south" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_south", "E_south", "I_south", "R_south", "V_south"
-              ]
-            }
+            "right": { "binding_ref": "N_south" }
           }
         },
         "metadata": {
@@ -1941,26 +1588,14 @@
                       "right": { "pop": "I_south" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_south" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
                 }
               }
             }
@@ -1997,9 +1632,7 @@
                 "right": { "pop": "I_east" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_east", "E_east", "I_east", "R_east", "V_east" ]
-            }
+            "right": { "binding_ref": "N_east" }
           }
         },
         "metadata": {
@@ -2032,26 +1665,14 @@
                       "right": { "pop": "I_east" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_east" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_east" },
+                  "right": { "binding_ref": "N_east" }
                 }
               }
             }
@@ -2088,11 +1709,7 @@
                 "right": { "pop": "I_center" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_center", "E_center", "I_center", "R_center", "V_center"
-              ]
-            }
+            "right": { "binding_ref": "N_center" }
           }
         },
         "metadata": {
@@ -2125,29 +1742,14 @@
                       "right": { "pop": "I_center" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_center" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_center", "E_center", "I_center", "R_center",
-                      "V_center"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_center" },
+                  "right": { "binding_ref": "N_center" }
                 }
               }
             }
@@ -2184,11 +1786,7 @@
                 "right": { "pop": "I_north" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_north", "E_north", "I_north", "R_north", "V_north"
-              ]
-            }
+            "right": { "binding_ref": "N_north" }
           }
         },
         "metadata": {
@@ -2221,26 +1819,14 @@
                       "right": { "pop": "I_north" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_north" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_north", "E_north", "I_north", "R_north", "V_north"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
                 }
               }
             }
@@ -2277,11 +1863,7 @@
                 "right": { "pop": "I_south" }
               }
             },
-            "right": {
-              "pop_sum": [
-                "S_south", "E_south", "I_south", "R_south", "V_south"
-              ]
-            }
+            "right": { "binding_ref": "N_south" }
           }
         },
         "metadata": {
@@ -2314,26 +1896,14 @@
                       "right": { "pop": "I_south" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_south" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_south", "E_south", "I_south", "R_south", "V_south"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
                 }
               }
             }
@@ -2370,9 +1940,7 @@
                 "right": { "pop": "I_east" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_east", "E_east", "I_east", "R_east", "V_east" ]
-            }
+            "right": { "binding_ref": "N_east" }
           }
         },
         "metadata": {
@@ -2405,26 +1973,14 @@
                       "right": { "pop": "I_east" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_east" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_east", "E_east", "I_east", "R_east", "V_east"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_east" },
+                  "right": { "binding_ref": "N_east" }
                 }
               }
             }
@@ -2461,9 +2017,7 @@
                 "right": { "pop": "I_west" }
               }
             },
-            "right": {
-              "pop_sum": [ "S_west", "E_west", "I_west", "R_west", "V_west" ]
-            }
+            "right": { "binding_ref": "N_west" }
           }
         },
         "metadata": {
@@ -2496,26 +2050,14 @@
                       "right": { "pop": "I_west" }
                     }
                   },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "right": { "binding_ref": "N_west" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  },
-                  "right": {
-                    "pop_sum": [
-                      "S_west", "E_west", "I_west", "R_west", "V_west"
-                    ]
-                  }
+                  "left": { "binding_ref": "N_west" },
+                  "right": { "binding_ref": "N_west" }
                 }
               }
             }
@@ -3142,6 +2684,44 @@
       "base_compartments": [ "S", "E", "I", "R", "V" ],
       "transmission_transitions": [ "infection", "importation" ],
       "infectious_compartments": [ "I" ]
-    }
+    },
+    "bindings": [
+      {
+        "name": "N_north",
+        "expr": {
+          "pop_sum": [
+            "S_north", "E_north", "I_north", "R_north", "V_north"
+          ]
+        }
+      },
+      {
+        "name": "N_south",
+        "expr": {
+          "pop_sum": [
+            "S_south", "E_south", "I_south", "R_south", "V_south"
+          ]
+        }
+      },
+      {
+        "name": "N_east",
+        "expr": {
+          "pop_sum": [ "S_east", "E_east", "I_east", "R_east", "V_east" ]
+        }
+      },
+      {
+        "name": "N_west",
+        "expr": {
+          "pop_sum": [ "S_west", "E_west", "I_west", "R_west", "V_west" ]
+        }
+      },
+      {
+        "name": "N_center",
+        "expr": {
+          "pop_sum": [
+            "S_center", "E_center", "I_center", "R_center", "V_center"
+          ]
+        }
+      }
+    ]
   }
 }

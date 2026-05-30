@@ -140,7 +140,7 @@
                     }
                   }
                 },
-                "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                "right": { "binding_ref": "N_H" }
               }
             },
             "right": { "pop": "S_H" }
@@ -162,14 +162,14 @@
                     "bin_op": {
                       "op": "mul",
                       "left": { "pop_sum": [ "I_B", "I_R" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "right": { "binding_ref": "N_H" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "left": { "binding_ref": "N_H" },
+                      "right": { "binding_ref": "N_H" }
                     }
                   }
                 }
@@ -187,14 +187,14 @@
                     "bin_op": {
                       "op": "mul",
                       "left": { "pop_sum": [ "I_A", "I_r" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "right": { "binding_ref": "N_H" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "left": { "binding_ref": "N_H" },
+                      "right": { "binding_ref": "N_H" }
                     }
                   }
                 }
@@ -410,7 +410,7 @@
                     "right": { "pop": "I_H" }
                   }
                 },
-                "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                "right": { "binding_ref": "N_H" }
               }
             },
             "right": { "pop": "S_B" }
@@ -432,14 +432,14 @@
                     "bin_op": {
                       "op": "mul",
                       "left": { "pop": "I_H" },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "right": { "binding_ref": "N_H" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "left": { "binding_ref": "N_H" },
+                      "right": { "binding_ref": "N_H" }
                     }
                   }
                 }
@@ -550,7 +550,7 @@
                     "right": { "pop": "I_H" }
                   }
                 },
-                "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                "right": { "binding_ref": "N_H" }
               }
             },
             "right": { "pop": "S_R" }
@@ -572,14 +572,14 @@
                     "bin_op": {
                       "op": "mul",
                       "left": { "pop": "I_H" },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "right": { "binding_ref": "N_H" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "left": { "binding_ref": "N_H" },
+                      "right": { "binding_ref": "N_H" }
                     }
                   }
                 }
@@ -812,7 +812,7 @@
                     "right": { "pop": "I_H" }
                   }
                 },
-                "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                "right": { "binding_ref": "N_H" }
               }
             },
             "right": { "pop": "S_A" }
@@ -834,14 +834,14 @@
                     "bin_op": {
                       "op": "mul",
                       "left": { "pop": "I_H" },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "right": { "binding_ref": "N_H" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "left": { "binding_ref": "N_H" },
+                      "right": { "binding_ref": "N_H" }
                     }
                   }
                 }
@@ -952,7 +952,7 @@
                     "right": { "pop": "I_H" }
                   }
                 },
-                "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                "right": { "binding_ref": "N_H" }
               }
             },
             "right": { "pop": "S_r" }
@@ -974,14 +974,14 @@
                     "bin_op": {
                       "op": "mul",
                       "left": { "pop": "I_H" },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "right": { "binding_ref": "N_H" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] },
-                      "right": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+                      "left": { "binding_ref": "N_H" },
+                      "right": { "binding_ref": "N_H" }
                     }
                   }
                 }
@@ -1511,6 +1511,12 @@
         "infection_r"
       ],
       "infectious_compartments": [ "I_A", "I_r", "I_B", "I_R", "I_H" ]
-    }
+    },
+    "bindings": [
+      {
+        "name": "N_H",
+        "expr": { "pop_sum": [ "S_H", "E_H", "I_H", "R_H" ] }
+      }
+    ]
   }
 }

@@ -49,7 +49,7 @@
                 "right": { "pop": "I_p0" }
               }
             },
-            "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+            "right": { "binding_ref": "N_p0" }
           }
         },
         "metadata": {
@@ -77,14 +77,14 @@
                       "right": { "pop": "I_p0" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+                  "right": { "binding_ref": "N_p0" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] },
-                  "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+                  "left": { "binding_ref": "N_p0" },
+                  "right": { "binding_ref": "N_p0" }
                 }
               }
             }
@@ -108,14 +108,14 @@
                       "right": { "pop": "I_p0" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+                  "right": { "binding_ref": "N_p0" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] },
-                  "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+                  "left": { "binding_ref": "N_p0" },
+                  "right": { "binding_ref": "N_p0" }
                 }
               }
             }
@@ -147,7 +147,7 @@
                 "right": { "pop": "I_p1" }
               }
             },
-            "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+            "right": { "binding_ref": "N_p1" }
           }
         },
         "metadata": {
@@ -175,14 +175,14 @@
                       "right": { "pop": "I_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+                  "right": { "binding_ref": "N_p1" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+                  "left": { "binding_ref": "N_p1" },
+                  "right": { "binding_ref": "N_p1" }
                 }
               }
             }
@@ -206,14 +206,14 @@
                       "right": { "pop": "I_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+                  "right": { "binding_ref": "N_p1" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+                  "left": { "binding_ref": "N_p1" },
+                  "right": { "binding_ref": "N_p1" }
                 }
               }
             }
@@ -245,7 +245,7 @@
                 "right": { "pop": "I_p2" }
               }
             },
-            "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+            "right": { "binding_ref": "N_p2" }
           }
         },
         "metadata": {
@@ -273,14 +273,14 @@
                       "right": { "pop": "I_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                  "right": { "binding_ref": "N_p2" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                  "left": { "binding_ref": "N_p2" },
+                  "right": { "binding_ref": "N_p2" }
                 }
               }
             }
@@ -304,14 +304,14 @@
                       "right": { "pop": "I_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                  "right": { "binding_ref": "N_p2" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                  "left": { "binding_ref": "N_p2" },
+                  "right": { "binding_ref": "N_p2" }
                 }
               }
             }
@@ -343,7 +343,7 @@
                 "right": { "pop": "I_p3" }
               }
             },
-            "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+            "right": { "binding_ref": "N_p3" }
           }
         },
         "metadata": {
@@ -371,14 +371,14 @@
                       "right": { "pop": "I_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                  "right": { "binding_ref": "N_p3" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                  "left": { "binding_ref": "N_p3" },
+                  "right": { "binding_ref": "N_p3" }
                 }
               }
             }
@@ -402,14 +402,14 @@
                       "right": { "pop": "I_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                  "right": { "binding_ref": "N_p3" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                  "left": { "binding_ref": "N_p3" },
+                  "right": { "binding_ref": "N_p3" }
                 }
               }
             }
@@ -441,7 +441,7 @@
                 "right": { "pop": "I_p4" }
               }
             },
-            "right": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] }
+            "right": { "binding_ref": "N_p4" }
           }
         },
         "metadata": {
@@ -469,14 +469,14 @@
                       "right": { "pop": "I_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] }
+                  "right": { "binding_ref": "N_p4" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] }
+                  "left": { "binding_ref": "N_p4" },
+                  "right": { "binding_ref": "N_p4" }
                 }
               }
             }
@@ -500,14 +500,14 @@
                       "right": { "pop": "I_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] }
+                  "right": { "binding_ref": "N_p4" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] }
+                  "left": { "binding_ref": "N_p4" },
+                  "right": { "binding_ref": "N_p4" }
                 }
               }
             }
@@ -803,6 +803,13 @@
       "base_compartments": [ "S", "I", "R" ],
       "transmission_transitions": [ "infection" ],
       "infectious_compartments": [ "I" ]
-    }
+    },
+    "bindings": [
+      { "name": "N_p0", "expr": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] } },
+      { "name": "N_p1", "expr": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] } },
+      { "name": "N_p2", "expr": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] } },
+      { "name": "N_p3", "expr": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] } },
+      { "name": "N_p4", "expr": { "pop_sum": [ "S_p4", "I_p4", "R_p4" ] } }
+    ]
   }
 }

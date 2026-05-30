@@ -104,6 +104,11 @@ type state = {
   tf_dims : (string, dim) Hashtbl.t;
   (* Cache of per-transition rate dims after inference rounds *)
   rate_cache : (string, dim) Hashtbl.t;
+  (* Fix B: dim of each model-level shared binding (name → dim), precomputed
+     in topological order before the transition rounds so a `BindingRef` infers
+     the binding body's dim instead of an unconstrained fresh var — which would
+     hide dimension conflicts (e.g. E303) that the inlined form caught. *)
+  binding_dims : (string, dim) Hashtbl.t;
   (* Permissive-dim mode: observation-likelihood expressions use
      variance formulas (e.g. He et al. 2010 eq 6) that mix `1 +
      overdispersion * count` within a single sqrt, so strictly
@@ -123,6 +128,7 @@ let create_state () = {
   table_dims = Hashtbl.create 16;
   tf_dims = Hashtbl.create 16;
   rate_cache = Hashtbl.create 16;
+  binding_dims = Hashtbl.create 16;
   permissive_dim = false;
 }
 
@@ -285,7 +291,11 @@ let rec infer st ~ctx (e : expr) : dim =
   | UnOp u -> infer_unop st ~ctx u
   | Cond c -> infer_cond st ~ctx c
   | Reduce terms -> infer st ~ctx (reduce_add_chain terms)
-  | BindingRef _ -> fresh_var st   (* inc1a placeholder; inc1b: the binding's inferred dim *)
+  | BindingRef name ->
+    (* Fix B: a binding's dim is its body's dim, precomputed in check_model. *)
+    (match Hashtbl.find_opt st.binding_dims name with
+     | Some d -> resolve st d
+     | None -> fresh_var st)
 
 and is_bare_const = function
   | Const _ -> true
@@ -580,7 +590,12 @@ let rec read_dim st (e : expr) : dim =
     let _de = read_dim st c.else_ in
     dt  (* branches already unified during inference *)
   | Reduce terms -> read_dim st (reduce_add_chain terms)
-  | BindingRef _ -> Unknown (-1)   (* inc1a placeholder sentinel *)
+  | BindingRef name ->
+    (* Fix B: read-only twin of the infer arm — the binding's precomputed dim,
+       so the error-checking phase (E300/E303) sees through a BindingRef. *)
+    (match Hashtbl.find_opt st.binding_dims name with
+     | Some d -> resolve st d
+     | None -> Unknown (-1))
 
 and read_dim_binop st (b : bin_op_expr) : dim =
   let dl = read_dim st b.left in
@@ -696,6 +711,16 @@ let check_model (m : model) : result =
 
   (* Initialize time function dims *)
   init_tf_dims st m.time_functions;
+
+  (* Fix B: precompute each shared binding's dim in declaration (topological)
+     order, so a BindingRef in a rate infers the body's dim. Bindings are
+     param-free, so their dim is fully determined here and stable across the
+     transition rounds below. *)
+  List.iter (fun (b : binding) ->
+    let ctx = Printf.sprintf "binding '%s'" b.bname in
+    let d = infer st ~ctx b.bexpr in
+    Hashtbl.replace st.binding_dims b.bname d
+  ) m.bindings;
 
   (* Pass 1: bottom-up inference + top-down propagation for each transition *)
   (* We do multiple rounds to propagate resolved unknowns across transitions.

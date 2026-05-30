@@ -124,6 +124,126 @@ fn test_gradient_vs_finite_differences_sir() {
     eprintln!("  max relative error: {:.2e}", max_rel_err);
 }
 
+/// Fix B settling check: the trajectory gate proves forward dynamics are
+/// byte-identical after shared-binding extraction, but it does NOT exercise
+/// gradients. This does. `seir_defines_patch` hoists `let N[p]` into
+/// per-patch bindings, and `d(infection)/dβ = S[p]·I[p]/BindingRef(N_p)` —
+/// so a correct analytical gradient must evaluate the BindingRef. If
+/// extraction had broken the gradient (e.g. the autodiff `BindingRef→0` arm
+/// firing on a param-bearing binding, or eval not resolving the ref), the
+/// analytical gradient would diverge from finite differences here.
+#[test]
+fn test_gradient_vs_finite_differences_spatial_bindings() {
+    let model = load_model("../../../ocaml/golden/seir_defines_patch.ir.json");
+
+    // The point of the test: the model must actually carry hoisted bindings,
+    // and a rate gradient must reference one. Otherwise it proves nothing.
+    assert!(!model.bindings.is_empty(),
+        "seir_defines_patch must carry hoisted bindings (regen goldens)");
+    let beta_grad_uses_binding = model.transitions.iter()
+        .filter(|t| t.name.starts_with("infection"))
+        .filter_map(|t| t.rate_grad.get("beta"))
+        .any(|g| format!("{:?}", g).contains("BindingRef"));
+    assert!(beta_grad_uses_binding,
+        "d(infection)/dβ must reference a BindingRef — otherwise this test \
+         does not exercise gradient-through-binding");
+
+    let mut model = model;
+    for p in &mut model.parameters {
+        if p.value.is_none() {
+            p.value = Some(match p.name.as_str() {
+                "beta" => 0.3,
+                "sigma" => 0.2,
+                "gamma" => 0.1,
+                "I0" => 5.0,
+                _ => 0.5,
+            });
+        }
+    }
+    let compiled = Arc::new(CompiledModel::new(model).unwrap());
+
+    let n_params = compiled.model.parameters.len();
+    let param_names: Vec<String> = compiled.model.parameters.iter()
+        .map(|p| p.name.clone()).collect();
+    let param_indices: Vec<usize> = param_names.iter()
+        .map(|n| *compiled.param_index.get(n.as_str()).unwrap())
+        .collect();
+
+    let mut params = vec![0.0; compiled.param_index.len()];
+    for p in &compiled.model.parameters {
+        if let Some(v) = p.value {
+            params[compiled.param_index[p.name.as_str()]] = v;
+        }
+    }
+
+    let model_to_estimated: Vec<Option<usize>> = (0..n_params).map(Some).collect();
+    let rate_grads_for_run = sim::inference::pgas_grad::resolve_rate_grad_for_run(
+        &compiled.resolved.rate_grads_indexed,
+        &model_to_estimated,
+    );
+
+    let mut rng = StatefulRng::new(42);
+    let t_end = compiled.model.simulation.t_end;
+    let dt = compiled.model.simulation.dt.unwrap_or(1.0);
+    let trajectory = simulate_reference(&compiled, &params, t_end, dt, &mut rng).unwrap();
+
+    let observations: Vec<Observation> = vec![];
+    let ivp_mappings: Vec<IVPMapping> = vec![];
+    let obs_model = MultiStreamObsModel::empty(compiled.clone());
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+
+    let (ll, grad) = complete_data_loglik_grad(
+        &compiled, &trajectory, &params, &observations, dt,
+        &obs_model, &ivp_mappings,
+        n_params, &rate_grads_for_run, &oas,
+    ).unwrap();
+    eprintln!("  log-likelihood: {:.4}", ll);
+    assert!(ll.is_finite(), "LL must be finite");
+
+    let eps = 1e-5;
+    let mut max_rel_err = 0.0_f64;
+    let mut checked_beta = false;
+    for i in 0..param_names.len() {
+        let mut p_plus = params.clone();
+        let mut p_minus = params.clone();
+        p_plus[param_indices[i]] += eps;
+        p_minus[param_indices[i]] -= eps;
+
+        let ll_plus = complete_data_loglik(
+            &compiled, &trajectory, &p_plus, &observations, dt,
+            &obs_model, &ivp_mappings, &oas,
+        ).unwrap().total;
+        let ll_minus = complete_data_loglik(
+            &compiled, &trajectory, &p_minus, &observations, dt,
+            &obs_model, &ivp_mappings, &oas,
+        ).unwrap().total;
+
+        let fd = (ll_plus - ll_minus) / (2.0 * eps);
+        let rel_err = if fd.abs() > 1e-8 {
+            (grad[i] - fd).abs() / fd.abs()
+        } else {
+            (grad[i] - fd).abs()
+        };
+        max_rel_err = max_rel_err.max(rel_err);
+
+        eprintln!("  d(ll)/d({:12}) = {:12.4} (analytical) vs {:12.4} (fd), rel_err = {:.2e}",
+            param_names[i], grad[i], fd, rel_err);
+
+        if param_names[i] == "beta" {
+            checked_beta = true;
+            // β flows through the spatial FOI denominator BindingRef(N_p);
+            // a nonzero, FD-matching gradient is the whole point.
+            assert!(fd.abs() > 1e-6,
+                "β gradient should be materially nonzero (got fd={:.3e})", fd);
+        }
+        assert!(rel_err < 0.01,
+            "gradient mismatch for {}: analytical={:.6}, fd={:.6}, rel_err={:.2e}",
+            param_names[i], grad[i], fd, rel_err);
+    }
+    assert!(checked_beta, "β must be among the model parameters");
+    eprintln!("  max relative error: {:.2e}", max_rel_err);
+}
+
 /// T1: Full NUTS target gradient check (LL + prior + Jacobian on z scale).
 /// This tests the gradient composition that NUTS actually uses, including
 /// the chain rule through parameter transforms and the Jacobian correction.

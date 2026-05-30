@@ -657,7 +657,7 @@ let rec collect_pops = function
   | Ir.Reduce terms -> List.concat_map collect_pops terms
   | Ir.BindingRef _ -> []
 
-let test_let_binding_is_inlined () =
+let test_let_binding_is_extracted () =
   let src = {|
     compartments { S, I, R }
     let N = S + I + R
@@ -670,20 +670,29 @@ let test_let_binding_is_inlined () =
     simulate { from = 0 'days  to = 30 'days }
   |} in
   let m = compile_expect_ok src in
-  let infection = List.find (fun (t : Ir.transition) -> t.name = "infection") m.transitions in
+  let open Ir in
+  (* Fix B (shared-binding extraction). A state-only `let` is no longer
+     inlined at each use; it is hoisted once into `model.bindings` and the
+     rate references it via `BindingRef`. The model meaning is unchanged
+     (the gate proves byte-identical trajectories) — only the IR shape is. *)
+  let n_binding = List.find_opt (fun (b : binding) -> b.bname = "N") m.bindings in
+  Alcotest.(check bool) "let N extracted into model.bindings" true (n_binding <> None);
+  (match n_binding with
+   | Some b ->
+     let body = collect_pops b.bexpr in
+     let has s = List.mem s body in
+     Alcotest.(check bool) "binding body sums S" true (has "S");
+     Alcotest.(check bool) "binding body sums I" true (has "I");
+     Alcotest.(check bool) "binding body sums R" true (has "R")
+   | None -> ());
+  (* The infection rate now references N via BindingRef; its own Pop leaves
+     are just the numerator S and I. collect_pops sees through BindingRef to
+     nothing, so R (only in N) must NOT appear in the rate itself. *)
+  let infection = List.find (fun (t : transition) -> t.name = "infection") m.transitions in
   let pops = collect_pops infection.rate in
-  (* If let bindings were NOT inlined, we'd see something like Ir.Ref "N"
-     or an IR variant for bindings. Instead, `N` must expand to {S, I, R}. *)
-  let has s = List.mem s pops in
-  Alcotest.(check bool) "S inlined into N" true (has "S");
-  Alcotest.(check bool) "I inlined into N" true (has "I");
-  Alcotest.(check bool) "R inlined into N" true (has "R");
-  (* And we MUST see the rate referring to S+I for the infection term
-     (beta * S * I / (S+I+R)), not just N's PopSum substitution. *)
-  let count_s = List.length (List.filter (fun p -> p = "S") pops) in
-  let count_i = List.length (List.filter (fun p -> p = "I") pops) in
-  Alcotest.(check bool) "S used ≥2× (numerator + denominator)" true (count_s >= 2);
-  Alcotest.(check bool) "I used ≥2× (numerator + denominator)" true (count_i >= 2)
+  Alcotest.(check bool) "rate numerator references S" true (List.mem "S" pops);
+  Alcotest.(check bool) "rate numerator references I" true (List.mem "I" pops);
+  Alcotest.(check bool) "N is a BindingRef, not inlined (no R in rate)" false (List.mem "R" pops)
 
 (* ── P3.2 — stratification count invariant (spec §5) ─────────────────────────
    Spec: `stratify(by = dim)` with N compartments and |dim|=K levels expands
@@ -5096,8 +5105,8 @@ let () =
         `Quick test_table_cell_type_ir_round_trips_through_serde;
     ];
     "spec_claims_v1", [
-      Alcotest.test_case "§9 let binding is inlined at use sites (P3.1)"
-        `Quick test_let_binding_is_inlined;
+      Alcotest.test_case "§9 let binding is extracted into model.bindings (P3.1, Fix B)"
+        `Quick test_let_binding_is_extracted;
       Alcotest.test_case "§5 stratify expands N × |dim| compartments (P3.2)"
         `Quick test_stratification_compartment_count;
       Alcotest.test_case "§13.1 incidence positional ≡ named projection (P3.5)"

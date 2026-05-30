@@ -29,7 +29,7 @@
               "bin_op": {
                 "op": "div",
                 "left": { "pop": "I" },
-                "right": { "pop_sum": [ "S", "I", "R" ] }
+                "right": { "binding_ref": "N" }
               }
             }
           }
@@ -48,7 +48,7 @@
                 "bin_op": {
                   "op": "div",
                   "left": { "pop": "I" },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "right": { "binding_ref": "N" }
                 }
               }
             }
@@ -182,6 +182,7 @@
       "base_compartments": [ "S", "I", "R" ],
       "transmission_transitions": [ "infection" ],
       "infectious_compartments": [ "I" ]
-    }
+    },
+    "bindings": [ { "name": "N", "expr": { "pop_sum": [ "S", "I", "R" ] } } ]
   }
 }

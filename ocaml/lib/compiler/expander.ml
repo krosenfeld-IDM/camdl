@@ -40,6 +40,21 @@ type context = {
   mutable expanded_param_tbl : (string, unit) Hashtbl.t;
   mutable func_tbl        : (string, func_decl) Hashtbl.t;
   mutable expanded_comp_tbl  : (string, unit) Hashtbl.t;
+  (* Fix B (shared-binding extraction). A `let` whose body is state-only
+     (no parameter, no other let — so d/dp ≡ 0, matching the
+     `differentiate(BindingRef)=0` autodiff arm) and context-independent
+     (every index-position variable is bound by the let's own declared
+     indices or an enclosing `sum`) is hoisted ONCE into `model.bindings`
+     and referenced by `Ir.BindingRef` instead of inlined at every use
+     site. This is what shrinks the Kano FOI from O(P²A²) IR to O(P²+PA). *)
+  mutable hoist_memo      : (string, bool) Hashtbl.t;   (* let name -> hoistable? (memoized) *)
+  mutable hoisted_tbl     : (string, unit) Hashtbl.t;   (* concrete binding name -> already registered *)
+  mutable hoisted_rev     : (string * Ir.expr) list;    (* registered bindings, reverse-topological (deps last) *)
+  (* While resolving a #[lineage] transition's rate, suppress extraction so the
+     lineage parent-decomposition (Lineage.classify_parents) sees the fully
+     inlined rate exactly as before — it cannot see through a state-bearing
+     BindingRef. The same let is still hoisted at its non-lineage use sites. *)
+  mutable suppress_hoist  : bool;
 }
 
 let empty_context ?(source_dir = "") ?(filename = "<input>") () = {
@@ -75,6 +90,10 @@ let empty_context ?(source_dir = "") ?(filename = "<input>") () = {
   expanded_param_tbl   = Hashtbl.create 16;
   func_tbl             = Hashtbl.create 16;
   expanded_comp_tbl    = Hashtbl.create 16;
+  hoist_memo           = Hashtbl.create 16;
+  hoisted_tbl          = Hashtbl.create 64;
+  hoisted_rev          = [];
+  suppress_hoist       = false;
 }
 
 (* ── Model summary ────────────────────────────────────────────────────────── *)
@@ -1467,6 +1486,93 @@ let splice_date_ranges ctx (es : expr list) : expr list =
     | _ -> [e]
   ) es
 
+(* ── Fix B: shared-binding extraction ─────────────────────────────────────── *)
+
+(* A reference inside a `let` body that makes it ineligible for hoisting: a
+   parameter (the body would have d/dp ≠ 0, but the BindingRef autodiff arm
+   yields 0 — a silent zero gradient) or another `let` (conservatively
+   excluded; it may transitively carry a parameter). Compartments, tables,
+   forcings, time, and constants are all fine — param-free, so d/dp ≡ 0. *)
+let rec body_refs_param_or_let ctx (e : expr) : bool =
+  let bad n =
+    is_indexed_param ctx n
+    || Hashtbl.mem ctx.scalar_param_tbl n
+    || Hashtbl.mem ctx.let_tbl n
+  in
+  match e with
+  | EConst _ | EUnit _ -> false
+  | EIdent (n, _)      -> bad n
+  | EIndex (n, items)  ->
+    bad n
+    || List.exists (function IPosn e | INamed (_, e) -> body_refs_param_or_let ctx e) items
+  | EBinOp (_, l, r) -> body_refs_param_or_let ctx l || body_refs_param_or_let ctx r
+  | EUnOp (_, e)     -> body_refs_param_or_let ctx e
+  | ESum (_, _, b)   -> body_refs_param_or_let ctx b
+  | ECond (p, t, f)  ->
+    body_refs_param_or_let ctx p || body_refs_param_or_let ctx t || body_refs_param_or_let ctx f
+  | EFuncCall (_, args) -> List.exists (fun (_, e) -> body_refs_param_or_let ctx e) args
+  | EList es            -> List.exists (body_refs_param_or_let ctx) es
+  | ERange (lo, hi)     -> body_refs_param_or_let ctx lo || body_refs_param_or_let ctx hi
+
+(* Every index-position variable in the body must be bound by the let's own
+   declared indices or an enclosing `sum`; otherwise the resolved body depends
+   on the enclosing transition's indices (the `inner_env @ env` join) and is
+   not a context-independent shared value. Literal dimension levels in index
+   position are conservatively rejected (treated as unbound) — none of the
+   extractable per-coordinate aggregates use them. *)
+let free_index_var_clean (lb : let_binding) : bool =
+  let declared = List.concat_map (function
+    | IBind (v, _)       -> [v]
+    | IConsec (v, vn, _) -> [v; vn]
+    | IComp v            -> [v]) lb.lindices in
+  let rec ok bound (e : expr) = match e with
+    | EConst _ | EUnit _ | EIdent _ -> true
+    | EIndex (_, items) ->
+      List.for_all (function
+        | IPosn (EIdent (v, _)) | INamed (_, EIdent (v, _)) -> List.mem v bound
+        | IPosn e | INamed (_, e) -> ok bound e) items
+    | EBinOp (_, l, r) -> ok bound l && ok bound r
+    | EUnOp (_, e)     -> ok bound e
+    | ESum (v, _, b)   -> ok (v :: bound) b
+    | ECond (p, t, f)  -> ok bound p && ok bound t && ok bound f
+    | EFuncCall (_, args) -> List.for_all (fun (_, e) -> ok bound e) args
+    | EList es            -> List.for_all (ok bound) es
+    | ERange (lo, hi)     -> ok bound lo && ok bound hi
+  in
+  ok declared lb.lbody
+
+(* Memoized hoist-eligibility for a `let` (by name). Eligible ⇒ extract once
+   into `model.bindings`; ineligible ⇒ keep inlining (the prior behaviour). *)
+let let_is_hoistable ctx (lb : let_binding) : bool =
+  match Hashtbl.find_opt ctx.hoist_memo lb.lname with
+  | Some b -> b
+  | None ->
+    let eligible =
+      lb.lshape = None
+      && not (lb.lkind <> None && is_const_expr lb.lbody)   (* typed const → Param path *)
+      && not (body_refs_param_or_let ctx lb.lbody)
+      && free_index_var_clean lb
+    in
+    Hashtbl.replace ctx.hoist_memo lb.lname eligible;
+    eligible
+
+(* Register a hoisted binding under its concrete (index-mangled) name, once,
+   and return the `BindingRef` to substitute at the use site. The body thunk
+   is resolved on first registration only; because it resolves nested
+   let-uses first (registering THEIR bindings before this one is prepended),
+   `hoisted_rev` is reverse-topological and `collect_hoisted_bindings`
+   reverses it so each binding's dependencies precede it. *)
+let register_hoisted_binding ctx (concrete : string) (resolve_body : unit -> Ir.expr) : Ir.expr =
+  if not (Hashtbl.mem ctx.hoisted_tbl concrete) then begin
+    Hashtbl.replace ctx.hoisted_tbl concrete ();
+    let body = resolve_body () in
+    ctx.hoisted_rev <- (concrete, body) :: ctx.hoisted_rev
+  end;
+  Ir.BindingRef concrete
+
+let collect_hoisted_bindings ctx : Ir.binding list =
+  List.rev_map (fun (name, body) -> { Ir.bname = name; Ir.bexpr = body }) ctx.hoisted_rev
+
 let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
   match e with
   | EConst f     -> Ir.Const f
@@ -1537,7 +1643,17 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
         in
         (var_name, val_name)
       ) lb.lindices in
-      normalize_expr (resolve_expr ctx (inner_env @ env) lb.lbody)
+      (* Fix B: extract a state-only, context-independent per-coordinate let
+         (e.g. N[l], I_lga[l]) into a shared binding once instead of inlining
+         its body at every use. Eligible bodies resolve against inner_env
+         alone (no enclosing-transition dependence). Ineligible lets inline
+         exactly as before. *)
+      if let_is_hoistable ctx lb && not ctx.suppress_hoist then
+        let concrete = String.concat "_" (base_name :: List.map snd inner_env) in
+        register_hoisted_binding ctx concrete
+          (fun () -> normalize_expr (resolve_expr ctx inner_env lb.lbody))
+      else
+        normalize_expr (resolve_expr ctx (inner_env @ env) lb.lbody)
     (* 2b. Shaped let? → flatten body, compute row-major index, resolve cell *)
     | Some lb when lb.lshape <> None ->
       let shape = Option.get lb.lshape in
@@ -1873,6 +1989,11 @@ and resolve_ident_name ctx name ~loc =
     if lb.lkind <> None && is_const_expr lb.lbody then
       (* Typed const let → treat as parameter (dimcheck will see param_kind) *)
       Ir.Param name
+    else if let_is_hoistable ctx lb && not ctx.suppress_hoist then
+      (* Fix B: a state-only scalar let (e.g. a mixed-compartment total) is
+         extracted into a shared binding once instead of inlined per use. *)
+      register_hoisted_binding ctx name
+        (fun () -> normalize_expr (resolve_expr ctx [] lb.lbody))
     else
       normalize_expr (resolve_expr ctx [] lb.lbody)
   | None ->
@@ -2194,7 +2315,16 @@ let expand_transitions_counted ctx =
            disambiguate `infect` → `infect_symp` / `infect_asym`. *)
         let emit_one dst_refs raw_rate_for_branch name_suffix =
           let dst_names = List.map (resolve_stoich_ref ctx env) dst_refs in
-          let rate = normalize_expr (resolve_expr ctx env raw_rate_for_branch) in
+          (* Fix B: a #[lineage] rate must stay fully inlined so the parent
+             decomposition can read its Pop structure (it cannot see through a
+             BindingRef). Non-lineage transitions still extract the same let. *)
+          let rate =
+            let prev = ctx.suppress_hoist in
+            ctx.suppress_hoist <- tr.trlineage;
+            let r = normalize_expr (resolve_expr ctx env raw_rate_for_branch) in
+            ctx.suppress_hoist <- prev;
+            r
+          in
           let raw_entries =
             List.map (fun n -> (n, -1)) src_names
             @ List.map (fun n -> (n,  1)) dst_names
@@ -4930,7 +5060,7 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     Ir.interventions      = expand_interventions ctx;
     Ir.observations       = expand_observations ctx;
     Ir.parameters         = expand_parameters ctx;
-    Ir.bindings           = [];   (* inc1a: expander does not hoist yet; inc1b emits hoisted bindings *)
+    Ir.bindings           = [];   (* filled below from ctx.hoisted_rev once all resolution is done *)
     Ir.initial_conditions = expand_init ctx;
     Ir.output             = expand_output ctx;
     Ir.simulation         = expand_simulate ctx;
@@ -4945,6 +5075,10 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     Ir.identity_tracked_compartments =
       compute_identity_tracked expanded_comps expanded_trs;
   } in
+  (* Fix B: the record above is fully forced here, so every resolve_expr call
+     (transitions, ode, observations, balance) has run and ctx.hoisted_rev
+     holds all extracted bindings in reverse-topological order. *)
+  let model = { model with Ir.bindings = collect_hoisted_bindings ctx } in
   let summary = {
     base_compartment_count     = List.length ctx.comp_decls;
     expanded_compartment_count = List.length expanded_comps;

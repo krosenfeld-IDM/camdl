@@ -29,7 +29,7 @@
               "bin_op": {
                 "op": "div",
                 "left": { "pop": "I" },
-                "right": { "pop_sum": [ "S", "I", "R" ] }
+                "right": { "binding_ref": "N" }
               }
             }
           }
@@ -48,7 +48,7 @@
                 "bin_op": {
                   "op": "div",
                   "left": { "pop": "I" },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "right": { "binding_ref": "N" }
                 }
               }
             }
@@ -79,7 +79,7 @@
           "bin_op": {
             "op": "mul",
             "left": { "param": "mu" },
-            "right": { "pop_sum": [ "S", "I", "R" ] }
+            "right": { "binding_ref": "N" }
           }
         },
         "metadata": {
@@ -87,7 +87,7 @@
           "source_compartment": null,
           "dest_compartment": "S"
         },
-        "rate_grad": { "mu": { "pop_sum": [ "S", "I", "R" ] } }
+        "rate_grad": { "mu": { "binding_ref": "N" } }
       },
       {
         "name": "death_S",
@@ -264,6 +264,7 @@
       "base_compartments": [ "S", "I", "R" ],
       "transmission_transitions": [ "infection" ],
       "infectious_compartments": [ "I" ]
-    }
+    },
+    "bindings": [ { "name": "N", "expr": { "pop_sum": [ "S", "I", "R" ] } } ]
   }
 }

@@ -49,12 +49,7 @@
                         "right": { "pop": "I_under5" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_under5", "E_under5", "I_under5", "R_under5",
-                        "V_under5"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_under5" }
                   }
                 },
                 {
@@ -72,11 +67,7 @@
                         "right": { "pop": "I_over5" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_over5", "E_over5", "I_over5", "R_over5", "V_over5"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_over5" }
                   }
                 }
               ]
@@ -113,12 +104,7 @@
                               "right": { "pop": "I_under5" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_under5" }
                         }
                       },
                       {
@@ -136,12 +122,7 @@
                               "right": { "pop": "I_over5" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     ]
@@ -193,12 +174,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_under5", "E_under5", "I_under5",
-                                      "R_under5", "V_under5"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_under5" }
                                 }
                               },
                               "right": {
@@ -224,18 +200,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_under5" },
+                              "right": { "binding_ref": "N_under5" }
                             }
                           }
                         }
@@ -273,12 +239,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_over5", "E_over5", "I_over5",
-                                      "R_over5", "V_over5"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_over5" }
                                 }
                               },
                               "right": {
@@ -304,18 +265,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_over5" },
+                              "right": { "binding_ref": "N_over5" }
                             }
                           }
                         }
@@ -371,12 +322,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -402,18 +348,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -451,12 +387,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -482,18 +413,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -547,12 +468,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -578,18 +494,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -627,12 +533,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -658,18 +559,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -723,12 +614,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -754,18 +640,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -803,12 +679,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -834,18 +705,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -899,12 +760,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -930,18 +786,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -979,12 +825,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -1010,18 +851,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -1075,12 +906,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -1106,18 +932,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -1155,12 +971,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -1186,18 +997,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -1251,12 +1052,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -1282,18 +1078,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -1331,12 +1117,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -1362,18 +1143,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -1427,12 +1198,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -1458,18 +1224,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -1507,12 +1263,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -1538,18 +1289,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -1590,12 +1331,7 @@
                         "right": { "pop": "I_under5" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_under5", "E_under5", "I_under5", "R_under5",
-                        "V_under5"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_under5" }
                   }
                 },
                 {
@@ -1613,11 +1349,7 @@
                         "right": { "pop": "I_over5" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_over5", "E_over5", "I_over5", "R_over5", "V_over5"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_over5" }
                   }
                 }
               ]
@@ -1654,12 +1386,7 @@
                               "right": { "pop": "I_under5" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_under5" }
                         }
                       },
                       {
@@ -1677,12 +1404,7 @@
                               "right": { "pop": "I_over5" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     ]
@@ -1734,12 +1456,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_under5", "E_under5", "I_under5",
-                                      "R_under5", "V_under5"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_under5" }
                                 }
                               },
                               "right": {
@@ -1765,18 +1482,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_under5" },
+                              "right": { "binding_ref": "N_under5" }
                             }
                           }
                         }
@@ -1814,12 +1521,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_over5", "E_over5", "I_over5",
-                                      "R_over5", "V_over5"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_over5" }
                                 }
                               },
                               "right": {
@@ -1845,18 +1547,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_over5" },
+                              "right": { "binding_ref": "N_over5" }
                             }
                           }
                         }
@@ -1912,12 +1604,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -1943,18 +1630,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -1992,12 +1669,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -2023,18 +1695,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -2088,12 +1750,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -2119,18 +1776,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -2168,12 +1815,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -2199,18 +1841,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -2264,12 +1896,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -2295,18 +1922,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -2344,12 +1961,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -2375,18 +1987,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -2440,12 +2042,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -2471,18 +2068,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -2520,12 +2107,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -2551,18 +2133,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -2616,12 +2188,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -2647,18 +2214,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -2696,12 +2253,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -2727,18 +2279,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -2792,12 +2334,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -2823,18 +2360,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -2872,12 +2399,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -2903,18 +2425,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -2968,12 +2480,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_under5", "E_under5", "I_under5",
-                                  "R_under5", "V_under5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_under5" }
                             }
                           },
                           "right": {
@@ -2999,18 +2506,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_under5", "E_under5", "I_under5", "R_under5",
-                              "V_under5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_under5" },
+                          "right": { "binding_ref": "N_under5" }
                         }
                       }
                     }
@@ -3048,12 +2545,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_over5", "E_over5", "I_over5", "R_over5",
-                                  "V_over5"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_over5" }
                             }
                           },
                           "right": {
@@ -3079,18 +2571,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_over5", "E_over5", "I_over5", "R_over5",
-                              "V_over5"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_over5" },
+                          "right": { "binding_ref": "N_over5" }
                         }
                       }
                     }
@@ -3389,6 +2871,24 @@
       "base_compartments": [ "S", "E", "I", "R", "V" ],
       "transmission_transitions": [],
       "infectious_compartments": []
-    }
+    },
+    "bindings": [
+      {
+        "name": "N_under5",
+        "expr": {
+          "pop_sum": [
+            "S_under5", "E_under5", "I_under5", "R_under5", "V_under5"
+          ]
+        }
+      },
+      {
+        "name": "N_over5",
+        "expr": {
+          "pop_sum": [
+            "S_over5", "E_over5", "I_over5", "R_over5", "V_over5"
+          ]
+        }
+      }
+    ]
   }
 }

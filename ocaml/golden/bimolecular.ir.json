@@ -31,7 +31,7 @@
                 "right": { "pop": "B" }
               }
             },
-            "right": { "pop_sum": [ "A", "B", "C" ] }
+            "right": { "binding_ref": "N" }
           }
         },
         "metadata": {
@@ -53,14 +53,14 @@
                       "right": { "pop": "B" }
                     }
                   },
-                  "right": { "pop_sum": [ "A", "B", "C" ] }
+                  "right": { "binding_ref": "N" }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "A", "B", "C" ] },
-                  "right": { "pop_sum": [ "A", "B", "C" ] }
+                  "left": { "binding_ref": "N" },
+                  "right": { "binding_ref": "N" }
                 }
               }
             }
@@ -140,6 +140,7 @@
       "base_compartments": [ "A", "B", "C" ],
       "transmission_transitions": [],
       "infectious_compartments": []
-    }
+    },
+    "bindings": [ { "name": "N", "expr": { "pop_sum": [ "A", "B", "C" ] } } ]
   }
 }

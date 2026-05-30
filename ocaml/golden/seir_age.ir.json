@@ -47,11 +47,7 @@
                         "right": { "pop": "I_child" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_child", "E_child", "I_child", "R_child"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_local_child" }
                   }
                 },
                 {
@@ -69,11 +65,7 @@
                         "right": { "pop": "I_adult" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_adult", "E_adult", "I_adult", "R_adult"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_local_adult" }
                   }
                 }
               ]
@@ -110,11 +102,7 @@
                               "right": { "pop": "I_child" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_local_child" }
                         }
                       },
                       {
@@ -132,11 +120,7 @@
                               "right": { "pop": "I_adult" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_local_adult" }
                         }
                       }
                     ]
@@ -188,12 +172,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_child", "E_child", "I_child",
-                                      "R_child"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_local_child" }
                                 }
                               },
                               "right": {
@@ -219,16 +198,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_local_child" },
+                              "right": { "binding_ref": "N_local_child" }
                             }
                           }
                         }
@@ -266,12 +237,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_adult", "E_adult", "I_adult",
-                                      "R_adult"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_local_adult" }
                                 }
                               },
                               "right": {
@@ -297,16 +263,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_local_adult" },
+                              "right": { "binding_ref": "N_local_adult" }
                             }
                           }
                         }
@@ -362,11 +320,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_child" }
                             }
                           },
                           "right": {
@@ -392,16 +346,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_child" },
+                          "right": { "binding_ref": "N_local_child" }
                         }
                       }
                     }
@@ -439,11 +385,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_adult" }
                             }
                           },
                           "right": {
@@ -469,16 +411,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_adult" },
+                          "right": { "binding_ref": "N_local_adult" }
                         }
                       }
                     }
@@ -532,11 +466,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_child" }
                             }
                           },
                           "right": {
@@ -562,16 +492,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_child" },
+                          "right": { "binding_ref": "N_local_child" }
                         }
                       }
                     }
@@ -609,11 +531,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_adult" }
                             }
                           },
                           "right": {
@@ -639,16 +557,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_adult" },
+                          "right": { "binding_ref": "N_local_adult" }
                         }
                       }
                     }
@@ -689,11 +599,7 @@
                         "right": { "pop": "I_child" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_child", "E_child", "I_child", "R_child"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_local_child" }
                   }
                 },
                 {
@@ -711,11 +617,7 @@
                         "right": { "pop": "I_adult" }
                       }
                     },
-                    "right": {
-                      "pop_sum": [
-                        "S_adult", "E_adult", "I_adult", "R_adult"
-                      ]
-                    }
+                    "right": { "binding_ref": "N_local_adult" }
                   }
                 }
               ]
@@ -752,11 +654,7 @@
                               "right": { "pop": "I_child" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_local_child" }
                         }
                       },
                       {
@@ -774,11 +672,7 @@
                               "right": { "pop": "I_adult" }
                             }
                           },
-                          "right": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          }
+                          "right": { "binding_ref": "N_local_adult" }
                         }
                       }
                     ]
@@ -830,12 +724,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_child", "E_child", "I_child",
-                                      "R_child"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_local_child" }
                                 }
                               },
                               "right": {
@@ -861,16 +750,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_local_child" },
+                              "right": { "binding_ref": "N_local_child" }
                             }
                           }
                         }
@@ -908,12 +789,7 @@
                                       }
                                     }
                                   },
-                                  "right": {
-                                    "pop_sum": [
-                                      "S_adult", "E_adult", "I_adult",
-                                      "R_adult"
-                                    ]
-                                  }
+                                  "right": { "binding_ref": "N_local_adult" }
                                 }
                               },
                               "right": {
@@ -939,16 +815,8 @@
                           "right": {
                             "bin_op": {
                               "op": "mul",
-                              "left": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              },
-                              "right": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              }
+                              "left": { "binding_ref": "N_local_adult" },
+                              "right": { "binding_ref": "N_local_adult" }
                             }
                           }
                         }
@@ -1004,11 +872,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_child" }
                             }
                           },
                           "right": {
@@ -1034,16 +898,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_child" },
+                          "right": { "binding_ref": "N_local_child" }
                         }
                       }
                     }
@@ -1081,11 +937,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_adult" }
                             }
                           },
                           "right": {
@@ -1111,16 +963,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_adult" },
+                          "right": { "binding_ref": "N_local_adult" }
                         }
                       }
                     }
@@ -1174,11 +1018,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_child", "E_child", "I_child", "R_child"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_child" }
                             }
                           },
                           "right": {
@@ -1204,16 +1044,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_child", "E_child", "I_child", "R_child"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_child" },
+                          "right": { "binding_ref": "N_local_child" }
                         }
                       }
                     }
@@ -1251,11 +1083,7 @@
                                   }
                                 }
                               },
-                              "right": {
-                                "pop_sum": [
-                                  "S_adult", "E_adult", "I_adult", "R_adult"
-                                ]
-                              }
+                              "right": { "binding_ref": "N_local_adult" }
                             }
                           },
                           "right": {
@@ -1281,16 +1109,8 @@
                       "right": {
                         "bin_op": {
                           "op": "mul",
-                          "left": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          },
-                          "right": {
-                            "pop_sum": [
-                              "S_adult", "E_adult", "I_adult", "R_adult"
-                            ]
-                          }
+                          "left": { "binding_ref": "N_local_adult" },
+                          "right": { "binding_ref": "N_local_adult" }
                         }
                       }
                     }
@@ -1466,6 +1286,16 @@
       "base_compartments": [ "S", "E", "I", "R" ],
       "transmission_transitions": [],
       "infectious_compartments": []
-    }
+    },
+    "bindings": [
+      {
+        "name": "N_local_child",
+        "expr": { "pop_sum": [ "S_child", "E_child", "I_child", "R_child" ] }
+      },
+      {
+        "name": "N_local_adult",
+        "expr": { "pop_sum": [ "S_adult", "E_adult", "I_adult", "R_adult" ] }
+      }
+    ]
   }
 }
