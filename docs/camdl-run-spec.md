@@ -185,7 +185,7 @@ project/
     │   │       └── diagnostics.json
     │   └── 02_fix_beta/
     │       └── ...
-    └── simulate/                    # batch sim results (hash-addressed)
+    └── sims/                       # batch sim results (hash-addressed)
         ├── manifest.json
         ├── model.ir.json
         └── {sim_hash_8}/
@@ -277,7 +277,7 @@ contract as a hard requirement.
 ### 2.4 Simulation Result Layout
 
 ```
-results/simulate/
+results/sims/
   manifest.json              # index of all completed runs
   model.ir.json              # compiled model (self-contained)
   {sim_hash_8}/              # model + base params + backend + dt
@@ -294,7 +294,7 @@ results/simulate/
 Example with two scenarios and a sweep point:
 
 ```
-results/simulate/
+results/sims/
   3a7f2c1d/baseline-00000000/seed_1/
   3a7f2c1d/with_sia-f9e2b047/seed_1/
   3a7f2c1d/with_sia_vacc_eff_0.5-a3c1e890/seed_1/
@@ -1748,6 +1748,27 @@ sim_hash = sha256(
 
 Full 64-character hex string; first 8 characters used in directory name.
 
+> **`model_hash` contract.** `model_ir_json_bytes` above must hash the
+> *structural* IR (compartments, transitions, parameters, tables,
+> time-functions, interventions, observations, ODE equations, initial
+> conditions, version) — the canonical hasher is
+> `cli/src/hashing.rs::model_hash`. Two models that differ in any structural
+> element must produce different `model_hash`, hence different `sim_hash`,
+> hence distinct cache directories. This is load-bearing for cache
+> correctness: if `model_hash` collapsed for distinct models, `--cas` would
+> serve one model's trajectory for another. **History (gh#135, fixed
+> f3bc389):** `model_hash` previously scanned the *envelope* top level
+> (`{ir_version, validated_by, model:{…}}`) rather than descending into
+> `model`, so it hashed nothing and returned `SHA256("")` for every model and
+> every caller — collapsing the sim cache. The fix descends into `model` (with
+> a bare-object fallback) and asserts the digest is never the empty-input hash,
+> so a future envelope-shape change fails loudly instead of silently colliding.
+> Pinned by `cas_different_models_do_not_collide` (integration) plus
+> `model_hash_envelope_is_not_empty_hash` / `model_hash_senses_structural_difference`
+> (unit). *Adjacent gaps still open: `t_end` / the `simulation` block are
+> excluded from the key, and `time_unit` is not in `structural_keys` — filed
+> separately.*
+
 **scen_hash** — scenario delta only:
 
 ```
@@ -1847,6 +1868,13 @@ impl ConfigHasher {
 
 ### 9.5 provenance.json — per-stage output (fits)
 
+> ⚠️ **Superseded — verify in the rev-3 rewrite.** A real fit (verified
+> 2026-05-30) writes a per-stage **`run.json`** (kind `fit-stage`, the §9.6
+> tagged schema) — **not** `provenance.json` (0 written;
+> `find results -name provenance.json` → empty). The fields below are kept for
+> reference until §9.5/§9.6 are merged into one `run.json` contract in the
+> full CAS rewrite; do not treat `provenance.json` as a current artifact.
+
 ```json
 {
   "camdl_version": "0.7.0",
@@ -1879,32 +1907,76 @@ impl ConfigHasher {
 }
 ```
 
-### 9.6 run.json — per-run metadata (simulations)
+### 9.6 run.json — the per-run metadata contract
+
+> **This subsection is the consumer contract.** `run.json` is the API between
+> camdl and everything that reads its output (`camdl list/show/cat`,
+> camdl-viewer, notebooks). The schema below is the tagged-union form actually
+> emitted by `rust/crates/cli/src/cli/run_meta.rs` (`Run` / `RunKind` /
+> `RunStatus`), verified against on-disk artifacts. Consumers must read this
+> shape, not a flattened guess. *(Earlier revisions of this spec documented a
+> flat `{sim_hash, scen_hash, …}` object; that form is superseded. The
+> camdl-viewer `cas.py` still carries a dual-format `normalize_run_json`
+> shim for the transition — to be dropped once example/golden output is
+> regenerated.)*
+
+Every run directory contains one `run.json` with a shared envelope and a
+kind-specific `kind` payload (serde `tag = "kind"`):
 
 ```json
 {
-  "sim_hash": "3a7f2c1d...",
-  "scen_hash": "f9e2b047...",
-  "scenario": "with_sia",
-  "seed": 42,
-  "model_hash": "...",
-  "camdl_version": "0.7.0",
-  "backend": "chain_binomial",
-  "dt": 1.0
+  "hash": "37a7ee460c63aa5c2f5f1107cfc962e815faa6a153a3ab5d64adb1748edc9d53",
+  "version": "0.1.0+8cdedd0",
+  "created_at": "2026-05-30T18:58:16Z",
+  "argv": ["camdl", "simulate", "he_measles.camdl", "--seed", "1", "..."],
+  "status": { "completed": { "wall_time_seconds": 0.0076 } },
+  "label": null,
+  "kind": {
+    "kind": "simulate",
+    "model": "he_measles.camdl",
+    "model_hash": "<sha256 of structural IR — see §9.2>",
+    "scenario": "baseline",
+    "sim_hash": "162c0116...",
+    "scen_hash": "e9235d61...",
+    "seed": 1,
+    "backend": "chain_binomial",
+    "dt": 1.0,
+    "sweep_point": { "vacc_eff": 0.5 },
+    "parameters_provenance": {
+      "beta":  { "value": 0.4, "source": "fixed" },
+      "gamma": { "value": 0.2, "source": "scenario" }
+    }
+  }
 }
 ```
 
-For sweep runs, sweep point values are included:
+**Envelope fields** (present on every kind):
+
+| field        | type                                   | meaning |
+| ------------ | -------------------------------------- | ------- |
+| `hash`       | string (64-hex)                        | content hash of this run's inputs; dir uses first 8 |
+| `version`    | string                                 | camdl version that produced the run |
+| `created_at` | RFC-3339 string                        | UTC start time |
+| `argv`       | string[]                               | the invocation, for reproducibility |
+| `status`     | enum (below)                           | lifecycle state |
+| `label`      | string \| null                         | optional `--label`; omitted when null |
+| `kind`       | tagged object                          | one of the `RunKind` payloads |
+
+**`status` lifecycle** — written at *start*, updated at *end*, so a run is
+discoverable (in `camdl list` / the viewer) **while it is still running**:
 
 ```json
-{
-  "sim_hash": "3a7f2c1d...",
-  "scen_hash": "a3c1e890...",
-  "scenario": "with_sia",
-  "seed": 1,
-  "sweep_point": { "vacc_eff": 0.5 }
-}
+"status": "running"
+"status": { "completed": { "wall_time_seconds": 3847.2 } }
+"status": { "failed":    { "at": "obs 31/52", "error": "PFDegenerate" } }
 ```
+
+**`kind` discriminator** (`"kind"` field): `"simulate"`, `"fit"`,
+`"fit-stage"`, `"profile"`, `"survey"`, `"batch"`. Each carries its own typed
+fields; scalars live here (e.g. a fit stage's `best_loglik: f64`), large
+artifacts are sibling files (`traj.tsv`, `trace.tsv`). `parameters_provenance`
+records where each resolved parameter value came from (`fixed` / `scenario` /
+`fit-toml` / `model-default` / `--fixed`), per the `ParameterResolver`.
 
 ### 9.7 manifest.json — simulation batch index
 
@@ -2223,12 +2295,12 @@ Created fits/02_fix_beta.toml
 ### 13.4 `camdl summarize`
 
 ```bash
-camdl summarize results/simulate/
+camdl summarize results/sims/
 ```
 
 Reads trajectory files and produces per-scenario summary tables with
 automatically computed statistics (peak, time-of-peak, final value, integral)
-for every non-time column. Output written to `results/simulate/summary/`.
+for every non-time column. Output written to `results/sims/summary/`.
 
 ---
 
