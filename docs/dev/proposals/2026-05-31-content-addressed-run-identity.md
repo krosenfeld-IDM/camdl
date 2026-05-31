@@ -121,10 +121,15 @@ corrupting wrong answer. Changing a field's policy bumps its type's
   `--dry-run`), output destination (`-o`, `--stdout`), and **pure presentation**
   — `--dates`, obs wide-vs-dir layout, `--format`. A path used only to *load* a
   value is provenance; the loaded value is semantic.
-- **Presentation rule:** identity is the canonical *values*, not a rendered
-  file. `--dates`/format/obs-layout are rendered on `cat` from the stored
-  values; they never enter a hash. (What *is* semantic is the output *schedule*
-  + horizon and the obs *streams* + *schedule* — which values exist.)
+- **Presentation rule — only sound because storage is canonical.** The stored
+  artifact is a **canonical representation** (canonical TSV: numeric time, fixed
+  column order, full precision), *not* the user-requested rendered file.
+  `--dates`, `--format` (parquet/…), and obs wide-vs-dir layout render *views* of
+  that canonical artifact at `cat`/`-o` time; they never enter a hash and never
+  produce a distinct cached artifact. This classification is **valid only given
+  canonical storage** — if the CAS stored the literal `--format parquet` bytes,
+  those flags would be semantic. (What *is* semantic is the output *schedule* +
+  horizon and the obs *streams* + *schedule* — which values exist.)
 
 ## The canonical hashing algorithm
 
@@ -236,6 +241,13 @@ digests, and invokes camdlc **only on a miss**. Every run then loads
 bytes that were hashed. The run-tree model level references this IR by
 `model_hash`.
 
+**Compile-cache version ≠ run-identity version.** The compile cache keys on
+`camdlc_version` (the *compiler*); the run-identity model digest keys on
+`engine_version` (the *runtime*). A runtime-only engine change re-keys run
+identity (resimulate) but does **not** invalidate the compile cache (no
+recompile) — the compiled IR is unchanged. Keep these two versions separate so a
+Rust-side change never reruns camdlc.
+
 ### `simulate` (and `batch`, which is many of these leaves)
 
 ```
@@ -243,20 +255,30 @@ results/sims/
   {model_stem}-{model_h8}/          # MODEL
     {backend_dt}-{config_h8}/       # CONFIG
       {param_label}-{params_h8}/    # PARAMETERS
-        {scenario_slug}-{scen_h8}/  # SCENARIO   (baseline = 00000000)
-          seed_{n}/                 # SEED (literal)
-            run.json  traj.tsv
-            obs/{stream}-{obs_h8}/  # obs sub-artifact, nested under its trajectory
+        {scenario_slug}-{scen_h8}/  # SCENARIO   (empty delta → label "baseline")
+          seed_{base}-{seed_h8}/    # SEED: segment carries the resolved-process_seed hash
+            run.json  traj.tsv      # the leaf's OWN files (exact-set applies to these)
+            obs/{stream}-{obs_h8}/  # DECLARED CHILD sub-artifact (own run.json; not an orphan)
 ```
+
+**Every semantic level carries its hash in the segment — no level is label-only.**
+The seed level was the lone offender: it hashes the resolved `process_seed`
+(below), so its segment must be `seed_{base}-{seed_h8}`, not `seed_{n}`. Otherwise
+lone `--seed 42` and the `beta=2` sweep-point with `--seed 42` — different
+`process_seed`, different `run_id` — would map to the *same* `seed_42/` path, with
+nowhere to store both and a stale-loop/deletion hazard (see PathPrefixCollision).
+Likewise the empty-delta scenario uses `baseline-{scen_h8}` (the real hash of the
+empty delta); `baseline`/`00000000` is a *display* convenience only, never a hash
+folded into `run_id`.
 
 | Level | Label (provenance) | Hash inputs (semantic, include-by-default) |
 |---|---|---|
-| model | model file stem | the **whole canonical IR** (incl. `output`, `simulation`, `origin`, `origin_rata_die`, `time_unit`) + `ir_version` + `engine_version` |
+| model | model file stem | `ModelDynamicsDigest` + `OutputDigest` (the obs model lives in the obs sub-artifact, not here — so `--obs` stays passive). M2 interim: whole IR; M2.5 splits. + `ir_version` + `engine_version` |
 | config | `chain_binomial-dt1` | backend, dt, t_start, t_end, output schedule, calendar mode, `allow_degenerate_rates` |
 | parameters | a param-set label | resolved base param **values** (canonical) + `--table`/`--param-vec` content digests |
-| scenario | scenario slug | resolved enable/disable/set **delta** (id-set + canonical patch) |
-| seed | `seed_42` (the base seed, readable) | the **resolved `process_seed`** — NOT the user `--seed` |
-| obs (sub) | stream name | obs **streams** + **schedule** + the **resolved `obs_seed`** (layout/`--dates`/format are provenance) |
+| scenario | scenario slug | resolved enable/disable/set **delta** (id-set + canonical patch); empty delta → label `baseline`, real hash |
+| seed | `seed_42` (the base seed, readable) | the **resolved `process_seed`** — NOT the user `--seed` (segment carries `seed_h8`) |
+| obs (sub) | stream name | full **`ObservationDigest`** (projections, likelihood families+params, corrections, aux, schedule, missing/window) + requested streams + plan + resolved `obs_seed` (layout/`--dates`/format are provenance) |
 
 **Hash the resolved seed, not the base seed.** The trajectory is driven by
 `process_seed = mix_cell_seed(base, point_idx, rep)` (`engine.rs:52-66`,
@@ -267,9 +289,10 @@ the `beta=2` point of `--sweep beta=1,2 --seed 42`
 (`process_seed = 42 ^ 1·M_DRAW`) produce different trajectories. If the seed
 level hashed the *base* seed they would share a full hash — a silent wrong
 answer the `run.json` gate cannot catch (both compute the identical wrong hash).
-The dir *label* stays readable (`seed_42`); the *hash* is over the resolved
-`process_seed`. Red test: lone-run vs sweep-point with the same base seed →
-distinct `run_id`.
+The dir *label* stays readable (`seed_42`) but the segment is
+`seed_42-{seed_h8}`; the hash is over the resolved `process_seed`. Red test:
+lone-run vs sweep-point with the same base seed → **distinct paths** (not just
+distinct `run_id`).
 
 The ensemble (`--seeds`) is the set of `seed_*` dirs under one scenario node —
 grouping falls out of the tree; no `GroupInput` needed for the common case.
@@ -394,14 +417,15 @@ mirror that `show` renders). Concrete shape:
     { "name": "model",  "label": "sir_basic",       "hash": "a1b2…", "schema_version": 1 },
     { "name": "config", "label": "chain_binomial-dt1","hash": "c3d4…", "schema_version": 1 },
     { "name": "params", "label": "base",            "hash": "e5f6…", "schema_version": 1 },
-    { "name": "scenario","label": "baseline",        "hash": "00000000…", "schema_version": 1 },
-    { "name": "seed",   "label": "1",               "hash": "7788…", "schema_version": 1 }
+    { "name": "scenario","label": "baseline",        "hash": "0c1d…", "schema_version": 1 },  // real hash of empty delta
+    { "name": "seed",   "label": "42",              "hash": "7788…", "schema_version": 1 }  // hash = resolved process_seed
   ],
-  "deps": [],                          // [{run_id, kind, path}] — lineage; fit stages list upstream stage ids
+  "deps": [],                          // [{run_id, kind, artifact, digest}] — lineage; fit stages list consumed upstream artifacts
   "status": "completed",               // running | completed | failed
-  "artifacts": {                       // EXACT-SET manifest — leaf must contain these and no others
+  "artifacts": {                       // EXACT-SET over the leaf's OWN files only
     "traj.tsv": { "bytes": 40213, "mtime": "…", "digest": "…" }  // algo pinned by hash_version
   },
+  "children": { "obs": ["<obs run_id>"] },  // declared child sub-artifacts (own run.json); validated recursively, NOT orphans
   "inputs": { /* resolved param values, scenario delta, config — for display/audit, not hashed */ },
   "provenance": {
     "argv": ["camdl","simulate","…"],
@@ -423,9 +447,10 @@ pub struct RunRecord {
     pub ir_version: u32,
     pub engine_version: String,
     pub levels: Vec<LevelId>,            // { name, label, hash: ContentHash, schema_version: u16 }
-    pub deps: Vec<ArtifactRef>,          // { run_id, kind, path }
+    pub deps: Vec<ArtifactRef>,          // { run_id, kind, artifact, digest } — the consumed artifact
     pub status: RunStatus,               // Running | Completed | Failed
-    pub artifacts: BTreeMap<String, FileChecksum>,  // { bytes, mtime, digest } — exact set
+    pub artifacts: BTreeMap<String, FileChecksum>,  // { bytes, mtime, digest } — exact set of OWN files
+    pub children: BTreeMap<String, Vec<ContentHash>>,  // reserved child-subdir namespaces (obs/, paths/, …)
     pub inputs: serde_json::Value,       // resolved-input summary; provenance, not hashed
     pub provenance: Provenance,          // argv, label, timestamps, host, version, threads, source paths
 }
@@ -434,7 +459,12 @@ pub struct RunRecord {
 ## `CasStore` — lookup and the atomic commit protocol
 
 ```rust
-pub enum Lookup { Hit(RunRecord), Miss, Stale(StaleReason) }
+pub enum Lookup {
+    Hit(RunRecord),       // identity matches, Completed, integrity ok
+    Miss,                 // nothing at the path
+    Stale(StaleReason),   // SAME identity present but unusable → safe-clear + recompute
+    Collision(RunRecord), // DIFFERENT full hash at this path → disambiguate, never touch incumbent
+}
 
 pub trait CasStore {
     fn lookup(&self, path: &Path, expected: &LeafIdentity) -> Lookup;
@@ -445,11 +475,16 @@ pub trait CasStore {
 **Lookup — tiered integrity** (so the full check never pressures an implementer
 back toward the existence-only bug). A hit requires:
 
-- *Cheap gate, always:* `run.json` present; `status == Completed`; recorded
-  `run_id` + level hashes equal `expected`; `hash_version`/`schema_version`
-  current; **the artifact set is exactly the manifest** (every listed file
-  present at its recorded `bytes` + `mtime`, **and no unlisted files in the
-  leaf** — orphans from a crashed prior run are a `Stale`, not ignored).
+- *Identity gate, first:* `run.json` present and its recorded `run_id` + level
+  hashes equal `expected`. **If `run.json` is present but the full hashes differ,
+  this is `PathPrefixCollision`, not `Stale`** — a *different* artifact occupies a
+  short-hash-colliding path; it must never be cleared or treated as a hit (see
+  below).
+- *Cheap gate, then:* `status == Completed`; `hash_version`/`schema_version`
+  current; **the leaf's OWN files exactly match the manifest** (every listed file
+  present at its recorded `bytes` + `mtime`, **and no unlisted files** — *except*
+  the declared `children` subdirs, which are validated recursively and are not
+  orphans). A crashed run's stray files (not listed, not a declared child) → `Stale`.
 - *Full digest, on demand:* re-hash only on `--verify`, on first read after an
   `mtime` change, **and whenever the artifact is actually consumed** (`cat`, or a
   downstream run reading it as a dep). Re-digesting multi-GB fit chains on *every*
@@ -462,9 +497,29 @@ back toward the existence-only bug). A hit requires:
   which is why anything that *reads* an artifact digests it, not just trusts the
   cheap gate.
 
-Any failure → `Stale(reason)` (`Incomplete` | `HashMismatch` | `Corrupt` |
-`OrphanFiles` | `SchemaDrift`). `Miss` and `Stale` both ⇒ recompute. `--force`
-skips lookup and recomputes + overwrites.
+A `Stale(reason)` (`Incomplete` | `Corrupt` | `OrphanFiles` | `SchemaDrift`)
+means *this identity's* leaf is present but unusable → recompute in place (after
+the safe-clear check below). A `Miss` means absent → compute. **A
+`PathPrefixCollision` is neither** → the path is occupied by a different
+identity; allocate a disambiguated path and never touch the incumbent. `--force`
+skips the cheap/integrity gate but **not** the identity gate — it recomputes its
+*own* identity, never overwrites a mismatched one.
+
+**Path existence never implies identity — the rule that prevents data loss.**
+Before any `remove_dir_all`, any "lost-race → Hit," or any overwrite, read the
+incumbent `run.json` and compare full level hashes to `expected`:
+
+- *full hashes match, status stale/corrupt* → safe to clear and recompute;
+- *full hashes differ* → `PathPrefixCollision`: the 8-char segment aliased two
+  distinct full hashes (possible for runs differing in a single level among a
+  very large sibling set). Allocate a disambiguated path
+  (`{label}-{hash8}~{hash16}/`) for the new run; the incumbent is untouched;
+- *no `run.json`* → treat as this identity's incomplete run only if the path is
+  unambiguously claimed by `expected` (e.g. a live `O_EXCL` lock for it),
+  otherwise quarantine for manual repair rather than clearing.
+
+This applies equally to `results/models/{source_h8}/` (a compile-cache short-hash
+collision must disambiguate, not overwrite the other model's IR).
 
 **Durable commit is new code.** Nothing in the tree fsyncs today; `rename`
 without a barrier is *not* crash-atomic (a durable dir entry can point at an
@@ -480,10 +535,13 @@ profile-point — single-shot). Write all artifacts + `run.json`
 `results/.staging/{run_id}` *on the same filesystem as `results/`* (a
 cross-mount staging dir makes the rename non-atomic — keep `.staging` under
 `results/`), apply the fsync ordering above, then `rename(staging, final)`. A
-reader never sees a half-written leaf. If `final` exists (lost a race) → discard
-staging, treat as Hit. Orphaned `.staging/*` from a crash is swept on the next
-store open. This *replaces* today's `traj.tsv`-existence check and non-atomic
-batch writes.
+reader never sees a half-written leaf. If `final` exists when the rename is
+attempted, **run `lookup(final, expected)` — never assume existence means hit**:
+a matching-identity `Completed` → discard staging, return Hit (lost a benign
+race); a `PathPrefixCollision` → rename staging to the disambiguated path
+instead; a same-identity `Stale` → safe-clear `final` and rename. Orphaned
+`.staging/*` from a crash is swept on the next store open. This *replaces*
+today's `traj.tsv`-existence check and non-atomic batch writes.
 
 **Commit — mode B: streamed `Running → Completed`** (fit stages — long,
 streaming, resumable; can't stage-then-rename because outputs must be visible
@@ -494,11 +552,14 @@ exclusively**: create `{stage_dir}/.lock` with `O_EXCL` (`create_new(true)`)
 shared chain files — without this, two concurrent identical fits corrupt one
 artifact (the proposal previously mis-stated this as "loser recomputes," which
 is Mode A's property). A `Running` `run.json` whose lock-holder PID is dead is a
-reclaimable stale claim. **Recompute clears first:** on `Stale`, `remove_dir_all`
-the leaf and recreate before streaming — production today has *no* such clean
-(only `#[cfg(test)]` does), so a crashed longer run's orphan
-`trajectory_*.tsv`/`chain_*` would otherwise survive into the new `Completed`
-artifact. Then: write `run.json` `Running`, stream chains (each new file
+reclaimable stale claim. **Recompute clears first — but only after the
+identity check:** on a *same-identity* `Stale`, `remove_dir_all` the leaf and
+recreate before streaming (production today has *no* such clean — only
+`#[cfg(test)]` does — so a crashed longer run's orphan `trajectory_*.tsv`/`chain_*`
+would otherwise survive into the new `Completed` artifact). On a
+`PathPrefixCollision` (incumbent `run.json` has different full hashes), **never
+clear** — disambiguate to a collision path; deleting it would destroy a valid
+artifact that merely shares the 8-char prefix. Then: write `run.json` `Running`, stream chains (each new file
 `sync_all`'d), and commit by writing `run.json.tmp` (`Completed`, full manifest)
 → `sync_all` → `rename` over `run.json` (the single-file rename is the commit
 point) → `sync_all` the dir. A crash leaves `Running` → next lookup
@@ -515,15 +576,18 @@ concurrent identical fits, but it does not corrupt. No TTLs, no background GC.
 fully-resolved leaf inputs. Shared steps:
 
 1. **Compile-or-cache IR.** `source_h = hash(.camdl bytes + camdlc_version +
-   inlined compile-time table digests)`. Look up `results/models/{source_h8}/`;
-   on miss run camdlc once and store. Load the canonical IR → `ModelDigest`.
+   IR-affecting camdlc argv)`. Look up `results/models/{source_h8}/`, re-verify
+   the recorded `reads.json` table digests; on miss run camdlc once and store
+   (IR + `reads.json`). Load the canonical IR → `ModelDynamicsDigest` /
+   `ObservationDigest` / `OutputDigest` (M2 interim: one whole-IR `ModelDigest`).
 2. **Params.** Merge sources in precedence order (file < `--params` < `--param`
    < resolved `--param-vec`) into a canonical `BTreeMap<ParamId, FiniteF64>`;
    `--table PATH` → `DataDigest` (hash of *content*, not path). `NaN`/`Inf` →
    `ResolveError::NonFiniteParam`.
 3. **Scenario.** Named scenario from the IR, or ad-hoc `--enable`/`--disable`/
    `--set` → a canonical `ResolvedScenario` delta (sorted id-sets + sorted
-   patch). Baseline = empty delta → `scen_h8 = 00000000`.
+   patch). The empty delta hashes to its **real** `scen_h8`; `baseline` is the
+   display label only (never a literal zero hash in `run_id`).
 4. **Config.** backend, dt, t_start, t_end, output schedule resolved to concrete
    cadence/times, calendar mode, `allow_degenerate_rates`.
 5. **Expand.** Sweep grids / design draws / `--seeds` → the Cartesian product →
@@ -622,12 +686,25 @@ pub trait Run {
 }
 
 // Per-level digests — each derives the macro, hashed include-by-default.
+// The model IR splits into three digests so an obs-only edit does not
+// re-key (and resimulate) the latent trajectory — preserving "--obs is passive":
 #[derive(RunInput)]
-pub struct ModelDigest {
-    pub ir: CanonicalIr,
-    pub ir_version: IrVersion,
-    pub engine: EngineVersion,
+pub struct ModelDynamicsDigest {     // what determines the latent trajectory
+    pub compartments, pub transitions, pub ode_equations,
+    pub events, pub balance, pub initial_conditions,
+    pub time_functions, pub tables_used_by_dynamics,
+    pub interventions_affecting_dynamics,
+    pub origin, pub time_unit,        // only if they drive dynamics/schedules
+    pub ir_version: IrVersion, pub engine: EngineVersion,
 }
+#[derive(RunInput)]
+pub struct ObservationDigest {       // the full measurement model (NOT just names)
+    pub projections, pub likelihood_families, pub likelihood_params,
+    pub diagnostic_corrections, pub aux_columns, pub schedules,
+    pub missing_window_semantics, pub synthetic_obs_schema,
+}
+#[derive(RunInput)]
+pub struct OutputDigest { pub trajectory_output_schedule, pub flow_quantities }
 
 #[derive(RunInput)]
 pub struct SimConfig {
@@ -655,26 +732,37 @@ pub struct ResolvedScenario {
 
 // Leaf inputs compose the level digests; provenance fields are excluded from the hash.
 #[derive(RunInput)]
-pub struct TrajectoryInput {
-    pub model: ModelDigest,
+pub struct TrajectoryInput {          // latent dynamics only — NOT the obs model
+    pub dynamics: ModelDynamicsDigest,
+    pub output: OutputDigest,
     pub config: SimConfig,
     pub params: ResolvedParams,
     pub scenario: ResolvedScenario,
-    pub seed: Seed,
+    pub seed: Seed,                   // hashed = resolved process_seed
     #[run_input(provenance)]
     pub display: RunProvenance,
 }
 
 // Other leaves, same pattern:
-//   SyntheticObsInput { trajectory: ArtifactRef, streams, schedule, obs_seed, .. }
-//   FitStageInput     { fit: FitDigest, stage: StageConfig, deps: Vec<ArtifactRef>, target_length, seed, .. }
-//   PfilterEvalInput  { model: ModelDigest, data: Vec<DataDigest>, params: ResolvedParams, particles, config, seed }
+//   SyntheticObsInput { trajectory: ArtifactRef, obs: ObservationDigest, streams, plan, obs_seed }
+//   FitStageInput     { fit: FitDigest, stage: StageConfig, deps: Vec<ArtifactRef>, target_length, seed }
+//   PfilterEvalInput  { dynamics, obs: ObservationDigest, data: ResolvedObs, params, particles, config, seed }
 //   SurveyInput, ProjectionInput (lineage), GroupInput (derived summaries only)
 ```
 
-`ArtifactRef` is another artifact's identity used as an input field (lineage).
-`Artifacts` is a bundle (e.g. `{traj, event_log}` or
-`{paths, filtering, prequential}`). `RunRecord` (above) is read by prefix
+> **M2 may collapse the three model digests into one `ModelDigest = whole IR`**
+> for safety (over-invalidates an obs-only edit, never under-invalidates), and
+> **split into dynamics/observation/output in M2.5** to recover trajectory reuse.
+> State which you shipped; do not leave it ambiguous. Either way the obs leaf
+> hashes the full `ObservationDigest`, not just stream names + schedule.
+
+`ArtifactRef` identifies the *consumed* artifact, not just its producing stage:
+`{ run_id, kind, artifact: "mle_params.toml", digest }`. Hashing it folds in the
+32-byte `digest` of the specific file consumed, so a change to a *sibling*
+artifact (a diagnostic, a trace layout) under the same stage does not invalidate
+the consumer, and a bug in artifact selection can't slip through. `Artifacts` is
+a bundle (e.g. `{traj, event_log}` or `{paths, filtering, prequential}`).
+`RunRecord` (above) is read by prefix
 resolution and `show`/`cat`, never the path.
 
 ### `#[derive(RunInput)]` (crate `runid-derive`, `proc-macro = true`)
@@ -715,6 +803,15 @@ member identities — `compare` (`FoldElpd` over fit-stage prequential refs),
 ensemble quantiles — added one `GroupKind` at a time, never a summary DSL.
 Per-chain convergence (R̂/ESS) is computed *inside* the fit-stage artifact, not
 as a group (chains aren't separate artifacts).
+
+**Storage dedups, analysis preserves multiplicity.** Content-addressing collapses
+two draw rows with identical resolved params + seed to one leaf — correct for
+storage, wrong for a posterior that needs both to count as two draws. So a
+batch/draw result carries an **ordered index** (`draw_index → ArtifactRef`) where
+indices 17 and 42 may point to the *same* `run_id`; downstream (posterior
+predictive, ensemble weights) reads multiplicity from the index, not from the
+distinct-leaf count. Make this index explicit before posterior-predictive
+workflows consume the new CAS.
 
 ## What this replaces / fixes (current state, verified — gh#147)
 
@@ -855,12 +952,18 @@ not just `hashing.rs`.
    **the seed level hashes the resolved `process_seed`/`obs_seed`, never the
    base `--seed`**; draw rows hash their resolved param values, not the design.
 2. Include-by-default per level; provenance is the only exclusion, annotated.
-3. Paths are readable nested `{label}-{hash8}`; labels are provenance, hashes are
-   identity; navigation + display read `run.json`, never the path shape.
+3. Paths are readable nested `{label}-{hash8}`; **every semantic level carries
+   its hash in the segment — no level is label-only** (the seed segment is
+   `seed_{base}-{seed_h8}`; the empty scenario is `baseline-{scen_h8}` with its
+   real hash, not a literal zero). Labels are provenance, hashes are identity;
+   navigation + display read `run.json`, never the path shape.
 4. A cache hit requires `run.json` present, `status == Completed`, hashes match,
-   the artifact set **exactly** matches the manifest (no missing *and no orphan*
-   files) at recorded size+mtime, schema/hash versions current; full blake3 on
-   demand. Commit is durable (mode A) or `Running → Completed` (mode B).
+   the artifact set **exactly** matches the manifest — no missing and no orphan,
+   *except declared `children` subdirs* (validated recursively) — at recorded
+   size+mtime, schema/hash versions current; the content digest is verified at
+   consume time. Commit is durable (mode A) or streamed `Running → Completed`
+   (mode B). **Adding a child sub-artifact (e.g. `--obs`) never makes its parent
+   leaf stale.**
 5. Forward-sim/obs determinism stays gate-green; inference is content-addressed
    only with the watchdog disabled and resume treated as a distinct artifact
    (which means resume is **rewritten** to read the prior artifact read-only and
@@ -868,9 +971,13 @@ not just `hashing.rs`.
 6. **Durability is explicit code.** Commit fsyncs each artifact + `run.json` +
    the containing dir before `rename`, and fsyncs the destination's parent after.
    Staging is on the same filesystem as `results/`. Mode B claims its leaf via
-   `O_EXCL` before streaming and clears the leaf (`remove_dir_all`) before any
-   recompute. Lineage/`deps` fold in upstream **identities** (`run_id`), never
-   paths.
+   `O_EXCL` before streaming. Lineage/`deps` fold in the **consumed artifact's
+   identity** (`run_id` + artifact digest), never paths.
+7. **Path existence never implies identity.** Before any hit, clear, or
+   overwrite, read the incumbent `run.json` and compare full level hashes: match
+   → proceed; differ → `PathPrefixCollision`, allocate a disambiguated path and
+   **never delete the incumbent**. No `remove_dir_all` without a verified
+   same-identity match. This applies to `results/models/` too.
 
 ## What NOT to do
 
@@ -882,7 +989,10 @@ not just `hashing.rs`.
   in the tree fsyncs today.
 - No in-place resume — resume reads the prior leaf read-only and writes a new one.
 - No existence-only cache check, and no skipping the exact-set manifest to save
-  time — use the tiered check (size+mtime cheap, blake3 on demand).
+  time — use the tiered check (size+mtime cheap, digest at consume time).
+- No deleting or overwriting a path whose `run.json` full hashes don't match the
+  expected identity — that is a `PathPrefixCollision`, disambiguate it.
+- No treating a nested sub-artifact dir as an orphan — declare it in `children`.
 - No grouping engine / summary DSL — reserve `GroupInput`, add kinds singly.
 - No bespoke "one-off fit" shape — `camdl if2` is a one-stage fit.
 - Do not content-address fits before the M3 engine fixes land.
@@ -958,11 +1068,21 @@ Deferred: additional `GroupKind`s, a compiled-IR GC, run-spec CAS-default output
   on a collapse-firing model → distinct key; `--dates` → same key; partial
   `traj.tsv` without a Completed `run.json` → not a hit (batch + single agree).
 - **Resolved-seed collision.** Lone `--param beta=2 --seed 42` vs the `beta=2`
-  point of `--sweep beta=1,2 --seed 42` → **distinct** `run_id`.
+  point of `--sweep beta=1,2 --seed 42` → **distinct paths** (assert the
+  `seed_*-{h8}` dirs differ, not just the `run_id`).
+- **Child namespace vs exact-set.** Running `simulate` then `simulate --obs` on
+  the same trajectory → the trajectory leaf is **still a Hit** (the `obs/` child
+  is not an orphan), and the obs sub-artifact is its own leaf.
+- **Path-prefix collision (no data loss).** Force two distinct full hashes onto
+  one 8-char segment → the second run gets a disambiguated path, the incumbent's
+  bytes are untouched, and neither lookup nor `--force` deletes the other.
 - **Keyed sub-artifacts.** Obs-sub-artifact key and compile-cache key each get a
   red→green test, not only the trajectory key.
 - **Compile cache.** A changed `read()` table file → miss (recompile); a changed
   IR-affecting camdlc flag → distinct `source_h`.
+- **Parallel determinism.** `simulate`, `batch`, and `simulate --obs` at
+  `--parallel 1` vs `8` → identical `run_id` and identical bytes (pins that thread
+  count is provenance for the forward path too, not only fits).
 - **Concurrency / crash.** Two threads commit the same sim → one wins the rename,
   both observe `Completed`, artifacts intact. Crash-injection between each fsync
   step → no `Completed` record ever points at unflushed bytes.
