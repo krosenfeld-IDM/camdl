@@ -52,7 +52,10 @@ fn tempdir(tag: &str) -> Tmp {
 fn model_hash_for_test(ir_json: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(ir_json)
         .expect("model_hash_for_test: invalid JSON");
-    let obj = v.as_object().expect("model_hash_for_test: expected object");
+    let envelope = v.as_object().expect("model_hash_for_test: expected object");
+    // gh#135: descend into the `model` envelope key (mirror of the
+    // production fix in hashing.rs); tolerate a bare inner model.
+    let obj = envelope.get("model").and_then(|m| m.as_object()).unwrap_or(envelope);
     let mut h = Sha256::new();
     let structural_keys = [
         "compartments", "transitions", "parameters", "tables",
