@@ -31,3 +31,40 @@ design rationale — don't delete it.
 Use the date the proposal was first written, not the implementation
 date. The slug should be descriptive enough to find by scanning
 filenames: `events-block`, `balance-compartment`, `cooling-schedule`.
+
+## Archive (epochs)
+
+The top-level `proposals/` directory holds the **currently-live** set:
+proposals whose Status is `Proposal`, `Accepted`, or otherwise still
+shaping unlanded work. Once a proposal is fully `Implemented` or
+`Superseded` and belongs to a *closed* release epoch, move it into an
+epoch subdirectory so the live set stays scannable (the "read the
+relevant proposals first" rule has a read cost proportional to how many
+live-looking docs there are):
+
+```
+docs/dev/proposals/archive/<epoch>/YYYY-MM-DD-slug.md
+```
+
+Epochs are bounded by release tags:
+
+- `archive/pre-alpha/` — implemented or superseded before the
+  `v0.1.0-alpha` tag (2026-05-15).
+- future: `archive/0.1/`, `archive/0.2/`, … one per release line.
+
+Moving a proposal to the archive is a pure `git mv` — its Status header
+already records `Implemented: commit <sha>` / `Superseded by:`, so the
+archive is physical tidying, not a content change. Do **not** archive a
+proposal that is still `Proposal`/`Accepted` or that has unlanded
+follow-ups; an archived proposal asserts "this epoch's design question
+is closed."
+
+### Release tags / versioning (for reference)
+
+- **Git release tags** are annotated, semver, `vX.Y.Z[-pre]`, tracking
+  the Rust workspace version in `rust/Cargo.toml`. First tag:
+  `v0.1.0-alpha` (alpha, breaking changes still expected). Bump the
+  Cargo version at each release so the tag and the crate agree.
+- **`ir/VERSION`** (the OCaml↔Rust IR schema contract) is **independent**
+  of the release version — it bumps only on a schema-breaking IR change,
+  per the "Changing the IR schema" procedure. Currently `0.7`.
