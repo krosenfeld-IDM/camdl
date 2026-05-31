@@ -96,15 +96,15 @@ pub fn record_event_log(
     let traj = match backend {
         Backend::Gillespie => {
             let cfg = GillespieConfig { t_start: 0.0, t_end, output_dt: None };
-            run_gillespie_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder)).unwrap()
+            run_gillespie_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder), None).unwrap()
         }
         Backend::TauLeap { dt } => {
             let cfg = TauLeapConfig { t_start: 0.0, t_end, dt };
-            run_tau_leap_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder)).unwrap()
+            run_tau_leap_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder), None).unwrap()
         }
         Backend::ChainBinomial { dt } => {
             let cfg = ChainBinomialConfig { t_start: 0.0, t_end, dt };
-            run_chain_binomial_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder))
+            run_chain_binomial_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder), None)
                 .unwrap()
         }
     };

@@ -48,7 +48,7 @@ pub fn run_tau_leap(
     seed: u64,
     cfg: &TauLeapConfig,
 ) -> Result<Trajectory, SimError> {
-    run_tau_leap_with_observer(model, params, seed, cfg, None)
+    run_tau_leap_with_observer(model, params, seed, cfg, None, None)
 }
 
 /// Tau-leap run with an optional [`TransitionObserver`] (individual-sampling
@@ -65,6 +65,9 @@ pub fn run_tau_leap_with_observer(
     seed: u64,
     cfg: &TauLeapConfig,
     mut observer: Option<&mut dyn TransitionObserver>,
+    // Per-timestep progress tick (RNG-free; `None` == byte-identical). See
+    // chain_binomial.rs and tests/progress_tick_invariance.rs.
+    mut tick: Option<&mut dyn FnMut(f64)>,
 ) -> Result<Trajectory, SimError> {
     let (mut int_s, mut real_s) = model.initial_state(params)?;
     let n_transitions = model.model.transitions.len();
@@ -101,6 +104,9 @@ pub fn run_tau_leap_with_observer(
     }
 
     while t < cfg.t_end {
+        // Progress tick: report current time before drawing this step. RNG-free.
+        if let Some(cb) = tick.as_deref_mut() { cb(t); }
+
         // Determine actual step (might be truncated by boundary)
         let next_boundary = {
             let out_t = output_times.get(output_idx).copied().unwrap_or(f64::INFINITY);

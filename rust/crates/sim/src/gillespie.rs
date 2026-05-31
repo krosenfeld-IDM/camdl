@@ -59,7 +59,7 @@ pub fn run_gillespie(
     seed: u64,
     cfg: &GillespieConfig,
 ) -> Result<Trajectory, SimError> {
-    run_gillespie_with_observer(model, params, seed, cfg, None)
+    run_gillespie_with_observer(model, params, seed, cfg, None, None)
 }
 
 /// Gillespie run with an optional [`TransitionObserver`] attached to the event
@@ -76,6 +76,10 @@ pub fn run_gillespie_with_observer(
     seed: u64,
     cfg: &GillespieConfig,
     mut observer: Option<&mut dyn TransitionObserver>,
+    // Per-event progress tick (RNG-free; `None` == byte-identical). Gillespie
+    // is event-driven, so this fires once per event with the current time `t`.
+    // See chain_binomial.rs and tests/progress_tick_invariance.rs.
+    mut tick: Option<&mut dyn FnMut(f64)>,
 ) -> Result<Trajectory, SimError> {
     let (mut int_s, mut real_s) = model.initial_state(params)?;
 
@@ -139,6 +143,9 @@ pub fn run_gillespie_with_observer(
 
     loop {
         if t >= cfg.t_end { break; }
+
+        // Progress tick: report current time before drawing this event. RNG-free.
+        if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
         // If lambda_total looks zero (from incremental drift or genuine absorbing state),
         // do a full recompute to verify before treating as absorbing.

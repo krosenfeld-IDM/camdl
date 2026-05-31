@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use ir::intervention::Intervention;
 use sim::{
     CompiledModel, GillespieSim, TauLeapSim, ChainBinomialSim, OdeSim,
-    config::{GillespieConfig, TauLeapConfig, ChainBinomialConfig, OdeConfig, SimConfig},
+    config::{GillespieConfig, TauLeapConfig, ChainBinomialConfig, OdeConfig},
     simulate::Simulate,
     Trajectory,
 };
@@ -325,7 +325,7 @@ pub(crate) fn run_camdlc(camdl_path: &str) -> Result<String, String> {
     // stderr keeps it off stdout (the IR JSON), and a plain line with no
     // carriage returns is safe under `tee`/CI.
     if crate::progress::is_plain() {
-        eprintln!("compiling {model_name} …");
+        eprintln!("compiling {model_name}...");
     }
 
     // Pretty mode draws to stderr; plain/none resolve to a hidden target, so
@@ -337,7 +337,7 @@ pub(crate) fn run_camdlc(camdl_path: &str) -> Result<String, String> {
         indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
             .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
     );
-    spinner.set_message(format!("compiling {model_name} …"));
+    spinner.set_message(format!("compiling {model_name}..."));
     spinner.enable_steady_tick(std::time::Duration::from_millis(120));
 
     // The blocking subprocess call — unchanged from the un-instrumented path.
@@ -1488,47 +1488,120 @@ pub fn resolve_run_model(run: &SimRun) -> Result<(CompiledModel, ir::Model), Str
 
 /// Run a simulation and return the full trajectory.
 pub fn run_simulation(run: &SimRun) -> Result<(Trajectory, ir::Model), String> {
+    run_simulation_with_progress(run, None)
+}
+
+/// Like [`run_simulation`], but with an optional per-timestep progress bar.
+///
+/// `progress = None` reproduces [`run_simulation`] byte-for-byte (it dispatches
+/// through the same backend functions, just with a `None` tick — see
+/// `tests/progress_tick_invariance.rs` for the byte-identity proof). When
+/// `Some(pb)` is passed, the bar's position is advanced to the current
+/// simulation time `t` once per timestep via an RNG-free tick closure, giving
+/// the `t/t_end` + ETA display for single `camdl simulate` runs. Only the
+/// single-cell caller passes `Some(..)`; ensembles pass `None` (they have an
+/// outer per-cell bar instead).
+pub fn run_simulation_with_progress(
+    run: &SimRun,
+    progress: Option<&indicatif::ProgressBar>,
+) -> Result<(Trajectory, ir::Model), String> {
+    // Resolve/compile first, THEN run. Callers that show a simulate progress
+    // bar must compile before the bar exists (see `simulate_compiled` and
+    // `engine::run_one_cell_with_progress`) — but for the no-bar path the order
+    // is immaterial, so this thin wrapper is byte-identical to the old body.
     let (compiled, model) = resolve_run_model(run)?;
+    let traj = simulate_compiled(&compiled, &model, run, progress)?;
+    Ok((traj, model))
+}
+
+/// Run an **already-resolved** model, optionally driving a per-timestep
+/// progress bar.
+///
+/// Split out from [`run_simulation_with_progress`] to fix a rendering bug: the
+/// compile step (`camdlc`, reached via [`resolve_run_model`]) shows its own
+/// indicatif spinner, and the simulate bar is a second indicatif object. Two
+/// draw targets active on stderr at once stomp each other's lines — a garbled
+/// bar, and a compile-spinner line left orphaned on screen (the reported
+/// Ctrl-C residue). The single-cell caller resolves FIRST (spinner draws and
+/// clears), then constructs the bar, then calls this — so only one indicatif
+/// target is ever live. `progress = None` is byte-identical to the bar-less
+/// path (the tick is RNG-free; see `tests/progress_tick_invariance.rs`).
+pub fn simulate_compiled(
+    compiled: &CompiledModel,
+    model: &ir::Model,
+    run: &SimRun,
+    progress: Option<&indicatif::ProgressBar>,
+) -> Result<Trajectory, String> {
     let params  = compiled.default_params.clone();
     let t_start = model.simulation.t_start;
     let t_end   = model.simulation.t_end;
 
     use crate::args::types::Backend;
-    let config = match run.backend {
-        Backend::Gillespie     => SimConfig::Gillespie(GillespieConfig { t_start, t_end, output_dt: None }),
-        Backend::TauLeap       => SimConfig::TauLeap(TauLeapConfig { t_start, t_end, dt: run.dt }),
-        Backend::ChainBinomial => SimConfig::ChainBinomial(ChainBinomialConfig { t_start, t_end, dt: run.dt }),
-        Backend::Ode           => SimConfig::Ode(OdeConfig { t_start, t_end, dt: run.dt }),
-    };
 
-    // Check backend compatibility before running
+    // Check backend compatibility before running (same gate as the
+    // trait-dispatch path; kept so the error wording is unchanged).
     let backend: &dyn Simulate = match run.backend {
         Backend::Gillespie     => &GillespieSim,
         Backend::TauLeap       => &TauLeapSim,
         Backend::ChainBinomial => &ChainBinomialSim,
         Backend::Ode           => &OdeSim,
     };
-    let unsupported = compiled.required_capabilities() - backend.capabilities();
-    if !unsupported.is_empty() {
-        let mut features = Vec::new();
-        if unsupported.contains(sim::Capabilities::OVERDISPERSION) {
-            features.push("OVERDISPERSION: transitions with overdispersion require --backend tau_leap or chain_binomial");
-        }
-        if unsupported.contains(sim::Capabilities::REAL_COMPARTMENTS) {
-            features.push("REAL_COMPARTMENTS: real-valued compartments with ODE equations");
-        }
+    let caps = backend.capabilities();
+    let required = compiled.required_capabilities();
+    if !caps.contains(required) {
+        let missing = required.difference(caps);
         return Err(format!(
-            "model requires capabilities not supported by backend '{}':\n  - {}",
-            backend.name(), features.join("\n  - ")
+            "backend {:?} does not support required capabilities: {:?}",
+            run.backend, missing
         ));
     }
 
-    let traj = backend.run(&compiled, &params, run.seed, &config)
-        .map_err(|e| format!("simulation error: {:?}", e))?;
+    // Tick closure: advance the bar to the current sim time. Read-only, RNG-free
+    // (the backends call it before any draw). We scale by 1000 so a unit-`dt`
+    // run still gets smooth motion on the integer-position bar, and clamp to the
+    // configured length.
+    let span = (t_end - t_start).max(1e-9);
+    let mut tick = |t: f64| {
+        if let Some(pb) = progress {
+            let frac = ((t - t_start) / span).clamp(0.0, 1.0);
+            pb.set_position((frac * 1000.0) as u64);
+        }
+    };
+    let mut tick_opt: Option<&mut dyn FnMut(f64)> =
+        if progress.is_some() { Some(&mut tick) } else { None };
 
-    Ok((traj, model))
+    let traj = match run.backend {
+        Backend::Gillespie => {
+            let cfg = GillespieConfig { t_start, t_end, output_dt: None };
+            sim::gillespie::run_gillespie_with_observer(
+                compiled, &params, run.seed, &cfg, None, tick_opt.as_deref_mut(),
+            )
+        }
+        Backend::TauLeap => {
+            let cfg = TauLeapConfig { t_start, t_end, dt: run.dt };
+            sim::tau_leap::run_tau_leap_with_observer(
+                compiled, &params, run.seed, &cfg, None, tick_opt.as_deref_mut(),
+            )
+        }
+        Backend::ChainBinomial => {
+            let cfg = ChainBinomialConfig { t_start, t_end, dt: run.dt };
+            sim::chain_binomial::run_chain_binomial_with_observer(
+                compiled, &params, run.seed, &cfg, None, tick_opt.as_deref_mut(),
+            )
+        }
+        Backend::Ode => {
+            let cfg = OdeConfig { t_start, t_end, dt: run.dt };
+            sim::ode::run_ode(compiled, &params, &cfg, tick_opt.as_deref_mut())
+        }
+    }
+    .map_err(|e| format!("simulation error: {:?}", e))?;
+
+    if let Some(pb) = progress {
+        pb.set_position(1000);
+    }
+
+    Ok(traj)
 }
-
 /// Run a simulation with the Layer-1 lineage **event recorder** attached, and
 /// return the count trajectory, resolved model, the recorded [`EventLog`], and
 /// whether the backend was exact (Gillespie). The recorder draws no identities;
@@ -1602,19 +1675,19 @@ pub fn run_simulation_event_log(
         Backend::Gillespie => {
             let cfg = GillespieConfig { t_start, t_end, output_dt: None };
             sim::gillespie::run_gillespie_with_observer(
-                &compiled, &params, run.seed, &cfg, Some(&mut recorder),
+                &compiled, &params, run.seed, &cfg, Some(&mut recorder), None,
             )
         }
         Backend::TauLeap => {
             let cfg = TauLeapConfig { t_start, t_end, dt: run.dt };
             sim::tau_leap::run_tau_leap_with_observer(
-                &compiled, &params, run.seed, &cfg, Some(&mut recorder),
+                &compiled, &params, run.seed, &cfg, Some(&mut recorder), None,
             )
         }
         Backend::ChainBinomial => {
             let cfg = ChainBinomialConfig { t_start, t_end, dt: run.dt };
             sim::chain_binomial::run_chain_binomial_with_observer(
-                &compiled, &params, run.seed, &cfg, Some(&mut recorder),
+                &compiled, &params, run.seed, &cfg, Some(&mut recorder), None,
             )
         }
         Backend::Ode => unreachable!("ODE rejected above"),

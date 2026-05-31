@@ -214,7 +214,18 @@ pub fn run_job(job: &SimulateJob, sink: &mut dyn RunSink) -> Result<(), String> 
 
     // Simulation phase. Each cell is independent; run sequentially or via
     // Rayon. Results carry their spec so the merge can stay ordered.
-    let results: Vec<Result<CellResult, String>> = if grid.parallel > 1 {
+    //
+    // Single-cell special case: a lone `camdl simulate` run (one scenario ×
+    // one param-point × one replicate) shows a per-timestep `t/t_end` + ETA
+    // progress bar so the user isn't staring at a silent terminal for ~45s.
+    // The bar is driven by an RNG-free tick threaded into the backend loop
+    // (see `util::run_simulation_with_progress`); the multi-cell path passes
+    // `None` and is byte-identical. Ensembles keep the existing behaviour
+    // (no inner bar in this commit — the sink owns any per-cell bar).
+    let results: Vec<Result<CellResult, String>> = if grid.total_runs == 1 && to_run.len() == 1 {
+        let spec = to_run.into_iter().next().expect("len checked == 1");
+        vec![run_one_cell_with_progress(spec)]
+    } else if grid.parallel > 1 {
         to_run
             .into_par_iter()
             .map(run_one_cell)
@@ -238,6 +249,74 @@ fn run_one_cell(spec: CellSpec) -> Result<CellResult, String> {
     Ok(CellResult { spec, traj, model })
 }
 
+/// Run a lone cell with a per-timestep `t/t_end` + ETA progress bar on stderr.
+///
+/// Respects the `--progress` mode via `crate::progress`:
+///   - Pretty (TTY): a live steady-tick bar
+///     `simulate · <backend>  ████░░ ETA 11s`, positioned by an RNG-free tick
+///     (so the trajectory is byte-identical to the bar-less path), cleared on
+///     completion.
+///   - Plain (off-TTY): the bar's draw target is hidden; we emit a single
+///     status line instead so logs/CI show motion without carriage returns.
+///   - None: nothing — falls straight through to the byte-identical
+///     `run_one_cell` (no bar, no line).
+fn run_one_cell_with_progress(spec: CellSpec) -> Result<CellResult, String> {
+    use crate::args::types::Backend;
+
+    if crate::progress::is_none() {
+        return run_one_cell(spec);
+    }
+
+    // Resolve/compile the model BEFORE the simulate bar exists. The compile
+    // step (camdlc, via resolve_run_model) shows its own spinner; if the
+    // simulate bar were already steady-ticking, the two indicatif draw targets
+    // would stomp each other on stderr (garbled bar; an orphaned compile-
+    // spinner line left on screen, the reported Ctrl-C residue). Serializing
+    // them is the fix: the compile spinner finishes and clears here, then the
+    // simulate bar starts. resolve_run_model is the same call run_one_cell
+    // makes via util::run_simulation, so this does not double-compile.
+    let (compiled, model) = util::resolve_run_model(&spec.sim_run)?;
+
+    let backend = match spec.sim_run.backend {
+        Backend::Gillespie => "gillespie",
+        Backend::TauLeap => "tau_leap",
+        Backend::ChainBinomial => "chain_binomial",
+        Backend::Ode => "ode",
+    };
+
+    // Length 1000 matches the tick's `frac * 1000` scale in
+    // `util::simulate_compiled`. Hidden in plain/none modes.
+    let pb = indicatif::ProgressBar::with_draw_target(
+        Some(1000),
+        crate::progress::draw_target(),
+    );
+    // indicatif 0.17's `{bar}` element already renders a trailing percentage,
+    // so the template deliberately omits a separate `{percent}` (a `{percent}`
+    // produced a duplicated "61%  61%" in testing). Bar + ETA is the display.
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(
+            "simulate \u{b7} {prefix}  {bar:24.cyan/blue} ETA {eta}",
+        )
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+        .progress_chars("\u{2588}\u{2591} "),
+    );
+    pb.set_prefix(backend.to_string());
+    // Steady-tick redraw (separate render thread; never touches the sim) so
+    // the bar appears and the ETA updates smoothly between `set_position`
+    // calls. A no-op against a hidden draw target (plain/none).
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    if crate::progress::is_plain() {
+        // One up-front line; the live bar is invisible off-TTY (hidden target).
+        log::info!("simulate \u{b7} {backend}: running \u{2026}");
+    }
+
+    let result = util::simulate_compiled(&compiled, &model, &spec.sim_run, Some(&pb))
+        .map(|traj| CellResult { spec, traj, model });
+
+    pb.finish_and_clear();
+    result
+}
 /// Effective replicate count. With explicit seeds, replicate count tracks
 /// the seed-list length (each seed is one seed-slot); otherwise it is the
 /// `ParamSource`'s replicate count (Draws) or 1.

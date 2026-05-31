@@ -27,7 +27,7 @@ impl Simulate for OdeSim {
                 got: config.variant_name(),
             }),
         };
-        run_ode(model, params, cfg)
+        run_ode(model, params, cfg, None)
     }
 
     fn capabilities(&self) -> crate::Capabilities {
@@ -152,10 +152,17 @@ fn to_states(int_vals: &[f64], real_vals: &[f64]) -> (IntState, RealState) {
     (int_s, real_s)
 }
 
-fn run_ode(
+/// Deterministic ODE integration.
+///
+/// `tick` is an optional per-timestep progress callback, called once at the
+/// top of each step with the current time `t`. ODE has no RNG, so the tick
+/// trivially cannot perturb the trajectory; `None` and `Some(..)` produce
+/// byte-identical output (asserted in tests/progress_tick_invariance.rs).
+pub fn run_ode(
     model: &CompiledModel,
     params: &[f64],
     cfg: &OdeConfig,
+    mut tick: Option<&mut dyn FnMut(f64)>,
 ) -> Result<Trajectory, SimError> {
     let (int_s0, real_s0) = model.initial_state(params)?;
     let mut int_vals: Vec<f64> = int_s0.counts.iter().map(|&c| c as f64).collect();
@@ -196,6 +203,10 @@ fn run_ode(
     }
 
     while t < cfg.t_end {
+        // Progress tick: report current time before this step. RNG-free (ODE
+        // has no RNG at all).
+        if let Some(cb) = tick.as_deref_mut() { cb(t); }
+
         let next_boundary = {
             let out_t = output_times.get(output_idx).copied().unwrap_or(f64::INFINITY);
             let iv_t  = iv_times.get(iv_idx).copied().unwrap_or(f64::INFINITY);
