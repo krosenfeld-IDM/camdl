@@ -1,5 +1,5 @@
 {
-  "ir_version": "0.6",
+  "ir_version": "0.7",
   "validated_by": "hand-curated-fixture",
   "model": {
     "name": "seir_spatial_5",
@@ -8031,7 +8031,6 @@
     "observations": [
       {
         "name": "cases_p1",
-        "data_stream": "cases_p1",
         "schedule": {
           "regular": {
             "start": 0.0,
@@ -8063,7 +8062,6 @@
       },
       {
         "name": "cases_p2",
-        "data_stream": "cases_p2",
         "schedule": {
           "regular": {
             "start": 0.0,
@@ -8095,7 +8093,6 @@
       },
       {
         "name": "cases_p3",
-        "data_stream": "cases_p3",
         "schedule": {
           "regular": {
             "start": 0.0,
@@ -8127,7 +8124,6 @@
       },
       {
         "name": "cases_p4",
-        "data_stream": "cases_p4",
         "schedule": {
           "regular": {
             "start": 0.0,
@@ -8159,7 +8155,6 @@
       },
       {
         "name": "cases_p5",
-        "data_stream": "cases_p5",
         "schedule": {
           "regular": {
             "start": 0.0,

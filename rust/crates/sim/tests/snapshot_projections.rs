@@ -59,7 +59,6 @@ fn model_with_obs(
         interventions: vec![],
         observations: vec![IrObservationModel {
             name: "obs".into(),
-            data_stream: "obs".into(),
             schedule: ObservationSchedule::AtTimes(vec![5.0]),
             projection,
             likelihood: Likelihood::Poisson(PoissonLikelihood {
@@ -324,7 +323,6 @@ fn snapshot_reads_post_intervention_state() {
         }],
         observations: vec![IrObservationModel {
             name: "obs".into(),
-            data_stream: "obs".into(),
             schedule: ObservationSchedule::AtTimes(vec![5.0]),
             projection: Projection::CurrentPop("S".into()),
             likelihood: Likelihood::Poisson(PoissonLikelihood {

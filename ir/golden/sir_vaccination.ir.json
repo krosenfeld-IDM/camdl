@@ -1,5 +1,5 @@
 {
-  "ir_version": "0.6",
+  "ir_version": "0.7",
   "validated_by": "hand-curated-ir-golden",
   "model": {
     "name": "sir_vaccination",
@@ -127,7 +127,6 @@
     "observations": [
       {
         "name": "reported_cases",
-        "data_stream": "cases",
         "schedule": {
           "regular": {
             "start": 7.0,

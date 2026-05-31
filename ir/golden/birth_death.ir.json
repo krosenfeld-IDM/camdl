@@ -1,5 +1,5 @@
 {
-  "ir_version": "0.6",
+  "ir_version": "0.7",
   "validated_by": "hand-curated-ir-golden",
   "model": {
     "name": "birth_death",
@@ -71,7 +71,6 @@
     "observations": [
       {
         "name": "count",
-        "data_stream": "X_obs",
         "schedule": {
           "regular": {
             "start": 1.0,

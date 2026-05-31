@@ -461,22 +461,19 @@ obs_list:
 
 obs_decl:
   | name = IDENT ibs = index_bindings_opt COLON LBRACE obs_kvs = list(obs_kv) RBRACE
-      { let ds = ref None in
-        let sched = ref None in
+      { let sched = ref None in
         let proj = ref None in
         let lik = ref None in
         List.iter (function
-          | `DataStream s -> ds := Some s
           | `Schedule sc  -> sched := Some sc
           | `Proj p       -> proj := Some p
           | `Lik l        -> lik := Some l
         ) obs_kvs;
-        { oname = name; oindices = ibs; odata_stream = !ds;
+        { oname = name; oindices = ibs;
           oschedule = !sched; oprojection = !proj; olikelihood = !lik;
           oloc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
 
 obs_kv:
-  | IDENT EQ s = STRING { `DataStream s }
   | EVERY EQ e = expr { `Schedule (ObsEvery e) }
   | AT_KW EQ LBRACKET ts = separated_list(COMMA, expr) RBRACKET { `Schedule (ObsTimes ts) }
   | IDENT EQ proj = obs_projection { `Proj proj }

@@ -244,7 +244,6 @@ type observation_schedule =
 
 type observation_model = {
   name:        string;
-  data_stream: string;
   schedule:    observation_schedule;
   projection:  projection;
   likelihood:  likelihood;

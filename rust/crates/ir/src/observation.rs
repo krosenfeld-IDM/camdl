@@ -82,7 +82,6 @@ pub enum ObservationSchedule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservationModel {
     pub name:        String,
-    pub data_stream: String,
     pub schedule:    ObservationSchedule,
     pub projection:  Projection,
     pub likelihood:  Likelihood,

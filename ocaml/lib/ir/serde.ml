@@ -710,7 +710,6 @@ let obs_schedule_of_json j =
 let observation_model_to_json (om : observation_model) : Yojson.Safe.t =
   obj [
     ("name",        str om.name);
-    ("data_stream", str om.data_stream);
     ("schedule",    obs_schedule_to_json om.schedule);
     ("projection",  projection_to_json om.projection);
     ("likelihood",  likelihood_to_json om.likelihood);
@@ -718,7 +717,6 @@ let observation_model_to_json (om : observation_model) : Yojson.Safe.t =
 
 let observation_model_of_json j =
   { name        = as_string (member "name"        j);
-    data_stream = as_string (member "data_stream" j);
     schedule    = obs_schedule_of_json (member "schedule"   j);
     projection  = projection_of_json  (member "projection" j);
     likelihood  = likelihood_of_json  (member "likelihood" j);

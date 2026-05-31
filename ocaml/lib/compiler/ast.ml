@@ -178,7 +178,6 @@ type likelihood_kind =
 type obs_decl = {
   oname       : string;
   oindices    : index_binding list;
-  odata_stream: string option;
   (* m12 in 2026-04-19 review: each of schedule/projection/likelihood
      is mandatory; an empty `cases: {}` block previously defaulted to
      Poisson(rate=1) every 1 time unit on an incidence projection,

@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.6",
-  "validated_by": "ocaml-compiler-v0.6",
+  "ir_version": "0.7",
+  "validated_by": "ocaml-compiler-v0.7",
   "model": {
     "name": "seir_spatial_5_inference",
     "version": "0.3",
@@ -3967,7 +3967,6 @@
     "observations": [
       {
         "name": "cases_p1",
-        "data_stream": "cases_p1",
         "schedule": {
           "regular": { "start": 0.0, "step": 7.0, "end": 365.0 }
         },
@@ -3987,7 +3986,6 @@
       },
       {
         "name": "cases_p2",
-        "data_stream": "cases_p2",
         "schedule": {
           "regular": { "start": 0.0, "step": 7.0, "end": 365.0 }
         },
@@ -4007,7 +4005,6 @@
       },
       {
         "name": "cases_p3",
-        "data_stream": "cases_p3",
         "schedule": {
           "regular": { "start": 0.0, "step": 7.0, "end": 365.0 }
         },
@@ -4027,7 +4024,6 @@
       },
       {
         "name": "cases_p4",
-        "data_stream": "cases_p4",
         "schedule": {
           "regular": { "start": 0.0, "step": 7.0, "end": 365.0 }
         },
@@ -4047,7 +4043,6 @@
       },
       {
         "name": "cases_p5",
-        "data_stream": "cases_p5",
         "schedule": {
           "regular": { "start": 0.0, "step": 7.0, "end": 365.0 }
         },

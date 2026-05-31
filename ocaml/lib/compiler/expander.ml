@@ -3773,25 +3773,7 @@ let expand_interventions ctx =
 
 let expand_observations ctx =
   List.concat_map (fun od ->
-    (* m25 in 2026-04-19 review: indexed obs with no explicit
-       data_stream defaults each stratum to its own stream name
-       (afp_cases_kano, afp_cases_borno, ...) per IR spec §5.3.
-       This is a common UX trap — users often want a single multi-
-       column file keyed by the base name. Warn once per declaration. *)
     let od_loc = diag_loc_of_ast_ctx ctx od.oloc in
-    (match od.odata_stream with
-     | None when od.oindices <> [] ->
-       Diagnostics.warning ctx.diags
-         ~code:"W203"
-         ~loc:od_loc
-         ~message:(Printf.sprintf
-           "indexed observation '%s' has no explicit data_stream; \
-            each stratum gets its own stream name"
-           od.oname)
-         ~hint:"add `data_stream = \"<name>\"` to share one stream, \
-                or set it explicitly per stratum to silence this warning"
-         ()
-     | _ -> ());
     (* m12 in 2026-04-19 review: each of schedule / projection /
        likelihood is required. Previously the parser filled in
        Poisson(rate=1) / every=1 / incidence(name) defaults, so an
@@ -3994,9 +3976,7 @@ let expand_observations ctx =
       if parts = [] then od.oname
       else od.oname ^ "_" ^ String.concat "_" parts
     in
-    let data_stream = Option.value ~default:obs_name od.odata_stream in
     Some { Ir.name        = obs_name;
-      Ir.data_stream;
       Ir.schedule;
       Ir.projection;
       Ir.likelihood;

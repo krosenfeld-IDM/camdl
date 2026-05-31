@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.6",
-  "validated_by": "ocaml-compiler-v0.6",
+  "ir_version": "0.7",
+  "validated_by": "ocaml-compiler-v0.7",
   "model": {
     "name": "seed_timing_dated",
     "version": "0.3",
@@ -514,7 +514,6 @@
     "observations": [
       {
         "name": "cases",
-        "data_stream": "cases",
         "schedule": {
           "regular": { "start": 0.0, "step": 1.0, "end": 120.0 }
         },

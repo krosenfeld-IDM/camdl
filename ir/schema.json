@@ -643,10 +643,9 @@
 
     "observation_model": {
       "type": "object",
-      "required": ["name", "data_stream", "schedule", "projection", "likelihood"],
+      "required": ["name", "schedule", "projection", "likelihood"],
       "properties": {
         "name": { "type": "string" },
-        "data_stream": { "type": "string" },
         "schedule": { "$ref": "#/definitions/observation_schedule" },
         "projection": { "$ref": "#/definitions/projection" },
         "likelihood": { "$ref": "#/definitions/likelihood" }

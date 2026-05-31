@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.6",
-  "validated_by": "ocaml-compiler-v0.6",
+  "ir_version": "0.7",
+  "validated_by": "ocaml-compiler-v0.7",
   "model": {
     "name": "sir_dim_annotated",
     "version": "0.3",
