@@ -69,6 +69,13 @@ fn collect_param_refs(e: &ir::expr::Expr, out: &mut std::collections::HashSet<St
             }
         }
         ir::expr::Expr::UncheckedDim(w) => collect_param_refs(&w.unchecked_dim.inner, out),
+        // A param reachable only through a Reduce must still be collected, or the
+        // gate would let an unsupported obs-param through with a silent zero gradient.
+        ir::expr::Expr::Reduce(w) => {
+            for t in &w.reduce { collect_param_refs(t, out); }
+        }
+        // Hoisted bindings are param-free; nothing to collect.
+        ir::expr::Expr::BindingRef(_) => {}
     }
 }
 

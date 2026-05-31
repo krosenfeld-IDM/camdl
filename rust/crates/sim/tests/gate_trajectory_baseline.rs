@@ -180,6 +180,9 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("sir_spatial_sum", "gillespie", 0x65d363618fc40fb4),
     ("sir_spatial_sum", "tau_leap", 0xd38ed3b3bfe9c9fa),
     ("sir_spatial_sum", "chain_binomial", 0xd38ed3b3bfe9c9fa),
+    // overdispersion model: gillespie/ode capability-skip, so tau-leap + chain-binomial only
+    ("sir_two_overdispersed", "tau_leap", 0x5af05162d3c983bd),
+    ("sir_two_overdispersed", "chain_binomial", 0x47b4ab5edd2fb5c4),
     ("sir_two_patch", "gillespie", 0xe9f432f7882e9b70),
     ("sir_two_patch", "tau_leap", 0xc432b4955e374ed6),
     ("sir_two_patch", "chain_binomial", 0xa1c9f945649cc4fa),

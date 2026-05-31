@@ -193,11 +193,15 @@ fn test_gradient_vs_finite_differences_spatial_bindings() {
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
     let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    // gh#76: complete_data_loglik_grad gained estimated_to_model (estimated→model
+    // param index). This test estimates all params in model order → identity map.
+    let estimated_to_model: Vec<usize> = (0..n_params).collect();
 
     let (ll, grad) = complete_data_loglik_grad(
         &compiled, &trajectory, &params, &observations, dt,
         &obs_model, &ivp_mappings,
         n_params, &rate_grads_for_run, &oas,
+        &estimated_to_model,
     ).unwrap();
     eprintln!("  log-likelihood: {:.4}", ll);
     assert!(ll.is_finite(), "LL must be finite");

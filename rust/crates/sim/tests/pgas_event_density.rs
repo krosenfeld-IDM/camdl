@@ -148,6 +148,7 @@ fn sir_with_seed_event() -> Model {
         },
         interventions: vec![seed_event],
         presets: vec![],
+        bindings: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],
     }
 }
@@ -234,6 +235,7 @@ fn seir_with_seed_event(n_seed: i64, tau: f64) -> Model {
         },
         interventions: vec![seed_event],
         presets: vec![],
+        bindings: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],
     }
 }
@@ -363,7 +365,6 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
             projection: StreamProjection::FlowSum(vec![0]),  // infection
             ir_model: ir::observation::ObservationModel {
                 name: "cases".into(),
-                data_stream: "cases".into(),
                 schedule: ir::observation::ObservationSchedule::FromData,
                 projection: ir::observation::Projection::CumulativeFlow("infection".into()),
                 likelihood: ir::observation::Likelihood::NegBinomial(
