@@ -112,7 +112,7 @@ pub fn run_chain_binomial(
     seed: u64,
     cfg: &ChainBinomialConfig,
 ) -> Result<Trajectory, SimError> {
-    run_chain_binomial_with_observer(model, params, seed, cfg, None)
+    run_chain_binomial_with_observer(model, params, seed, cfg, None, None)
 }
 
 /// Chain-binomial run with an optional [`TransitionObserver`] (individual-
@@ -130,6 +130,11 @@ pub fn run_chain_binomial_with_observer(
     seed: u64,
     cfg: &ChainBinomialConfig,
     mut observer: Option<&mut dyn TransitionObserver>,
+    // Per-timestep progress tick: called once at the top of each step with the
+    // current time `t`, BEFORE any RNG is drawn. Read-only and RNG-free, so
+    // `None` and `Some(..)` produce byte-identical trajectories. See
+    // tests/progress_tick_invariance.rs.
+    mut tick: Option<&mut dyn FnMut(f64)>,
 ) -> Result<Trajectory, SimError> {
     let (mut int_s, mut real_s) = model.initial_state(params)?;
     let n_transitions = model.model.transitions.len();
@@ -163,6 +168,9 @@ pub fn run_chain_binomial_with_observer(
     }
 
     while t < cfg.t_end {
+        // Progress tick: report current time before drawing this step. RNG-free.
+        if let Some(cb) = tick.as_deref_mut() { cb(t); }
+
         let dt = cfg.dt.min(cfg.t_end - t);
         if dt <= 1e-15 { break; }
 

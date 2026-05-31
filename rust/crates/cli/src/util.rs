@@ -294,12 +294,60 @@ pub(crate) fn camdlc_checked_flag() -> &'static std::sync::OnceLock<()> {
 }
 
 /// Run camdlc on a .camdl file and return the IR JSON as a string.
+///
+/// camdlc can take ~20s on large stratified models and `.output()` blocks
+/// the whole time. While it runs we show a progress indicator on **stderr**
+/// so the user knows the tool is working, respecting the `--progress` mode:
+///   - Pretty (TTY): an indicatif steady-tick spinner `compiling <model> …`,
+///     cleared on completion.
+///   - Plain (off-TTY): a single `compiling <model> …` log line (no carriage
+///     returns), safe under `tee`/CI.
+///   - None: nothing.
+///
+/// The indicator draws to stderr only (via `progress::draw_target()`, which
+/// is `hidden()` in plain/none modes); stdout — the IR JSON returned here —
+/// is untouched, so the return value is byte-identical to an un-instrumented
+/// call. The camdlc error path is unchanged: a non-zero exit still surfaces
+/// camdlc's stderr as `Err`.
 pub(crate) fn run_camdlc(camdl_path: &str) -> Result<String, String> {
     let camdlc = find_camdlc()?;
+
+    // Friendly model name for the message: just the file's basename.
+    let model_name = std::path::Path::new(camdl_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| camdl_path.to_string());
+
+    // Plain mode: emit one line up front on stderr (the bar below is hidden).
+    // We use `eprintln!` rather than `log::info!` because the camdl binary
+    // installs no `log` backend — `log::*` macros are silently dropped — and
+    // this line must actually reach the user off-TTY (the motivating fix).
+    // stderr keeps it off stdout (the IR JSON), and a plain line with no
+    // carriage returns is safe under `tee`/CI.
+    if crate::progress::is_plain() {
+        eprintln!("compiling {model_name} …");
+    }
+
+    // Pretty mode draws to stderr; plain/none resolve to a hidden target, so
+    // the same spinner object is safe to construct unconditionally — nothing
+    // renders unless the mode is Pretty.
+    let spinner =
+        indicatif::ProgressBar::with_draw_target(None, crate::progress::draw_target());
+    spinner.set_style(
+        indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
+            .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
+    );
+    spinner.set_message(format!("compiling {model_name} …"));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    // The blocking subprocess call — unchanged from the un-instrumented path.
     let output = std::process::Command::new(&camdlc)
         .arg(camdl_path)
-        .output()
-        .map_err(|e| format!("cannot run {}: {}", camdlc.display(), e))?;
+        .output();
+
+    spinner.finish_and_clear();
+
+    let output = output.map_err(|e| format!("cannot run {}: {}", camdlc.display(), e))?;
     if !output.status.success() {
         // camdlc prints errors to stderr — pass them through
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
