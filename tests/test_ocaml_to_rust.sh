@@ -55,8 +55,13 @@ print(s[0]['name'] if s else '')
         # shellcheck disable=SC2086
         if ! "$CAMDL" simulate "$tmpir" $params_flag --backend "$backend" \
                 --seed 42 --allow-degenerate-rates > /dev/null 2>"$tmperr"; then
-            if grep -q "requires capabilities" "$tmperr"; then
-                # Expected: model needs features this backend doesn't support
+            # Expected: model needs features this backend doesn't support
+            # (e.g. overdispersed() → OVERDISPERSION, which Gillespie/ODE
+            # reject). Match the capability-rejection wording emitted by the
+            # dispatch guard in rust/crates/sim/src/lib.rs — keep this in
+            # sync if that message is reworded (it was: "requires
+            # capabilities" → "does not support required capabilities").
+            if grep -q "does not support required capabilities" "$tmperr"; then
                 rm -f "$tmperr"
                 continue
             fi
