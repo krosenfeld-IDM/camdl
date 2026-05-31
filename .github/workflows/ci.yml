@@ -1,9 +1,10 @@
 name: CI
 
-# Runs on every push / PR to main. Linux-only — cross-platform builds
-# are gated behind tags (see release.yml) because macOS runners are
-# billed 10× and Windows 2× the Linux rate, and the Rust code is
-# platform-invariant (no OS-conditional cfgs).
+# Runs on every push / PR to main. Linux-only: macOS runners bill 10×
+# and Windows 2× the Linux rate, and the Rust code is platform-invariant
+# (no OS-conditional cfgs). There is no cross-platform / release workflow
+# at present (camdl is alpha, source-install only); add one post-alpha if
+# tagged binary builds are wanted.
 #
 # Doc-only and fixture-only changes skip this workflow.
 
