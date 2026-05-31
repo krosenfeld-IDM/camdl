@@ -61,3 +61,38 @@ simulate {
   from = origin
   to   = add_calendar_years(origin, 2)
 }
+
+# Scenarios carry concrete parameter values so the golden is runnable
+# without `--param`, and so the Rust smoke test
+# (`test_smoke_all_ocaml_golden`) — which applies the first scenario's
+# params before simulating — can compile it. This deviates from the
+# proposal (2026-05-31-instant-typed-table-cells.md), which shipped no
+# scenarios block; the concrete reason is that smoke test requirement.
+# Matches the `sirv_anchored_calendar` convention (bounds-only params +
+# a scenario that sets them). R0 = beta/gamma = 1.1 — a slow burn that
+# keeps susceptibles high through the campaign dates, so the SIA rounds
+# are visibly subtractive: `--scenario campaigns` halves S→V at each of
+# the six resolved dates (north day 304/438/627, south 311/445/634).
+scenarios {
+  baseline {
+    label = "no campaigns"
+    set = {
+      beta     = 0.11
+      gamma    = 0.1
+      vacc_cov = 0.0
+      I0       = 10
+      N0       = 10000
+    }
+  }
+  campaigns {
+    label  = "SIA at calendar dates"
+    enable = [sia]
+    set = {
+      beta     = 0.11
+      gamma    = 0.1
+      vacc_cov = 0.5
+      I0       = 10
+      N0       = 10000
+    }
+  }
+}
