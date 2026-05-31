@@ -136,19 +136,21 @@ Measured Kano peak RSS 8.41 GB → 3.02 GB, P44 4.78 GB → 1.73 GB; wall
 unchanged (the layout engine still runs); output byte-identical. Defuses the
 2026-05-29 OOM-watchdog hazard. (Commit: "stream IR JSON to channel".)
 
-**Lever 3 — compact serialization: 4.6× faster compile + 5× smaller IR. THE
-time lever — needs a format decision.** Dropping pretty-printing for compact
-`to_string`: Kano 20.44 s → 4.47 s (4.6×), peak RSS 8.41 → 3.60 GB, IR
-1814.6 → 360.8 MB (5.0×); P44 11.91 → 2.64 s. The pretty IR is ~80 %
+**Lever 3 — compact serialization: 4.6× faster compile + 5× smaller IR.
+LANDED (canonical compact format).** Dropping pretty-printing for compact JSON:
+Kano 20.44 s → **4.42 s** (4.6×), IR 1814.6 → **360.9 MB** (5.0×), peak RSS
+~flat (~3.5 GB, AST-bound); P44 11.91 → 2.49 s. The pretty IR was ~80 %
 whitespace, which the Rust runtime also pays to parse (parse-bound), so this
-wins the whole pipeline. **It changes every golden's bytes** (loses
-line-by-line golden diffability), so it is a maintainer decision — written up
-with options in
-[`docs/dev/proposals/2026-05-30-compact-ir-serialization.md`](../proposals/2026-05-30-compact-ir-serialization.md).
+wins the whole pipeline. It changes every golden's bytes, so it went through a
+[proposal](../proposals/2026-05-30-compact-ir-serialization.md); the maintainer
+chose Option 2 — a single canonical format with one element per line for the
+model's top-level arrays, so golden diffs stay reviewable (sir_basic: 18 lines
+vs 179), `--pretty` kept as a view. Compact and pretty render the same AST
+(whitespace-only difference); `canonical_equiv_test` pins the equivalence.
 
-Net: the byte-safe memory win (Lever 2) has landed; the byte-safe time win is
-~10 % and needs a flambda toolchain (Lever 1); the big 4.6× time win (Lever 3)
-is one format decision away.
+Net: all three levers resolved — memory (Lever 2) and the big 4.6× time win
+(Lever 3) both landed; flambda (Lever 1) is a documented null/modest path not
+worth the toolchain change.
 
 The IR size itself (O(P²) from flat spatial coupling) is the FOI study's domain
 (sparse coupling) — out of scope here, but halving IR bytes halves both compile

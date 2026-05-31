@@ -119,6 +119,7 @@ let () =
     let set_kvs = ref [] in
     let output_path = ref "" in       (* "" → write to stdout *)
     let set_output p = output_path := p in
+    let pretty_output = ref false in  (* false → canonical compact IR JSON *)
     let spec = [
       ("--set", Arg.String (fun s ->
         match String.split_on_char '=' s with
@@ -135,6 +136,8 @@ let () =
        "FILE  write IR JSON to FILE instead of stdout");
       ("--output", Arg.String set_output,
        "FILE  write IR JSON to FILE instead of stdout (long form of -o)");
+      ("--pretty", Arg.Set pretty_output,
+       " emit indented (human-readable) IR JSON instead of the default compact form");
     ] in
     Arg.parse_argv (Array.of_list ("camdlc" :: args))
       spec (fun f -> files := f :: !files) usage;
@@ -171,18 +174,18 @@ let () =
          in
          (* Stream the IR JSON straight to the destination channel rather than
             materializing the whole (multi-GB at scale) string first — see
-            Serde.model_to_channel. Byte-identical to the old
-            `model_to_string` + write path. *)
+            Serde.model_to_channel. Default is the canonical compact form;
+            --pretty selects the indented view. *)
+         let pretty = !pretty_output in
          (if !output_path = "" then begin
            (* Default: write to stdout, preserving trailing newline. *)
-           Passtime.time "serialize" (fun () -> Serde.model_to_channel stdout m);
+           Passtime.time "serialize" (fun () -> Serde.model_to_channel ~pretty stdout m);
            print_newline ()
          end else begin
            (* -o / --output FILE: write IR JSON to FILE. Includes the
-              trailing newline so file output is byte-identical to
-              `camdl compile model.camdl > FILE`. *)
+              trailing newline so file output matches `camdl compile … > FILE`. *)
            let oc = open_out !output_path in
-           Passtime.time "serialize" (fun () -> Serde.model_to_channel oc m);
+           Passtime.time "serialize" (fun () -> Serde.model_to_channel ~pretty oc m);
            output_char oc '\n';
            close_out oc
          end);

@@ -1101,14 +1101,70 @@ let model_of_envelope_json (j : Yojson.Safe.t) : (model, string) result =
         "IR JSON missing `ir_version` field (expected wrapped envelope: \
          {ir_version, validated_by, model}). Re-emit IR with `make update-golden`.")
 
-let model_to_string (m : model) : string =
-  Yojson.Safe.pretty_to_string (envelope_to_json m)
+(* ── IR JSON output ────────────────────────────────────────────────────────
+   The canonical on-disk format is COMPACT JSON with one element per line for
+   the model's top-level arrays (compartments, transitions, parameters, …).
+   Pretty-printing the IR was ~97% of compile time and ~80% of IR bytes on
+   large models (docs/dev/notes/2026-05-30-compiler-profiling.md); compact
+   removes both costs, while the per-element newlines keep golden diffs
+   reviewable (a changed transition is a one-line diff). Both forms render the
+   SAME `envelope_to_json m` value — they differ only in whitespace, which every
+   JSON parser ignores — so they encode identical content. `~pretty:true`
+   selects the indented human view (also available via `camdlc --pretty` and
+   `camdlc inspect`). The canonical/pretty equivalence is pinned by
+   canonical_equiv_test in test_ir_roundtrip.ml. *)
 
-(* Stream the same pretty-printed bytes straight to a channel, skipping the
-   1.8 GB intermediate string `model_to_string` would build. Byte-identical to
-   `model_to_string m` followed by writing the result. *)
-let model_to_channel (oc : out_channel) (m : model) : unit =
-  Yojson.Safe.pretty_to_channel oc (envelope_to_json m)
+(* Render `envelope_to_json m` compactly, except that each element of the model
+   object's non-empty array fields goes on its own line. [out_str] writes raw
+   punctuation/whitespace; [out_json] renders a JSON value compactly via Yojson
+   (to a channel or buffer — never an intermediate string, so peak memory stays
+   at the AST, not AST + a multi-GB output string). The structure is read from
+   the canonical AST — we iterate its fields rather than re-listing them — so no
+   field can be silently dropped or reordered if the schema grows, and leaf
+   bytes come from Yojson, so there is no token-level divergence from pretty. *)
+let write_canonical
+    ~(out_str : string -> unit) ~(out_json : Yojson.Safe.t -> unit)
+    (m : model) : unit =
+  let key k = out_json (`String k); out_str ":" in
+  let write_list_per_line xs =
+    out_str "[";
+    List.iteri (fun i x -> if i > 0 then out_str ","; out_str "\n"; out_json x) xs;
+    out_str "\n]"
+  in
+  let write_field (k, v) =
+    key k;
+    (match v with
+     | `List (_ :: _ as xs) -> write_list_per_line xs
+     | other                -> out_json other)
+  in
+  (match envelope_to_json m with
+   | `Assoc efields ->
+     out_str "{";
+     List.iteri (fun i (k, v) ->
+       if i > 0 then out_str ",";
+       (match k, v with
+        | "model", `Assoc mfields ->
+          key k; out_str "{";
+          List.iteri (fun j kv -> if j > 0 then out_str ","; write_field kv) mfields;
+          out_str "}"
+        | _ -> write_field (k, v))
+     ) efields;
+     out_str "}"
+   | other -> out_json other)
+
+let model_to_channel ?(pretty = false) (oc : out_channel) (m : model) : unit =
+  if pretty then Yojson.Safe.pretty_to_channel oc (envelope_to_json m)
+  else write_canonical ~out_str:(output_string oc)
+         ~out_json:(Yojson.Safe.to_channel oc) m
+
+let model_to_string ?(pretty = false) (m : model) : string =
+  if pretty then Yojson.Safe.pretty_to_string (envelope_to_json m)
+  else begin
+    let b = Buffer.create 65536 in
+    write_canonical ~out_str:(Buffer.add_string b)
+      ~out_json:(Yojson.Safe.to_buffer b) m;
+    Buffer.contents b
+  end
 
 let model_of_string (s : string) : (model, string) result =
   match Yojson.Safe.from_string s with

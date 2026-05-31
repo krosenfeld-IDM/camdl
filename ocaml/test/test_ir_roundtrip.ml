@@ -78,6 +78,28 @@ let roundtrip_test name () =
     let msgs = List.map Validate.error_to_string errs in
     Alcotest.failf "validation errors in %s:\n  %s" name (String.concat "\n  " msgs)
 
+(* ── Canonical (compact) vs pretty equivalence ────────────────────────────── *)
+(* The default serializer emits compact JSON with one element per line for the
+   model's top-level arrays; --pretty emits the indented form. Both render the
+   same `envelope_to_json m`, so they must encode identical JSON content — this
+   is the divergence guard for the custom compact whitespace policy. *)
+
+let canonical_equiv_test name () =
+  let m = match Serde.model_of_string (read_golden name) with
+    | Ok m    -> m
+    | Error e -> Alcotest.failf "deserialise failed for %s: %s" name e
+  in
+  let compact = Serde.model_to_string m in
+  let pretty  = Serde.model_to_string ~pretty:true m in
+  if Yojson.Safe.from_string compact <> Yojson.Safe.from_string pretty then
+    Alcotest.failf
+      "canonical (compact) and pretty IR JSON diverge in content for %s" name;
+  (* The canonical form must also round-trip back to the same model. *)
+  match Serde.model_of_string compact with
+  | Ok m2 when models_equal m m2 -> ()
+  | Ok _    -> Alcotest.failf "canonical IR JSON did not round-trip for %s" name
+  | Error e -> Alcotest.failf "canonical IR JSON failed to parse for %s: %s" name e
+
 (* ── Test suite ──────────────────────────────────────────────────────────── *)
 
 let golden_cases =
@@ -157,10 +179,16 @@ let () =
       Alcotest.test_case name `Quick (roundtrip_test name)
     ) golden_cases
   in
+  let equiv_tests =
+    List.map (fun name ->
+      Alcotest.test_case name `Quick (canonical_equiv_test name)
+    ) golden_cases
+  in
   let invariant_tests = [
     Alcotest.test_case "prior ⊕ hierarchical" `Quick prior_xor_hierarchical_test;
   ] in
   Alcotest.run "IR round-trip" [
     ("golden", tests);
+    ("canonical≡pretty", equiv_tests);
     ("deser-invariants", invariant_tests);
   ]

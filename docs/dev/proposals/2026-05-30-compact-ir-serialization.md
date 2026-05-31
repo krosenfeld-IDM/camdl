@@ -2,10 +2,34 @@
 
 Date: 2026-05-30
 Project: camdl
-Status: **DRAFT — needs maintainer decision on the golden-file format tradeoff**
+Status: **ACCEPTED — Option 2 implemented** (single canonical compact format;
+`--pretty` kept as a view). Maintainer chose Option 2 (newline-delimited
+compact) to keep golden diffability.
 Tags: perf, compiler, serialization, ir, golden
 
 Profiling note: [`docs/dev/notes/2026-05-30-compiler-profiling.md`](../notes/2026-05-30-compiler-profiling.md)
+
+## Decision & outcome (2026-05-30)
+
+Chose **Option 2**: one canonical compact format everywhere (what ships = what
+CI byte-tests), with one element per line for the model's top-level arrays so
+golden diffs stay reviewable; `camdlc --pretty` / `camdlc inspect` give the
+indented view. Measured on implementation (`bench_compile`, reps=3 min):
+
+| | before (streaming pretty) | after (canonical compact) |
+|---|---|---|
+| Kano compile wall | 20.4 s | **4.42 s** (4.6×) |
+| Kano IR on disk | 1814.6 MB | **360.9 MB** (5.0×) |
+| Kano peak RSS | 3.02 GB | 3.51 GB (~flat, AST-bound) |
+| sir_basic golden | 179 lines | 18 lines (still 1 transition/line) |
+
+Correction to the table below: Option 2 turned out **equal** to Option 1 on
+speed/size/memory (all AST-bound), not faster/lower-memory — its only edge over
+Option 1 is the diffable goldens. Divergence is pinned by `canonical_equiv_test`
+(`test_ir_roundtrip.ml`): for every golden, `from_string(compact) ==
+from_string(pretty)` and compact round-trips to the model. The writer iterates
+the canonical `envelope_to_json` AST (no hardcoded field list), so a future
+schema field cannot be silently dropped.
 
 ## Problem
 
