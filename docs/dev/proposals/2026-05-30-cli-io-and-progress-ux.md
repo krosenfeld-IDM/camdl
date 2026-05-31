@@ -36,7 +36,10 @@ Three changes, one coherent surface:
    long runs and the silent ~20 s compile step finally show feedback. Slim
    the mode enum from `auto/pretty/plain/none` to `auto/none`.
 
-3. **Finish the resolver migration + fix the two orthogonal flag overloads.**
+3. **Finish the resolver migration.** *(The "two orthogonal flag overloads"
+   — `--obs` / `survey --data` — are now SUPERSEDED by the unified
+   observation-data proposal `bca0360`; see §4b. This item is just the rev-2
+   `ParameterResolver` migration.)*
    Land rev-2's `ParameterResolver` across `if2`/`profile`/`survey`/`fit run`
    (removing `--params` there), and additionally fix the overloads rev-2 does
    *not* touch: `--obs` (output-path on `simulate` vs input-block-name on
@@ -288,22 +291,31 @@ writes `parameters_provenance` into `run.json` — which is *exactly* the CAS
 record this proposal makes the default and the viewer consumes. So finishing
 4a and landing CAS-by-default are mutually reinforcing, not competing.
 
-### 4b — the overloads rev-2 does not touch (verified)
+### 4b — SUPERSEDED by the unified observation-data proposal (bca0360)
 
-- **`--obs` means opposite things** (audit B1, observed): output *path* on
-  `simulate` (`--obs cases.tsv` writes synthetic obs), input block-*name* on
-  `pfilter`/`if2` (`--obs weekly_cases` selects a block). An agent that
-  learned `simulate --obs file.tsv` mis-drives `pfilter`. **Proposed:**
-  rename the *selector* to `--obs-block NAME` on pfilter/if2; keep `--obs
-  PATH` as output everywhere. (Or the reverse — but output-`--obs` is the
-  more established surface.)
-- **`survey --data` = inline fixed params, not data** (audit B3, help-read):
-  collides with `pfilter --data PATH` (the data TSV). **Proposed:** survey
-  uses `--fixed NAME=VALUE` (the now-universal value-setter from 4a) and frees
-  `--data` to mean the data file, matching every sibling.
+> **Dropped from this proposal (2026-05-30).** The `--obs` / `survey --data`
+> overload fixes below are subsumed by the upstream
+> [`2026-05-30-unified-observation-data.md`](2026-05-30-unified-observation-data.md)
+> (commit `bca0360`), which locks a single observation-data binding surface:
+> **`--data NAME=PATH`** binds an observation block *by name* (§10, "LOCKED as
+> the primary path"), and `--data` is reserved for observation data with a
+> separate `--plan` flag for design files rather than overloading it (§7.2.5).
+> That design replaces — and is better than — the renames sketched here:
+> - the `--obs-block NAME` selector is unnecessary: binding-by-name *is*
+>   `--data NAME=PATH`, so the pfilter/if2 `--obs NAME` selector is absorbed,
+>   not renamed;
+> - the `survey --data` = inline-params overload is removed by the same
+>   "`--data` means observation data, everywhere" rule.
+>
+> **Action:** this rev-3 proposal no longer owns the observation-flag work;
+> defer entirely to `bca0360`. Its IR-0.7 / `data_stream`-deletion refactor
+> (`77bfe4e`) already landed on main. Original sketch retained below for the
+> record only.
 
-These are pure CLI-layer renames (no inference math), so they can land early
-and independently of the risky 4a commits.
+*(Original, now superseded:)* `--obs` meant opposite things — output *path*
+on `simulate`, input block-*name* on `pfilter`/`if2`; and `survey --data` meant
+inline fixed params, colliding with `pfilter --data`. Both are resolved by the
+unified `--data NAME=PATH` surface above.
 
 ---
 
@@ -377,8 +389,9 @@ inference-math commits:
    document the `run.json` schema against `run_meta.rs`, the `status`
    lifecycle, and CAS-as-default + `--stdout`. *(No code; this is the seam
    definition the viewer cites.)*
-2. **`--obs-block` / `survey --data` renames** (CLI-layer only, no inference
-   math). Tests + golden CLI snapshots.
+2. ~~`--obs-block` / `survey --data` renames~~ **— DROPPED, superseded by
+   `bca0360` (unified observation-data, `--data NAME=PATH`). See §4b.** No
+   work owned here.
 3. **CAS-by-default + `--stdout` + banner** for `simulate` (then `pfilter`,
    `eval`), incl. ensemble-as-one-run + `seed` column. `RunStatus=running`
    written at start.

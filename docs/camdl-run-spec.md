@@ -1898,59 +1898,25 @@ impl ConfigHasher {
 }
 ```
 
-### 9.5 provenance.json — per-stage output (fits)
-
-> ⚠️ **Superseded — verify in the rev-3 rewrite.** A real fit (verified
-> 2026-05-30) writes a per-stage **`run.json`** (kind `fit-stage`, the §9.6
-> tagged schema) — **not** `provenance.json` (0 written;
-> `find results -name provenance.json` → empty). The fields below are kept for
-> reference until §9.5/§9.6 are merged into one `run.json` contract in the
-> full CAS rewrite; do not treat `provenance.json` as a current artifact.
-
-```json
-{
-  "camdl_version": "0.7.0",
-  "timestamp": "2026-04-15T10:30:00Z",
-  "config_hash": "a1b3c4d5e6f7...",
-  "fit_config": "fits/02_fix_beta.toml",
-  "fit_config_hash": "b2c3d4e5...",
-  "stage": "posterior",
-  "model": "models/sir.camdl",
-  "model_hash": "3a7f2c1d...",
-  "data_hash": "f9e2b047...",
-  "estimated": ["gamma", "rho", "k"],
-  "fixed": {
-    "beta": 0.34,
-    "N0": 1000000,
-    "I0": 10
-  },
-  "algorithm": {
-    "method": "pgas",
-    "chains": 4,
-    "particles": 50,
-    "sweeps": 5000
-  },
-  "init_mle": {
-    "source": "results/fits/02_fix_beta/mle",
-    "source_hash": "e8f1a2b3..."
-  },
-  "derived_from": "fits/01_all_free.toml",
-  "wall_time_seconds": 3847.2
-}
-```
-
-### 9.6 run.json — the per-run metadata contract
+### 9.5 run.json — the per-run metadata contract
 
 > **This subsection is the consumer contract.** `run.json` is the API between
 > camdl and everything that reads its output (`camdl list/show/cat`,
 > camdl-viewer, notebooks). The schema below is the tagged-union form actually
-> emitted by `rust/crates/cli/src/cli/run_meta.rs` (`Run` / `RunKind` /
+> emitted by `rust/crates/cli/src/run_meta.rs` (`Run` / `RunKind` /
 > `RunStatus`), verified against on-disk artifacts. Consumers must read this
-> shape, not a flattened guess. *(Earlier revisions of this spec documented a
-> flat `{sim_hash, scen_hash, …}` object; that form is superseded. The
-> camdl-viewer `cas.py` still carries a dual-format `normalize_run_json`
-> shim for the transition — to be dropped once example/golden output is
-> regenerated.)*
+> shape, not a flattened guess.
+>
+> *History: through v0.2, simulations wrote a flat `{sim_hash, scen_hash, …}`
+> object and fits wrote a separate `provenance.json`. Both are superseded by
+> the single tagged `run.json` below — there is now **one** metadata file per
+> run directory, of one schema, for every run kind (verified 2026-05-30: a
+> real fit writes a per-stage `run.json` of kind `fit-stage`, and zero
+> `provenance.json`). Fit-stage staleness is detected by comparing the
+> recorded `config_hash` (§9.4), now carried inside the `fit-stage` run.json
+> rather than a separate file. The camdl-viewer `cas.py` still carries a
+> dual-format `normalize_run_json` shim for the transition — dropped once
+> example/golden output is regenerated.*
 
 Every run directory contains one `run.json` with a shared envelope and a
 kind-specific `kind` payload (serde `tag = "kind"`):
