@@ -152,6 +152,12 @@ Net: all three levers resolved — memory (Lever 2) and the big 4.6× time win
 (Lever 3) both landed; flambda (Lever 1) is a documented null/modest path not
 worth the toolchain change.
 
+Figures: `compile_compact_before_after.png` (baseline pretty vs compact — the
+4.6× time gap and 5× IR shrinkage) and `compile_progression.png` (baseline →
+streaming → compact: streaming is the memory drop at unchanged time, compact is
+the time drop). Per-format sweeps:
+`compile_{baseline,streaming,flambda,compact}.tsv` (+ `_passes`).
+
 The IR size itself (O(P²) from flat spatial coupling) is the FOI study's domain
 (sparse coupling) — out of scope here, but halving IR bytes halves both compile
 time and RSS one-for-one, and stacks with compact serialization.
