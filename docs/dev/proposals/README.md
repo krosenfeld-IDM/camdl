@@ -35,22 +35,30 @@ filenames: `events-block`, `balance-compartment`, `cooling-schedule`.
 ## Archive (epochs)
 
 The top-level `proposals/` directory holds the **currently-live** set:
-proposals whose Status is `Proposal`, `Accepted`, or otherwise still
-shaping unlanded work. Once a proposal is fully `Implemented` or
-`Superseded` and belongs to a *closed* release epoch, move it into an
-epoch subdirectory so the live set stays scannable (the "read the
-relevant proposals first" rule has a read cost proportional to how many
-live-looking docs there are):
+proposals whose Status is `Proposal`, `Accepted`, `Deferred`, or
+otherwise still shaping unlanded work. Once a proposal is fully
+`Implemented` or `Superseded` — its design question is closed — move it
+into an epoch subdirectory so the live set stays scannable (the "read
+the relevant proposals first" rule has a read cost proportional to how
+many live-looking docs there are):
 
 ```
 docs/dev/proposals/archive/<epoch>/YYYY-MM-DD-slug.md
 ```
 
-Epochs are bounded by release tags:
+Epochs bucket by the release line the proposal closed under, split at
+release tags. Bucket by the proposal's **file date** (its naming date),
+which is stable and doesn't require chasing the implementing commit:
 
-- `archive/pre-alpha/` — implemented or superseded before the
-  `v0.1.0-alpha` tag (2026-05-15).
-- future: `archive/0.1/`, `archive/0.2/`, … one per release line.
+- `archive/pre-alpha/` — closed before the `v0.1.0-alpha` tag
+  (2026-05-15).
+- `archive/post-alpha/` — closed during the current 0.1 development
+  cycle (dated on/after the alpha tag, before the 0.1.0 release).
+- future: `archive/0.1/`, `archive/0.2/`, … one per release line as it
+  is cut.
+
+`Deferred` proposals (parked but unbuilt — an open question) stay in the
+live set; only `Implemented`/`Superseded` get archived.
 
 Moving a proposal to the archive is a pure `git mv` — its Status header
 already records `Implemented: commit <sha>` / `Superseded by:`, so the
