@@ -59,6 +59,26 @@ proposal that is still `Proposal`/`Accepted` or that has unlanded
 follow-ups; an archived proposal asserts "this epoch's design question
 is closed."
 
+### Partially-implemented proposals
+
+A proposal whose core landed but which still has unbuilt pieces is the
+common messy case — and the worst kind of ambient context, because it
+reads as live but is mostly history. Don't leave it half-live in
+`proposals/`. Resolve it one of two ways:
+
+- **Remaining work is ignorable** (won't be built, or was folded
+  elsewhere): record it in the Status block — `Implemented; remaining
+  <X> dropped — <reason>` — and archive the whole proposal. The design
+  question is closed.
+- **Remaining work is real**: split the unbuilt part into a fresh,
+  narrowly-scoped proposal (with a `Split from:` pointer back), keep
+  *that* in the live set, mark the original `Implemented` and archive
+  it. The live set then describes only work that is actually still open.
+
+Either way, no file in the live `proposals/` set is partially done —
+each is either fully open (`Proposal`/`Accepted`) or a clean remainder
+split.
+
 ### Release tags / versioning (for reference)
 
 - **Git release tags** are annotated, semver, `vX.Y.Z[-pre]`, tracking
