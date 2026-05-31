@@ -115,12 +115,18 @@ sim: build-rust
 # See docs/dev/notes/2026-05-29-foi-scaling-bench.md. The toy model generator
 # is scripts/gen_scaling_models.py; macro sweep scripts/bench_scaling.py.
 
-.PHONY: bench-scaling bench-micro bench-micro-fixtures flamegraph-real flamegraph-bench profile-pmmh
+.PHONY: bench-scaling bench-compile bench-micro bench-micro-fixtures flamegraph-real flamegraph-bench profile-pmmh
 
 CAMDLC_ABS := $(abspath $(CAMDLC))
 GEN        := scripts/gen_scaling_models.py
 FX         := rust/crates/sim/benches/fixtures/scaling
 PROFILE_CAMDL := rust/target/profiling/camdl
+
+# Real model timed alongside the synthetic ladder by bench-compile. Default is
+# the main-checkout-relative path to the playpen Kano SEIRV model; from a git
+# worktree (deeper tree) pass an absolute KANO_MODEL=... instead. The harness
+# skips it cleanly with a message if the path is absent.
+KANO_MODEL ?= ../playpen-camdl-measles/projects/nga/getting-started-simple/model/kano_lga_seirv.camdl
 
 # (P,A,coupling) grid for the micro-bench fixtures — matches GRID in scaling.rs.
 MICRO_GRID := 4/1/on 8/1/on 16/1/on 32/1/on 4/1/off 8/1/off 16/1/off 32/1/off \
@@ -130,6 +136,15 @@ MICRO_GRID := 4/1/on 8/1/on 16/1/on 32/1/on 4/1/off 8/1/off 16/1/off 32/1/off \
 bench-scaling: build
 	CAMDLC="$(CAMDLC_ABS)" python3 scripts/bench_scaling.py
 	uv run --with matplotlib --with numpy scripts/plot_scaling.py
+
+# Compiler-only sweep: time camdlc.exe alone (parse→expand→dimcheck→autodiff→
+# serialize), no Rust runtime — the compile-side analogue of bench-scaling.
+# Writes docs/dev/notes/assets/compile/compile_baseline.tsv + curves. Override
+# OUT=... to record a labelled variant (e.g. _flambda) for before/after plots.
+OUT ?= docs/dev/notes/assets/compile/compile_baseline.tsv
+bench-compile: build-ocaml
+	CAMDLC="$(CAMDLC_ABS)" python3 scripts/bench_compile.py --out "$(OUT)" --real "$(KANO_MODEL)"
+	uv run --with matplotlib --with numpy scripts/plot_compile.py
 
 # Generate the (gitignored) IR fixtures the micro-bench loads.
 bench-micro-fixtures: build
