@@ -34,19 +34,37 @@ Removing the comment lines (header row first) compiles cleanly. Verified
 by compiling the exact same model against a comment-free vs commented
 copy of the TSV: comment-free → EXIT 0; commented → the crash.
 
-## Root cause (hypothesis, not yet code-confirmed)
+## Root cause (confirmed against `ocaml/lib/compiler/expander.ml`)
 
-`read_csv_rows` / `load_table_data` (`ocaml/lib/compiler/expander.ml`)
-appears to treat the **first physical line** as the header. A `#`
-comment line has no tabs, so it splits to a single column; the header
-check then does a `List.combine` of header-columns against dim-names
-whose lengths differ (1 vs n_dims), raising the uncaught
-`Invalid_argument`.
+`read_csv_rows` reads the **first physical line** as the header
+unconditionally (`expander.ml:268`, `let header_line = input_line ic`).
+The `#`-skip lives *inside the data loop only* (`expander.ml:276`,
+`line.[0] = '#'`), so it never protects the header. A leading `#`
+comment therefore becomes `header_cols`.
 
-(Not yet localized to the exact `List.combine` call — needs a read of
-`read_csv_rows`'s header handling. The reproduction above is solid; the
-mechanism is inferred from the column-count mismatch and the error
-text.)
+In `load_table_data`'s `on_header`, `header_dims` is truncated to
+`min n_dims (List.length header_cols)` (`expander.ml:328-330`), and the
+mismatch branch then zips it against the full `dim_names`:
+
+```ocaml
+(* expander.ml:355 *)
+) (List.combine dim_names header_dims)
+```
+
+When the comment splits to fewer columns than `n_dims` (a 1-column,
+tab-free comment vs a 2-dim `region × round` table → 1 vs 2),
+`List.combine` raises `Invalid_argument`. Confirmed with the
+reproduction above and a column-count variant: a `#`-comment that splits
+to *exactly* `n_dims` columns (e.g. `#region\t#round`) does **not**
+crash — instead the real header row is consumed as a data row and
+surfaces as `E207` ("'region' in column 1 ... is not a valid 'region'
+level"). So the symptom is column-count-dependent, exactly as the
+truncation predicts.
+
+The same `read_csv_rows` header read backs all three `read()` consumers
+(`load_table_data` :298, `read_dim_column_from_file` :560,
+`load_interpolated_for_level` :3197); a fix in `read_csv_rows` covers
+all of them.
 
 ## Why it matters
 
@@ -75,6 +93,6 @@ guarantee. Small, well-scoped — a good `gh` issue.
 
 ## Next
 
-File a gh issue with this reproduction. Out of scope for the
-instant-table-cells change (that change worked around it by shipping a
-comment-free golden TSV).
+Filed as **gh#144** with this reproduction and the confirmed root
+cause. Out of scope for the instant-table-cells change (that change
+worked around it by shipping a comment-free golden TSV).
