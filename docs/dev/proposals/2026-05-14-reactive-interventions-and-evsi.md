@@ -121,6 +121,56 @@ Fields:
   one-shot SIAs. `once = false` is "fire every step where condition
   holds" — useful for ongoing reactive measures (e.g., contact
   tracing intensity scaling with case load).
+- **`cooldown`** — a minimum interval between firings (a re-fire
+  suppression window), distinct from `once`. `once = true` is
+  fire-and-disable; `once = false` with `cooldown = 60 'days` fires
+  repeatedly but at most once per window, so rapid threshold
+  oscillation yields one firing per cooldown, not a burst. Optional;
+  `None` = no suppression. Uses the same last-fired-time bookkeeping the
+  runtime already keeps; IR adds `cooldown: Option<f64>` (in `time_unit`)
+  to `ReactiveIntervention`.
+
+  ```camdl
+  reactive_irs : trigger(when = prevalence(Y1 + Y2) / N_h > outbreak_threshold)
+                 action   = transfer(fraction = irs_eff, from = Iv, to = Sv)
+                 cooldown = 60 'days
+  ```
+
+### Intervention state-read (decay dynamics)
+
+*(Migrated 2026-05-31 from the archived `malaria-model-features` #5b —
+the one reactive design not otherwise covered here.)*
+
+Real ITN/IRS/drug interventions decay after deployment (net ageing,
+residual insecticide life, resistance build-up). Expose each reactive
+intervention's firing history as scalars readable in any rate
+expression or `when` predicate:
+
+- **`<iv>.t_last_fired`** — model time of last firing; `−∞` before the
+  first firing. Dimension `T`.
+- **`<iv>.times_fired`** — integer count; dimension `[1]`.
+
+```camdl
+# itn_distribution.t_last_fired / .times_fired readable anywhere:
+let itn_age = t - itn_distribution.t_last_fired
+let itn_eff = if itn_distribution.times_fired > 0
+              then itn_eff_init * exp(- log(2) * itn_age / itn_halflife)
+              else 0.0
+
+transitions {
+  bite[a in age] : X[a] + Iv --> Y1[a] + Iv
+    @ (1 - itn_eff) * a * b_h * X[a] * Iv / N_h
+}
+```
+
+IR: one new `Expr` variant
+`InterventionState { intervention: String, field: TLastFired | TimesFired }`;
+the propensity evaluator reads from the intervention registry (the same
+bookkeeping `cooldown` needs). Unlocks ITN/IRS decay, post-campaign
+reactivation windows, and resistance build-up
+(`resistance_frac = 1 - exp(-k * drug.times_fired)`). Test: a single
+firing at t=0 with a known half-life; assert the effect at
+t = halflife is exactly half the initial.
 
 ### Triggering on observed (not true) state
 

@@ -1,11 +1,35 @@
 ---
-status: proposal
+status: mostly-implemented (re-audited 2026-05-31; staged for archive once #5/#5b reactive design is moved to the reactive proposal)
 date: 2026-04-21
 authors: camdl core
 supersedes: (none)
 ---
 
 # Proposal: DSL features for first-class malaria modelling
+
+> **Implementation status — re-audited 2026-05-31 (by capability, not slug).**
+> This roadmap mostly **landed**; it is not open/unbuilt as an earlier triage
+> pass mistakenly recorded.
+> - **#1 multi-source ("bimolecular") transitions — BUILT** (`bimolecular.camdl`;
+>   `ross_macdonald.camdl` catalyst form `S_h + I_v --> I_h + I_v`; error E310;
+>   `bimolecular_conservation.rs`).
+> - **#2 probabilistic branching — BUILT** (`branching_si_symp_asym.camdl`:
+>   `S --> { I_symp : p, I_asym : 1 − p }`).
+> - **#3 hierarchical priors — PARTIAL.** Gates 1–3a built (`HierarchicalPrior`
+>   IR, the `| <dim>` pool clause, PMMH joint updates). **Gate 3b — the
+>   hierarchical gradient for NUTS/PGAS — is NOT built**: `pgas.rs` returns `−∞`
+>   for a hierarchical-prior gradient. This is the one real remaining piece.
+> - **#4 diagnostic-test likelihood — BUILT** (`diagnostic_test(base, sens,
+>   spec)`; ross_macdonald; spec §13.2.1).
+> - **#5 / #5b reactive interventions + intervention state-read — NOT built.**
+>   This design is superseded by `2026-05-14-reactive-interventions-and-evsi.md`
+>   (the live reactive proposal). The `cooldown` semantics and the #5b
+>   state-read (`.t_last_fired` / `.times_fired`, decay dynamics) below are NOT
+>   yet in that proposal and should migrate there before this is archived.
+>
+> Demographics (aging / births / mortality) were always out of scope here — see
+> `2026-04-21-vital-dynamics.md`. **Net remaining open work after archive: #3
+> Gate-3b, plus the reactive proposal.**
 
 ## Goal
 
