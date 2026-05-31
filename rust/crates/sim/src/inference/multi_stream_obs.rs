@@ -393,28 +393,19 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
     fn log_likelihood(
         &self, state: &ParticleState, obs_idx: usize, params: &[f64],
     ) -> f64 {
-        let t = self.obs_times[obs_idx];
-        (0..self.streams.len()).map(|si| {
-            let projected = self.project_stream_with_params(
-                si, &state.flow_accumulators, &state.counts, params, t,
-            );
-            let s = &self.streams[si];
-            // GH #6 (third-strike fix): evaluate likelihood arg
-            // expressions against the particle's actual compartment
-            // state, not a zero scratch. This is the path that
-            // `bootstrap_filter` calls via the trait. Previous fixes
-            // patched adjacent methods (sample, mean, flow-form
-            // log_likelihood) but left this one broken; as a result
-            // `camdl pfilter` on state-dependent likelihoods produced
-            // log-ll off by ~100× (book agent observed -15980 where
-            // ~-146 was expected). See incident 2026-04-22.
-            with_scratch_int_from_counts(&state.counts, |int_s| {
-                eval_likelihood_resolved(
-                    &s.resolved, t, projected, s.observations[obs_idx],
-                    params, &self.compiled, int_s, &self.real_s,
-                )
-            })
-        }).sum()
+        // gh#139: this trait path (PF / IF2 / PMMH-via-PF) and the flat
+        // path (PGAS, via `log_likelihood_from_flows_and_counts`) were
+        // two byte-identical summation loops. A change to one but not
+        // the other is the GH#6 / incident-2026-04-22 class of bug
+        // (state-dependent likelihoods scored against a zero scratch →
+        // log-ll off by ~100×), which has bitten this file twice. Since
+        // `ParticleState` is exactly `{ counts, flow_accumulators }`,
+        // the trait method is just the flat method with the fields
+        // unpacked — so delegate, and keep the per-stream scoring
+        // (including the GH#6 actual-state handling) in ONE seam.
+        self.log_likelihood_from_flows_and_counts(
+            &state.flow_accumulators, &state.counts, obs_idx, params,
+        )
     }
 
     fn n_observations(&self) -> usize { self.obs_times.len() }
