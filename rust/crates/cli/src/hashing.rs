@@ -6,10 +6,26 @@ use crate::version;
 /// Structural hash of the IR: only fields that affect simulation semantics.
 /// Ignores t_end, output config, labels, and other non-structural fields.
 /// serde_json's Map is backed by BTreeMap (sorted keys), so serialization is deterministic.
+///
+/// The on-disk IR is an *envelope* — `{ ir_version, validated_by, model: {…} }`
+/// — and every structural field below lives inside `model`. We descend into it.
+/// gh#135: the previous code scanned the envelope's top level, found none of
+/// these keys, fed nothing to the hasher, and returned `SHA256("")` for every
+/// model. That made the sim cache blind to model structure: two different
+/// models with the same params/backend/dt/seed collided to one CAS entry and
+/// the second run was silently served the first model's trajectory. The `model`
+/// key is absent only when the input is already a bare inner model; we fall
+/// back to scanning it directly so that case still hashes, and the post-hash
+/// guard catches the empty-input digest either way.
 pub fn model_hash(ir_json: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(ir_json)
         .expect("model_hash: invalid JSON");
-    let obj = v.as_object().expect("model_hash: expected object");
+    let envelope = v.as_object().expect("model_hash: expected object");
+    // Descend into the `model` envelope key; tolerate a bare inner model.
+    let obj = match envelope.get("model").and_then(|m| m.as_object()) {
+        Some(model_obj) => model_obj,
+        None => envelope,
+    };
 
     let mut h = Sha256::new();
     let structural_keys = [
@@ -29,7 +45,18 @@ pub fn model_hash(ir_json: &str) -> String {
         h.update(b"version\x00");
         h.update(serde_json::to_string(val).unwrap().as_bytes());
     }
-    hex::encode(h.finalize())
+    let digest = hex::encode(h.finalize());
+    // Defense in depth against the gh#135 failure mode recurring under a
+    // future schema rename: a real model always has at least `compartments`,
+    // so an empty-input digest means we hashed nothing and every model would
+    // collide. Fail loudly here rather than silently serve a wrong trajectory.
+    assert_ne!(
+        digest, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "model_hash hashed no structural fields (SHA256 of empty) — the IR \
+         envelope shape likely changed and model_hash no longer finds the \
+         model's structural keys; see gh#135"
+    );
+    digest
 }
 
 /// Hash of the shared simulation configuration: model + base params + backend + dt + tool version.
@@ -263,9 +290,42 @@ mod tests {
 
     #[test]
     fn golden_hash_model_hash() {
-        let ir = r#"{"compartments":["S","I"],"parameters":[{"name":"beta"}]}"#;
+        // Realistic on-disk shape: an IR *envelope* whose structural
+        // fields live under `model` (not at the top level). Pre-gh#135
+        // this hashed to SHA256("") because the scanner looked at the
+        // envelope's top level and found none of its keys.
+        let ir = r#"{"ir_version":"3","validated_by":"camdlc","model":{"compartments":["S","I"],"parameters":[{"name":"beta"}]}}"#;
         assert_eq!(model_hash(ir),
             "53b7d24e97c71b0fb35e58a95d21ccd8b7178a22317e3115df5770c856d9180b");
+    }
+
+    // SHA-256 of the empty byte string — the digest a Hasher produces
+    // when nothing is fed to it. gh#135: model_hash returned exactly
+    // this for every model because it scanned the wrong nesting level.
+    const EMPTY_SHA256: &str =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn model_hash_envelope_is_not_empty_hash() {
+        // gh#135 regression: a real enveloped IR must hash its inner
+        // structural fields, NOT collapse to SHA256("").
+        let ir = r#"{"ir_version":"3","validated_by":"camdlc","model":{"compartments":["S","I","R"],"transitions":[{"name":"inf"}],"parameters":[{"name":"beta","value":0.3}]}}"#;
+        assert_ne!(model_hash(ir), EMPTY_SHA256,
+            "model_hash must hash the inner `model`, not the empty envelope top level (gh#135)");
+    }
+
+    #[test]
+    fn model_hash_senses_structural_difference() {
+        // gh#135 regression: two structurally different models must
+        // produce different model_hash (→ different sim_hash → distinct
+        // CAS dirs). Pre-fix both collapsed to SHA256("") and collided,
+        // so run 2 was silently served run 1's trajectory.
+        let v1 = r#"{"ir_version":"3","validated_by":"camdlc","model":{"compartments":["S","I","R"],"transitions":[{"name":"inf","rate":"beta*S*I"}],"parameters":[{"name":"beta","value":15.0}]}}"#;
+        let v2 = r#"{"ir_version":"3","validated_by":"camdlc","model":{"compartments":["S","I","R"],"transitions":[{"name":"inf","rate":"beta*S*I"}],"parameters":[{"name":"beta","value":30.0}]}}"#;
+        assert_ne!(model_hash(v1), model_hash(v2),
+            "models differing in a parameter value must hash differently (gh#135)");
+        assert_ne!(model_hash(v1), EMPTY_SHA256);
+        assert_ne!(model_hash(v2), EMPTY_SHA256);
     }
 
     #[test]

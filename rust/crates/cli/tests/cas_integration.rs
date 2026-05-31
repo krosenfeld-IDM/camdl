@@ -150,6 +150,97 @@ fn cas_different_seed_new_cache_entry() {
     assert!(seeds.iter().any(|n| n == "seed_43"));
 }
 
+/// gh#135 regression. Two structurally different models under identical
+/// params/backend/dt/seed must NOT collide to one CAS entry. Pre-fix,
+/// `model_hash` scanned the envelope's top level (keys live under
+/// `model`), hashed nothing, and returned SHA256("") for every model, so
+/// `sim_hash` was blind to structure: the second model was silently
+/// served the first model's cached trajectory.
+///
+/// The two models share a basename (`model.ir.json`) so the path's
+/// model-stem prefix is identical — the ONLY thing that can separate
+/// them is `model_hash`. They differ only in the `recovery` transition's
+/// rate (×2), a structural field hashed by `model_hash` but NOT a
+/// parameter value, so `base_params_canonical` is identical between them.
+#[test]
+fn cas_different_models_do_not_collide() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("output");
+
+    // v1 = golden as-is; v2 = recovery rate doubled (structural change).
+    let v1: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(golden_sir_basic()).unwrap()).unwrap();
+    let mut v2 = v1.clone();
+    {
+        let transitions = v2["model"]["transitions"].as_array_mut()
+            .expect("model.transitions array");
+        let recovery = transitions.iter_mut()
+            .find(|t| t["name"] == serde_json::json!("recovery"))
+            .expect("a `recovery` transition");
+        let old_rate = recovery["rate"].clone();
+        recovery["rate"] = serde_json::json!({
+            "bin_op": { "op": "mul", "left": old_rate, "right": { "const": 2.0 } }
+        });
+    }
+    assert_ne!(v1["model"]["transitions"], v2["model"]["transitions"],
+        "test setup: the two models must actually differ structurally");
+
+    // Identical basename in separate dirs → identical model-stem prefix.
+    let dir_a = tmp.path().join("a");
+    let dir_b = tmp.path().join("b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let path_a = dir_a.join("model.ir.json");
+    let path_b = dir_b.join("model.ir.json");
+    std::fs::write(&path_a, serde_json::to_string(&v1).unwrap()).unwrap();
+    std::fs::write(&path_b, serde_json::to_string(&v2).unwrap()).unwrap();
+
+    let run = |model: &Path| {
+        let st = Command::new(&bin)
+            .args(["simulate", &model.to_string_lossy(),
+                   "--scenario", "baseline",
+                   "--seed", "1",
+                   "--cas",
+                   "--output-dir", &output.to_string_lossy(),
+                   "-o", &tmp.path().join("traj.tsv").to_string_lossy()])
+            .status().expect("spawn");
+        assert!(st.success(), "simulate --cas should succeed");
+    };
+    run(&path_a);
+    run(&path_b);
+
+    // Two distinct cache entries — not one collision.
+    let dirs: Vec<_> = walkdir(&output.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(dirs.len(), 2,
+        "two structurally different models must produce two CAS entries, \
+         not collide to one (gh#135)");
+
+    // model_hash must be recorded, distinct, and never the empty-input hash.
+    const EMPTY_SHA256: &str =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let mut model_hashes: Vec<String> = dirs.iter().map(|d| {
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(d.join("run.json")).unwrap()).unwrap();
+        meta["kind"]["model_hash"].as_str().unwrap().to_string()
+    }).collect();
+    model_hashes.sort();
+    for mh in &model_hashes {
+        assert_ne!(mh, EMPTY_SHA256,
+            "model_hash must not be SHA256(\"\") — that is the gh#135 bug");
+    }
+    assert_ne!(model_hashes[0], model_hashes[1],
+        "the two models must record distinct model_hash values (gh#135)");
+
+    // And the trajectories themselves must differ — the symptom users saw.
+    let trajs: Vec<Vec<u8>> = dirs.iter()
+        .map(|d| std::fs::read(d.join("traj.tsv")).unwrap()).collect();
+    assert_ne!(trajs[0], trajs[1],
+        "doubling the recovery rate must change the trajectory; identical \
+         bytes means one model was served the other's cached result (gh#135)");
+}
+
 #[test]
 fn cas_rejects_multi_seeds() {
     let Some(bin) = skip_if_missing_binary() else { return; };
