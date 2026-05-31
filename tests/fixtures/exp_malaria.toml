@@ -11,14 +11,16 @@ backend = "gillespie"
 n = 20
 
 [[scenario]]
-# Both species contribute roughly equally; baseline endemic state.
-name = "co_endemic"
-params = {}
+# Both species contribute roughly equally; baseline endemic state. The
+# model's `baseline` preset (labelled "baseline (co-endemic)") is the
+# source of truth — reference it by name, not an empty patch.
+name = "baseline"
 
 [[scenario]]
-# An. funestus dominant: higher recruitment and biting, arabiensis suppressed.
+# An. funestus dominant: higher recruitment and biting, arabiensis
+# suppressed. A model preset — reference by name (preset is the source
+# of truth; it already sets these biting/recruitment params).
 name = "funestus_dominant"
-params = { pi_B = 800.0, pi_A = 100.0, beta_BH = 0.5, beta_AH = 0.05, beta_HB = 0.12, beta_HA = 0.02 }
 
 [[scenario]]
 # 50% ITN coverage: halve mosquito→human biting rates for both species.

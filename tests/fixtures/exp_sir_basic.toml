@@ -15,5 +15,6 @@ name = "low_r0"
 params = { beta = 0.2, gamma = 0.1 }
 
 [[scenario]]
+# A model preset (beta=0.5, gamma=0.1) — reference by name; the preset
+# is the source of truth, so no inline override.
 name = "high_r0"
-params = { beta = 0.5, gamma = 0.1 }

@@ -20,5 +20,6 @@ name = "coupled"
 params = { kappa = 0.05 }
 
 [[scenario]]
+# All five regional SIA campaigns — a model preset that enables them.
+# Reference by name; the preset is the source of truth.
 name = "with_sia"
-enable = ["sia_north", "sia_south", "sia_east", "sia_west", "sia_center"]
