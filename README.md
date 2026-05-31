@@ -512,6 +512,7 @@ Kermack–McKendrick closed form. CI blocks merges if camdl drifts.
 
 | Document                                                         | Contents                             |
 | ---------------------------------------------------------------- | ------------------------------------ |
+| [`docs/commands.md`](docs/commands.md)                          | Command taxonomy and workflows       |
 | [`docs/camdl-language-spec.md`](docs/camdl-language-spec.md)     | Full DSL reference                   |
 | [`docs/camdl-data-spec.md`](docs/camdl-data-spec.md)             | IR schema and data model             |
 | [`docs/camdl-inference-spec.md`](docs/camdl-inference-spec.md)   | Fitting workflow specification       |
