@@ -201,8 +201,8 @@ project/
 human-driven experiments. You want to see `01_all_free/mle/` in your file
 browser, not a hash. You reason about fits by name ("the one where I fixed
 beta"). Named directories support this. Cache invalidation is handled by
-hash-based staleness detection inside `provenance.json` (see §9), not by
-directory naming.
+hash-based staleness detection over the fit's recorded `config_hash` (see
+§9.4), not by directory naming.
 
 **Simulation results use content-addressed (hash-based) directories** because
 batch simulations are reproducible and high-volume. You might run 18,000
@@ -660,8 +660,9 @@ for running a model. No batch file or fit config is needed for exploration.
 ### 4.1 Basic CLI
 
 ```bash
-# Baseline (no scenario), output to stdout
+# Baseline (no scenario) — registers a run in the CAS, prints a banner (§4.4)
 camdl simulate model.camdl --params params.toml --seed 42
+# stderr: ✓ run a1d91886 · camdl cat a1d91886   (add --stdout to pipe instead)
 
 # Named scenario from .camdl
 camdl simulate model.camdl --params params.toml --scenario with_sia --seed 42
@@ -707,48 +708,79 @@ camdl simulate model.camdl --params p.toml --scenario with_sia --param beta=0.5 
 --table NAME=FILE          # supply external() table data
 ```
 
-### 4.4 `--cas` — opt-in content-addressable caching
+### 4.4 Output destinations — CAS by default
+
+Every run **registers in the content-addressable store** (`results/`, §2.4)
+and prints a one-line discoverability banner to **stderr**. This is the
+default — there is no `--cas` flag to remember, and a large trajectory never
+floods the terminal. (Rev-3 change: CAS was opt-in via `--cas` through v0.2;
+that behavior is now the default and the flag is removed.)
 
 ```bash
-# Cache output; repeated identical invocations are instant
-camdl simulate model.camdl --params p.toml --seed 42 --cas
-# stderr: cached: results/sims/<sim_hash>/<scenario>-<scen_hash>/seed_42/
-# stdout: trajectory TSV as usual
+# Default: register in CAS, print a banner. Re-run with identical inputs = instant cache hit.
+camdl simulate model.camdl --params p.toml --seed 42
+# stderr: ✓ run a1d91886 · 12K traj · camdl cat a1d91886
+# (re-run) stderr: ✓ run a1d91886 (cache hit) · camdl cat a1d91886
 
-# Run again: cache hit, no simulation
-camdl simulate model.camdl --params p.toml --seed 42 --cas
-# stderr: cache hit: results/sims/<sim_hash>/<scenario>-<scen_hash>/seed_42/
-# stdout: same trajectory, read from cache
+# Opt out: stream the trajectory to stdout, no CAS write, no banner
+camdl simulate model.camdl --params p.toml --seed 42 --stdout > out.tsv
+camdl simulate model.camdl --params p.toml --seed 42 --stdout | head
 
-# Browse cached runs
+# Write a named file AND register in CAS (the file is a convenience copy)
+camdl simulate model.camdl --params p.toml --seed 42 -o out.tsv
+
+# Browse what you've run
 camdl list
 camdl show <short-hash>
 camdl cat <short-hash>
 ```
 
-**Scope.** `--cas` currently supports single-run invocations only — one
-seed, one scenario, no `--draws` / `--replicates`. For sweeps use
-`camdl batch run` (§5), which has had content-addressable output
-since v0.2.
+**The three destinations** (a run always produces exactly one *primary*
+artifact; these say where it goes):
 
-**Layout.** Same as batch — `results/sims/{sim_hash[:8]}/{scenario_slug}-{scen_hash[:8]}/seed_{n}/traj.tsv`.
-See §2.4.
+| flag | trajectory / large artifact | tiny scalar (pfilter, eval) | CAS-registered? |
+| --- | --- | --- | --- |
+| *(default)* | → CAS only | echoed to stdout **and** CAS | yes |
+| `--stdout` | → stdout, no CAS | → stdout, no CAS | no |
+| `-o FILE` / `--output FILE` | → FILE **and** CAS | → FILE and CAS | yes |
 
-**Hash composition.** `sim_hash` keys on model IR + base params + backend
-+ dt + **runtime version** (VERSION_SHORT, includes git hash).
-`scen_hash` keys on enable/disable/param overrides + runtime version.
-A code change that alters simulation semantics (intervention expansion,
-scenario resolution, etc.) invalidates the cache under identical
-inputs — no silent stale results.
+**Small-result echo.** Commands whose primary result is at/under a small size
+threshold (a `pfilter` loglik, a short `eval` table) *also* echo to stdout
+even while registering in CAS, so the tight "vary θ, re-check" loop stays a
+one-liner. Larger results (a trajectory, `pfilter --replicates 50`) go
+CAS-only with the banner. `--stdout` forces full output to stdout regardless.
 
-**Stderr vs stdout convention.** `cached: <path>` / `cache hit: <path>`
-are logged to stderr; trajectory bytes go to stdout (or `-o FILE`).
-Pipelines like `camdl simulate ... --cas > out.tsv` work as expected.
+**The banner.** `✓ run <hash8> · <summary> · camdl cat <hash8>` on a fresh
+write; `✓ run <hash8> (cache hit) · …` on a hit. Always stderr, so
+`--stdout | …` pipelines stay clean. (Supersedes the pre-rev-3 `cached:` /
+`cache hit:` lines, which mislabeled a first write as `cached:`; see gh#136.)
 
-**Output location.** Defaults to `./output` (matches `batch run`).
-Override with `--output-dir DIR`.
+**Cache hit = identical inputs.** A re-run with the same `sim_hash` +
+`scen_hash` + seed is served from the CAS without re-simulating. Cache
+correctness depends on `model_hash` being structural (§9.2) — fixed in
+gh#135/f3bc389, so distinct models no longer collide.
 
-### 4.5 `camdl list` / `camdl show` / `camdl cat` — browse cached runs
+**Ensembles register as one multi-run.** `--seeds` / `--replicates` /
+`--draws` register a single multi-seed run whose `camdl cat` output carries a
+`seed` (or `replicate`) column — no delimiter-less concatenated trajectories,
+and no "`--cas` supports single runs only" wall.
+
+**Layout.** `results/sims/{sim_hash[:8]}/{scenario_slug}-{scen_hash[:8]}/seed_{n}/`
+(§2.4). Override the root with `--output-dir DIR` (default `./results`).
+
+**Hash composition.** `sim_hash` keys on model IR (via `model_hash`, §9.2) +
+base params + backend + dt + **runtime version** (VERSION_SHORT, includes git
+hash). `scen_hash` keys on enable/disable/param overrides + runtime version. A
+code change that alters simulation semantics invalidates the cache under
+identical inputs — no silent stale results.
+
+
+### 4.5 `camdl list` / `camdl show` / `camdl cat` — the primary access path
+
+Because output goes to the CAS by default (§4.4), `list` / `show` / `cat` are
+**the** way you reach results — not an optional convenience. `list` defaults
+to `./results` with no argument; the banner from each run hands you the exact
+`camdl cat <hash>` to run next.
 
 ```bash
 # Tabular overview — most recent first
