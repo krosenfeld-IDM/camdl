@@ -1,6 +1,6 @@
 # Pre-alpha audit remediation
 
-**Status:** Proposal
+**Status:** archived 2026-05-31 — all Critical + High safety findings landed. Deferred remainder is cleanup/ergonomics, none a silent-correctness risk (verified at triage): C1's obs-likelihood σ²/ρ gradient is still dropped in PGAS but fails *loud* via the `pgas.rs` preflight gate and is tracked at **gh#76**; remainder also tracked by **gh#107** (H6 ParamKind enum), **gh#101** (H11 index newtypes), and M5/M8/M11/M16 cleanup.
 **Date:** 2026-05-13
 **Motivation:** Per-finding response to `docs/dev/reviews/2026-05-12-full-audit.md` (8C / 14H / 21M); decides per item whether to fix-now, fix-right, gate-with-error, or defer, with reasoning. Frames the alpha as: a skeptical user running their own AI-assisted code review should not find low-hanging silent-failure bugs.
 

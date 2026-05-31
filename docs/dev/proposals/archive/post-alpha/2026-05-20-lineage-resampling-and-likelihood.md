@@ -1,7 +1,7 @@
 # Proposal: three-layer lineage architecture — resampling, tree likelihood, and the inference boundary
 
 Date: 2026-05-20
-Status: Draft (RFC) — for review before implementation
+Status: archived 2026-05-31 — Layers 1–2 (lineage resampling + tree realization, three backends, projections, validation) implemented. Layer 3 (sampled-tree / coalescent likelihood + the native joint-tree-inference path, §4c/§7) split to `2026-05-31-lineage-tree-likelihood.md`.
 Branch: `feature/lineages` (refactor of the shipped two-layer design)
 Supersedes the *architecture* of `2026-05-19-individual-sampling-layer.md`;
 that document's implementation (count-level lineage tracking, stratified

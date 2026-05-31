@@ -1,5 +1,5 @@
 ---
-status: proposal
+status: archived 2026-05-31 — Part I (plug-in prequential: `camdl compare` log predictive density, `--save-prequential`, `PrequentialTrace`) implemented. Part II (Bayesian LFO-PSIS extension) split to `2026-05-31-prequential-bayesian-lfo.md`.
 date: 2026-04-20
 authors: camdl-book authors
 ---
