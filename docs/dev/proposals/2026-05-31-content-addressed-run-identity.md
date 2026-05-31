@@ -129,10 +129,12 @@ corrupting wrong answer. Changing a field's policy bumps its type's
 ## The canonical hashing algorithm
 
 This is the load-bearing contract: get it wrong and hashes are unstable or
-unsound. One fixed 256-bit hash, pinned as `runid::HASHER` (BLAKE3 recommended;
-SHA-256 acceptable if `sha2` is already in the tree). A global
-`HASH_VERSION: u16` is folded into every root hash, so the function or encoding
-can be migrated with a single bump (which invalidates the whole store — fine at
+unsound. One fixed 256-bit hash, pinned as `runid::HASHER` — default SHA-256
+(`sha2` is already the only hashing dep in the tree; add `blake3` only if its
+speed is needed for large-artifact digests). The *same* pinned function produces
+both the input `ContentHash` and the artifact-manifest digests; the choice is
+recorded by `HASH_VERSION: u16`, folded into every root hash, so the function or
+encoding migrates with a single bump (which invalidates the whole store — fine at
 alpha). `ContentHash` is `[u8; 32]`.
 
 The `CanonicalHasher` wraps the hash state; the derive macro and any hand impl
@@ -179,8 +181,12 @@ Three derived quantities:
 
 - **Level hash** — each path level (`ModelDigest`, `SimConfig`, …) has its own
   `ContentHash`; the segment's `hash8` is its first 4 bytes as hex.
-- **`run_id`** — the leaf's address: `hash(HASH_VERSION ++ kind_tag ++ [level
-  hashes in path order])`. One 32-byte id per leaf, stored in `run.json`.
+- **`run_id`** — the leaf's address: `hash(HASH_VERSION ++ kind_tag ++ count ++
+  [level hashes in path order])`. The root derivation obeys the same framing
+  rules as everything else: `kind_tag` is a **fixed-width enum index** (not a
+  bare string) and the level-hash list is **count-prefixed** (`u64` LE), so two
+  kinds with coincidentally-equal level sequences cannot alias. One 32-byte id
+  per leaf, stored in `run.json`; a golden test pins this injectivity.
 - **`hash8`** is for the path (human reading + grouping); **`run_id`** is for
   addressing (`show`/`cat` prefix match). Both, plus all full level hashes, live
   in `run.json`.
@@ -195,21 +201,40 @@ deps, and provenance.
 
 ### Compiled IR lives at the model level — compile once, never recompile
 
-`compile : (source.camdl, camdlc_version, compile-time table digests) → IR` is a
-pure function, so the compiled IR is content-addressed like anything else. A
-**compile cache** keyed by **source hash** stores the IR:
+`compile : (source.camdl, camdlc_version, IR-affecting argv, files read) → IR` is
+a pure function, so the compiled IR is content-addressed like anything else. The
+**compile cache**:
 
 ```
 results/models/
-  {source_h8}/                  # source_h = hash(.camdl bytes + camdlc_version + inlined-table digests)
-    model.ir.json               # the compiled IR  (camdlc runs ONCE per distinct source, ever)
+  {source_h8}/                  # source_h = hash(.camdl bytes + camdlc_version + IR-affecting camdlc argv)
+    model.ir.json               # the compiled IR  (camdlc runs ONCE per distinct (source, version, argv))
     model_hash                  # = hash(canonical IR); the run-tree's model-level identity
+    reads.json                  # camdlc side output: every file it read → its content digest
 ```
 
-`Resolve` computes `source_h`, looks here first, and invokes camdlc **only on a
-miss**. Every run then loads `model.ir.json` from the cache — no recompile, no
-double-compile, and `Run` consumes the same IR bytes that were hashed. The
-run-tree model level (`{stem}-{model_h8}`) references this IR by `model_hash`.
+Two subtleties, both under-invalidation hazards if mishandled:
+
+- **camdlc argv is part of the key.** camdlc accepts IR-mutating flags (`--set
+  NAME=VALUE`, `--no-dim-check`), so `source_h` folds in the IR-affecting argv;
+  inert flags (`-o`/`--pretty`/`--json-errors`/`--output`) are whitelisted out.
+  Today the Rust CLI invokes `camdlc <path>` with no flags (`util.rs:344`); that
+  invariant is pinned by a test so a future `--set` can't silently collide.
+- **Table-file digests are discovered, not predicted.** A `.camdl` can `read(...)`
+  external tables/CSVs at compile time, so the IR depends on those file *contents*
+  — but Resolve cannot know *which* files without re-implementing camdlc's path
+  resolution (the natural guess, and it is unsound). **Invert it:** camdlc emits
+  `reads.json` (every path it opened + its content digest) as a side output. A
+  cache lookup re-checks those recorded digests; a changed table file → miss →
+  recompile. The read-set can only *grow* via a source edit (which changes
+  `source_h`), so re-verifying the recorded set is sufficient. M2's compile-cache
+  gate includes a **table-file-change → miss** red→green test.
+
+`Resolve` computes `source_h`, finds a candidate, re-verifies `reads.json`
+digests, and invokes camdlc **only on a miss**. Every run then loads
+`model.ir.json` — no recompile, no double-compile, and `Run` consumes the same IR
+bytes that were hashed. The run-tree model level references this IR by
+`model_hash`.
 
 ### `simulate` (and `batch`, which is many of these leaves)
 
@@ -264,9 +289,31 @@ results/fits/
 
 | Level | Label | Hash inputs |
 |---|---|---|
-| fit | fit.toml stem | model (whole IR), data **content digests**, estimate spec, fixed, resolved priors, `engine_version` |
-| stage | `NN-{name}` (`01-scout`, `02-posterior`) | stage config (algorithm, backend, dt, cooling, gates, resolved `--init`/`--regime`/`--rw-sd`), `target_length`, **`deps: [upstream stage identities]`** |
+| fit | fit.toml stem | model (whole IR), data (resolved-obs digests), **the whole canonicalized fit.toml**, resolved priors, `engine_version` |
+| stage | `NN-{name}` (`01-scout`, `02-posterior`) | the **whole `Stage` config struct** + the **resolved obs-block + flow indices** + `target_length` + **`deps: [upstream stage identities]`** |
 | seed | — | base seed |
+
+**Hash the whole fit.toml and the whole `Stage` struct — do not re-enumerate.**
+Fit identity has many fit-level fields that change θ̂ and are easy to drop by
+hand: `ic_free` (skips obs 1 from the loglik), `holdout`/`holdout_after`, the
+*fit-level* `dt` and `backend` (`dt` lives on `[config]`, **not** on `Stage`),
+`simplex_groups`, `synthetic`, fit-level scenario. A `Stage` likewise carries
+`tempering`, `max_tree_depth`, `csmc_sweeps_per_nuts`, `dense_mass`, `use_nuts`,
+`adapt`, `rho`, `burn_in`, `thin`, the gate/loglik-eval config — all
+output-determining. Enumerating a subset is the same hash-a-recipe antipattern as
+the gh#147 bug; hashing the canonicalized document/struct is the include-by-default
+posture applied to the fit. The two genuinely *non*-fit-config inputs added on
+top are the resolved obs-block name and flow-index set (the `--obs`/`--flow`
+selection, which selects which series drives the likelihood and is *not* in the
+toml).
+
+Knobs that change a *saved sub-artifact's* bytes without changing θ̂ key their own
+sub-artifact, not the stage leaf: `n_trajectories` (posterior-trajectory rows
+written) → a `trajectories/` sub-artifact keyed on it; the dt-check → a
+`dt_check/` sub-artifact keyed on `(enabled, n_halvings, strict_threshold,
+dt_check_seed)`. So `--no-dt-check`, `--dt-check-halvings`, `--dt-check-strict`,
+and `n_trajectories` stay provenance for the θ̂ leaf while remaining semantic for
+their own sub-artifact — the same split as obs-under-trajectory.
 
 `camdl if2` (and `camdl pmmh`-free, prior-free standalone fits) **desugar to a
 one-stage fit**: a bare `camdl if2 …` builds an in-memory one-`if2`-stage fit
@@ -296,17 +343,24 @@ unconflated, as `survey`/`eval` are already separate:
 ```
 results/pfilters/
   {model_stem}-{model_h8}/
-    {filter_spec}-{spec_h8}/       # data digests, fixed params, particles, backend, dt
-      seed_{n}/
+    {filter_spec}-{spec_h8}/       # resolved-obs digests, fixed params, particles, backend, dt,
+      seed_{n}/                    #   resolved obs-block + flow indices, time_format
         run.json  filtering.tsv
+        paths/…  prequential/…     # --save-paths/--n-paths, --save-prequential → keyed sub-artifacts
 ```
+
+Output-shaping flags that change a *sub-artifact's* bytes without changing the
+loglik (`--n-paths`, `--save-paths`, `--save-prequential`, `--record-ancestry`)
+key their **own sub-artifact**, the obs-under-trajectory pattern — they stay
+provenance for the main `filtering.tsv` leaf.
 
 ### `profile` — grid nests by point/start
 
 ```
 results/profiles/
   {model_stem}-{model_h8}/
-    {profile_spec}-{spec_h8}/      # backend, dt, data digests, estimate/fixed, algorithm, cooling, sweep axes, iterations, starts
+    {profile_spec}-{spec_h8}/      # backend, dt, resolved-obs digests, resolved obs-block + flow indices,
+                                   #   estimate/fixed, algorithm, cooling, sweep axes, iterations, starts
       seed_{n}/
         {param}={value}/           # one dir per grid point (readable)
           start_{k}/
@@ -346,7 +400,7 @@ mirror that `show` renders). Concrete shape:
   "deps": [],                          // [{run_id, kind, path}] — lineage; fit stages list upstream stage ids
   "status": "completed",               // running | completed | failed
   "artifacts": {                       // EXACT-SET manifest — leaf must contain these and no others
-    "traj.tsv": { "bytes": 40213, "mtime": "…", "blake3": "…" }
+    "traj.tsv": { "bytes": 40213, "mtime": "…", "digest": "…" }  // algo pinned by hash_version
   },
   "inputs": { /* resolved param values, scenario delta, config — for display/audit, not hashed */ },
   "provenance": {
@@ -371,7 +425,7 @@ pub struct RunRecord {
     pub levels: Vec<LevelId>,            // { name, label, hash: ContentHash, schema_version: u16 }
     pub deps: Vec<ArtifactRef>,          // { run_id, kind, path }
     pub status: RunStatus,               // Running | Completed | Failed
-    pub artifacts: BTreeMap<String, FileChecksum>,  // { bytes, mtime, blake3 } — exact set
+    pub artifacts: BTreeMap<String, FileChecksum>,  // { bytes, mtime, digest } — exact set
     pub inputs: serde_json::Value,       // resolved-input summary; provenance, not hashed
     pub provenance: Provenance,          // argv, label, timestamps, host, version, threads, source paths
 }
@@ -396,11 +450,17 @@ back toward the existence-only bug). A hit requires:
   current; **the artifact set is exactly the manifest** (every listed file
   present at its recorded `bytes` + `mtime`, **and no unlisted files in the
   leaf** — orphans from a crashed prior run are a `Stale`, not ignored).
-- *Full checksum, on demand:* re-hash (blake3) only on `--verify`, on first read
-  after an `mtime` change, or at `cat` time. The input hash already gives
-  collision resistance; the per-file blake3 defends against bit-rot / partial
-  writes, which size+mtime catch at near-zero cost. Re-checksumming multi-GB fit
-  chains on *every* `batch` re-run is the cliff that recreates `batch.rs:862`.
+- *Full digest, on demand:* re-hash only on `--verify`, on first read after an
+  `mtime` change, **and whenever the artifact is actually consumed** (`cat`, or a
+  downstream run reading it as a dep). Re-digesting multi-GB fit chains on *every*
+  `batch` re-run is the cliff that recreates `batch.rs:862`, so the hot path stops
+  at the cheap gate — but be honest about what that buys: size+mtime is a
+  *performance* optimization, not the integrity guarantee. mtime is coarse and
+  `cp -p`/`rsync`/restore-from-backup preserve it, so a same-size-same-mtime
+  tamper passes the cheap gate. The actual "never serve wrong bytes" guarantee is
+  the input hash (collision resistance) **plus the digest check at consume time** —
+  which is why anything that *reads* an artifact digests it, not just trusts the
+  cheap gate.
 
 Any failure → `Stale(reason)` (`Incomplete` | `HashMismatch` | `Corrupt` |
 `OrphanFiles` | `SchemaDrift`). `Miss` and `Stale` both ⇒ recompute. `--force`
@@ -425,7 +485,7 @@ staging, treat as Hit. Orphaned `.staging/*` from a crash is swept on the next
 store open. This *replaces* today's `traj.tsv`-existence check and non-atomic
 batch writes.
 
-**Commit — mode B: in-place `Running → Completed`** (fit stages — long,
+**Commit — mode B: streamed `Running → Completed`** (fit stages — long,
 streaming, resumable; can't stage-then-rename because outputs must be visible
 and resumable during the hours-long run). The leaf dir is **claimed
 exclusively**: create `{stage_dir}/.lock` with `O_EXCL` (`create_new(true)`)
@@ -476,6 +536,15 @@ fully-resolved leaf inputs. Shared steps:
    `--seed` (`main.rs:406-407`), so the recipe alone doesn't pin the row. The
    design spec (method, n, bounds) is recorded as provenance; draw-row
    distinctness lives in the params hash where it belongs.
+
+**Data identity is the resolved-observation set, not the raw file digest.**
+`--time-format {auto,numeric,date}` reinterprets the *same* data bytes (a column
+parsed as numbers vs as ISO dates against the model `origin`/`time_unit`), so two
+runs with identical files but different `--time-format` have different
+observations and different logliks. For any data-consuming kind the hashed unit
+is `(DataDigest, resolved time_format, origin, time_unit)` jointly — `auto`
+resolves to its concrete choice before hashing — never the raw `DataDigest`
+alone.
 
 Every resolved value, never a raw path, unresolved preset, or generating recipe,
 enters a hash.
@@ -628,8 +697,11 @@ own, and hashing the IR via serde bytes is unsound (NaN → `null`; `HashMap`
 order not guaranteed sorted). So M1 **hand-writes and tests `ContentAddressed`
 for every `ir` type reachable from `Model`** (orphan rule allows it: local
 trait, foreign type), applying the structural-IR-float rule and sorted-map rule
-by hand. This hand reference is also what the macro is validated against: a
-golden test pins `macro output == hand impl` on a fixed value before the macro
+by hand. `Expr` is a `Box`-recursive tree and serde has hit its
+recursion limit on deeply-nested IRs, so the hand-written `hash_into` mirrors
+`eval_expr`'s depth strategy (or states its bound) rather than becoming a new
+recursion cliff. This hand reference is also what the macro is validated against:
+a golden test pins `macro output == hand impl` on a fixed value before the macro
 is trusted. The macro **replaces** the hand-written `cas/typed.rs` canonical
 hashing and the `hashing.rs` functions; there is never a second implementation.
 `runid` depends only on `ir`; `cli` depends on `runid`. (There is no `observe`
@@ -671,15 +743,92 @@ as a group (chains aren't separate artifacts).
   honor).
 - Stale comment at `cli/src/if2.rs:349` references a removed `camdl fit if2`
   subcommand — delete during M3 when `if2` desugars to a one-stage fit.
-- `--no-dt-check` (`fit/mod.rs:1042`) changes the *artifact bytes* (the dt-check
-  diagnostic block is present or absent) without changing θ̂. Make the dt-check
-  its **own sub-artifact** under the fit stage (the obs-under-trajectory
-  pattern), so its presence is its own leaf and the θ̂ leaf is unaffected — keeps
-  `--no-dt-check` honestly provenance for the θ̂ artifact.
+- The dt-check flags `--no-dt-check`/`--dt-check-halvings`/`--dt-check-strict`
+  (`fit/mod.rs:1042-1047`; the dt-check has its own derived
+  `dt_check_seed = seed + 0xd7c4ec5eed`) change *artifact bytes* without changing
+  θ̂. Make the dt-check its **own sub-artifact** keyed on
+  `(enabled, n_halvings, strict_threshold, dt_check_seed)`, so all three flags
+  stay provenance for the θ̂ leaf and semantic only for their sub-artifact. (All
+  three must appear in the flag inventory — omitting two is the same foot-gun.)
 - `output.format`/`time_semantics` live in `ir::Model` but never affect computed
   values; a **normalization pass strips them from the hashed `CanonicalIr`** so
   "the whole IR" means the whole *value-determining* IR and `--format` is
   genuinely inert (otherwise it busts the model cache despite being provenance).
+
+## Adding a new CAS-backed subcommand
+
+The system is only as sound as its least careful extension. A new artifact-producing
+subcommand follows this recipe; the steps exist to make the foot-guns this design
+already hit *unrepresentable* for the next author.
+
+1. **Enumerate the complete input set — default everything in.** List every CLI
+   flag and every config field the command reads. Each is an input *until proven
+   inert*. The bar for "inert" is: changing it changes the bytes of no artifact in
+   the bundle. When unsure, include it — over-invalidation recomputes (cheap,
+   visible); under-invalidation serves a wrong answer (silent, corrupting). The
+   completeness audit (a per-command table of flag → semantic/provenance) is part
+   of the PR, not an afterthought.
+2. **Define the leaf input type.** A `XInput` struct, `#[derive(RunInput)]`,
+   composing the shared per-level digests (`ModelDigest`, `SimConfig`,
+   `ResolvedParams`, `ResolvedScenario`) wherever they apply, plus the
+   command-specific fields. Provenance fields carry `#[run_input(provenance)]`.
+3. **Resolve, never smuggle a recipe or a name.** Implement `Resolve` so every
+   field is a resolved *value* or *content digest* before hashing:
+   - a path is read to a `DataDigest` (hash of content), never hashed as a path;
+   - a preset / named scenario resolves to its values;
+   - a *generator* resolves to its *result* — hash the drawn param vector, not the
+     `--draws` design; hash the resolved `process_seed`/`obs_seed`, not `--seed`;
+   - **if your command has its own stochastic expansion** (per-draw, per-replicate,
+     per-stream — not the sweep grid), define a deterministic
+     `unit_seed(base, unit_index) → u64` and hash the *per-unit resolved seed* in
+     each leaf, exactly as the grid resolves `process_seed = mix_cell_seed(base,
+     point_idx, rep)` (`engine.rs:52-66`). Do **not** store the base `--seed` and
+     mix at runtime inside `Run` — that reproduces the base-seed collision;
+   - a non-finite resolved float is a `ResolveError`, surfaced before any hash.
+4. **Classify each flag.** Semantic (hashed) iff it changes artifact bytes. Three
+   classes to keep straight:
+   - *selects what is computed* (a test statistic, an estimand, `--obs`/`--flow`,
+     a summary function) — **semantic**, even though it "just picks an output";
+   - *toggles a diagnostic block* — semantic, but better split into its own
+     sub-artifact (the obs-under-trajectory pattern) so the flag stays provenance
+     for the main artifact;
+   - *selects what is displayed* of already-computed values (`--dates`,
+     `--format`, wide-vs-dir, a `cat`-time column filter) — **provenance**.
+   The test: would two values of the flag, each run to completion, produce a
+   different artifact you'd want to cache separately? If yes, semantic; when
+   unsure, include it. Presentation values that live in the hashed IR are
+   normalized out of the `CanonicalIr`; a presentation field that is your
+   *command's own* (not in the IR) goes in the leaf struct with
+   `#[run_input(provenance)]` (step 2) and is applied at `cat` time.
+5. **Lineage by identity — and know what's an artifact vs a file.** A consumed
+   *camdl artifact* (has a `run_id` in the store) is an `ArtifactRef`; a consumed
+   *external file* (raw data, a table) is a `DataDigest` of its content (step 3) —
+   observed data is a `DataDigest`, not an `ArtifactRef`. An `ArtifactRef` records
+   `{run_id, kind, path}` for display but **only the `run_id` (32 bytes) is
+   hashed** — the path is recorded-not-hashed, so a regenerated upstream
+   invalidates correctly. Multi-hop chains (event-log → line-list → projection)
+   carry one `ArtifactRef` per hop.
+6. **Register the kind and declare the `Layout`.** Add a variant to
+   `ArtifactKind` and register its `Layout` (the kind dir + the factored levels —
+   each a disjoint input slice, union = the complete set — + the leaf) so the
+   data-driven reader walks it; an unregistered kind is invisible to
+   `list`/`show`. Reuse the shared levels so grouping keeps working.
+7. **`Run` writes only through `CasStore`.** Never write artifact files directly —
+   the store provides the atomic/durable commit, the exact-set checksum manifest,
+   and the `Running → Completed` semantics. A command that writes its own files
+   loses all three. The sneaky path back in: **reusing an existing engine that
+   writes its own files** (e.g. the simulate backend) — capture its outputs into
+   the returned `Artifacts` bundle rather than letting it touch disk.
+8. **Gate it with the standard tests.** Per output-determining flag: two inputs
+   differing only in that flag → *distinct* `run_id`. Per provenance flag: differs
+   → *same* `run_id`. Plus a golden-hash pin. These mirror the gh#147 suite and are
+   the command's definition of done.
+
+The foot-guns this recipe forecloses, each a real finding from review: hashing a
+recipe instead of its result; hashing a base seed instead of the resolved one; a
+diagnostic-toggling flag mislabeled provenance; a path-valued lineage dependency;
+a presentation field left inside the hashed IR; and writing artifact files outside
+the store.
 
 ## Existing scaffolding to extract and harden
 
@@ -778,7 +927,8 @@ sub-artifact; delete the stale `cli/src/if2.rs:349` comment. *Gate:*
 fit-reproducibility pin (same inputs, watchdog off → identical θ̂); **an
 iteration-bound-still-catches-a-wedged-filter pin** (the traded safety property);
 `--parallel 1` vs `8` → identical θ̂; resume → distinct `run_id` **and base run
-byte-identical before/after**.
+byte-identical before/after**; **two concurrent identical fits → the second fails
+fast on the `O_EXCL` claim** (no interleaved chains).
 
 **M4 — addressing + reader.** Generic tree walker (data-driven depth via
 `Layout`, replacing the hard-coded 3-level walk), `run_id` prefix resolution with
@@ -811,6 +961,8 @@ Deferred: additional `GroupKind`s, a compiled-IR GC, run-spec CAS-default output
   point of `--sweep beta=1,2 --seed 42` → **distinct** `run_id`.
 - **Keyed sub-artifacts.** Obs-sub-artifact key and compile-cache key each get a
   red→green test, not only the trajectory key.
+- **Compile cache.** A changed `read()` table file → miss (recompile); a changed
+  IR-affecting camdlc flag → distinct `source_h`.
 - **Concurrency / crash.** Two threads commit the same sim → one wins the rename,
   both observe `Completed`, artifacts intact. Crash-injection between each fsync
   step → no `Completed` record ever points at unflushed bytes.
@@ -822,6 +974,10 @@ Deferred: additional `GroupKind`s, a compiled-IR GC, run-spec CAS-default output
 - **Determinism.** `gate_trajectory_baseline.rs` stays green; fit-reproducibility
   pin (same inputs, watchdog off → identical θ̂); `--parallel 1` vs `8` →
   identical θ̂; `from_mle` with a changed upstream θ̂ → miss.
+- **Fit completeness (under-invalidation regressions).** Two fits differing only
+  in `ic_free` / `holdout` / fit-level `dt` / `--obs` / `--flow` → distinct fit
+  `run_id`; changing `n_trajectories` or a dt-check flag → *same* θ̂ leaf,
+  *distinct* sub-artifact.
 - **Traded safety.** An iteration-based bound still aborts a genuinely wedged
   filter (the property the wall-clock watchdog used to provide).
 - **Resume.** Resume → different `run_id` **and** the base run's bytes are
@@ -858,7 +1014,7 @@ control/IO/presentation argument is provenance.
 | `pfilter` | `PfilterEval` under `pfilters/` | scores at fixed params (not estimation); sibling kind to `survey`/`eval`. M3. |
 | `profile` | grid leaves nested point/start | `--starts`/`--seeds`/`--sweep` are tree levels. M3. |
 | `survey` | `Survey` (one landscape leaf) | per-point logliks are rows, not runs. M3. |
-| `lineage realize/tree/sojourn/cohort` | `Projection` (a two-hop chain) | enumerate inputs per subcommand (below); each hop's upstream is an `ArtifactRef`. |
+| `lineage realize/tree/sojourn/cohort` | `Projection` (a 1–2-hop chain) | enumerate inputs per subcommand (below); each hop's upstream is an `ArtifactRef`. |
 | `eval` | `Eval` | pure fn of (model, params, `--expr`, grid). |
 | `compare` | `Group(FoldElpd)` over fit prequential refs | `--baseline` = provenance. |
 
@@ -881,10 +1037,15 @@ hashed — the summary "scheme/window = semantic" was incomplete:
 
 Semantic-vs-provenance of the load-bearing flags: **semantic** — model, params
 (`--param`/`--params`/`--param-vec`/`--draws`), `--table` content, scenario,
-`--backend`, `--dt`, `--seed`, output schedule + horizon, obs streams+schedule,
-**`--allow-degenerate-rates`**, `--identity-seed`/`--sample-seed`, and resolved
-`--regime`/`--rw-sd`/`--init`/`--time-format`. **Provenance** — `--parallel`,
-`--force`, `--dry-run`, `-o`/`--output`, `--stdout`, `--label`, `geo`,
-`--resume` flag itself (the resulting `target_length` is semantic), `--dates`,
-obs wide-vs-dir, `--format`/`--tsv`, `--no-dt-check`, `--suppress-warnings`,
+`--backend`, `--dt`, `--seed` (hashed as the resolved `process_seed`), output
+schedule + horizon, obs streams+schedule, **`--obs`/`--flow`** (selects which
+series drives the likelihood), **`--allow-degenerate-rates`**,
+`--identity-seed`/`--sample-seed`, and resolved
+`--regime`/`--rw-sd`/`--init`/`--time-format` (the last hashed *jointly* with the
+data digest). **Provenance for the main leaf, but each keys its own sub-artifact**
+— `--no-dt-check`/`--dt-check-halvings`/`--dt-check-strict`, `n_trajectories`,
+`--save-paths`/`--n-paths`/`--save-prequential`/`--record-ancestry`. **Pure
+provenance** — `--parallel`, `--force`, `--dry-run`, `-o`/`--output`, `--stdout`,
+`--label`, `geo`, `--resume` flag itself (the resulting `target_length` is
+semantic), `--dates`, obs wide-vs-dir, `--format`/`--tsv`, `--suppress-warnings`,
 `--progress`, `--verbosity`.
