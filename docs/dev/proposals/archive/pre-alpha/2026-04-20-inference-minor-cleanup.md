@@ -1,7 +1,8 @@
 ---
-status: implemented
+status: implemented (archived 2026-05-31)
 date: 2026-04-20
 implemented: 2026-04-20
+note: R1–R5 all landed (mostly in 35747d3). Only unbuilt item is R2's `log_prob_floor_is_finite` unit test (~4 lines) — below the bar for a live proposal; LOG_PROB_FLOOR floor behavior is already exercised by the obs_model.rs assertion.
 ---
 
 # Inference minor cleanup
