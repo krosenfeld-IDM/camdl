@@ -1,5 +1,5 @@
 ---
-status: draft
+status: archived 2026-05-31 — walker/table/labels/prune landed; the remaining results-aware experiment-management concerns are absorbed/re-scoped by the 2026-05-26 week-audit reviews
 date: 2026-04-28
 audit: docs/dev/notes/2026-04-27-fit-experiment-management-audit.md
 implements: walker, MethodResult ADT, fit table, fit prune, labels, structured config_diff (engine), integration tests

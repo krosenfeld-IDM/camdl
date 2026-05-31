@@ -1,5 +1,5 @@
 ---
-status: proposal
+status: archived 2026-05-31 — mostly mooted by the clap migration; the remaining CLI consolidation (helper unification, fit-run decomposition) is deferred to a larger future CLI lift
 date: 2026-04-20
 ---
 

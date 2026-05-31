@@ -1,6 +1,6 @@
 # Proposal: Seed Timing Inference for Early-Outbreak Models
 
-**Status:** draft for discussion — revised against the current codebase (post-PR-#65 lineage merge) and to compose with the lineage layer.
+**Status:** archived 2026-05-31 — Mechanism B (smooth-importation seed) implemented & verified end-to-end; the E2/E3 magnitude estimands and Mechanism C are not being pursued. (Original draft note retained below.)
 **Scope:** a mechanism for estimating the introduction/seed time of an epidemic, plus the inference machinery and honest-reporting outputs to support it.
 **Primary application:** early cVDPV2 emergence dynamics (Nigeria), generalizing to any early-outbreak setting.
 

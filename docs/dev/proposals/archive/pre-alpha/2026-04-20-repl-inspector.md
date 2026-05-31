@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: archived 2026-05-31 — static `camdl inspect` (camdlc passthrough) landed; the interactive REPL/eval/grad/set loop is not being pursued
 date: 2026-04-20
 scope: ocaml/bin/camdlc.ml, rust/crates/cli/src/
 priority: low — quality of life / learning tool

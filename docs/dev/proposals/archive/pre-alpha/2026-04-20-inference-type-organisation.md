@@ -1,5 +1,5 @@
 ---
-status: partially-implemented
+status: archived 2026-05-31 — R1 (shared types out of if2.rs) landed; R2/R3 superseded by the 2026-05-26 week-audit / upstream-rust-engine reviews, which re-scope inference type organisation
 date: 2026-04-20
 implemented: 2026-04-20
 deferred:
