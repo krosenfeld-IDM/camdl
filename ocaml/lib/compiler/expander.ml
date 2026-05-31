@@ -295,7 +295,7 @@ let read_csv_rows ctx path ~on_header ~on_row ~on_done =
     dims is the list of table_dim_entry (TDim/TDimUnit) for index columns.
     n_values is the number of value columns (= List.length tnames).
     default_val = Some f → sparse (missing cells get f); None → dense (all cells required). *)
-let load_table_data ctx path ~dims ~n_values ~default_val =
+let load_table_data ctx path ~dims ~n_values ~default_val ~cell_kind =
   let n_dims = List.length dims in
   (* Compute dimension sizes and level lists *)
   let dim_info = List.map (fun de ->
@@ -397,15 +397,42 @@ let load_table_data ctx path ~dims ~n_values ~default_val =
           set_flags.(idx) <- true;
           for j = 0 to n_values - 1 do
             let cell = String.trim (List.nth cols (n_dims + j)) in
-            match float_of_string_opt cell with
-            | Some f -> arrays.(j).(idx) <- f
-            | None ->
-              Diagnostics.error ctx.diags
-                ~code:"E209"
-                ~loc:Diagnostics.no_loc
-                ~message:(Printf.sprintf "%s row %d column %d: expected a number, got '%s'"
-                  path row_num (n_dims + j + 1) cell)
-                ()
+            (match float_of_string_opt cell with
+             | Some f -> arrays.(j).(idx) <- f
+             | None ->
+               (* Date-valued cell: permitted only for an instant/duration
+                  cell-kind table in an anchored model. The ISO date resolves
+                  to internal time via origin + time_unit at compile time —
+                  the same parse_date_to_float used by date() literals and the
+                  --data loader (docs/dates.md, "The one rule"). A bare number
+                  already matched the Some-branch above and is taken as
+                  internal time directly. *)
+               (match cell_kind, ctx.origin with
+                | Some ("instant" | "duration"), Some origin_str ->
+                  (try arrays.(j).(idx) <- parse_date_to_float origin_str cell ctx.time_unit
+                   with Failure msg | Invalid_argument msg ->
+                     Diagnostics.error ctx.diags
+                       ~code:"E209"
+                       ~loc:Diagnostics.no_loc
+                       ~message:(Printf.sprintf
+                         "%s row %d column %d: expected a number or ISO date (YYYY-MM-DD), got '%s' (%s)"
+                         path row_num (n_dims + j + 1) cell msg)
+                       ())
+                | Some ("instant" | "duration"), None ->
+                  Diagnostics.error ctx.diags
+                    ~code:"E209"
+                    ~loc:Diagnostics.no_loc
+                    ~message:(Printf.sprintf
+                      "%s row %d column %d: date cell '%s' needs a top-level `origin = date(...)` to resolve (instant/duration table in an unanchored model)"
+                      path row_num (n_dims + j + 1) cell)
+                    ()
+                | _ ->
+                  Diagnostics.error ctx.diags
+                    ~code:"E209"
+                    ~loc:Diagnostics.no_loc
+                    ~message:(Printf.sprintf "%s row %d column %d: expected a number, got '%s'"
+                      path row_num (n_dims + j + 1) cell)
+                    ()))
           done
         end
       end
@@ -2948,7 +2975,7 @@ let expand_tables ctx =
          in
          let n_values = List.length td.tnames in
          let arrays = load_table_data ctx path
-           ~dims:dim_entries ~n_values ~default_val in
+           ~dims:dim_entries ~n_values ~default_val ~cell_kind in
          List.mapi (fun col_idx name ->
            let arr = List.nth arrays col_idx in
            let vals = Array.to_list (Array.map (fun f -> Ir.Const f) arr) in

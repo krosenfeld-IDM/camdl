@@ -1,0 +1,63 @@
+# SIA (Supplementary Immunization Activity) schedule supplied as anchored
+# calendar DATES read from a table — the common operational input shape for
+# measles/polio campaign modelling. Exercises `instant` cell-kind tables: the
+# ISO dates in the value column resolve via `origin` + `time_unit` to internal
+# time at compile time (the same parse_date_to_float path as date() literals
+# and the --data loader). See docs/dates.md, "The one rule".
+#
+# Keyed by (region, round): each region runs three campaign rounds on its own
+# calendar dates. The intervention comprehension fires one S->V transfer per
+# (region, round) at the table-supplied date. With origin = 2013-01-01 the
+# resolved internal times (in days) are:
+#   north: r0 2013-11-01 -> 304, r1 2014-03-15 -> 438, r2 2014-09-20 -> 627
+#   south: r0 2013-11-08 -> 311, r1 2014-03-22 -> 445, r2 2014-09-27 -> 634
+time_unit = 'days
+origin    = date("2013-01-01")
+
+dimensions {
+  region = [north, south]
+  round  = [r0, r1, r2]
+}
+
+compartments { S, I, R, V }
+
+stratify(by = region)
+
+tables {
+  # instant cell-kind: value cells are ISO dates, resolved via origin.
+  sia_time : region × round : instant = read("data/sia_anchored_dates_schedule.tsv")
+}
+
+parameters {
+  beta     : rate         in [0.001, 2.0]
+  gamma    : rate         in [0.01,  1.0]
+  vacc_cov : probability  in [0.0, 1.0]
+  I0       : count        in [1, 1000]
+  N0       : count        in [1000, 1000000]
+}
+
+let N[reg in region] = S[reg] + I[reg] + R[reg] + V[reg]
+
+transitions {
+  infection[reg in region] : S[reg] --> I[reg] @ beta * S[reg] * I[reg] / N[reg]
+  recovery[reg in region]  : I[reg] --> R[reg] @ gamma * I[reg]
+}
+
+interventions {
+  # One S->V campaign per (region, round), fired at the calendar date read
+  # from sia_time (an instant table). `at [ sia_time[reg, k] ]` is a single-
+  # element schedule per expanded intervention.
+  sia[reg in region, k in round]
+    : transfer(fraction = vacc_cov, from = S[reg], to = V[reg])
+      at [ sia_time[reg, k] ]
+}
+
+init {
+  S[reg in region] = N0 - I0
+  I[reg in region] = I0
+}
+
+simulate {
+  from = origin
+  to   = add_calendar_years(origin, 2)
+}

@@ -1,0 +1,439 @@
+{
+  "ir_version": "0.7",
+  "validated_by": "ocaml-compiler-v0.7",
+  "model": {
+    "name": "sia_anchored_dates",
+    "version": "0.3",
+    "time_unit": "days",
+    "description": null,
+    "origin": "2013-01-01",
+    "origin_rata_die": 41272,
+    "compartments": [
+      { "name": "S_north", "kind": "integer" },
+      { "name": "S_south", "kind": "integer" },
+      { "name": "I_north", "kind": "integer" },
+      { "name": "I_south", "kind": "integer" },
+      { "name": "R_north", "kind": "integer" },
+      { "name": "R_south", "kind": "integer" },
+      { "name": "V_north", "kind": "integer" },
+      { "name": "V_south", "kind": "integer" }
+    ],
+    "transitions": [
+      {
+        "name": "infection_north",
+        "stoichiometry": [ [ "S_north", -1 ], [ "I_north", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "div",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "param": "beta" },
+                    "right": { "pop": "S_north" }
+                  }
+                },
+                "right": { "pop": "I_north" }
+              }
+            },
+            "right": { "binding_ref": "N_north" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "transmission",
+          "source_compartment": "S_north",
+          "dest_compartment": "I_north"
+        },
+        "rate_grad": {
+          "beta": {
+            "bin_op": {
+              "op": "div",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "pop": "S_north" },
+                      "right": { "pop": "I_north" }
+                    }
+                  },
+                  "right": { "binding_ref": "N_north" }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "binding_ref": "N_north" },
+                  "right": { "binding_ref": "N_north" }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "infection_south",
+        "stoichiometry": [ [ "S_south", -1 ], [ "I_south", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "div",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "param": "beta" },
+                    "right": { "pop": "S_south" }
+                  }
+                },
+                "right": { "pop": "I_south" }
+              }
+            },
+            "right": { "binding_ref": "N_south" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "transmission",
+          "source_compartment": "S_south",
+          "dest_compartment": "I_south"
+        },
+        "rate_grad": {
+          "beta": {
+            "bin_op": {
+              "op": "div",
+              "left": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": {
+                    "bin_op": {
+                      "op": "mul",
+                      "left": { "pop": "S_south" },
+                      "right": { "pop": "I_south" }
+                    }
+                  },
+                  "right": { "binding_ref": "N_south" }
+                }
+              },
+              "right": {
+                "bin_op": {
+                  "op": "mul",
+                  "left": { "binding_ref": "N_south" },
+                  "right": { "binding_ref": "N_south" }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "recovery_north",
+        "stoichiometry": [ [ "I_north", -1 ], [ "R_north", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": { "param": "gamma" },
+            "right": { "pop": "I_north" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "intrinsic",
+          "source_compartment": "I_north",
+          "dest_compartment": "R_north"
+        },
+        "rate_grad": { "gamma": { "pop": "I_north" } }
+      },
+      {
+        "name": "recovery_south",
+        "stoichiometry": [ [ "I_south", -1 ], [ "R_south", 1 ] ],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": { "param": "gamma" },
+            "right": { "pop": "I_south" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "intrinsic",
+          "source_compartment": "I_south",
+          "dest_compartment": "R_south"
+        },
+        "rate_grad": { "gamma": { "pop": "I_south" } }
+      }
+    ],
+    "ode_equations": [],
+    "time_functions": [],
+    "tables": [
+      {
+        "name": "sia_time",
+        "values": [
+          { "const": 304.0 },
+          { "const": 438.0 },
+          { "const": 627.0 },
+          { "const": 311.0 },
+          { "const": 445.0 },
+          { "const": 634.0 }
+        ],
+        "out_of_bounds": "error",
+        "cell_kind": "instant"
+      }
+    ],
+    "interventions": [
+      {
+        "name": "sia_north_r0",
+        "base_name": "sia",
+        "schedule": {
+          "at_times_expr": [
+            {
+              "table_lookup": {
+                "table": "sia_time",
+                "indices": [ { "const": 0.0 } ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "fraction_transfer": {
+              "src": "S_north",
+              "dst": "V_north",
+              "fraction": { "param": "vacc_cov" }
+            }
+          }
+        ]
+      },
+      {
+        "name": "sia_north_r1",
+        "base_name": "sia",
+        "schedule": {
+          "at_times_expr": [
+            {
+              "table_lookup": {
+                "table": "sia_time",
+                "indices": [ { "const": 1.0 } ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "fraction_transfer": {
+              "src": "S_north",
+              "dst": "V_north",
+              "fraction": { "param": "vacc_cov" }
+            }
+          }
+        ]
+      },
+      {
+        "name": "sia_north_r2",
+        "base_name": "sia",
+        "schedule": {
+          "at_times_expr": [
+            {
+              "table_lookup": {
+                "table": "sia_time",
+                "indices": [ { "const": 2.0 } ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "fraction_transfer": {
+              "src": "S_north",
+              "dst": "V_north",
+              "fraction": { "param": "vacc_cov" }
+            }
+          }
+        ]
+      },
+      {
+        "name": "sia_south_r0",
+        "base_name": "sia",
+        "schedule": {
+          "at_times_expr": [
+            {
+              "table_lookup": {
+                "table": "sia_time",
+                "indices": [ { "const": 3.0 } ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "fraction_transfer": {
+              "src": "S_south",
+              "dst": "V_south",
+              "fraction": { "param": "vacc_cov" }
+            }
+          }
+        ]
+      },
+      {
+        "name": "sia_south_r1",
+        "base_name": "sia",
+        "schedule": {
+          "at_times_expr": [
+            {
+              "table_lookup": {
+                "table": "sia_time",
+                "indices": [ { "const": 4.0 } ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "fraction_transfer": {
+              "src": "S_south",
+              "dst": "V_south",
+              "fraction": { "param": "vacc_cov" }
+            }
+          }
+        ]
+      },
+      {
+        "name": "sia_south_r2",
+        "base_name": "sia",
+        "schedule": {
+          "at_times_expr": [
+            {
+              "table_lookup": {
+                "table": "sia_time",
+                "indices": [ { "const": 5.0 } ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "fraction_transfer": {
+              "src": "S_south",
+              "dst": "V_south",
+              "fraction": { "param": "vacc_cov" }
+            }
+          }
+        ]
+      }
+    ],
+    "observations": [],
+    "parameters": [
+      {
+        "name": "beta",
+        "value": null,
+        "bounds": [ 0.001, 2.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "rate",
+        "param_dim": null
+      },
+      {
+        "name": "gamma",
+        "value": null,
+        "bounds": [ 0.01, 1.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "rate",
+        "param_dim": null
+      },
+      {
+        "name": "vacc_cov",
+        "value": null,
+        "bounds": [ 0.0, 1.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "probability",
+        "param_dim": null
+      },
+      {
+        "name": "I0",
+        "value": null,
+        "bounds": [ 1.0, 1000.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "count",
+        "param_dim": null
+      },
+      {
+        "name": "N0",
+        "value": null,
+        "bounds": [ 1000.0, 1000000.0 ],
+        "prior": null,
+        "hierarchical": null,
+        "transform": null,
+        "initial_value": null,
+        "param_kind": "count",
+        "param_dim": null
+      }
+    ],
+    "initial_conditions": {
+      "parameterized": {
+        "S_north": {
+          "bin_op": {
+            "op": "sub",
+            "left": { "param": "N0" },
+            "right": { "param": "I0" }
+          }
+        },
+        "S_south": {
+          "bin_op": {
+            "op": "sub",
+            "left": { "param": "N0" },
+            "right": { "param": "I0" }
+          }
+        },
+        "I_north": { "param": "I0" },
+        "I_south": { "param": "I0" }
+      }
+    },
+    "output": {
+      "times": { "regular": { "start": 0.0, "step": 1.0, "end": 730.0 } },
+      "format": "tsv",
+      "trajectory": true,
+      "observations": true
+    },
+    "simulation": {
+      "t_start": 0.0,
+      "t_end": 730.0,
+      "time_semantics": "continuous",
+      "dt": null,
+      "rng_seed": null
+    },
+    "scenarios": [],
+    "model_structure": {
+      "dimensions": [ { "name": "region", "values": [ "north", "south" ] } ],
+      "compartment_dims": {
+        "S": [ "region" ],
+        "I": [ "region" ],
+        "R": [ "region" ],
+        "V": [ "region" ]
+      },
+      "base_compartments": [ "S", "I", "R", "V" ],
+      "transmission_transitions": [ "infection" ],
+      "infectious_compartments": [ "I" ]
+    },
+    "bindings": [
+      {
+        "name": "N_north",
+        "expr": { "pop_sum": [ "S_north", "I_north", "R_north", "V_north" ] }
+      },
+      {
+        "name": "N_south",
+        "expr": { "pop_sum": [ "S_south", "I_south", "R_south", "V_south" ] }
+      }
+    ]
+  }
+}

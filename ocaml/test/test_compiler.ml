@@ -574,6 +574,69 @@ let test_table_no_cell_type_annotation_remains_none () =
     "C.cell_kind = None"
     None tbl.Ir.cell_kind
 
+(* An `instant` cell-kind table read from a file accepts ISO-date value
+   cells, resolved to internal time via origin + time_unit at compile time
+   (the same parse_date_to_float path as date() literals). With origin
+   2013-01-01 and time_unit = days: 2013-11-01 -> 304, 2014-03-15 -> 438. *)
+let test_table_cell_kind_instant_resolves_dates () =
+  let tsv = Filename.temp_file "camdl_instant" ".tsv" in
+  let oc = open_out tsv in
+  output_string oc "round\tsched\nr0\t2013-11-01\nr1\t2014-03-15\n";
+  close_out oc;
+  let src = Printf.sprintf {|
+    time_unit = 'days
+    origin = date("2013-01-01")
+    dimensions { round = [r0, r1] }
+    compartments { S, V }
+    parameters { r : rate in [0.0, 1.0]  vc : probability in [0.0, 1.0] }
+    tables { sched : round : instant = read("%s") }
+    transitions { waste : S --> V @ r * S }
+    interventions {
+      sia[k in round] : transfer(fraction = vc, from = S, to = V) at [ sched[k] ]
+    }
+    init { S = 1000 }
+    simulate { from = origin  to = add_calendar_years(origin, 2) }
+  |} tsv in
+  let m = compile_expect_ok src in
+  Sys.remove tsv;
+  let tbl = List.find (fun (t : Ir.table) -> t.Ir.name = "sched") m.Ir.tables in
+  Alcotest.(check (option string)) "sched cell_kind" (Some "instant") tbl.Ir.cell_kind;
+  let vals =
+    match tbl.Ir.source with
+    | Ir.Inline exprs ->
+        List.map (function
+          | Ir.Const f -> f
+          | _ -> Alcotest.fail "expected compile-resolved Const cells") exprs
+    | Ir.External _ -> Alcotest.fail "expected inline (resolved) table source"
+  in
+  Alcotest.(check (list (float 1e-9)))
+    "ISO date cells resolve to day-offsets via origin" [ 304.0; 438.0 ] vals
+
+(* Negative control: a date cell in an instant table with no top-level
+   `origin` cannot be resolved — it is a hard error (E209), never a silent
+   0. Proves the date branch is gated on the anchor, so the positive test
+   above is non-vacuous. *)
+let test_table_cell_kind_instant_needs_origin () =
+  let tsv = Filename.temp_file "camdl_instant_noorigin" ".tsv" in
+  let oc = open_out tsv in
+  output_string oc "round\tsched\nr0\t2013-11-01\n";
+  close_out oc;
+  let src = Printf.sprintf {|
+    time_unit = 'days
+    dimensions { round = [r0] }
+    compartments { S, V }
+    parameters { r : rate in [0.0, 1.0]  vc : probability in [0.0, 1.0] }
+    tables { sched : round : instant = read("%s") }
+    transitions { waste : S --> V @ r * S }
+    interventions {
+      sia[k in round] : transfer(fraction = vc, from = S, to = V) at [ sched[k] ]
+    }
+    init { S = 1000 }
+    simulate { from = 0 'days  to = 730 'days }
+  |} tsv in
+  compile_expect_error_code ~code:"E209" ~contains:"origin" src;
+  Sys.remove tsv
+
 let with_dim_check_enabled f =
   let prev = !Compiler.no_dim_check in
   Compiler.no_dim_check := false;
@@ -5062,6 +5125,7 @@ let () =
       Alcotest.test_case "seir_spatial_5_inference" `Quick (test_golden "seir_spatial_5_inference");
       Alcotest.test_case "malaria_two_species"     `Quick (test_golden "malaria_two_species");
       Alcotest.test_case "seir_age_table_rates"    `Quick (test_golden "seir_age_table_rates");
+      Alcotest.test_case "sia_anchored_dates"      `Quick (test_golden "sia_anchored_dates");
     ];
     "table_lookup_flattening", [
       Alcotest.test_case "single index per lookup" `Quick test_table_lookup_single_index;
@@ -5099,6 +5163,10 @@ let () =
         `Quick test_table_cell_type_probability_parses;
       Alcotest.test_case "no annotation = cell_kind None (back-compat)"
         `Quick test_table_no_cell_type_annotation_remains_none;
+      Alcotest.test_case "instant cells: ISO dates resolve via origin"
+        `Quick test_table_cell_kind_instant_resolves_dates;
+      Alcotest.test_case "instant date cell without origin is E209"
+        `Quick test_table_cell_kind_instant_needs_origin;
       Alcotest.test_case "dim-check passes with :rate-typed table in rate position"
         `Quick test_table_cell_type_dim_check_passes_in_rate_position;
       Alcotest.test_case "cell_kind survives JSON serde round-trip"
