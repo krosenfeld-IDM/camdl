@@ -326,10 +326,16 @@ failure mode it opens.
 
 ### 5.2 Missing = skip, under MAR
 
-The likelihood seam is `MultiStreamObsModel::log_likelihood`
-(`multi_stream_obs.rs:393`), which sums over streams at each time. All
-four inference methods (PF, IF2, PGAS, PMMH) funnel through it, so the
-skip lands once and is inherited everywhere.
+The likelihood seam is `MultiStreamObsModel::log_likelihood_from_flows_and_counts`,
+which sums over streams at each time. **As of gh#139 this is a single
+seam:** PF/IF2/PMMH reach it via the trait `log_likelihood` (now a
+one-line delegate) and PGAS calls it directly, so the skip lands once
+and is genuinely inherited by all four methods. *(Pre-gh#139 there were
+two byte-identical summation loops — the trait method and the flat
+method — and a change to one silently missed the other; that is the
+GH#6 / incident-2026-04-22 ~100× divergence class. The unification was
+done first, precisely so this proposal's skip/`data.<col>`/`observed≤n`
+work lands in one place. Do **not** revert to per-method loops.)*
 
 - **Stream absent at `t_k`** (no row in long form, or `NaN` cell in
   wide): contributes 0 to that step's joint log-likelihood (drop the
