@@ -177,9 +177,16 @@ obey these rules so that equal *values* always produce equal bytes:
   collected and sorted before hashing.
 - **Nested `RunInput` fields.** Hashed compositionally via `hash_into` — one
   pass, no intermediate digest.
-- **`ArtifactRef` (lineage).** Hashed as its 32 identity bytes, *not* by
-  re-walking the upstream inputs — the upstream's identity already transitively
-  summarizes them. This is what makes `deps` cheap and statically computable.
+- **`ArtifactRef` (lineage).** Hashed as `run_id ++ artifact_name ++ digest`
+  (the producing leaf's identity, *which* file within it, and that file's content
+  digest), *not* by re-walking the upstream inputs — the upstream's identity
+  already transitively summarizes its inputs. `kind`/`path` on the struct are
+  display-only, not hashed. This is what makes `deps` cheap and statically
+  computable.
+- **`deps: Vec<ArtifactRef>`.** Hashed as a **set sorted by `run_id`**, not in
+  collection order — so reordering independent upstreams changes no hash (the
+  general `Vec` rule is order-sensitive; `deps` is the documented exception,
+  backed by a `BTreeSet` or sorted in `hash_into`).
 - **`#[run_input(provenance)]` fields.** Skipped entirely.
 
 Three derived quantities:
@@ -306,7 +313,7 @@ the stage level **ordinal-prefixed** so `ls` shows execution order:
 results/fits/
   {fit_stem}-{fit_h8}/             # FIT-WIDE
     {NN}-{stage}-{stage_h8}/       # STAGE: NN = zero-padded topological position (01, 02, …)
-      seed_{n}/
+      seed_{base}-{seed_h8}/       # segment carries the resolved-seed hash (no level is label-only)
         run.json  chains…
 ```
 
@@ -314,7 +321,7 @@ results/fits/
 |---|---|---|
 | fit | fit.toml stem | model (whole IR), data (resolved-obs digests), **the whole canonicalized fit.toml**, resolved priors, `engine_version` |
 | stage | `NN-{name}` (`01-scout`, `02-posterior`) | the **whole `Stage` config struct** + the **resolved obs-block + flow indices** + `target_length` + **`deps: [upstream stage identities]`** |
-| seed | — | base seed |
+| seed | `seed_{base}` | the **resolved fit RNG seed** (segment carries `seed_h8`; never label-only) |
 
 **Hash the whole fit.toml and the whole `Stage` struct — do not re-enumerate.**
 Fit identity has many fit-level fields that change θ̂ and are easy to drop by
@@ -367,7 +374,7 @@ unconflated, as `survey`/`eval` are already separate:
 results/pfilters/
   {model_stem}-{model_h8}/
     {filter_spec}-{spec_h8}/       # resolved-obs digests, fixed params, particles, backend, dt,
-      seed_{n}/                    #   resolved obs-block + flow indices, time_format
+      seed_{base}-{seed_h8}/       #   resolved obs-block + flow indices, time_format
         run.json  filtering.tsv
         paths/…  prequential/…     # --save-paths/--n-paths, --save-prequential → keyed sub-artifacts
 ```
@@ -384,7 +391,7 @@ results/profiles/
   {model_stem}-{model_h8}/
     {profile_spec}-{spec_h8}/      # backend, dt, resolved-obs digests, resolved obs-block + flow indices,
                                    #   estimate/fixed, algorithm, cooling, sweep axes, iterations, starts
-      seed_{n}/
+      seed_{base}-{seed_h8}/
         {param}={value}/           # one dir per grid point (readable)
           start_{k}/
             run.json
@@ -450,7 +457,7 @@ pub struct RunRecord {
     pub deps: Vec<ArtifactRef>,          // { run_id, kind, artifact, digest } — the consumed artifact
     pub status: RunStatus,               // Running | Completed | Failed
     pub artifacts: BTreeMap<String, FileChecksum>,  // { bytes, mtime, digest } — exact set of OWN files
-    pub children: BTreeMap<String, Vec<ContentHash>>,  // reserved child-subdir namespaces (obs/, paths/, …)
+    pub children: BTreeMap<String, Vec<ContentHash>>,  // namespace (obs/, paths/, …) → child run_ids; recorded, NOT hashed
     pub inputs: serde_json::Value,       // resolved-input summary; provenance, not hashed
     pub provenance: Provenance,          // argv, label, timestamps, host, version, threads, source paths
 }
@@ -483,8 +490,12 @@ back toward the existence-only bug). A hit requires:
 - *Cheap gate, then:* `status == Completed`; `hash_version`/`schema_version`
   current; **the leaf's OWN files exactly match the manifest** (every listed file
   present at its recorded `bytes` + `mtime`, **and no unlisted files** — *except*
-  the declared `children` subdirs, which are validated recursively and are not
-  orphans). A crashed run's stray files (not listed, not a declared child) → `Stale`.
+  the declared `children` subdirs, which are recognized as children, not orphans).
+  A crashed run's stray files (not listed, not a declared child) → `Stale`.
+  **A child's status is independent of its parent's:** the parent lookup does not
+  descend into child integrity; a stale or missing child is recomputed on *its
+  own* next lookup and never marks the parent `Stale` (so a corrupt `obs/` never
+  forces the trajectory to resimulate).
 - *Full digest, on demand:* re-hash only on `--verify`, on first read after an
   `mtime` change, **and whenever the artifact is actually consumed** (`cat`, or a
   downstream run reading it as a dep). Re-digesting multi-GB fit chains on *every*
@@ -512,11 +523,14 @@ incumbent `run.json` and compare full level hashes to `expected`:
 - *full hashes match, status stale/corrupt* → safe to clear and recompute;
 - *full hashes differ* → `PathPrefixCollision`: the 8-char segment aliased two
   distinct full hashes (possible for runs differing in a single level among a
-  very large sibling set). Allocate a disambiguated path
-  (`{label}-{hash8}~{hash16}/`) for the new run; the incumbent is untouched;
+  very large sibling set). Allocate a disambiguated path and leave the incumbent
+  untouched. **Disambiguation escalates and terminates:** `{label}-{hash8}` →
+  `{label}-{hash8}~{hash16}` → `{label}-{full64}`. The full-64 form *is* the
+  level identity, so it cannot collide — the protocol always terminates and never
+  loops;
 - *no `run.json`* → treat as this identity's incomplete run only if the path is
-  unambiguously claimed by `expected` (e.g. a live `O_EXCL` lock for it),
-  otherwise quarantine for manual repair rather than clearing.
+  unambiguously claimed by `expected` (a live `O_EXCL` lock for it), otherwise
+  quarantine for manual repair rather than clearing.
 
 This applies equally to `results/models/{source_h8}/` (a compile-cache short-hash
 collision must disambiguate, not overwrite the other model's IR).
@@ -539,9 +553,10 @@ reader never sees a half-written leaf. If `final` exists when the rename is
 attempted, **run `lookup(final, expected)` — never assume existence means hit**:
 a matching-identity `Completed` → discard staging, return Hit (lost a benign
 race); a `PathPrefixCollision` → rename staging to the disambiguated path
-instead; a same-identity `Stale` → safe-clear `final` and rename. Orphaned
-`.staging/*` from a crash is swept on the next store open. This *replaces*
-today's `traj.tsv`-existence check and non-atomic batch writes.
+instead; a same-identity `Stale` (or a `final` with no `run.json` — an orphaned
+partial) → sweep `final` to quarantine, then rename. Orphaned `.staging/*` from a
+crash is swept on the next store open. This *replaces* today's
+`traj.tsv`-existence check and non-atomic batch writes.
 
 **Commit — mode B: streamed `Running → Completed`** (fit stages — long,
 streaming, resumable; can't stage-then-rename because outputs must be visible
@@ -620,7 +635,14 @@ enters a hash.
 - **Generic tree walk.** Each kind declares its level names/depth via `Layout`,
   so the reader walks `results/` data-driven — no hard-coded 3-level depth
   (today's `browse.rs:690`), no dual-keying on `sim_hash` + path
-  (`browse.rs:956`). Navigation reads `run.json`, never path segments.
+  (`browse.rs:956`). Navigation reads `run.json`, never path segments. **Segment
+  matching is prefix-tolerant:** a dir name is `{label}-{hash8}` with an optional
+  `~{suffix}` (the collision disambiguator), so the walker enumerates *all* sibling
+  dirs and reads each `run.json` rather than reconstructing the expected name — a
+  `~`-suffixed collision sibling is found like any other leaf. Both colliding
+  artifacts have distinct full `run_id`s, so `show <run_id-prefix>` resolves each;
+  an ambiguous short prefix errors and lists candidates **with their `~`
+  disambiguators** so the user can tell them apart.
 - **Derived index, with run.json as truth — operationally.** A rebuildable
   `index.json` caches `(run_id → path, kind, label, status, created_at)` for fast
   `list` (replacing `manifest.json`). "Truth is run.json" must be *operational*,
@@ -756,6 +778,17 @@ pub struct TrajectoryInput {          // latent dynamics only — NOT the obs mo
 > State which you shipped; do not leave it ambiguous. Either way the obs leaf
 > hashes the full `ObservationDigest`, not just stream names + schedule.
 
+**Single-ownership rule for the split (closes the shared-object gray area).**
+Every IR object is assigned to *exactly one* digest. An object referenced by any
+dynamics rate/event/balance expression belongs to `ModelDynamicsDigest` — *even
+if* an observation projection also references it (a shared reporting-rate
+time-function, a shared table). The `ObservationDigest` then covers it
+transitively through its dependence on the trajectory `ArtifactRef`, never by
+re-hashing it. So a shared-object edit re-keys the trajectory (correct — the
+dynamics genuinely changed), while an obs-only object lives solely in
+`ObservationDigest`. This makes the partition total and removes the double-count
+(breaks `--obs is passive`) / drop (under-invalidation) ambiguity.
+
 `ArtifactRef` identifies the *consumed* artifact, not just its producing stage:
 `{ run_id, kind, artifact: "mle_params.toml", digest }`. Hashing it folds in the
 32-byte `digest` of the specific file consumed, so a change to a *sibling*
@@ -763,7 +796,10 @@ artifact (a diagnostic, a trace layout) under the same stage does not invalidate
 the consumer, and a bug in artifact selection can't slip through. `Artifacts` is
 a bundle (e.g. `{traj, event_log}` or `{paths, filtering, prequential}`).
 `RunRecord` (above) is read by prefix
-resolution and `show`/`cat`, never the path.
+resolution and `show`/`cat`, never the path. **`RunRecord` is never hashed** —
+identity comes only from the `RunInput`; `children`, `artifacts`, and
+`provenance` are recorded-only, which is *why* adding an `obs/` child cannot
+change the trajectory's `run_id`.
 
 ### `#[derive(RunInput)]` (crate `runid-derive`, `proc-macro = true`)
 
@@ -777,18 +813,21 @@ error (the emitted `<FieldTy as ContentAddressed>::hash_into` fails to resolve) 
 you cannot forget to make an input hashable.
 
 **Bootstrapping — hand-write the `ir` tree first, extract the macro second.**
-`ModelDigest.ir` is `ir::Model`, a *foreign* type with ~20 nested foreign types
-(`Compartment`, `Transition`, `Expr`, `Table`, `OutputConfig`, …) pervaded by
-`HashMap<String, f64>`, `HashMap<String, Expr>` (`rate_grad`,
-`transition.rs:53`), and raw `f64`. You cannot `#[derive]` on types you don't
-own, and hashing the IR via serde bytes is unsound (NaN → `null`; `HashMap`
-order not guaranteed sorted). So M1 **hand-writes and tests `ContentAddressed`
-for every `ir` type reachable from `Model`** (orphan rule allows it: local
-trait, foreign type), applying the structural-IR-float rule and sorted-map rule
-by hand. `Expr` is a `Box`-recursive tree and serde has hit its
-recursion limit on deeply-nested IRs, so the hand-written `hash_into` mirrors
-`eval_expr`'s depth strategy (or states its bound) rather than becoming a new
-recursion cliff. This hand reference is also what the macro is validated against:
+The model digests wrap `ir::Model` sub-trees (the whole `ir::Model` in the M2
+interim; the dynamics/observation/output slices in M2.5). `ir::Model` is a
+*foreign* type with ~20 nested foreign types (`Compartment`, `Transition`,
+`Expr`, `Table`, `OutputConfig`, …) pervaded by `HashMap<String, f64>`,
+`HashMap<String, Expr>` (`rate_grad`, `transition.rs:53`), and raw `f64`. You
+cannot `#[derive]` on types you don't own, and hashing the IR via serde bytes is
+unsound (NaN → `null`; `HashMap` order not guaranteed sorted). So M1
+**hand-writes and tests `ContentAddressed` for every `ir` type reachable from
+`Model`** (orphan rule allows it: local trait, foreign type), applying the
+structural-IR-float rule and sorted-map rule by hand. `Expr` is a `Box`-recursive
+tree; `eval_expr` already recurses it plainly and production handles multi-GB IRs
+without overflow, so a recursive `hash_into` is exactly as safe as the engine
+itself — no new cliff. (If an explicit bound is wanted, use a work-stack with a
+stated limit; do not claim to "mirror" a depth strategy `eval_expr` doesn't have.)
+This hand reference is also what the macro is validated against:
 a golden test pins `macro output == hand impl` on a fixed value before the macro
 is trusted. The macro **replaces** the hand-written `cas/typed.rs` canonical
 hashing and the `hashing.rs` functions; there is never a second implementation.
@@ -900,11 +939,12 @@ already hit *unrepresentable* for the next author.
 5. **Lineage by identity — and know what's an artifact vs a file.** A consumed
    *camdl artifact* (has a `run_id` in the store) is an `ArtifactRef`; a consumed
    *external file* (raw data, a table) is a `DataDigest` of its content (step 3) —
-   observed data is a `DataDigest`, not an `ArtifactRef`. An `ArtifactRef` records
-   `{run_id, kind, path}` for display but **only the `run_id` (32 bytes) is
-   hashed** — the path is recorded-not-hashed, so a regenerated upstream
-   invalidates correctly. Multi-hop chains (event-log → line-list → projection)
-   carry one `ArtifactRef` per hop.
+   observed data is a `DataDigest`, not an `ArtifactRef`. An `ArtifactRef` is
+   `{run_id, kind, artifact, digest}`; the hash folds in `run_id + artifact name
+   + digest` (`kind`/`path` are display-only), so it pins *which* upstream file
+   you consumed and a regenerated or reselected upstream invalidates correctly.
+   Multi-hop chains (event-log → line-list → projection) carry one `ArtifactRef`
+   per hop.
 6. **Register the kind and declare the `Layout`.** Add a variant to
    `ArtifactKind` and register its `Layout` (the kind dir + the factored levels —
    each a disjoint input slice, union = the complete set — + the leaf) so the
@@ -959,11 +999,11 @@ not just `hashing.rs`.
    navigation + display read `run.json`, never the path shape.
 4. A cache hit requires `run.json` present, `status == Completed`, hashes match,
    the artifact set **exactly** matches the manifest — no missing and no orphan,
-   *except declared `children` subdirs* (validated recursively) — at recorded
+   *except declared `children` subdirs* (recognized, not orphaned) — at recorded
    size+mtime, schema/hash versions current; the content digest is verified at
    consume time. Commit is durable (mode A) or streamed `Running → Completed`
    (mode B). **Adding a child sub-artifact (e.g. `--obs`) never makes its parent
-   leaf stale.**
+   leaf stale, and a stale/missing child never makes its parent stale.**
 5. Forward-sim/obs determinism stays gate-green; inference is content-addressed
    only with the watchdog disabled and resume treated as a distinct artifact
    (which means resume is **rewritten** to read the prior artifact read-only and
@@ -1023,7 +1063,10 @@ regression + macro equivalence, all green with no CLI wiring.
 `model_hash`/`canonical_params` survive until M3 (fit/survey/profile still call
 them); relocate utilities `slug`/`path_stem_slug`/`sha256_hex`/`file_hash` to a
 util module (do not delete; `external-harness/src/hashing.rs` is a *different*
-file, out of scope). Regenerate golden files. *Gate:* gh#147 red→green for the
+file, out of scope). **The `SimulateMeta.sim_hash`/`scen_hash` *fields* are read
+by the reader (`browse.rs:380-381,991` dual-keys on them) — which M4 rewrites —
+so M2 keeps those fields (or migrates browse's dual-keying into M2); deleting the
+functions without the fields won't compile.** Regenerate golden files. *Gate:* gh#147 red→green for the
 trajectory key, **the obs-sub-artifact key, and the compile-cache key**; the
 `process_seed` lone-vs-sweep-point collision test; concurrent-commit rename test.
 
