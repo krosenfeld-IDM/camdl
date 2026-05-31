@@ -169,8 +169,8 @@ let () =
                ) m.Ir.parameters
            }
          in
-         let json = Serde.model_to_string m in
-         if !output_path = "" then begin
+         let json = Passtime.time "serialize" (fun () -> Serde.model_to_string m) in
+         (if !output_path = "" then begin
            (* Default: write to stdout, preserving trailing newline. *)
            print_string json;
            print_newline ()
@@ -182,4 +182,7 @@ let () =
            output_string oc json;
            output_char oc '\n';
            close_out oc
-         end)
+         end);
+         (* Env-gated per-pass timing breakdown to stderr (no-op unless
+            CAMDL_TIME_PASSES is set); never touches the IR on stdout/-o. *)
+         Passtime.dump ())

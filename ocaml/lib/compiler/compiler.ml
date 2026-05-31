@@ -18,6 +18,7 @@ let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : strin
   try
     let lexbuf = Lexing.from_string src in
     Lexing.set_filename lexbuf filename;
+    let t_parse = Sys.time () in
     let decls =
       try Parser.file Lexer.token lexbuf
       with
@@ -40,11 +41,15 @@ let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : strin
           ();
         Diagnostics.report_and_exit diags source
     in
+    Passtime.record "parse" (Sys.time () -. t_parse);
     let source_dir =
       if filename = "<input>" then ""
       else Filename.dirname filename
     in
-    let (model, ctx, summary) = Expander.expand_detail ~source_dir ~filename name decls in
+    let (model, ctx, summary) =
+      Passtime.time "expand"
+        (fun () -> Expander.expand_detail ~source_dir ~filename name decls)
+    in
     (* Drain any lex-phase warnings (e.g. inconsistent digit grouping) collected
        before the expander's ctx.diags was available. *)
     List.iter (fun (sp, ep, msg) ->
@@ -192,9 +197,9 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
   | Ok d ->
     (* Post-expansion structural validation (M1 / C5 in the
        2026-04-19 compiler review). *)
-    if run_validate d then
+    if Passtime.time "validate" (fun () -> run_validate d) then
       Diagnostics.report_and_exit d.ctx.diags d.source;
-    run_dimcheck d;
+    Passtime.time "dimcheck" (fun () -> run_dimcheck d);
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     (* Single render of any collected non-blocking diagnostics
@@ -221,19 +226,21 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
       | Some td -> Expander.diag_loc_of_ast_ctx d.ctx td.trloc
       | None -> Diagnostics.no_loc
     in
-    let transitions = List.map (fun (t : Ir.transition) ->
-      match (try Ok (Autodiff.differentiate_rate t.rate param_names)
-             with Failure msg -> Error msg) with
-      | Ok rate_grad -> { t with Ir.rate_grad }
-      | Error msg ->
-        Diagnostics.error d.ctx.diags
-          ~code:"E600"
-          ~loc:(tr_loc t.name)
-          ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
-          ~hint:"mod is not differentiable; replace with a conditional guard"
-          ();
-        { t with Ir.rate_grad = [] }
-    ) d.model.Ir.transitions in
+    let transitions = Passtime.time "autodiff" (fun () ->
+      List.map (fun (t : Ir.transition) ->
+        match (try Ok (Autodiff.differentiate_rate t.rate param_names)
+               with Failure msg -> Error msg) with
+        | Ok rate_grad -> { t with Ir.rate_grad }
+        | Error msg ->
+          Diagnostics.error d.ctx.diags
+            ~code:"E600"
+            ~loc:(tr_loc t.name)
+            ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
+            ~hint:"mod is not differentiable; replace with a conditional guard"
+            ();
+          { t with Ir.rate_grad = [] }
+      ) d.model.Ir.transitions)
+    in
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     let m = { d.model with Ir.transitions = transitions } in
