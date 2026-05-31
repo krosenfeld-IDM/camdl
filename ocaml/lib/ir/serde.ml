@@ -1104,6 +1104,12 @@ let model_of_envelope_json (j : Yojson.Safe.t) : (model, string) result =
 let model_to_string (m : model) : string =
   Yojson.Safe.pretty_to_string (envelope_to_json m)
 
+(* Stream the same pretty-printed bytes straight to a channel, skipping the
+   1.8 GB intermediate string `model_to_string` would build. Byte-identical to
+   `model_to_string m` followed by writing the result. *)
+let model_to_channel (oc : out_channel) (m : model) : unit =
+  Yojson.Safe.pretty_to_channel oc (envelope_to_json m)
+
 let model_of_string (s : string) : (model, string) result =
   match Yojson.Safe.from_string s with
   | exception exn -> Error (Printexc.to_string exn)

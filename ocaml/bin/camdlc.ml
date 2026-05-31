@@ -169,17 +169,20 @@ let () =
                ) m.Ir.parameters
            }
          in
-         let json = Passtime.time "serialize" (fun () -> Serde.model_to_string m) in
+         (* Stream the IR JSON straight to the destination channel rather than
+            materializing the whole (multi-GB at scale) string first — see
+            Serde.model_to_channel. Byte-identical to the old
+            `model_to_string` + write path. *)
          (if !output_path = "" then begin
            (* Default: write to stdout, preserving trailing newline. *)
-           print_string json;
+           Passtime.time "serialize" (fun () -> Serde.model_to_channel stdout m);
            print_newline ()
          end else begin
-           (* -o / --output FILE: write IR JSON to file. Includes the
+           (* -o / --output FILE: write IR JSON to FILE. Includes the
               trailing newline so file output is byte-identical to
               `camdl compile model.camdl > FILE`. *)
            let oc = open_out !output_path in
-           output_string oc json;
+           Passtime.time "serialize" (fun () -> Serde.model_to_channel oc m);
            output_char oc '\n';
            close_out oc
          end);
