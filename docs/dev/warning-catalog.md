@@ -40,7 +40,7 @@ specifics are documented at each emit site in `ocaml/lib/compiler/`.)
 | E107 | parse | ambiguous unit literal after `/` |
 | E108 | parse | malformed initial-condition expression |
 | E109 | parse | unknown forcing function shape |
-| E200–E218 | semantic | scoping / declaration / resolution errors (multiple variants) |
+| E200–E221 | semantic | scoping / declaration / resolution errors (multiple variants); E221 = read() data-file header has too few columns for the table's index dimensions |
 | E230–E276 | semantic | observation, balance, simulation-block validation |
 | E300 | dimensional | transition rate has wrong dimension (e.g. per-capita where total propensity expected) |
 | E310 | dimensional | misc dimensional mismatch |

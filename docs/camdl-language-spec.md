@@ -830,7 +830,10 @@ human readability — the compiler uses **positional mapping** from the type
 signature.
 
 **Extension determines separator:** `.tsv` → tab, `.csv` → comma, anything else
-→ compile error. The first row is always a required header.
+→ compile error. The first non-comment row is the required header. Lines that
+begin with `#` (and blank lines) are skipped wherever they appear, so a file
+may carry leading provenance comments (source URL, fetch date) above the
+header — the usual convention for committed reference data.
 
 **Sparse tables** use `default = value` to fill index combinations missing from
 the file:

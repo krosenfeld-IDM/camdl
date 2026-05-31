@@ -469,6 +469,82 @@ let test_table_read_path_scales_unit () =
   assert_inline_const ~epsilon:1e-6 tbl 1 (60.0 *. 365.2425);
   Sys.remove tmp
 
+(* ── gh#144 — read() data-file header robustness ─────────────────────────────
+   read_csv_rows read the FIRST physical line as the header unconditionally,
+   even when that line was a `#` provenance comment. A 1-column tab-free
+   comment then mis-mapped as a 0/1-column "header" against a multi-dim table,
+   tripping `List.combine dim_names header_dims` with an uncaught
+   Invalid_argument crash instead of skipping the comment (a) or diagnosing a
+   genuinely malformed header (b). ────────────────────────────────────────── *)
+
+(* (a) A leading `#` provenance comment block is skipped; the first non-comment
+   line is the header, and the table loads identically to the comment-free
+   case. *)
+let test_table_read_skips_leading_comment () =
+  let tmp = Filename.temp_file "camdl_read_comment" ".tsv" in
+  let oc = open_out tmp in
+  (* Two leading comment lines (source URL + fetch date), then the header.
+     The comments are tab-free single columns; the table has two dims. *)
+  output_string oc "# source: https://example.org/contact_matrix\n";
+  output_string oc "# fetched: 2026-05-31\n";
+  output_string oc "row\tcol\tw\n";
+  output_string oc "a\ta\t1.0\n";
+  output_string oc "a\tb\t0.5\n";
+  output_string oc "b\ta\t0.5\n";
+  output_string oc "b\tb\t1.0\n";
+  close_out oc;
+  let src = Printf.sprintf {|
+    time_unit = 'days
+    dimensions { row = [a, b]  col = [a, b] }
+    compartments { S }
+    stratify(by = row)
+    stratify(by = col)
+    parameters { beta : rate }
+    tables { C : row × col = read("%s") }
+    let N = S_a_a + S_a_b + S_b_a + S_b_b
+    transitions {
+      dummy[r in row, c in col] : S[r, c] -->   @ beta * C[r, c] * S[r, c]
+    }
+    init { S_a_a = 1 S_a_b = 1 S_b_a = 1 S_b_b = 1 }
+    simulate { from = 0 'days  to = 1 'days }
+  |} tmp in
+  let m = compile_expect_ok src in
+  let tbl = List.find (fun (t : Ir.table) -> t.Ir.name = "C") m.Ir.tables in
+  (* Row-major 2×2: [a,a]=1.0 [a,b]=0.5 [b,a]=0.5 [b,b]=1.0 *)
+  assert_inline_const ~epsilon:1e-12 tbl 0 1.0;
+  assert_inline_const ~epsilon:1e-12 tbl 1 0.5;
+  assert_inline_const ~epsilon:1e-12 tbl 2 0.5;
+  assert_inline_const ~epsilon:1e-12 tbl 3 1.0;
+  Sys.remove tmp
+
+(* (b) A genuinely malformed header (too few columns, no comment) diagnoses
+   cleanly with E221 instead of crashing the compiler. *)
+let test_table_read_malformed_header_e221 () =
+  let tmp = Filename.temp_file "camdl_read_badhdr" ".tsv" in
+  let oc = open_out tmp in
+  (* Header has ONE column but the table is 2-D (row × col): the dim-column
+     count can't be read off this header. *)
+  output_string oc "row\n";
+  output_string oc "a\ta\t1.0\n";
+  close_out oc;
+  let src = Printf.sprintf {|
+    time_unit = 'days
+    dimensions { row = [a, b]  col = [a, b] }
+    compartments { S }
+    stratify(by = row)
+    stratify(by = col)
+    parameters { beta : rate }
+    tables { C : row × col = read("%s") }
+    let N = S_a_a + S_a_b + S_b_a + S_b_b
+    transitions {
+      dummy[r in row, c in col] : S[r, c] -->   @ beta * C[r, c] * S[r, c]
+    }
+    init { S_a_a = 1 S_a_b = 1 S_b_a = 1 S_b_b = 1 }
+    simulate { from = 0 'days  to = 1 'days }
+  |} tmp in
+  compile_expect_error_code ~code:"E221" ~contains:"row" src;
+  Sys.remove tmp
+
 let test_table_no_unit_annotation_leaves_values_alone () =
   (* No unit literal on the table = no scaling; dimcheck infers dim from use. *)
   let src = {|
@@ -5155,6 +5231,12 @@ let () =
         `Quick test_table_read_path_scales_unit;
       Alcotest.test_case "no unit annotation leaves values untouched"
         `Quick test_table_no_unit_annotation_leaves_values_alone;
+    ];
+    "table_read_header_gh144", [
+      Alcotest.test_case "leading # comment block is skipped before header"
+        `Quick test_table_read_skips_leading_comment;
+      Alcotest.test_case "malformed header (too few columns) is E221, not a crash"
+        `Quick test_table_read_malformed_header_e221;
     ];
     "table_cell_type_annotation_gh32", [
       Alcotest.test_case ":rate annotation parses + stamps IR.cell_kind"

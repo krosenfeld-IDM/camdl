@@ -264,16 +264,34 @@ let read_csv_rows ctx path ~on_header ~on_row ~on_done =
        Fun.protect guarantees the close runs on any exit path,
        normal or exceptional. *)
     let result = Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      (* gh#144: scan past any leading `#` comment block (provenance lines
+         such as source URL / fetch date — the repo's data-step convention)
+         and blank lines, treating the FIRST non-comment, non-blank physical
+         line as the header. This mirrors the data-row skip below, which
+         already drops `#` lines among data rows; the only `#` placement
+         that is meaningful is a leading block, so we skip exactly that.
+         [row_num] counts PHYSICAL lines so on_row diagnostics still point at
+         the right line of the file even when the header was preceded by
+         comments. *)
+      let row_num = ref 0 in
+      let is_comment_or_blank line =
+        line = "" || (String.length line > 0 && line.[0] = '#')
+      in
+      let rec read_header () =
+        let raw_line = input_line ic in   (* raises End_of_file at EOF *)
+        incr row_num;
+        let line = String.trim raw_line in
+        if is_comment_or_blank line then read_header ()
+        else List.map String.trim (split_by sep line)
+      in
       try
-        let header_line = input_line ic in
-        let header_cols = List.map String.trim (split_by sep header_line) in
+        let header_cols = read_header () in
         on_header header_cols;
-        let row_num = ref 1 in
         (try while true do
           let raw_line = input_line ic in
           incr row_num;
           let line = String.trim raw_line in
-          if line <> "" && not (String.length line > 0 && line.[0] = '#') then begin
+          if not (is_comment_or_blank line) then begin
             let cols = split_by sep line in
             on_row !row_num cols
           end
@@ -325,34 +343,55 @@ let load_table_data ctx path ~dims ~n_values ~default_val ~cell_kind =
   done;
   let dim_names = List.map fst dim_info in
   let on_header header_cols =
-    let header_dims =
-      List.init (min n_dims (List.length header_cols))
-        (fun i -> String.trim (List.nth header_cols i))
-    in
-    if header_dims <> dim_names then begin
-      let header_sorted = List.sort compare header_dims in
-      let expected_sorted = List.sort compare dim_names in
-      if header_sorted = expected_sorted then
-        Diagnostics.error ctx.diags
-          ~code:"E216"
-          ~loc:Diagnostics.no_loc
-          ~message:(Printf.sprintf
-            "%s: dimension columns appear reordered; expected %s, got %s"
-            path
-            (String.concat ", " dim_names)
-            (String.concat ", " header_dims))
-          ()
-      else
-        List.iteri (fun i (expected, actual) ->
-          if expected <> actual then
-            Diagnostics.warning ctx.diags
-              ~code:"W201"
-              ~loc:Diagnostics.no_loc
-              ~message:(Printf.sprintf
-                "%s: column %d is named '%s' but maps to dimension '%s'"
-                path (i + 1) actual expected)
-              ()
-        ) (List.combine dim_names header_dims)
+    let n_header = List.length header_cols in
+    (* gh#144: the header must carry at least the n_dims index columns so
+       each dimension maps to a column. A shorter header (e.g. a stray
+       single-column line) cannot be zipped against dim_names — the old
+       code truncated header_dims and then tripped `List.combine` on the
+       length mismatch. Diagnose it cleanly here and skip the
+       reorder/name checks below, which assume one header column per
+       dimension. *)
+    if n_header < n_dims then
+      Diagnostics.error ctx.diags
+        ~code:"E221"
+        ~loc:Diagnostics.no_loc
+        ~message:(Printf.sprintf
+          "%s: header has %d column(s) but table needs at least %d index column(s) for dimensions %s"
+          path n_header n_dims (String.concat " × " dim_names))
+        ~hint:"the first row must be a header naming the dimension columns; \
+               if it is a comment, prefix it with '#'"
+        ()
+    else begin
+      let header_dims =
+        List.init n_dims (fun i -> String.trim (List.nth header_cols i))
+      in
+      if header_dims <> dim_names then begin
+        let header_sorted = List.sort compare header_dims in
+        let expected_sorted = List.sort compare dim_names in
+        if header_sorted = expected_sorted then
+          Diagnostics.error ctx.diags
+            ~code:"E216"
+            ~loc:Diagnostics.no_loc
+            ~message:(Printf.sprintf
+              "%s: dimension columns appear reordered; expected %s, got %s"
+              path
+              (String.concat ", " dim_names)
+              (String.concat ", " header_dims))
+            ()
+        else
+          (* header_dims and dim_names are both length n_dims here, so the
+             zip is total. *)
+          List.iteri (fun i (expected, actual) ->
+            if expected <> actual then
+              Diagnostics.warning ctx.diags
+                ~code:"W201"
+                ~loc:Diagnostics.no_loc
+                ~message:(Printf.sprintf
+                  "%s: column %d is named '%s' but maps to dimension '%s'"
+                  path (i + 1) actual expected)
+                ()
+          ) (List.combine dim_names header_dims)
+      end
     end
   in
   let on_row row_num cols =
