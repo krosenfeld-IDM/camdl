@@ -110,31 +110,46 @@ i.e. IR → full `Yojson.Safe.t` AST (`envelope_to_json`) → pretty-printer →
 pretty-printer (column-fitting layout engine) is the dominant term, and the
 boxed intermediate AST explains the ~5× RSS/IR ratio.
 
-## Implications — ranked levers (to be verified with the harness)
+## Results — measured levers
 
-1. **Serialization is the only thing worth optimizing.** Any expander
-   micro-optimization is capped at ~1 % — ignore it.
-2. **flambda + release build** (byte-identical): codegen speedup of the
-   Yojson/pretty traversal. The switch is flambda OFF and the dune files carry
-   no `ocamlopt_flags`/release profile. Cheapest byte-safe win; measured in the
-   companion section once the flambda switch build lands. *Prior: modest — the
-   layout engine work remains; flambda speeds its codegen but does not remove
-   it.*
-3. **Compact serialization** (`Yojson.Safe.to_string`/`to_channel`, or a direct
-   IR→Buffer writer): bypasses the pretty-print layout engine entirely — the
-   thing that *is* the 97 %. Almost certainly the dominant lever (potentially
-   several×). **But it changes the emitted IR bytes** (whitespace only;
-   semantically identical JSON the Rust side parses regardless). That trips the
-   "golden byte-identical" gate, so it is a **format decision for the
-   maintainer**, not a silent change. Recommend measuring the ceiling and
-   deciding explicitly (alpha + "clean breaks preferred" argue for it; golden
-   readability of *small* models argues against a blanket switch). A
-   byte-identical replica of Yojson 2.x's adaptive pretty layout is fragile and
-   not recommended.
-4. **Stream pretty-print to the output channel** (`pretty_to_channel`,
-   byte-identical): avoids materializing the final 1.8 GB string. A memory win
-   (~the string), small time win. Free and safe; worth taking regardless.
+All measured with `bench_compile.py` (reps=3 min) on the same machine.
 
-The IR size itself (O(P²) from flat spatial coupling) is the FOI study's
-domain (sparse coupling) — out of scope here, but note that halving IR bytes
-halves both compile time and RSS one-for-one.
+**Lever 0 — serialization is the only thing worth optimizing.** Any expander
+micro-optimization is capped at ~1 %. Ignore it.
+
+**Lever 1 — flambda (and flambda + `-O3`): NULL to modest. Not the lever.**
+A `5.2.0+flambda` switch was built (yojson recompiled with flambda — verified
+via `ocamlobjinfo` showing Flambda export info). Plain flambda: Kano 20.21 s
+vs 20.44 s baseline, P44 11.38 vs 11.91 — within noise, RSS unchanged.
+flambda + `(ocamlopt_flags (:standard -O3 -inline 1000))` on the `ir` lib:
+~8–13 % on serialize (P44 11.56→10.00 s, Kano 19.36→17.91 s), byte-identical,
+but requires adopting a flambda toolchain. The brief's "1.5–3× from flambda"
+prior assumed the hot path was the allocation-heavy *expander*; the actual hot
+path is allocation/memory-bandwidth-bound serialization (boxed Yojson AST +
+1.8 GB string), which flambda's inlining/unboxing cannot touch.
+
+**Lever 2 — stream pretty-print to the channel (`pretty_to_channel`):
+byte-identical, 2.8× less compiler RAM. LANDED.** `pretty_to_string` built the
+Yojson AST + a Buffer of the full pretty output + a final string copy;
+streaming straight to the output channel drops the Buffer and the string.
+Measured Kano peak RSS 8.41 GB → 3.02 GB, P44 4.78 GB → 1.73 GB; wall
+unchanged (the layout engine still runs); output byte-identical. Defuses the
+2026-05-29 OOM-watchdog hazard. (Commit: "stream IR JSON to channel".)
+
+**Lever 3 — compact serialization: 4.6× faster compile + 5× smaller IR. THE
+time lever — needs a format decision.** Dropping pretty-printing for compact
+`to_string`: Kano 20.44 s → 4.47 s (4.6×), peak RSS 8.41 → 3.60 GB, IR
+1814.6 → 360.8 MB (5.0×); P44 11.91 → 2.64 s. The pretty IR is ~80 %
+whitespace, which the Rust runtime also pays to parse (parse-bound), so this
+wins the whole pipeline. **It changes every golden's bytes** (loses
+line-by-line golden diffability), so it is a maintainer decision — written up
+with options in
+[`docs/dev/proposals/2026-05-30-compact-ir-serialization.md`](../proposals/2026-05-30-compact-ir-serialization.md).
+
+Net: the byte-safe memory win (Lever 2) has landed; the byte-safe time win is
+~10 % and needs a flambda toolchain (Lever 1); the big 4.6× time win (Lever 3)
+is one format decision away.
+
+The IR size itself (O(P²) from flat spatial coupling) is the FOI study's domain
+(sparse coupling) — out of scope here, but halving IR bytes halves both compile
+time and RSS one-for-one, and stacks with compact serialization.

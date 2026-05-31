@@ -1,0 +1,13 @@
+label	slice	P	A	coupling	grad	n_compartments	n_transitions	ir_bytes	wall_min_s	wall_median_s	peak_rss_mb	reps
+P2_A21_on_full	patch	2	21	on	full	168	126	3213991	0.040	0.040	23.4	3
+P4_A21_on_full	patch	4	21	on	full	336	252	10699849	0.120	0.120	63.2	3
+P8_A21_on_full	patch	8	21	on	full	672	504	38753473	0.450	0.450	213.2	3
+P16_A21_on_full	patch	16	21	on	full	1344	1008	146745856	1.670	1.670	788.7	3
+P32_A21_on_full	patch	32	21	on	full	2688	2016	570223872	6.270	6.300	3063.7	3
+P44_A21_on_full	patch	44	21	on	full	3696	2772	1069650672	11.380	11.450	4778.4	3
+P16_A1_on_full	age	16	1	on	full	64	48	7012946	0.070	0.070	40.7	3
+P16_A7_on_full	age	16	7	on	full	448	336	48931418	0.540	0.540	244.0	3
+P16_A14_on_full	age	16	14	on	full	896	672	97837579	1.100	1.100	487.3	3
+P16_A21_on_full	age	16	21	on	full	1344	1008	146745856	1.680	1.690	789.2	3
+P16_A7_off_full	axis	16	7	off	full	448	336	1278882	0.020	0.020	15.2	3
+kano_lga_seirv	real							1814621159	20.210	20.260	8412.2	3
