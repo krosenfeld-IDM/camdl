@@ -1,7 +1,7 @@
 use crate::{
     compiled_model::{CompiledModel, CompiledTimeFuncKind},
     error::{SimError, CollapseKind},
-    eval_stats::allow_degenerate_rates,
+    eval_stats::{allow_degenerate_rates, eval_unresolved},
     resolved_expr::eval_resolved,
     state::{IntState, RealState},
 };
@@ -451,9 +451,22 @@ pub fn eval_propensities(
     }
 
     let ctx = EvalCtx { model, int_s, real_s, params, t, dt, projected: None, int_float_override: None };
+    // Bench/validation switch (eval_stats::eval_unresolved): off → the
+    // pre-resolved index path (default, hot); on → the string-keyed
+    // eval_expr path. Read once here and branched per-transition below,
+    // so the off path is identical to not having the switch at all.
+    let unresolved = eval_unresolved();
     out.clear();
     for (i, tr) in model.model.transitions.iter().enumerate() {
-        let p = eval_resolved(&model.resolved.rates[i], &ctx);
+        let p = if unresolved {
+            // String-keyed evaluator. Errors (NumericalCollapse) propagate
+            // directly; in the non-degenerate case it returns the same
+            // value as eval_resolved, so the is_nan/negative guards below
+            // and the resulting trajectory are unchanged.
+            eval_expr(&tr.rate, &ctx)?
+        } else {
+            eval_resolved(&model.resolved.rates[i], &ctx)
+        };
         // gh#audit-C6 / S1. eval_resolved returns NaN under hard-fail
         // mode when a degenerate path was hit (Div-by-zero, Pow → NaN,
         // Sqrt of negative, etc.); convert to typed error so the
