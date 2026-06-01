@@ -353,7 +353,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     // have no extension dimension (IF2's cooling depends on total
     // iterations, PFilter is single-pass), so resuming would be
     // statistically incoherent.
-    if a.resume {
+    if a.resume.is_some() {
         if let Some(ref name) = stage_filter {
             match config.stages.get(name.as_str()) {
                 Some(s) if matches!(s, Stage::PGAS { .. } | Stage::PMMH { .. }) => {}
@@ -717,7 +717,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         let cli_starts = starts_from_override.as_ref()
             .filter(|_| stages_to_run.len() == 1)
             .cloned();
-        let (effective_starts, deps): (Option<String>, Vec<runid::inputs::ArtifactRef>) =
+        let (effective_starts, mut deps): (Option<String>, Vec<runid::inputs::ArtifactRef>) =
             if let Some(dir) = cli_starts {
                 let dep = cas::cas_dep_from_dir(std::path::Path::new(&dir));
                 (Some(dir), dep.into_iter().collect())
@@ -741,6 +741,21 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     }
                 }
             };
+
+        // gh#147 (M3.2): --resume <base ref> reads a prior leaf read-only; the
+        // resumed run writes a distinct leaf keyed on the new target_length
+        // plus a dep on the base. Resolve the ref and fold the dep here; the
+        // chain state is copied into the new leaf after the claim below.
+        let resume_base: Option<std::path::PathBuf> = a.resume.as_deref().map(|r| {
+            let base = resolve_base_ref(r, &cas_root).unwrap_or_else(|| {
+                eprintln!("error: --resume base '{}' not found (run_id prefix or leaf path)", r);
+                std::process::exit(1);
+            });
+            if let Some(dep) = cas::cas_dep_from_dir(&base) {
+                deps.push(dep);
+            }
+            base
+        });
 
         // ── CAS identity + claim ──
         let ordinal = config.stages.get_index_of(*stage_name).map(|i| i + 1).unwrap_or(0);
@@ -800,7 +815,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
             }
         }
         let store = runid::FsCasStore::new(&cas_root);
-        if !force && !a.resume {
+        if !force && a.resume.is_none() {
             if let runid::Lookup::Hit(_) =
                 store.lookup(&cas_path, &runid::LeafIdentity::new(resolved.run_id))
             {
@@ -818,6 +833,17 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
             std::process::exit(1);
         });
         let stage_dir = claim.dir().to_path_buf();
+
+        // gh#147 (M3.2): seed the resumed leaf with the base chain's state
+        // (resume_state.bin + parameter_traces.tsv per chain), copied from the
+        // read-only base. The runner then loads/extends these in the new leaf;
+        // the base is never written.
+        if let Some(base) = &resume_base {
+            copy_resume_carryover(base, &stage_dir).unwrap_or_else(|e| {
+                eprintln!("error: staging resume carry-over from {}: {}", base.display(), e);
+                std::process::exit(1);
+            });
+        }
 
         let stage_t0 = std::time::Instant::now();
         let mut stage_best_loglik: Option<f64> = None;
@@ -1273,7 +1299,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     &stage_dir,
                     pgas_opts,
                     seed, force,
-                    a.resume,
+                    a.resume.is_some(),
                     effective_starts.as_deref(),
                 ).unwrap_or_else(|e| {
                     eprintln!("error running pgas stage '{}': {}", stage_name, e);
@@ -1318,7 +1344,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     pmmh_opts,
                     seed, force,
                     /* check_variance */ false,
-                    a.resume,
+                    a.resume.is_some(),
                     effective_starts.as_deref(),
                 ).unwrap_or_else(|e| {
                     eprintln!("error running pmmh stage '{}': {}", stage_name, e);
@@ -1669,6 +1695,45 @@ fn read_ir_json_or_empty(model_path: &str) -> String {
     } else {
         std::fs::read_to_string(model_path).unwrap_or_default()
     }
+}
+
+/// Resolve a `--resume <base ref>` to a base stage-leaf dir: an existing path,
+/// else a `run_id` hex prefix matched under `<cas_root>/fits/`. `None` when no
+/// unique match (caller errors).
+fn resolve_base_ref(reference: &str, cas_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(reference);
+    if p.is_dir() {
+        return Some(p.to_path_buf());
+    }
+    let mut matches = crate::cas_read::resolve_fit_prefix(cas_root, reference);
+    if matches.len() == 1 {
+        Some(matches.remove(0).dir)
+    } else {
+        None
+    }
+}
+
+/// Copy the base leaf's per-chain resume state (`chain_*/resume_state.bin` +
+/// `parameter_traces.tsv`) into the resumed leaf so the runner extends them
+/// there. The base is read-only.
+fn copy_resume_carryover(base: &std::path::Path, new_leaf: &std::path::Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(base)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("chain_") || !entry.path().is_dir() {
+            continue;
+        }
+        let dst = new_leaf.join(name.as_ref());
+        std::fs::create_dir_all(&dst)?;
+        for f in ["resume_state.bin", "parameter_traces.tsv"] {
+            let src = entry.path().join(f);
+            if src.is_file() {
+                std::fs::copy(&src, dst.join(f))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 // gh#147 (M3.2): `archive_fit_toml` (the legacy `fit.toml.original` writer

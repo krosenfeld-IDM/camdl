@@ -115,88 +115,131 @@ burn_in = 2
     p
 }
 
-/// (1) and (2): first run writes resume_state.bin; second run with
-/// `--resume` reads it and announces resumption.
-///
-/// Caveat documented here so future-us doesn't relitigate it: the
-/// fit_dir is keyed on the raw fit.toml bytes (`fit_content_hash`).
-/// So you cannot bump `sweeps` in the TOML and have the new run
-/// find the old fit_dir's resume_state.bin — they live in different
-/// directories. The identity-vs-extension split lives at the
-/// stage-hash level (`fit_stage_hash` via `identity_payload`), not
-/// the fit-content-hash level. A future `--sweeps N` CLI override
-/// (analogous to `--max-tree-depth N`) would make resume-to-extend
-/// work without TOML edits, but that's a separate feature.
+/// The `(run_id, dir, run_json)` of a `post` stage leaf under `<out>/fits/`,
+/// skipping any run_id in `exclude` (to pick the resumed leaf after a resume).
+fn post_leaf(out: &Path, exclude: &[String]) -> (String, PathBuf, serde_json::Value) {
+    let mut stack = vec![out.join("fits")];
+    while let Some(d) = stack.pop() {
+        let rj = d.join("run.json");
+        if rj.is_file() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&rj).unwrap_or_default(),
+            ) {
+                if v.get("kind").and_then(|k| k.as_str()) == Some("fit_stage") {
+                    let stage = v["levels"].as_array().into_iter().flatten()
+                        .find(|l| l["name"].as_str() == Some("stage"))
+                        .and_then(|l| l["label"].as_str()).unwrap_or("");
+                    let rid = v["run_id"].as_str().unwrap_or("").to_string();
+                    if stage.contains("post") && !exclude.contains(&rid) {
+                        return (rid, d, v);
+                    }
+                }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(&d) {
+            for e in es.flatten() { if e.path().is_dir() { stack.push(e.path()); } }
+        }
+    }
+    panic!("no post stage leaf under {} (excluding {:?})", out.join("fits").display(), exclude);
+}
+
+/// Recursive `{relpath -> bytes}` snapshot of a leaf, for the base-untouched check.
+fn snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() { stack.push(p); }
+            else { out.insert(p.strip_prefix(dir).unwrap().to_path_buf(), std::fs::read(&p).unwrap()); }
+        }
+    }
+    out
+}
+
+/// gh#147 (M3.2): `--resume <base ref>` reads the base leaf read-only and
+/// writes a distinct resumed leaf keyed on the new target_length with a dep on
+/// the base. Covers: the base run is byte-identical before/after; the resumed
+/// run gets a distinct run_id; the resumed leaf deps on the prior; and a
+/// chained resume (8→16→24) deps on the *actual* immediate prior, not the
+/// original base.
 #[test]
-#[ignore = "resume not yet on CAS — M3.2 commit 2 (gh#152)"]
-fn pgas_resume_announces_continuation_with_unchanged_toml() {
+fn pgas_resume_writes_distinct_leaf_with_base_untouched_and_dep() {
     let Some(bin) = camdl_bin() else { return };
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("continues");
     let (ir, data) = write_fixture(tmp.path());
+    let out = tmp.path().join("results");
 
-    // First run: 8 sweeps. Tiny but enough to write resume_state.bin.
-    let fit_toml = write_fit_toml(tmp.path(), &ir, &data, /*sweeps*/ 8, /*chains*/ 1);
-    let out = Command::new(&bin)
-        .args(["fit", "run", &fit_toml.to_string_lossy(), "--seed", "1"])
+    // Run 1: 8 sweeps → base leaf.
+    let fit8 = write_fit_toml(tmp.path(), &ir, &data, 8, 1);
+    let r1 = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit8).arg("--seed").arg("1")
         .output().expect("spawn");
-    assert!(out.status.success(),
-        "first PGAS run failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(r1.status.success(), "first PGAS run failed: {}", String::from_utf8_lossy(&r1.stderr));
+    let (base_id, base_dir, _) = post_leaf(&out, &[]);
+    assert!(base_dir.join("chain_1/resume_state.bin").exists(),
+        "base must write chain_1/resume_state.bin");
+    let base_before = snapshot(&base_dir);
 
-    // Find the resume_state.bin written by chain 1.
-    let fits_dir = tmp.path().join("results/fits");
-    let fit_dir = std::fs::read_dir(&fits_dir).unwrap()
-        .flatten().map(|e| e.path()).next().expect("one fit dir");
-    let stage_dir = fit_dir.join("real/fit_1/post");
-    let resume_state = stage_dir.join("chain_1/resume_state.bin");
-    assert!(resume_state.exists(),
-        "first run should write {}", resume_state.display());
-    let first_size = std::fs::metadata(&resume_state).unwrap().len();
-    assert!(first_size > 0, "resume_state.bin must be non-empty");
-
-    // Second run: same TOML, `--resume`. The runner reads
-    // resume_state.bin and announces resumption (even though the
-    // chain is already at the target sweep count, this exercises
-    // the load + hash-check paths).
-    let out = Command::new(&bin)
-        .args(["fit", "run", &fit_toml.to_string_lossy(),
-               "--seed", "1", "--stage", "post", "--resume"])
+    // Run 2: 16 sweeps, --resume <base run_id>. Distinct leaf; base read-only.
+    let fit16 = write_fit_toml(tmp.path(), &ir, &data, 16, 1);
+    let r2 = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit16)
+        .arg("--seed").arg("1").arg("--stage").arg("post").arg("--resume").arg(&base_id)
         .output().expect("spawn");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(),
-        "resume run must succeed: stderr={}", stderr);
-    assert!(stderr.contains("resuming from sweep"),
-        "stderr should announce resumption: {}", stderr);
+    let stderr = String::from_utf8_lossy(&r2.stderr);
+    assert!(r2.status.success(), "resume run must succeed: {}", stderr);
+    assert!(stderr.contains("resuming from sweep"), "must announce resumption: {}", stderr);
+
+    let (resumed_id, _, resumed_json) = post_leaf(&out, &[base_id.clone()]);
+    assert_ne!(resumed_id, base_id, "resumed run must have a distinct run_id");
+    assert_eq!(snapshot(&base_dir), base_before, "the base leaf must be untouched by resume");
+    let deps = serde_json::to_string(&resumed_json["deps"]).unwrap();
+    assert!(deps.contains(&base_id), "resumed leaf must dep on the base {}; deps={}", base_id, deps);
+
+    // Run 3 (chained): resume the *resumed* leaf, 16 → 24. The dep must point
+    // at the actual prior (the 16-sweep leaf), not the original base.
+    let fit24 = write_fit_toml(tmp.path(), &ir, &data, 24, 1);
+    let r3 = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit24)
+        .arg("--seed").arg("1").arg("--stage").arg("post").arg("--resume").arg(&resumed_id)
+        .output().expect("spawn");
+    assert!(r3.status.success(), "chained resume must succeed: {}", String::from_utf8_lossy(&r3.stderr));
+    let (third_id, _, third_json) = post_leaf(&out, &[base_id.clone(), resumed_id.clone()]);
+    assert_ne!(third_id, resumed_id, "chained resume must re-key");
+    let deps3 = serde_json::to_string(&third_json["deps"]).unwrap();
+    assert!(deps3.contains(&resumed_id),
+        "chained resume must dep on the actual prior {}; deps={}", resumed_id, deps3);
 }
 
-/// (3): changing an identity field (chains) between runs must reject
-/// `--resume` with a hash-mismatch error.
+/// (3): changing an identity field (chains) between base and resume must reject
+/// with a config-hash mismatch — the copied resume_state's identity hash
+/// (chains=1) won't match the new run (chains=2).
 #[test]
 fn pgas_resume_rejects_when_identity_field_changes() {
     let Some(bin) = camdl_bin() else { return };
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("rejects");
     let (ir, data) = write_fixture(tmp.path());
+    let out = tmp.path().join("results");
 
-    // First run: 1 chain.
+    // Run 1: 1 chain → base.
     let fit1 = write_fit_toml(tmp.path(), &ir, &data, 8, 1);
-    let out = Command::new(&bin)
-        .args(["fit", "run", &fit1.to_string_lossy(), "--seed", "1"])
+    let r1 = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit1).arg("--seed").arg("1")
         .output().expect("spawn");
-    assert!(out.status.success(),
-        "first PGAS run failed: stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(r1.status.success(), "first PGAS run failed: {}", String::from_utf8_lossy(&r1.stderr));
+    let (base_id, _, _) = post_leaf(&out, &[]);
 
-    // Second run: 2 chains (chains is identity-defining → fit hash
-    // changes → fit_dir changes too, so the resume_state.bin from
-    // run 1 isn't even visible). Resume should fail with "no resume
-    // state file" (the new fit_dir has no chain_1/resume_state.bin).
+    // Run 2: 2 chains (an identity field) + --resume <base>. Reject.
     let fit2 = write_fit_toml(tmp.path(), &ir, &data, 8, 2);
-    let out = Command::new(&bin)
-        .args(["fit", "run", &fit2.to_string_lossy(),
-               "--seed", "1", "--stage", "post", "--resume"])
+    let r2 = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit2)
+        .arg("--seed").arg("1").arg("--stage").arg("post").arg("--resume").arg(&base_id)
         .output().expect("spawn");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "resume with changed chains must reject");
-    assert!(stderr.contains("no resume state") || stderr.contains("config hash mismatch"),
-        "expected hash-mismatch or no-state error: got {}", stderr);
+    let stderr = String::from_utf8_lossy(&r2.stderr);
+    assert!(!r2.status.success(), "resume with changed chains must reject");
+    assert!(stderr.contains("config hash mismatch") || stderr.contains("no resume state"),
+        "expected config-hash-mismatch error: got {}", stderr);
 }

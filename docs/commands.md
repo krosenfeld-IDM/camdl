@@ -144,11 +144,15 @@ init = "single" # all chains at that point
 ```
 
 ```bash
-camdl fit run fit.toml                         # all stages, in order
-camdl fit run fit.toml --stage scout           # one stage only
-camdl fit run fit.toml --resume --stage posterior   # extend a completed run
-camdl fit summary results/fits/<dir>/          # Â / gate verdict / MLE table
+camdl fit run fit.toml                              # all stages, in order
+camdl fit run fit.toml --stage scout                # one stage only
+camdl fit run fit.toml --resume <base-run-id> --stage posterior   # extend a completed run
+camdl fit summary results/fits/<dir>/               # Â / gate verdict / MLE table
 ```
+
+A resumed fit reads the base run read-only and writes a *new* run keyed on the
+extended length. It is a distinct deterministic artifact — not bit-identical to
+an uninterrupted fit of the same length (both are valid posterior samples).
 
 **Initialization and staging.** Each stage, on completion, records its best
 estimate (θ̂). A downstream stage picks where to start with two knobs:

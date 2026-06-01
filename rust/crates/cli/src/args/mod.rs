@@ -729,14 +729,15 @@ pub struct FitRunArgs {
     #[arg(long)]
     pub force: bool,
 
-    /// Resume a previously-completed PGAS or PMMH stage from its
-    /// stored `chain_<n>/resume_state.bin`. Requires --stage.
-    /// Identity fields (chains, particles, burn_in, thin, model,
-    /// data, priors, fixed, seed) must match the original run; the
-    /// extension dimension (PGAS `sweeps` / PMMH `iterations`) may
-    /// change to extend the chain. Conflicts with --force.
-    #[arg(long, requires = "stage", conflicts_with = "force")]
-    pub resume: bool,
+    /// Resume a previously-completed PGAS or PMMH stage from a base run
+    /// addressed by `<run_id prefix>` or a leaf path. gh#147 (M3.2): the
+    /// base leaf is read **read-only**; the resumed run is written to a new
+    /// content-addressed leaf keyed on the new extension dimension (PGAS
+    /// `sweeps` / PMMH `iterations`) with a dep on the base — a distinct
+    /// deterministic artifact, not bit-identical to an uninterrupted fit of
+    /// the same length. Requires --stage. Conflicts with --force.
+    #[arg(long, value_name = "BASE_REF", requires = "stage", conflicts_with = "force")]
+    pub resume: Option<String>,
 
     /// Cartesian sweep over a fixed parameter (may repeat).
     /// SPEC is `V1,V2,...` | `lin(min,max,n)` | `log10(min,max,n)`.
