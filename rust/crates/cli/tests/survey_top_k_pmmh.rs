@@ -264,8 +264,31 @@ fn parse_chain_starts_tsv(path: &Path) -> (Vec<String>, Vec<Vec<String>>) {
     (cols, rows)
 }
 
+/// The CAS stage leaf for `stage_substr` under `fits_root` —
+/// `<fit>/<NN>-<stage>-<h8>/seed_<N>-<h8>/` holding a `fit_stage` run.json.
+fn cas_stage_leaf(fits_root: &Path, stage_substr: &str) -> PathBuf {
+    let mut stack = vec![fits_root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        if d.join("run.json").is_file() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(d.join("run.json")).unwrap_or_default(),
+            ) {
+                if v.get("kind").and_then(|k| k.as_str()) == Some("fit_stage") {
+                    let stage = v["levels"].as_array().into_iter().flatten()
+                        .find(|l| l["name"].as_str() == Some("stage"))
+                        .and_then(|l| l["label"].as_str()).unwrap_or("");
+                    if stage.contains(stage_substr) { return d; }
+                }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(&d) {
+            for e in es.flatten() { if e.path().is_dir() { stack.push(e.path()); } }
+        }
+    }
+    panic!("no CAS '{}' stage leaf under {}", stage_substr, fits_root.display());
+}
+
 #[test]
-#[ignore = "survey/top-k init not yet migrated to CAS — M3.3 (gh#151)"]
 fn pmmh_survey_top_k_writes_chain_starts_with_survey_ranks() {
     let Some(bin) = camdl_bin() else { return };
     if camdlc_bin().is_none() { return }
@@ -294,13 +317,11 @@ fn pmmh_survey_top_k_writes_chain_starts_with_survey_ranks() {
         "pmmh fit must succeed with init=survey_top_k.\n\
          stdout:\n{}\nstderr:\n{}", stdout, stderr);
 
-    // Locate the stage dir (output_dir/fits/<fit-stem>-<hash>/real/fit_1/post).
+    // Locate the CAS stage leaf (<fits>/<fit>-<h8>/<NN>-post-<h8>/seed_N-<h8>/).
     let fits_dir = tmp.path().join("results/fits");
-    let fit_dir = std::fs::read_dir(&fits_dir).unwrap()
-        .flatten().map(|e| e.path()).next().expect("one fit dir");
-    let stage_dir = fit_dir.join("real/fit_1/post");
-    assert!(stage_dir.exists(),
-        "stage dir missing: {}", stage_dir.display());
+    let stage_dir = cas_stage_leaf(&fits_dir, "post");
+    assert!(stage_dir.join("run.json").is_file(),
+        "post stage leaf missing run.json: {}", stage_dir.display());
 
     let starts_tsv = stage_dir.join("chain_starts.tsv");
     assert!(starts_tsv.exists(),

@@ -244,11 +244,34 @@ survey_path    = "{survey}"
     p
 }
 
+/// The CAS stage leaf for `stage_substr` under `fits_root` —
+/// `<fit>/<NN>-<stage>-<h8>/seed_<N>-<h8>/` holding a `fit_stage` run.json.
+fn cas_stage_leaf(fits_root: &Path, stage_substr: &str) -> PathBuf {
+    let mut stack = vec![fits_root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        if d.join("run.json").is_file() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(d.join("run.json")).unwrap_or_default(),
+            ) {
+                if v.get("kind").and_then(|k| k.as_str()) == Some("fit_stage") {
+                    let stage = v["levels"].as_array().into_iter().flatten()
+                        .find(|l| l["name"].as_str() == Some("stage"))
+                        .and_then(|l| l["label"].as_str()).unwrap_or("");
+                    if stage.contains(stage_substr) { return d; }
+                }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(&d) {
+            for e in es.flatten() { if e.path().is_dir() { stack.push(e.path()); } }
+        }
+    }
+    panic!("no CAS '{}' stage leaf under {}", stage_substr, fits_root.display());
+}
+
 /// gh#110 acceptance: pathological survey-rank-1 init must not hang
 /// the run — the chain is skipped with a `BadInit` diagnostic and
 /// the sane rank-2 chain completes.
 #[test]
-#[ignore = "survey/top-k init not yet migrated to CAS — M3.3 (gh#151)"]
 fn pmmh_skips_pathological_survey_init_and_continues() {
     let Some(bin) = camdl_bin() else { return };
     if camdlc_bin().is_none() { return }
@@ -289,11 +312,9 @@ fn pmmh_skips_pathological_survey_init_and_continues() {
 
     // Acceptance 2: diagnostics.json contains a `bad_init` entry.
     let fits_dir = tmp.path().join("results/fits");
-    let fit_dir = std::fs::read_dir(&fits_dir).unwrap()
-        .flatten().map(|e| e.path()).next().expect("one fit dir");
-    let stage_dir = fit_dir.join("real/fit_1/post");
-    assert!(stage_dir.exists(),
-        "stage dir missing: {}\nstderr:\n{}", stage_dir.display(), stderr);
+    let stage_dir = cas_stage_leaf(&fits_dir, "post");
+    assert!(stage_dir.join("run.json").is_file(),
+        "post stage leaf missing run.json: {}\nstderr:\n{}", stage_dir.display(), stderr);
 
     let diag_path = stage_dir.join("diagnostics.json");
     assert!(diag_path.exists(),
