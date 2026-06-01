@@ -1,0 +1,3 @@
+model	k_micro	T_off_high	T_on_high	raw_ratio	c_off_ns_per_particle	c_on_ns_per_particle	marginal_ratio	eval_frac_derived
+seir_observations	4.1	0.667	0.812	1.217	33038.5	36531.9	1.106	0.034
+seir_spatial_5_inference	3.5	2.881	4.289	1.489	144953.3	235253.8	1.623	0.249
