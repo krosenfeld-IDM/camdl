@@ -53,7 +53,32 @@ def _w_matrix(P: int) -> str:
     return "[" + indent.join(rows) + "]"
 
 
-def gen_camdl(P: int, A: int, coupling: str, grad: str, observe: bool = False) -> str:
+def _w_matrix_sparse(P: int, k: int) -> str:
+    """Sparse ring coupling: patch i couples only to its k nearest neighbours
+    (k//2 each side, wrapping), row-normalised over those k; 0 elsewhere.
+
+    The realistic national-scale shape (local neighbour mixing) — a literal W
+    with P*k nonzeros and P^2 - P*k structural zeros. The dense P-term FOI
+    Reduce the expander emits collapses to a k-term Reduce once the
+    constant-fold pass resolves the zero W cells and drops them.
+    """
+    half = max(1, k // 2)
+    rows = []
+    for i in range(P):
+        nbrs = set()
+        for d in range(1, half + 1):
+            nbrs.add((i - d) % P)
+            nbrs.add((i + d) % P)
+        nbrs.discard(i)
+        w = round(1.0 / len(nbrs), 8) if nbrs else 0.0
+        vals = [(str(w) if j in nbrs else "0.0") for j in range(P)]
+        rows.append("[" + ", ".join(vals) + "]")
+    indent = ",\n" + " " * 24
+    return "[" + indent.join(rows) + "]"
+
+
+def gen_camdl(P: int, A: int, coupling: str, grad: str, observe: bool = False,
+              coupling_degree: int = 0) -> str:
     assert coupling in ("on", "off")
     assert grad in ("full", "minimal")
     if coupling == "on" and P < 2:
@@ -122,8 +147,9 @@ def gen_camdl(P: int, A: int, coupling: str, grad: str, observe: bool = False) -
     L.append("")
 
     if coupling == "on":
+        w_lit = _w_matrix_sparse(P, coupling_degree) if coupling_degree > 0 else _w_matrix(P)
         L.append("tables {")
-        L.append(f"  W : patch × patch = {_w_matrix(P)}")
+        L.append(f"  W : patch × patch = {w_lit}")
         L.append("}")
         L.append("")
 
@@ -131,8 +157,16 @@ def gen_camdl(P: int, A: int, coupling: str, grad: str, observe: bool = False) -
     L.append("transitions {")
     foi_local = f"(I_agg[l] + {iota_term}) / N[l]"
     if coupling == "on":
+        if coupling_degree > 0:
+            # Guarded form: W[l,q] * (if N[q] > 0 then I_agg[q]/N[q] else 0).
+            # Makes the constant-fold sound — a zero-W term folds 0*(finite)->0
+            # in one step (the division lives inside the guard, never reached
+            # when the term is zeroed), so dropping it is byte-identical.
+            inner = "(if N[q] > 0 then I_agg[q] / N[q] else 0.0)"
+        else:
+            inner = "I_agg[q] / N[q]"
         foi_spatial = (f"\n      + {kappa_term} * "
-                       f"sum(q in patch, W[l, q] * I_agg[q] / N[q])")
+                       f"sum(q in patch, W[l, q] * {inner})")
     else:
         foi_spatial = ""
     L.append("  infection[l in patch, a in age] : S[l, a] --> E[l, a]")
@@ -209,11 +243,16 @@ def main() -> int:
                     help="add a weekly_cases observation block (for PMMH/PGAS "
                          "inference profiling); off by default so scaling "
                          "benches stay byte-identical")
+    ap.add_argument("--coupling-degree", type=int, default=0, metavar="K",
+                    help="sparse ring coupling: each patch couples to its K "
+                         "nearest neighbours (rest of W = 0) + a guarded FOI; "
+                         "0 (default) = dense all-to-all W (the FOI-blowup shape)")
     ap.add_argument("-o", "--out", type=Path, default=None,
                     help="output .camdl path (default: stdout)")
     args = ap.parse_args()
 
-    text = gen_camdl(args.patches, args.ages, args.coupling, args.grad, args.observe)
+    text = gen_camdl(args.patches, args.ages, args.coupling, args.grad, args.observe,
+                     coupling_degree=args.coupling_degree)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(text)

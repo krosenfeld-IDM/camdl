@@ -244,5 +244,13 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     let m = { d.model with Ir.transitions = transitions } in
+    (* Sparse-coupling constant-fold (opt-in while it beds in): resolves
+       constant-indexed inline-table lookups, drops zero W terms from FOI
+       Reduce sums. Byte-identical; gated by the trajectory baseline. *)
+    let m =
+      if Sys.getenv_opt "CAMDL_CONSTANT_FOLD" <> None then
+        Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
+      else m
+    in
     Ok m
   | Error e -> Error e
