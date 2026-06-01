@@ -48,3 +48,10 @@ serde_json = "1"
 [[bench]]
 name = "scaling"
 harness = false
+
+# A/B: pre-resolved eval_resolved vs string-keyed eval_expr on a model's
+# rate exprs. Custom main (no criterion harness); pass a model IR path:
+#   cargo bench -p sim --bench eval_ab -- <model.ir.json> [label]
+[[bench]]
+name = "eval_ab"
+harness = false
