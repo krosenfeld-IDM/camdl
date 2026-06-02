@@ -19,10 +19,15 @@
      lives inside the guard, never reached when the term is zeroed).
    Div/Pow/Mod of constants are deliberately NOT folded — their degenerate
    handling lives in the evaluator and folding here could diverge from it.
-   The trajectory baseline is the empirical proof (same ratchet as Fix B/D).
+   The empirical proof is the A/B gate
+   `rust/crates/sim/tests/gate_constant_fold_ab.rs`: on a sparse-coupling model
+   it compiles the IR both ways and asserts the simulated trajectory is
+   byte-identical under every backend (with a non-vacuity guard that the fold
+   actually collapsed the FOI Reduce). The OCaml half
+   (`test_compiler.ml`, "constant_fold") pins the term-count collapse.
 
    Runs after expansion + autodiff (so rate_grad folds too), before serialize.
-   Opt-in via CAMDL_CONSTANT_FOLD while it beds in. *)
+   On by default; set CAMDL_NO_CONSTANT_FOLD to emit the unfolded IR. *)
 
 open Ir
 

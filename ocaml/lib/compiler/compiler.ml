@@ -92,6 +92,13 @@ let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : strin
 
 let no_dim_check = ref false
 
+(** Run the sparse-coupling constant-fold pass. On by default; the
+    CAMDL_NO_CONSTANT_FOLD escape hatch forces it off (see the call site).
+    Exposed as a ref so tests that assert on the *unfolded* IR shape (the
+    expander's TableLookup-flattening contract) can disable it locally,
+    mirroring [no_dim_check]. *)
+let constant_fold = ref true
+
 (** Translate a `Validate.error` into an E5xx Diagnostic and attach
     it to the given context. Codes are new (E500–E511) — the existing
     E2xx range covers parser/expansion-phase duplicates and unknowns,
@@ -244,12 +251,15 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     let m = { d.model with Ir.transitions = transitions } in
-    (* Sparse-coupling constant-fold (opt-in while it beds in): resolves
-       constant-indexed inline-table lookups, drops zero W terms from FOI
-       Reduce sums. Byte-identical; gated by the trajectory baseline. *)
+    (* Sparse-coupling constant-fold (on by default): resolves constant-indexed
+       inline-table lookups and drops zero-W terms from FOI Reduce sums,
+       collapsing the dense P-term spatial sum to its k nonzero terms. Proven
+       byte-identical by the A/B gate (rust .../gate_constant_fold_ab). Set
+       CAMDL_NO_CONSTANT_FOLD to emit the unfolded (dense) IR — an escape hatch
+       for debugging the pass or inspecting the pre-fold shape. *)
+    let fold_on = !constant_fold && Sys.getenv_opt "CAMDL_NO_CONSTANT_FOLD" = None in
     let m =
-      if Sys.getenv_opt "CAMDL_CONSTANT_FOLD" <> None then
-        Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
+      if fold_on then Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
       else m
     in
     Ok m

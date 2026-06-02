@@ -106,11 +106,23 @@ let rec collect_table_lookups expr =
   | Reduce terms -> List.concat_map collect_table_lookups terms
   | _ -> []
 
+(** Run [f] with the constant-fold pass disabled, restoring the prior setting
+    afterwards. The TableLookup-flattening tests below assert on the *unfolded*
+    IR (the fold resolves constant-indexed lookups to literals, erasing the
+    TableLookup nodes they inspect). Mirrors [with_dim_check_enabled]. *)
+let with_fold_disabled f =
+  let prev = !Compiler.constant_fold in
+  Compiler.constant_fold := false;
+  Fun.protect ~finally:(fun () -> Compiler.constant_fold := prev) f
+
+(* Compiled with the fold OFF: these tests inspect the expander's
+   TableLookup-flattening contract, which the fold would resolve away. *)
 let compile_seir_age () =
-  let src = read_file (Filename.concat golden_dir "seir_age.camdl") in
-  match Compiler.compile ~name:"seir_age" src with
-  | Ok m    -> m
-  | Error e -> Alcotest.failf "seir_age compile failed: %s" e
+  with_fold_disabled (fun () ->
+    let src = read_file (Filename.concat golden_dir "seir_age.camdl") in
+    match Compiler.compile ~name:"seir_age" src with
+    | Ok m    -> m
+    | Error e -> Alcotest.failf "seir_age compile failed: %s" e)
 
 let find_transition (m : Ir.model) name =
   match List.find_opt (fun (t : Ir.transition) -> t.name = name) m.transitions with
@@ -222,11 +234,13 @@ let sparse_ring_src = {|
   |}
 
 let test_constant_fold_collapses_sparse_foi_reduce () =
-  let m = match Compiler.compile ~name:"sparse_ring" sparse_ring_src with
+  (* Compile with the fold OFF so [m] is the unfolded (dense) IR; then apply
+     the pass directly and compare. (The default pipeline now folds.) *)
+  let m = with_fold_disabled (fun () ->
+    match Compiler.compile ~name:"sparse_ring" sparse_ring_src with
     | Ok m -> m
-    | Error e -> Alcotest.failf "compile failed: %s" e
+    | Error e -> Alcotest.failf "compile failed: %s" e)
   in
-  (* `compile` does not fold by default; call the pass directly. *)
   let folded = Constant_fold.fold_model m in
   let before = max_foi_reduce_terms m in
   let after  = max_foi_reduce_terms folded in
