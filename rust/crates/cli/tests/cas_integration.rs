@@ -324,14 +324,20 @@ fn starts_from_resolves_short_hash() {
     let stage = results.join("fits").join("demo-abc12345")
         .join("real").join("fit_1").join("scout");
     std::fs::create_dir_all(&stage).unwrap();
+    // gh#147: the resolver matches a `FitStage` `runid::RunRecord` leaf on its
+    // `run_id` hex prefix. Plant a leaf whose `run_id` starts `deadbeef`.
     let target_hash = "deadbeefc0ffee00000000000000000000000000000000000000000000000000";
     let run_json = format!(r#"{{
-        "hash": "{}",
-        "version": "0.1.0+test","created_at": "2026-04-19T12:00:00Z",
-        "argv": [],"status": {{"completed": {{"wall_time_seconds": 1.0}}}},
-        "kind": {{"kind":"fit-stage","fit_hash":"f","stage":"scout",
-                 "method":"if2","backend":"chain_binomial",
-                 "seed":1,"n_chains":2}}
+        "format_version":1,"kind":"fit_stage","run_id":"{}","hash_version":1,
+        "ir_version":"0.7","engine_version":"0.1.0+test",
+        "levels":[
+            {{"name":"fit","label":"demo","hash":"abc1234500000000000000000000000000000000000000000000000000000000","schema_version":1}},
+            {{"name":"stage","label":"01-scout","hash":"1fb03eee00000000000000000000000000000000000000000000000000000000","schema_version":1}},
+            {{"name":"seed","label":"seed_1","hash":"06cbd6b300000000000000000000000000000000000000000000000000000000","schema_version":1}}
+        ],
+        "status":"completed","artifacts":{{}},
+        "inputs":{{"stage":"scout","method":"if2","backend":"chain_binomial","seed":1,"n_chains":2}},
+        "provenance":{{"created_at":"2026-04-19T12:00:00Z","argv":[]}}
     }}"#, target_hash);
     std::fs::write(stage.join("run.json"), run_json).unwrap();
 
@@ -623,45 +629,6 @@ fn show_resolves_fit_by_hash_prefix() {
     assert!(stdout.contains("scout"), "stage label missing: {stdout}");
 }
 
-#[test]
-fn show_renders_fit_metadata() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
-    let tmp = tempfile::tempdir().unwrap();
-    let output = tmp.path().join("output");
-    let fit_dir = output.join("fits").join("demo-abc12345");
-    std::fs::create_dir_all(&fit_dir).unwrap();
-    let run_json = r#"{
-        "hash": "abc12345deadbeef0000000000000000000000000000000000000000abc12345",
-        "version": "0.1.0+test",
-        "created_at": "2026-04-19T12:00:00Z",
-        "argv": ["camdl","fit","run","demo.toml"],
-        "status": {"completed": {"wall_time_seconds": 3.2}},
-        "kind": {
-            "kind": "fit",
-            "model": "demo.camdl",
-            "model_hash": "m000",
-            "fit_toml_path": "demo.toml",
-            "fit_toml_hash": "h000",
-            "data_hashes": {"cases": "d000"},
-            "estimated": ["beta","gamma"],
-            "fixed": {"N0": 1000.0},
-            "stages_declared": ["scout","refine"]
-        }
-    }"#;
-    std::fs::write(fit_dir.join("run.json"), run_json).unwrap();
-
-    let out = Command::new(&bin)
-        .args(["show", &fit_dir.to_string_lossy()])
-        .output().expect("spawn");
-    assert!(out.status.success(), "show should succeed on a fit dir: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("kind"),      "output should label the kind field");
-    assert!(stdout.contains("fit"),       "output should say 'fit': {}", stdout);
-    assert!(stdout.contains("demo.camdl"),"output should include model: {}", stdout);
-    assert!(stdout.contains("scout, refine"), "output should list stages");
-    assert!(stdout.contains("3.2"),       "output should show wall time");
-}
 
 #[test]
 fn cat_emits_cached_trajectory() {

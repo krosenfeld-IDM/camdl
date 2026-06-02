@@ -12,6 +12,7 @@ pub mod provenance;
 pub mod runner;
 pub mod priors_precedence;  // gh#75: shared prior-resolution chain for fit run + profile
 pub mod fit_tree;
+pub mod fit_view;
 pub mod method_result;
 pub mod config_diff;
 pub mod table_row;
@@ -138,25 +139,38 @@ fn run_status_v2_dir(dir: &str) {
 }
 
 fn print_stage_status(name: &str, stage_dir: &str) {
-    use crate::run_meta::{Run, RunKind};
-
-    // A completed v2 stage always has a FitStage run.json. The
-    // fit_state.toml path (checked by the caller's directory walk)
-    // is written earlier in the stage, so a dir with fit_state.toml
-    // but no run.json is an interrupted run.
-    match Run::read(std::path::Path::new(stage_dir)) {
-        Ok(run) => {
-            if let RunKind::FitStage(m) = &run.kind {
-                let ll    = m.best_loglik.map(|l| format!("{:.1}", l)).unwrap_or_else(|| "—".into());
-                let chain = m.best_chain.map(|c| format!(" (chain {})", c + 1)).unwrap_or_default();
-                let wall = run.status.wall_time_seconds()
-                    .map(|t| format!("{:.0}s", t))
-                    .unwrap_or_else(|| "running".to_string());
-                println!("    {:12} \x1b[32m✓\x1b[0m {} — loglik={}{}, {}",
-                    name, m.method, ll, chain, wall);
-            }
+    // A completed v2 stage always has a `FitStage` `runid::RunRecord` leaf.
+    // The fit_state.toml path (checked by the caller's directory walk) is
+    // written earlier in the stage, so a dir with fit_state.toml but no
+    // run.json is an interrupted run.
+    let leaf: Option<runid::RunRecord> = std::fs::read(std::path::Path::new(stage_dir).join("run.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<runid::RunRecord>(&b).ok())
+        .filter(|r| r.kind == runid::ArtifactKind::FitStage);
+    match leaf {
+        Some(rec) => {
+            let inputs = rec.inputs.as_object();
+            let get = |k: &str| inputs.and_then(|o| o.get(k));
+            let method = get("method").and_then(|v| v.as_str()).unwrap_or("?");
+            let ll = get("best_loglik")
+                .and_then(|v| v.as_f64())
+                .map(|l| format!("{:.1}", l))
+                .unwrap_or_else(|| "—".into());
+            let chain = get("best_chain")
+                .and_then(|v| v.as_u64())
+                .map(|c| format!(" (chain {})", c + 1))
+                .unwrap_or_default();
+            let wall = get("wall_time_seconds")
+                .and_then(|v| v.as_f64())
+                .map(|t| format!("{:.0}s", t))
+                .unwrap_or_else(|| match rec.status {
+                    runid::RunStatus::Completed => "done".to_string(),
+                    _ => "running".to_string(),
+                });
+            println!("    {:12} \x1b[32m✓\x1b[0m {} — loglik={}{}, {}",
+                name, method, ll, chain, wall);
         }
-        Err(_) => {
+        None => {
             // GH #18: a stage that ran IF2 + clean-eval but failed
             // the compound gate exits before writing run.json. The
             // user has nonzero results on disk (fit_state.toml,
@@ -446,8 +460,8 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     // (consumed by the match-arm provenance below). The fit-level outputs
     // (grid summary, sweep_failures) still use `fit_dir` for swept/synthetic
     // multi-cell fits — their CAS-segment relocation is M3.3.
-    let run_fit = build_fit_run(&config, &fit_path, validated_label, Some(&model));
-    let parent_fit_hash = run_fit.hash.clone();
+    let (parent_fit_hash, fit_sidecar) =
+        build_fit_run(&config, &fit_path, validated_label, Some(&model));
 
     eprintln!("fit: {} ({} stage{})",
         fit_path,
@@ -779,31 +793,15 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         if let Some(seg) = cas_path.parent().and_then(|p| p.parent()) {
             if written_fit_segments.insert(seg.to_path_buf()) {
                 // gh#147 (M3.2): the fit-level provenance sidecar — a faithful
-                // readable projection of the fit-wide `FitMeta` `build_fit_run`
-                // already computed (resolved_priors with gh#75 sources,
+                // readable projection of the fit-wide provenance `build_fit_run`
+                // computed (resolved_priors with gh#75 sources,
                 // estimated/fixed/data_hashes/model_hash). Derived provenance,
                 // never identity-bearing (the priors are already hashed into the
                 // FitDigest); written once per segment, even on a cached rerun.
-                let sidecar = if let crate::run_meta::RunKind::Fit(m) = &run_fit.kind {
-                    crate::run_meta::FitSidecar {
-                        label: run_fit.label.clone(),
-                        model_path: m.model.clone(),
-                        model_hash: m.model_hash.clone(),
-                        fit_toml_path: m.fit_toml_path.clone(),
-                        fit_toml_hash: m.fit_toml_hash.clone(),
-                        data_hashes: m.data_hashes.clone(),
-                        estimated: m.estimated.clone(),
-                        fixed: m.fixed.clone(),
-                        resolved_priors: m.resolved_priors.clone(),
-                        parameters_provenance: m.parameters_provenance.clone(),
-                    }
-                } else {
-                    crate::run_meta::FitSidecar::default()
-                };
                 if let Err(e) = crate::run_meta::write_fit_sidecar(
                     seg,
                     std::path::Path::new(&fit_path),
-                    &sidecar,
+                    &fit_sidecar,
                 ) {
                     eprintln!("warning: cannot write fit-level sidecar {}: {}", seg.display(), e);
                 }
@@ -1696,12 +1694,15 @@ fn copy_resume_carryover(base: &std::path::Path, new_leaf: &std::path::Path) -> 
 // fit-level config archive for `fit table` config_diff is reworked in M3.3
 // alongside the fit-level outputs' CAS relocation.
 
-/// Build the top-level `Run::Fit` record for a fit.toml. Fields that
-/// require I/O (model IR, data files, fit.toml bytes) are read here
-/// and hashed; `wall_time_seconds` is initialised to 0 and patched at
-/// end-of-fit by the caller. Silent fallbacks (empty strings / empty
-/// maps) cover the read-error case so a partially-written fit still
-/// produces something `camdl list` can display.
+/// Build the fit-level provenance sidecar + the fit-content hash for a
+/// fit.toml. Fields that require I/O (model IR, data files, fit.toml bytes) are
+/// read here and hashed. Silent fallbacks (empty strings / empty maps) cover
+/// the read-error case so a partially-written fit still produces a sidecar
+/// `camdl list` can display.
+///
+/// Returns `(fit_content_hash, sidecar)`: the hash is the fit-level
+/// (seed-free) identity shared by every stage leaf (`parent_fit_hash`); the
+/// sidecar is the readable provenance projection written once per fit segment.
 ///
 /// `model_for_priors` is the compiled IR model used to resolve
 /// per-parameter prior provenance (`fit_toml / model_ir /
@@ -1713,7 +1714,7 @@ fn build_fit_run(
     fit_path: &str,
     label: Option<String>,
     model_for_priors: Option<&ir::Model>,
-) -> crate::run_meta::Run {
+) -> (String, crate::run_meta::FitSidecar) {
     let fit_hash = config.fit_content_hash(fit_path).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
@@ -1773,32 +1774,22 @@ fn build_fit_run(
         }
         _ => Vec::new(),
     };
-    let inputs = crate::cas::fit_inputs::FitInputs {
-        fit_content_hash: fit_hash,
-        meta: crate::run_meta::FitMeta {
-            model: config.model.camdl.clone(),
-            model_hash,
-            fit_toml_path: fit_path.to_string(),
-            fit_toml_hash,
-            data_hashes,
-            estimated,
-            fixed,
-            stages_declared,
-            ic_free: config.ic_free.unwrap_or(false),
-            resolved_priors,
-            // gh#83/gh#85 step 9: top-level fit-meta provenance is
-            // populated by the fit-finalization layer that owns the
-            // resolved-params view.
-            parameters_provenance: Default::default(),
-        },
+    let _ = stages_declared; // stages come from the leaves; sidecar omits them.
+    let sidecar = crate::run_meta::FitSidecar {
+        label,
+        model_path: config.model.camdl.clone(),
+        model_hash,
+        fit_toml_path: fit_path.to_string(),
+        fit_toml_hash,
+        data_hashes,
+        estimated,
+        fixed,
+        resolved_priors,
+        // gh#83/gh#85 step 9: top-level parameter provenance is populated by
+        // the fit-finalization layer that owns the resolved-params view.
+        parameters_provenance: Default::default(),
     };
-    use crate::cas::typed::CasInputs;
-    let mut run = inputs.to_run(
-        crate::version::VERSION_SHORT.to_string(),
-        std::env::args().collect(),
-    );
-    run.label = label;
-    run
+    (fit_hash, sidecar)
 }
 
 fn format_prior(p: &Option<config_v2::EstimatePriorSpec>) -> String {
@@ -2155,8 +2146,8 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
         for e in rd.flatten() {
             let seg = e.path();
             if !seg.is_dir() { continue; }
-            if let Some(run) = crate::run_meta::read_fit_segment(&seg) {
-                if run.hash.starts_with(&args.hash) {
+            if let Some(view) = crate::fit::fit_view::FitView::read(&seg) {
+                if view.fit_hash.starts_with(&args.hash) {
                     fit_segments.push(seg);
                 }
             }
@@ -2242,46 +2233,14 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
         }
     }
 
-    // Legacy `run_meta::Run` (fit / profile / survey / replicate-set).
-    let mut run = match crate::run_meta::Run::read(&run_dir) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: cannot read {}: {}", run_json_path.display(), e);
-            std::process::exit(1);
-        }
-    };
-
-    // Atomicity: refuse to relabel a still-running fit. The runner
-    // sets wall_time_seconds at end-of-fit; mid-run it stays at the
-    // RunStatus::Running. A running fit will overwrite our label
-    // change when it finishes. Sim/profile/replicate-set writes set
-    // status to Completed at write time, so the gate only fires for
-    // mid-run fits.
-    if run.status.is_running() {
-        eprintln!(
-            "error: run at {} is still in progress (status = running). \
-             Wait for it to finish, or pass --label at run time.",
-            run_dir.display());
-        std::process::exit(1);
-    }
-
-    let prior = run.label.clone();
-    run.label = Some(new_label.clone());
-    if let Err(e) = run.write(&run_dir) {
-        eprintln!("error: cannot write {}: {}", run_json_path.display(), e);
-        std::process::exit(1);
-    }
-    match prior {
-        Some(p) if p != new_label =>
-            eprintln!("ok: label updated from \"{}\" to \"{}\" on {}",
-                p, new_label, run_dir.display()),
-        Some(_) =>
-            eprintln!("ok: label unchanged (\"{}\") on {}",
-                new_label, run_dir.display()),
-        None =>
-            eprintln!("ok: label set to \"{}\" on {}",
-                new_label, run_dir.display()),
-    }
+    // The only `run.json` files under `sims/` are new-format `RunRecord`s
+    // (handled above). A match whose `run.json` failed to parse as a
+    // `RunRecord` is malformed — surface it rather than fabricating a label
+    // write.
+    eprintln!(
+        "error: {} is not a recognized (new-format) run.json — cannot relabel",
+        run_json_path.display());
+    std::process::exit(1);
 }
 
 /// Recursively find directories under `root` whose `run.json` has a

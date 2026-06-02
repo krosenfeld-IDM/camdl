@@ -1,25 +1,18 @@
-//! Reading the new-format (`runid::RunRecord`) CAS store.
+//! Reading the content-addressed (`runid::RunRecord`) CAS store.
 //!
-//! This is the generic, Layout-driven half of the transitional reader: a
-//! data-driven walk where the presence of a parseable `RunRecord` `run.json`
-//! is the only discovery signal — no hardcoded level depth. The legacy
-//! `run_meta::Run` kinds (fit/profile/survey) keep their own discovery in
-//! `browse.rs` until M3 migrates their writers; until then `browse` dispatches
-//! by subtree (new `sims/` here, old kinds there).
-//!
-//! An old `run_meta::Run` never deserializes as a `RunRecord` (it lacks the
-//! required `format_version`/`run_id`/`levels`/… fields), so walking a legacy
-//! subtree through here simply finds nothing — there is no cross-format
-//! mis-parse hazard.
+//! A generic, Layout-driven walk: the presence of a parseable `RunRecord`
+//! `run.json` is the only discovery signal — no hardcoded level depth. Every
+//! run kind (sim / fit-stage / profile-point / pfilter / survey) is discovered
+//! here; the per-kind projections live in `browse` and `fit::fit_view`.
 
 use std::path::{Path, PathBuf};
 
 use runid::{ArtifactKind, RunRecord};
 
-// gh#147 (M3.2): the fit-level provenance sidecar (`fit.meta.json`) lives in
+// The fit-level provenance sidecar (`fit.meta.json`) lives in
 // `run_meta::FitSidecar` (it carries `run_meta` provenance types —
 // `ResolvedPriorEntry`, `ParameterProvenance`), with `write_fit_sidecar` /
-// `read_fit_sidecar` beside `read_fit_segment` there.
+// `read_fit_sidecar` beside it there.
 
 /// Recursively collect every `(dir, RunRecord)` under `subtree` whose dir holds
 /// a parseable `RunRecord` `run.json`. Hidden dirs (`.staging`, `.quarantine`)

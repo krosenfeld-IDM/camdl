@@ -23,12 +23,12 @@ use crate::evidence::NATS_TO_DB;
 use crate::fit::config_diff::ConfigDiff;
 use crate::fit::config_v2::{LoglikEvalConfig, GateConfig};
 use crate::fit::fit_tree::{self, DataKind};
+use crate::fit::fit_view::FitView;
 use crate::fit::method_result::{
     If2StageResult, MethodResult, PgasStageResult, PmmhStageResult,
 };
 use crate::fit::state::FitState;
 use crate::fit::table_row::{self, TableRow};
-use crate::run_meta::{Run, RunKind};
 use crate::version;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -96,7 +96,7 @@ pub fn cmd_fit_summary(args: &FitSummaryArgs) {
 
 /// Calendar context for date-rendering `instant`-kind estimands
 /// (2026-05-22 calendar-time §6.7). Sourced once per `fit summary`
-/// invocation from the fit dir's model (path via `FitMeta.model`),
+/// invocation from the fit dir's model (path via `FitView.model`),
 /// then shared by every formatter. When the model declares no
 /// `origin`, or cannot be loaded (moved path, parse error), rendering
 /// degrades to numeric-only — `date_for` returns `None` and no
@@ -130,28 +130,25 @@ impl CalendarContext {
     }
 }
 
-/// Load the calendar context from a fit dir: read the model path from
-/// the top-level `run.json` (`FitMeta.model`), load that model, and
-/// extract `origin`, `time_unit`, and the `instant`-kind parameter
-/// set. Any failure (no run.json, non-fit run, model moved/unparseable)
-/// degrades to an empty context (numeric-only rendering) — never panics.
+/// Load the calendar context from a fit dir: read the model path from the
+/// fit-level view (`FitView.model`, sidecar-sourced), falling back to any stage
+/// leaf's `provenance.source_paths`; load that model and extract `origin`,
+/// `time_unit`, and the `instant`-kind parameter set. Any failure (no fit view,
+/// model moved/unparseable) degrades to an empty context (numeric-only
+/// rendering) — never panics.
 fn load_calendar_context(fit_dir: &Path) -> CalendarContext {
     // Legacy fits carried the model path on the top-level `Fit` run.json. A
     // content-addressed fit (gh#147 M3.2) has no fit-wide record — the fit
     // level is a path segment — so recover the model path from any stage
     // leaf's `run.json` `provenance.source_paths`.
-    let model_path = match Run::read(fit_dir) {
-        Ok(r) => match r.kind {
-            RunKind::Fit(m) => Some(m.model),
-            _ => None,
-        },
-        Err(_) => None,
-    }
-    .or_else(|| {
-        crate::cas_read::walk_records(fit_dir)
-            .into_iter()
-            .find_map(|(_, rec)| rec.provenance.source_paths.first().cloned())
-    });
+    let model_path = FitView::read(fit_dir)
+        .map(|v| v.model)
+        .filter(|m| !m.is_empty())
+        .or_else(|| {
+            crate::cas_read::walk_records(fit_dir)
+                .into_iter()
+                .find_map(|(_, rec)| rec.provenance.source_paths.first().cloned())
+        });
     let Some(model_path) = model_path else {
         return CalendarContext::default();
     };
@@ -183,8 +180,8 @@ struct ResolvedStage {
 }
 
 /// Walk the fit_dir and return one `ResolvedStage` per completed
-/// stage. Order matches `FitMeta.stages_declared` (the canonical
-/// pipeline order from fit.toml); stages that didn't complete are
+/// stage. Order matches `FitView.stages_declared` (the execution order recovered
+/// from the leaves' ordinal-prefixed stage labels); stages that didn't complete are
 /// dropped; stages that completed but aren't in `stages_declared`
 /// (shouldn't happen in v2 layouts, but the walker is permissive)
 /// are appended at the end in walker order so they're still visible.
@@ -194,15 +191,11 @@ struct ResolvedStage {
 /// `fit_seed`, then lex-first stage_dir — same priority as
 /// [`crate::fit::table_row::build_row`]'s terminal-stage picker.
 fn discover_stages(fit_dir: &Path) -> Vec<ResolvedStage> {
-    // Read the top-level run.json for `stages_declared`; if missing,
-    // fall back to walker-order (covers user-built non-canonical fits).
-    let stages_declared: Vec<String> = match Run::read(fit_dir) {
-        Ok(r) => match r.kind {
-            RunKind::Fit(m) => m.stages_declared,
-            _ => Vec::new(),
-        },
-        Err(_) => Vec::new(),
-    };
+    // Read the fit-level view for `stages_declared`; if missing, fall back to
+    // walker-order (covers user-built non-canonical fits).
+    let stages_declared: Vec<String> = FitView::read(fit_dir)
+        .map(|v| v.stages_declared)
+        .unwrap_or_default();
     let nodes = fit_tree::walk_fit_dir(fit_dir).unwrap_or_default();
 
     // Best (stage_name, method, dir) per stage name, by (data_kind,
@@ -210,11 +203,8 @@ fn discover_stages(fit_dir: &Path) -> Vec<ResolvedStage> {
     type Rank = (u8, u64, PathBuf);
     let mut best: BTreeMap<String, (String, Rank, PathBuf)> = BTreeMap::new();
     for node in &nodes {
-        let (stage, method) = match &node.run.kind {
-            RunKind::FitStage(m) => (m.stage.clone(), m.method.as_str().to_string()),
-            _ => continue,
-        };
-        let rank: Rank = match &node.axes {
+        let (stage, method) = (node.stage.stage.clone(), node.stage.method.as_str().to_string());
+        let rank: Rank = match &node.stage.axes {
             Some(axes) => {
                 let kind_rank = match axes.data_kind {
                     DataKind::Real => 0,
@@ -1171,8 +1161,8 @@ fn build_summary_doc(dir: &str, stages: &[ResolvedStage]) -> FitSummaryDoc {
 /// substitutes a placeholder row whose `fit_id` reflects the failure
 /// so JSON consumers see something rather than a crash.
 fn build_summary_table_row(fit_dir: &Path, now_unix: i64) -> TableRow {
-    let run_hash = Run::read(fit_dir).map(|r| r.hash).unwrap_or_default();
-    let diff = ConfigDiff::identity(&run_hash);
+    let fit_hash = FitView::read(fit_dir).map(|v| v.fit_hash).unwrap_or_default();
+    let diff = ConfigDiff::identity(&fit_hash);
     match table_row::build_row(fit_dir, diff, 0.0, now_unix) {
         Ok(r) => r,
         Err(e) => {
@@ -1958,69 +1948,73 @@ mod tests {
         dir
     }
 
-    fn write_top_level_fit_run(dir: &std::path::Path, parent_hash: &str) {
-        use crate::run_meta::{FitMeta, Run, RunKind, RunStatus};
-        let r = Run {
-            hash: parent_hash.into(),
-            version: "0.1.0+test".into(),
-            created_at: "2026-04-27T00:00:00Z".into(),
-            argv: vec!["camdl".into(), "fit".into(), "run".into()],
-            status: RunStatus::Completed { wall_time_seconds: 1.0 },
-            label: None,
-            kind: RunKind::Fit(FitMeta {
-                model: "sir.camdl".into(),
-                model_hash: "f00d".repeat(16),
-                fit_toml_path: "fit.toml".into(),
-                fit_toml_hash: "cafe".repeat(16),
-                data_hashes: HashMap::new(),
-                estimated: vec!["R0".into(), "sigma".into(), "gamma".into()],
-                fixed: HashMap::new(),
-                stages_declared: vec!["scout".into(), "refine".into(), "validate".into()],
-                ic_free: false,
-                resolved_priors: Vec::new(),
-                parameters_provenance: Default::default(),
-                        }),
-        };
-        r.write(dir).unwrap();
+    /// Write the fit-level provenance sidecar at the segment root so
+    /// `FitView::read` treats `dir` as a well-formed fit. `parent_hash` is the
+    /// `fit`-level hash the stage leaves also carry.
+    fn write_top_level_fit_run(dir: &std::path::Path, _parent_hash: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("fit.meta.json"),
+            r#"{"model_path":"sir.camdl","model_hash":"f00d","fit_toml_path":"fit.toml","estimated":["R0","sigma","gamma"]}"#,
+        )
+        .unwrap();
     }
 
+    /// Write a `FitStage` `runid::RunRecord` leaf for `stage` under `stage_dir`.
+    /// `parent_hash` seeds the shared `fit`-level hash; the `inputs` carry the
+    /// per-stage numbers (`method`, `n_chains`, `best_loglik`, …) the views
+    /// project. The `stage` LEVEL label gets an ordinal prefix (`01-scout`,
+    /// `02-refine`, …) so `FitView::read` recovers execution order; `inputs.stage`
+    /// keeps the bare name consumers read.
     fn write_stage_run(stage_dir: &std::path::Path, parent_hash: &str, stage: &str, method: crate::run_meta::MethodKind) {
-        use crate::run_meta::{FitStageMeta, Run, RunKind, RunStatus};
-        let r = Run {
-            hash: format!("{}-{}", parent_hash, stage)
-                .chars()
-                .cycle()
-                .take(64)
-                .collect(),
-            version: "0.1.0+test".into(),
-            created_at: "2026-04-27T00:00:00Z".into(),
-            argv: vec!["camdl".into()],
-            status: RunStatus::Completed { wall_time_seconds: 1.0 },
-            label: None,
-            kind: RunKind::FitStage(FitStageMeta {
-                fit_hash: parent_hash.into(),
-                stage: stage.into(),
-                method,
-                backend: crate::run_meta::Backend::ChainBinomial,
-                seed: 1,
-                n_chains: 8,
-                algorithm: serde_json::json!({
-                    "algorithm": method,
-                    "backend": "chain_binomial",
-                    "iterations": 50,
-                }),
-                best_loglik: Some(-3804.9),
-                best_chain: Some(1),
-                starts_from: None,
-                derived_from: None,
-                parent_profile_hash: None,
-                profile_point_idx: None,
-                profile_start_idx: None,
-                parameters_provenance: Default::default(),
-                init_provenance: None,
-                        }),
+        std::fs::create_dir_all(stage_dir).unwrap();
+        // Fixed pipeline order for the test stage names → `NN-` ordinal.
+        let ord = match stage {
+            "scout" | "mle" => 1,
+            "refine"        => 2,
+            "validate"      => 3,
+            _               => 9,
         };
-        r.write(stage_dir).unwrap();
+        let stage_label = format!("{ord:02}-{stage}");
+        let fit_hash: String = parent_hash.chars().cycle().take(64).collect();
+        let run_id: String = format!("{}-{}", parent_hash, stage)
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .chain(std::iter::repeat('0'))
+            .take(64)
+            .collect();
+        let algorithm = serde_json::json!({
+            "algorithm": method.as_str(),
+            "backend": "chain_binomial",
+            "iterations": 50,
+        });
+        let rec = serde_json::json!({
+            "format_version": 1,
+            "kind": "fit_stage",
+            "run_id": run_id,
+            "hash_version": 1,
+            "ir_version": "0.7",
+            "engine_version": "0.1.0+test",
+            "levels": [
+                {"name": "fit",   "label": "fit",  "hash": fit_hash, "schema_version": 1},
+                {"name": "stage", "label": stage_label, "hash": "1fb03eee00000000000000000000000000000000000000000000000000000000", "schema_version": 1},
+                {"name": "seed",  "label": "seed_1","hash": "06cbd6b300000000000000000000000000000000000000000000000000000000", "schema_version": 1}
+            ],
+            "status": "completed",
+            "artifacts": {},
+            "inputs": {
+                "stage": stage,
+                "method": method.as_str(),
+                "backend": "chain_binomial",
+                "seed": 1,
+                "n_chains": 8,
+                "algorithm": algorithm,
+                "best_loglik": -3804.9,
+                "best_chain": 1
+            },
+            "provenance": {"created_at": "2026-04-27T00:00:00Z", "argv": ["camdl"]}
+        });
+        std::fs::write(stage_dir.join("run.json"), serde_json::to_string(&rec).unwrap()).unwrap();
     }
 
     /// JSON output is parseable, schema.version is 1, stage report

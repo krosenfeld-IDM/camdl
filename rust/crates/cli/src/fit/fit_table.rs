@@ -17,8 +17,8 @@ use crate::args::{FitTableArgs, FitTableFormat};
 use crate::fit::config_diff::ConfigDiff;
 use crate::fit::config_v2::FitConfigV2;
 use crate::fit::fit_tree::{self, FitDirEntry};
+use crate::fit::fit_view::FitView;
 use crate::fit::table_row::{self, TableRow};
-use crate::run_meta::FitMeta;
 
 /// Top-level entry point. Walks the root, applies filters, builds
 /// rows, renders in the requested format.
@@ -36,7 +36,7 @@ pub fn cmd_fit_table(args: &FitTableArgs) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    // Outer-loop filters that key only on FitMeta + Run (no per-stage
+    // Outer-loop filters that key only on the FitView (no per-stage
     // load needed). These are cheap; running them first avoids the
     // walker / MethodResult load on rows the user filtered out.
     let pre_filtered: Vec<&FitDirEntry> = entries
@@ -50,11 +50,11 @@ pub fn cmd_fit_table(args: &FitTableArgs) {
     let baseline_idx = match &args.baseline {
         Some(prefix) => pre_filtered
             .iter()
-            .position(|e| e.run.hash.starts_with(prefix)),
+            .position(|e| e.view.fit_hash.starts_with(prefix)),
         None => pre_filtered
             .iter()
             .enumerate()
-            .min_by(|(_, a), (_, b)| a.run.hash.cmp(&b.run.hash))
+            .min_by(|(_, a), (_, b)| a.view.fit_hash.cmp(&b.view.fit_hash))
             .map(|(i, _)| i),
     };
     let baseline_loaded = baseline_idx.and_then(|i| {
@@ -77,19 +77,19 @@ pub fn cmd_fit_table(args: &FitTableArgs) {
         };
         let diff = match (&cfg, &baseline_loaded) {
             (Some(this_cfg), Some((base_entry, base_cfg))) => {
-                if base_entry.run.hash == entry.run.hash {
-                    ConfigDiff::identity(&entry.run.hash)
+                if base_entry.view.fit_hash == entry.view.fit_hash {
+                    ConfigDiff::identity(&entry.view.fit_hash)
                 } else {
                     ConfigDiff::compare(
                         this_cfg,
                         base_cfg,
-                        &entry.fit_meta,
-                        &base_entry.fit_meta,
+                        &entry.view,
+                        &base_entry.view,
                     )
-                    .with_baseline_hash(base_entry.run.hash.clone())
+                    .with_baseline_hash(base_entry.view.fit_hash.clone())
                 }
             }
-            _ => ConfigDiff::identity(&entry.run.hash),
+            _ => ConfigDiff::identity(&entry.view.fit_hash),
         };
         match table_row::build_row(&entry.fit_dir, diff, 0.0, now_unix) {
             Ok(r) => rows.push(r),
@@ -182,32 +182,32 @@ fn load_archived_fit_toml(fit_dir: &std::path::Path) -> Result<FitConfigV2, Stri
 }
 
 fn matches_outer_filters(entry: &FitDirEntry, args: &FitTableArgs, now_unix: i64) -> bool {
-    let meta: &FitMeta = &entry.fit_meta;
+    let view: &FitView = &entry.view;
 
     if let Some(model) = &args.model {
-        if !meta.model_hash.starts_with(model.as_str()) {
+        if !view.model_hash.starts_with(model.as_str()) {
             return false;
         }
     }
     if let Some(stage) = &args.with_stage {
-        if !meta.stages_declared.iter().any(|s| s == stage) {
+        if !view.stages_declared.iter().any(|s| s == stage) {
             return false;
         }
     }
     if let Some(prefix) = &args.hash {
-        if !entry.run.hash.starts_with(prefix.as_str()) {
+        if !view.fit_hash.starts_with(prefix.as_str()) {
             return false;
         }
     }
     if let Some(secs) = args.since_seconds {
-        if let Some(created) = parse_iso_to_unix(&entry.run.created_at) {
+        if let Some(created) = parse_iso_to_unix(&view.created_at) {
             if now_unix - created > secs {
                 return false;
             }
         }
     }
     if let Some(pat) = &args.label_pattern {
-        let label = entry.run.label.as_deref().unwrap_or("");
+        let label = view.label.as_deref().unwrap_or("");
         if !glob_match(pat, label) {
             return false;
         }

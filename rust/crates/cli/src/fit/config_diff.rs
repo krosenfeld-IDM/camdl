@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::fit::config_v2::{FitConfigV2, PriorDist, Stage};
-use crate::run_meta::FitMeta;
+use crate::fit::fit_view::FitView;
 
 /// Structured diff of one fit's config relative to a baseline. Map
 /// fields use `BTreeMap` end-to-end so JSON serialization is
@@ -139,14 +139,14 @@ impl ConfigDiff {
     /// dispatches here.
     ///
     /// `model_changed` requires the caller to supply each fit's
-    /// `model_hash` from `FitMeta` (the `FitConfigV2` itself only
-    /// references the model file; the canonical hash lives on
-    /// `FitMeta`).
+    /// `model_hash` from its [`FitView`] (the `FitConfigV2` itself only
+    /// references the model file; the canonical hash lives on the fit-level
+    /// view / sidecar).
     pub fn compare(
         this: &FitConfigV2,
         baseline: &FitConfigV2,
-        this_meta: &FitMeta,
-        baseline_meta: &FitMeta,
+        this_meta: &FitView,
+        baseline_meta: &FitView,
     ) -> Self {
         let this_est: BTreeSet<&str> =
             this.estimate.keys().map(|s| s.as_str()).collect();
@@ -266,14 +266,12 @@ pub fn format_prior(spec: &crate::fit::config_v2::EstimatePriorSpec) -> String {
     }
 }
 
-fn baseline_meta_hash(meta: &FitMeta) -> String {
-    // FitMeta carries the fit's input hash via fit_toml_hash (the
-    // canonical hash for a v2 fit.toml); the *fit* hash itself lives on
-    // the enclosing Run.hash. Callers that have the Run pass that
-    // through; here we only have FitMeta, so fall back to the toml
-    // hash. In practice the consumer (`fit table`) passes a
-    // pre-resolved baseline hash via `ConfigDiff::with_baseline_hash`
-    // when it has a Run handy.
+fn baseline_meta_hash(meta: &FitView) -> String {
+    // The view carries the fit's input hash via fit_toml_hash (the canonical
+    // hash for a v2 fit.toml); the *fit* hash itself is `fit_hash`. In practice
+    // the consumer (`fit table`) passes a pre-resolved baseline hash via
+    // `ConfigDiff::with_baseline_hash`, so this fallback is rarely the value
+    // surfaced.
     meta.fit_toml_hash.clone()
 }
 
@@ -452,8 +450,13 @@ mod tests {
     use crate::fit::config_v2::FitConfigV2;
     use std::collections::HashMap;
 
-    fn fitmeta(model_hash: &str) -> FitMeta {
-        FitMeta {
+    fn fitmeta(model_hash: &str) -> FitView {
+        FitView {
+            fit_hash: "f".repeat(64),
+            engine_version: "0.1.0+test".into(),
+            created_at: "2026-04-27T00:00:00Z".into(),
+            argv: Vec::new(),
+            label: None,
             model: "sir.camdl".into(),
             model_hash: model_hash.into(),
             fit_toml_path: "fit.toml".into(),
@@ -461,10 +464,10 @@ mod tests {
             data_hashes: HashMap::new(),
             estimated: Vec::new(),
             fixed: HashMap::new(),
-            stages_declared: Vec::new(),
-            ic_free: false,
             resolved_priors: Vec::new(),
             parameters_provenance: Default::default(),
+            stages_declared: Vec::new(),
+            stages: Vec::new(),
         }
     }
 

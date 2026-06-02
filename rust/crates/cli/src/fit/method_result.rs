@@ -1,8 +1,8 @@
 //! Typed loaded interpretation of a completed fit-stage.
 //!
-//! Mirrors `RunKind` for **outputs**: each variant carries the typed
-//! payload its method produces, so consumers pattern-match instead of
-//! stringly-dispatching on `FitStageMeta.method: String`.
+//! One variant per inference method: each carries the typed payload its
+//! method produces, so consumers pattern-match instead of stringly-dispatching
+//! on the stage leaf's `inputs.method` tag.
 //!
 //! Three variants — pfilter is excluded by design (it's a CLI
 //! evaluator on already-fixed parameters, never a fit-stage). See
@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::fit::state::FitState;
-use crate::run_meta::{Run, RunKind};
 
 /// One stage of a fit, typed by method. The variant carries the
 /// payload appropriate to its inference method (point estimate +
@@ -214,32 +213,40 @@ impl MethodResult {
     }
 }
 
-/// Read `<stage>/run.json` if present. Convenience for loaders that
-/// need `n_chains` / `algorithm` / `method` from the stage's own
-/// metadata. Errors with a typed [`MethodResultError::Io`] on missing
-/// or malformed files — the contract is "every fit-stage writes a
-/// run.json".
-fn read_run(stage_dir: &Path) -> Result<Run, MethodResultError> {
-    Run::read(stage_dir).map_err(|e| MethodResultError::Io {
+/// Read the stage leaf's `inputs` map from its `run.json` (`runid::RunRecord`).
+/// Convenience for loaders that need stage-level metadata (`n_chains`,
+/// `algorithm`) recorded alongside the leaf. Errors with a typed
+/// [`MethodResultError::Io`] on a missing / malformed file or a non-`FitStage`
+/// record — the contract is "every fit-stage writes a `RunRecord` leaf whose
+/// `inputs` carries its config".
+fn read_stage_inputs(stage_dir: &Path) -> Result<serde_json::Value, MethodResultError> {
+    let bytes = std::fs::read(stage_dir.join("run.json")).map_err(|e| MethodResultError::Io {
         stage_dir: stage_dir.to_owned(),
         message: format!("run.json: {}", e),
-    })
+    })?;
+    let rec: runid::RunRecord = serde_json::from_slice(&bytes).map_err(|e| MethodResultError::Io {
+        stage_dir: stage_dir.to_owned(),
+        message: format!("run.json: {}", e),
+    })?;
+    if rec.kind != runid::ArtifactKind::FitStage {
+        return Err(MethodResultError::Io {
+            stage_dir: stage_dir.to_owned(),
+            message: "run.json is not a fit-stage".into(),
+        });
+    }
+    Ok(rec.inputs)
+}
+
+/// `inputs.n_chains` as a `usize` (0 when absent).
+fn inputs_n_chains(inputs: &serde_json::Value) -> usize {
+    inputs.get("n_chains").and_then(|v| v.as_u64()).unwrap_or(0) as usize
 }
 
 // ── NloptStageResult ────────────────────────────────────────────────
 
 impl NloptStageResult {
     pub fn load(stage_dir: &Path, method: &str) -> Result<Self, MethodResultError> {
-        let run = read_run(stage_dir)?;
-        let stage_meta = match &run.kind {
-            RunKind::FitStage(m) => m,
-            _ => {
-                return Err(MethodResultError::Io {
-                    stage_dir: stage_dir.to_owned(),
-                    message: "run.json is not a fit-stage".into(),
-                })
-            }
-        };
+        let n_chains = inputs_n_chains(&read_stage_inputs(stage_dir)?);
         let state = FitState::load(&stage_dir.to_string_lossy()).map_err(|e| {
             MethodResultError::Io {
                 stage_dir: stage_dir.to_owned(),
@@ -271,9 +278,9 @@ impl NloptStageResult {
             best_chain: state.best_chain,
             theta_hat,
             algorithm: method.to_string(),
-            n_converged: state.n_good_chains.unwrap_or(stage_meta.n_chains),
+            n_converged: state.n_good_chains.unwrap_or(n_chains),
             max_rel_range,
-            n_chains: stage_meta.n_chains,
+            n_chains,
         })
     }
 }
@@ -282,16 +289,8 @@ impl NloptStageResult {
 
 impl If2StageResult {
     pub fn load(stage_dir: &Path) -> Result<Self, MethodResultError> {
-        let run = read_run(stage_dir)?;
-        let stage_meta = match &run.kind {
-            RunKind::FitStage(m) => m,
-            _ => {
-                return Err(MethodResultError::Io {
-                    stage_dir: stage_dir.to_owned(),
-                    message: "run.json is not a fit-stage".into(),
-                })
-            }
-        };
+        let inputs = read_stage_inputs(stage_dir)?;
+        let n_chains = inputs_n_chains(&inputs);
 
         let state = FitState::load(&stage_dir.to_string_lossy()).map_err(|e| {
             MethodResultError::Io {
@@ -331,9 +330,9 @@ impl If2StageResult {
 
         let ess_at_mle = read_ess_at_mle(stage_dir);
 
-        let n_iter = stage_meta
-            .algorithm
-            .get("iterations")
+        let n_iter = inputs
+            .get("algorithm")
+            .and_then(|a| a.get("iterations"))
             .and_then(|v| v.as_u64())
             .map(|n| n as usize)
             .unwrap_or(0);
@@ -345,7 +344,7 @@ impl If2StageResult {
             max_chain_agreement,
             gate_verdict,
             ess_at_mle,
-            n_chains: stage_meta.n_chains,
+            n_chains,
             n_iter,
         })
     }
@@ -453,16 +452,7 @@ fn read_ess_at_mle(stage_dir: &Path) -> Option<EssSummary> {
 
 impl PgasStageResult {
     pub fn load(stage_dir: &Path) -> Result<Self, MethodResultError> {
-        let run = read_run(stage_dir)?;
-        let stage_meta = match &run.kind {
-            RunKind::FitStage(m) => m,
-            _ => {
-                return Err(MethodResultError::Io {
-                    stage_dir: stage_dir.to_owned(),
-                    message: "run.json is not a fit-stage".into(),
-                })
-            }
-        };
+        let n_chains = inputs_n_chains(&read_stage_inputs(stage_dir)?);
 
         // Estimated parameter names from algorithm config — pgas
         // doesn't store them directly. Fall back to "every column in
@@ -547,7 +537,7 @@ impl PgasStageResult {
             ess_per_param: ess_map,
             max_rhat,
             acceptance_per_param,
-            n_chains: stage_meta.n_chains,
+            n_chains,
         })
     }
 }
@@ -556,16 +546,7 @@ impl PgasStageResult {
 
 impl PmmhStageResult {
     pub fn load(stage_dir: &Path) -> Result<Self, MethodResultError> {
-        let run = read_run(stage_dir)?;
-        let stage_meta = match &run.kind {
-            RunKind::FitStage(m) => m,
-            _ => {
-                return Err(MethodResultError::Io {
-                    stage_dir: stage_dir.to_owned(),
-                    message: "run.json is not a fit-stage".into(),
-                })
-            }
-        };
+        let n_chains = inputs_n_chains(&read_stage_inputs(stage_dir)?);
         let summary = read_summary_json(stage_dir, "pmmh_summary.json")?;
 
         let rhat_map: BTreeMap<String, f64> = summary
@@ -621,7 +602,7 @@ impl PmmhStageResult {
             max_rhat,
             acceptance_rate,
             map_loglik,
-            n_chains: stage_meta.n_chains,
+            n_chains,
         })
     }
 }
@@ -719,7 +700,6 @@ fn posterior_summaries(
 mod tests {
     use super::*;
     use crate::fit::config_v2::{LoglikEvalConfig, GateConfig};
-    use crate::run_meta::{FitStageMeta, RunKind, RunStatus};
     use std::collections::HashMap;
 
     struct TempDir(PathBuf);
@@ -748,34 +728,37 @@ mod tests {
         TempDir(p)
     }
 
+    /// Write a `FitStage` `runid::RunRecord` leaf at `dir` carrying the
+    /// `inputs` the loaders read (`method`, `n_chains`, `algorithm`).
     fn write_stage_run(dir: &Path, method: crate::run_meta::MethodKind, n_chains: usize, algorithm: serde_json::Value) {
-        let run = Run {
-            hash: "deadbeef".repeat(8),
-            version: "0.1.0+test".into(),
-            created_at: "2026-04-27T00:00:00Z".into(),
-            argv: vec!["camdl".into()],
-            status: RunStatus::Completed { wall_time_seconds: 1.0 },
-            label: None,
-            kind: RunKind::FitStage(FitStageMeta {
-                fit_hash: "f00d".repeat(16),
-                stage: "scout".into(),
-                method,
-                backend: crate::run_meta::Backend::ChainBinomial,
-                seed: 1,
-                n_chains,
-                algorithm,
-                best_loglik: Some(-100.0),
-                best_chain: Some(0),
-                starts_from: None,
-                derived_from: None,
-                parent_profile_hash: None,
-                profile_point_idx: None,
-                profile_start_idx: None,
-                parameters_provenance: Default::default(),
-                init_provenance: None,
-                        }),
-        };
-        run.write(dir).unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        let rec = serde_json::json!({
+            "format_version": 1,
+            "kind": "fit_stage",
+            "run_id": "deadbeef".repeat(8),
+            "hash_version": 1,
+            "ir_version": "0.7",
+            "engine_version": "0.1.0+test",
+            "levels": [
+                {"name": "fit",   "label": "fit",   "hash": "f00d".repeat(16), "schema_version": 1},
+                {"name": "stage", "label": "01-scout", "hash": "1fb03eee00000000000000000000000000000000000000000000000000000000", "schema_version": 1},
+                {"name": "seed",  "label": "seed_1", "hash": "06cbd6b300000000000000000000000000000000000000000000000000000000", "schema_version": 1}
+            ],
+            "status": "completed",
+            "artifacts": {},
+            "inputs": {
+                "stage": "scout",
+                "method": method.as_str(),
+                "backend": "chain_binomial",
+                "seed": 1,
+                "n_chains": n_chains,
+                "algorithm": algorithm,
+                "best_loglik": -100.0,
+                "best_chain": 0
+            },
+            "provenance": {"created_at": "2026-04-27T00:00:00Z", "argv": ["camdl"]}
+        });
+        std::fs::write(dir.join("run.json"), serde_json::to_string(&rec).unwrap()).unwrap();
     }
 
     fn synthetic_if2_state() -> FitState {

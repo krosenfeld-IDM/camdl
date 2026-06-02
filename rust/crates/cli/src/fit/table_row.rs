@@ -18,11 +18,11 @@ use serde::Serialize;
 
 use crate::fit::config_diff::ConfigDiff;
 use crate::fit::fit_tree::{self, StageNode};
+use crate::fit::fit_view::FitView;
 use crate::fit::method_result::{
     EssSummary, GateVerdict, If2StageResult, MethodResult, MethodResultError,
     PgasStageResult, PmmhStageResult,
 };
-use crate::run_meta::{FitMeta, Run, RunKind};
 
 /// Schema discriminator. The proposal pins `name = "table_row"` and
 /// `version = 1`. Field additions are non-breaking under v1; removals
@@ -168,41 +168,28 @@ pub fn build_row(
     delta_ll_vs_best: f64,
     now_unix: i64,
 ) -> Result<TableRow, TableRowError> {
-    let run = Run::read(fit_dir).map_err(|e| TableRowError::TopLevelRun {
+    let view = FitView::read(fit_dir).ok_or_else(|| TableRowError::TopLevelRun {
         fit_dir: fit_dir.to_path_buf(),
-        message: e.to_string(),
+        message: "not a fit segment (no FitStage leaves + sidecar)".into(),
     })?;
-    let fit_meta = match &run.kind {
-        RunKind::Fit(m) => m.clone(),
-        _ => {
-            return Err(TableRowError::TopLevelRun {
-                fit_dir: fit_dir.to_path_buf(),
-                message: format!("expected RunKind::Fit, got {:?}", run.kind),
-            })
-        }
-    };
 
     let nodes = fit_tree::walk_fit_dir(fit_dir).map_err(|e| TableRowError::TopLevelRun {
         fit_dir: fit_dir.to_path_buf(),
         message: format!("walker: {}", e),
     })?;
-    let terminal = pick_terminal_stage(&fit_meta, &nodes).ok_or_else(|| {
+    let terminal = pick_terminal_stage(&view, &nodes).ok_or_else(|| {
         TableRowError::NoStages {
             fit_dir: fit_dir.to_path_buf(),
         }
     })?;
-    let completed_stages = completed_stage_names(&fit_meta, &nodes);
+    let completed_stages = completed_stage_names(&view, &nodes);
 
-    let method_kind = match &terminal.run.kind {
-        RunKind::FitStage(m) => m.method,
-        _ => unreachable!("walker only returns FitStage runs"),
-    };
-    let method = method_kind.as_str().to_string();
+    let method = terminal.stage.method.as_str().to_string();
     let method_result = MethodResult::load_from(&terminal.stage_dir, &method)?;
-    let view = MethodView::from(&method_result);
+    let mview = MethodView::from(&method_result);
 
-    let stem = stem_from_fit_toml_path(&fit_meta.fit_toml_path);
-    let created = parse_iso8601_to_unix(&run.created_at);
+    let stem = stem_from_fit_toml_path(&view.fit_toml_path);
+    let created = parse_iso8601_to_unix(&view.created_at);
     let age_seconds = match created {
         Some(c) => now_unix - c,
         None => 0,
@@ -210,26 +197,26 @@ pub fn build_row(
 
     Ok(TableRow {
         schema: TableRowSchema::current(),
-        fit_id: short_hash(&run.hash),
-        fit_hash: run.hash.clone(),
-        label: run.label.clone(),
+        fit_id: short_hash(&view.fit_hash),
+        fit_hash: view.fit_hash.clone(),
+        label: view.label.clone(),
         stem,
-        model_hash: fit_meta.model_hash.clone(),
+        model_hash: view.model_hash.clone(),
         stages: completed_stages,
         method,
         config_diff_from_baseline: config_diff,
-        converged: view.converged,
-        gate_verdict: view.gate_verdict,
-        best_loglik: view.best_loglik,
-        max_chain_agreement: view.max_chain_agreement,
-        max_rhat: view.max_rhat,
-        acceptance_rate: view.acceptance_rate,
-        ess_at_mle: view.ess_at_mle,
-        ess_posterior: view.ess_posterior,
-        params: view.params,
+        converged: mview.converged,
+        gate_verdict: mview.gate_verdict,
+        best_loglik: mview.best_loglik,
+        max_chain_agreement: mview.max_chain_agreement,
+        max_rhat: mview.max_rhat,
+        acceptance_rate: mview.acceptance_rate,
+        ess_at_mle: mview.ess_at_mle,
+        ess_posterior: mview.ess_posterior,
+        params: mview.params,
         delta_ll_vs_best,
         age_seconds,
-        created_at: run.created_at.clone(),
+        created_at: view.created_at.clone(),
         stale: false,
         stale_reason: None,
     })
@@ -341,10 +328,10 @@ impl MethodView {
 /// lex-first stage_dir — same priority as
 /// `fit_summary::resolve_if2_stage_dirs`.
 fn pick_terminal_stage<'a>(
-    fit_meta: &FitMeta,
+    view: &FitView,
     nodes: &'a [StageNode],
 ) -> Option<&'a StageNode> {
-    for stage_name in fit_meta.stages_declared.iter().rev() {
+    for stage_name in view.stages_declared.iter().rev() {
         if let Some(node) = best_node_for_stage(stage_name, nodes) {
             return Some(node);
         }
@@ -357,14 +344,10 @@ fn best_node_for_stage<'a>(stage_name: &str, nodes: &'a [StageNode]) -> Option<&
     use crate::fit::fit_tree::DataKind;
     let mut best: Option<(&'a StageNode, (u8, u64))> = None;
     for node in nodes {
-        let stage = match &node.run.kind {
-            RunKind::FitStage(m) => m.stage.as_str(),
-            _ => continue,
-        };
-        if stage != stage_name {
+        if node.stage.stage != stage_name {
             continue;
         }
-        let rank: (u8, u64) = match &node.axes {
+        let rank: (u8, u64) = match &node.stage.axes {
             Some(axes) => {
                 let kind_rank = match axes.data_kind {
                     DataKind::Real => 0,
@@ -382,16 +365,10 @@ fn best_node_for_stage<'a>(stage_name: &str, nodes: &'a [StageNode]) -> Option<&
     best.map(|(n, _)| n)
 }
 
-fn completed_stage_names(fit_meta: &FitMeta, nodes: &[StageNode]) -> Vec<String> {
-    let completed: std::collections::HashSet<&str> = nodes
-        .iter()
-        .filter_map(|n| match &n.run.kind {
-            RunKind::FitStage(m) => Some(m.stage.as_str()),
-            _ => None,
-        })
-        .collect();
-    fit_meta
-        .stages_declared
+fn completed_stage_names(view: &FitView, nodes: &[StageNode]) -> Vec<String> {
+    let completed: std::collections::HashSet<&str> =
+        nodes.iter().map(|n| n.stage.stage.as_str()).collect();
+    view.stages_declared
         .iter()
         .filter(|s| completed.contains(s.as_str()))
         .cloned()

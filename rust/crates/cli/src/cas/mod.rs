@@ -28,7 +28,6 @@
 //! key is `(trajectory, obs_hash, obs_seed)`.
 
 pub mod typed;
-pub mod fit_inputs;
 
 // ─── Run buffer: accumulator for --cas trajectory bytes ────────────────────
 
