@@ -430,6 +430,22 @@ fn run_simulate(a: &args::SimulateArgs) {
     sim::eval_stats::set_allow_degenerate_rates(a.allow_degenerate_rates);  // gh#audit-C6
     // ── Extract typed args into locals that match the rest of the function ─
     let ir_path          = a.model.to_string_lossy().into_owned();
+    // Compile `.camdl` → IR EXACTLY ONCE for the whole command. Every
+    // downstream load (obs preflight, --draws generation, the CAS-sink base
+    // model, and every engine cell) reads this resolved `.ir.json` instead of
+    // re-invoking camdlc per unit. Without this, a multi-cell run (--replicates
+    // / --seeds / --draws / multiple --scenario) compiled once per cell: the
+    // repeated camdlc spinners stomp each other on a TTY (orphaned/overwritten
+    // bar), and a large stratified model paid the ~20s compile N times.
+    // `_ir_tmp` is the temp-file path (None for a plain `.ir.json` input); held
+    // alive for the whole function so it isn't reaped mid-run.
+    // `ir_path` (the original `.camdl`) is preserved for display + provenance
+    // (dry-run model line, CAS `model_path`/`model_stem`); `ir_path_compiled`
+    // is the resolved IR used for all compilation.
+    let (ir_path_compiled, _ir_tmp) = util::resolve_ir_path(&ir_path).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
     // Track explicit vs default flags for the backend-provenance guardrail.
     // Option<_> fields mean None ↔ not explicitly passed.
     let backend_explicit = a.backend.backend.is_some();
@@ -585,7 +601,9 @@ fn run_simulate(a: &args::SimulateArgs) {
     }
 
     let base_sim_run = util::SimRun {
-        ir_path: ir_path.clone(),
+        // The already-compiled IR: every engine cell loads this directly, so
+        // `resolve_ir_path` short-circuits (no per-cell camdlc).
+        ir_path: ir_path_compiled.clone(),
         params_files,
         overrides,
         set_vec_entries,
@@ -617,7 +635,7 @@ fn run_simulate(a: &args::SimulateArgs) {
     // We need the model to check observation blocks, but we don't want to
     // run simulation twice. Do a dry load to validate, then run in the loop.
     if want_obs {
-        let (model_check, _) = util::load_model(&ir_path).unwrap_or_else(|e| {
+        let (model_check, _) = util::load_model(&ir_path_compiled).unwrap_or_else(|e| {
             eprintln!("error: {}", e);
             std::process::exit(1);
         });
@@ -708,7 +726,7 @@ fn run_simulate(a: &args::SimulateArgs) {
                 eprintln!("error: --draws uniform requires -n N");
                 std::process::exit(1);
             });
-            generate_uniform_draws(&ir_path, n, seed).unwrap_or_else(|e| {
+            generate_uniform_draws(&ir_path_compiled, n, seed).unwrap_or_else(|e| {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             })
@@ -724,7 +742,7 @@ fn run_simulate(a: &args::SimulateArgs) {
                     // tier-2 fallback when the fit toml omits a prior
                     // for a parameter that declares `~ <dist>` in the
                     // model file.
-                    let (draws_model, _) = util::load_model(&ir_path).unwrap_or_else(|e| {
+                    let (draws_model, _) = util::load_model(&ir_path_compiled).unwrap_or_else(|e| {
                         eprintln!("error loading model for --draws prior: {}", e);
                         std::process::exit(1);
                     });
@@ -740,7 +758,7 @@ fn run_simulate(a: &args::SimulateArgs) {
                     // semantics.
                     let scenarios: Vec<&str> = scenario_names.iter()
                         .map(|s| s.as_str()).collect();
-                    generate_prior_draws_from_ir(&ir_path, n, seed, &scenarios).unwrap_or_else(|e| {
+                    generate_prior_draws_from_ir(&ir_path_compiled, n, seed, &scenarios).unwrap_or_else(|e| {
                         eprintln!("error: {}", e);
                         std::process::exit(1);
                     })
@@ -772,7 +790,7 @@ fn run_simulate(a: &args::SimulateArgs) {
     // ── Dry run ─────────────────────────────────────────────────────────────
     if dry_run {
         print_dry_run(
-            &ir_path, base_sim_run.backend, dt, seed,
+            &ir_path, &ir_path_compiled, base_sim_run.backend, dt, seed,
             &base_sim_run.params_files, &base_sim_run.overrides,
             &scenario_list, &seeds, &draws_path,
             n_draws, replicates, total_runs,
@@ -838,7 +856,9 @@ fn run_simulate(a: &args::SimulateArgs) {
     };
 
     let job = SimulateJob {
-        model: ir_path.clone(),
+        // The pre-compiled IR: each engine cell loads this directly (no
+        // per-cell camdlc — see the resolve-once at the top of the function).
+        model: ir_path_compiled.clone(),
         params_files: base_sim_run.params_files.clone(),
         backend,
         dt,
@@ -866,6 +886,7 @@ fn run_simulate(a: &args::SimulateArgs) {
     // mirror is layered on top by `StreamSink` (below).
     let cas_sink = match build_simulate_cas_sink(
         &base_sim_run,
+        &ir_path,
         &scenario_names,
         &cas_root,
         want_obs || obs_only.is_some() || obs_only_dir.is_some()
@@ -987,6 +1008,11 @@ impl engine::RunSink for SimSink {
 #[allow(clippy::too_many_arguments)]
 fn build_simulate_cas_sink(
     run: &util::SimRun,
+    // The original source path (e.g. `sir.camdl`) for the human-readable store
+    // prefix + provenance. `run.ir_path` is the pre-compiled `.ir.json`, whose
+    // basename would slug to `camdl_<pid>`; the display fields must keep the
+    // model's real name so leaves land under `sims/sir-<hash>/…`.
+    display_path: &str,
     scenario_names: &[String],
     cas_root: &str,
     obs_enabled: bool,
@@ -997,6 +1023,7 @@ fn build_simulate_cas_sink(
     total_runs: usize,
 ) -> Result<crate::batch::CasSink, String> {
     // Parse the raw IR (envelope-aware) — params NOT applied (batch parity).
+    // `run.ir_path` is already the compiled IR, so this short-circuits.
     let (ir_path_resolved, _tmp) = util::resolve_ir_path(&run.ir_path)?;
     let src = std::fs::read_to_string(&ir_path_resolved)
         .map_err(|e| format!("cannot read {}: {}", ir_path_resolved, e))?;
@@ -1050,12 +1077,16 @@ fn build_simulate_cas_sink(
         }).collect::<Result<Vec<_>, String>>()?
     };
 
-    let model_stem = hashing::path_stem_slug(&run.ir_path);
+    // Display prefix + provenance source path come from the ORIGINAL model
+    // path, not the compiled temp IR (`run.ir_path`), so the store layout and
+    // `run.json` provenance show the model's real name (gh#51 cross-check
+    // parity with the pre-hoist behaviour).
+    let model_stem = hashing::path_stem_slug(display_path);
     let runs_dir = format!("{}/sims", cas_root);
 
     Ok(crate::batch::CasSink {
         resolved_scenarios,
-        model_path: run.ir_path.clone(),
+        model_path: display_path.to_string(),
         model_stem,
         base_model,
         base_params,
@@ -1075,7 +1106,13 @@ fn build_simulate_cas_sink(
         errors: Vec::new(),
         label,
         fit_dep,
-        quiet: true,
+        // Progress: a LONE run (total_runs <= 1) goes through the engine's
+        // per-timestep bar (`run_one_cell_with_progress`), so the sink stays
+        // quiet to avoid a redundant `[1/1]` line. A multi-cell ensemble hits
+        // `run_one_cell` (no inner bar), so the sink emits the `[i/N]` per-cell
+        // progress line — otherwise the ensemble runs silently. Honours
+        // `--progress none` because the line is gated on `progress::is_none()`.
+        quiet: total_runs <= 1,
     })
 }
 
@@ -1996,6 +2033,7 @@ fn load_draws_tsv(path: &str) -> Result<Vec<HashMap<String, f64>>, String> {
 #[allow(clippy::too_many_arguments)]
 fn print_dry_run(
     ir_path: &str,
+    ir_path_compiled: &str,
     backend: args::types::Backend,
     dt: f64,
     seed: u64,
@@ -2071,8 +2109,9 @@ fn print_dry_run(
             }
         }
     } else {
-        // Point/single mode: show resolved parameter values with provenance
-        match util::load_model(ir_path) {
+        // Point/single mode: show resolved parameter values with provenance.
+        // Load the already-compiled IR (display still shows the source path).
+        match util::load_model(ir_path_compiled) {
             Ok((model, _)) => {
                 // Track provenance: (param_name → (value, source, override_chain))
                 struct ParamProv {

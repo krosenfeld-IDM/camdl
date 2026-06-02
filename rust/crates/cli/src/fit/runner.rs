@@ -112,8 +112,12 @@ impl FitRunConfig {
         seed: u64,
         random_starts: bool,
     ) -> Result<Self, String> {
-        // Load model
-        let model_path = &fit.model.camdl;
+        // Load model. Prefer the pre-compiled IR threaded in by
+        // `cmd_fit_run_v2` (compiled once up front) so a multi-stage / swept
+        // fit doesn't re-invoke camdlc per (cell × sweep point × stage); fall
+        // back to `model.camdl` (recompiles) when no compiled IR was provided
+        // — the identity path is always `model.camdl`, not this.
+        let model_path = fit.compiled_ir.as_deref().unwrap_or(&fit.model.camdl);
         let (mut model_pre, model_ir_json) = crate::util::load_model(model_path)?;
         // Keep a copy of the unfiltered model so the startup diagnostic
         // can show what was declared vs what's active. Cheap clone — the

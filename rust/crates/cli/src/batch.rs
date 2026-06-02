@@ -758,8 +758,11 @@ pub(crate) struct CasSink {
     /// `deps`, so this does not change the sim's run_id or store path.
     pub(crate) fit_dep: Vec<runid::inputs::ArtifactRef>,
     /// Suppress the `[i/total] scenario=… seed=…` per-cell stderr line.
-    /// `simulate` drives its own output and a lone run shows a progress bar,
-    /// so it sets this to keep the terminal quiet; batch leaves it `false`.
+    /// A LONE `simulate` run gets the engine's per-timestep bar instead, so it
+    /// sets this `true` (`total_runs <= 1`) to avoid a redundant `[1/1]` line;
+    /// a multi-cell `simulate` ensemble and `batch run` leave it `false` so the
+    /// per-cell line is the ensemble's progress. The line is additionally
+    /// suppressed under `--progress none` at the print site.
     pub(crate) quiet: bool,
 }
 
@@ -877,7 +880,7 @@ impl crate::engine::RunSink for CasSink {
         let rel = self.cell_resolve(spec).map(|(_, _, rel)| rel).unwrap_or_default();
         let name = spec.scenario.name().to_string();
         self.counter += 1;
-        if !self.quiet {
+        if !self.quiet && !crate::progress::is_none() {
             eprintln!("[{}/{}] scenario={} seed={} (skipped — cache hit)",
                 self.counter, self.total, name, spec.process_seed);
         }
@@ -964,7 +967,7 @@ impl crate::engine::RunSink for CasSink {
         }
 
         self.counter += 1;
-        if !self.quiet {
+        if !self.quiet && !crate::progress::is_none() {
             eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
         }
         self.completed_runs.push(RunEntry { run_path: rel });

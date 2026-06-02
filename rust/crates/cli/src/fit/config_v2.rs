@@ -109,6 +109,17 @@ pub struct FitConfigV2 {
     /// Optional lineage metadata (not used by the runner).
     #[serde(default)]
     pub provenance: Option<FitProvenance>,
+
+    /// Runtime-only: the path to the model **already compiled to IR**
+    /// (`.ir.json`). `cmd_fit_run_v2` compiles `model.camdl` → IR exactly
+    /// once up front and records the temp path here; every per-stage
+    /// `FitRunConfig::build` then loads this pre-compiled IR instead of
+    /// re-invoking camdlc per (cell × sweep point × stage). `None` means
+    /// "compile from `model.camdl`" (the fallback for unit tests that build a
+    /// config directly). Never serialized — `model.camdl` remains the sole
+    /// identity-bearing source path (the fit content hash hashes its bytes).
+    #[serde(skip)]
+    pub compiled_ir: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

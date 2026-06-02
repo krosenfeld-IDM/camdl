@@ -125,8 +125,23 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         std::process::exit(1);
     });
 
-    // Load model and validate completeness
-    let (model, model_json) = crate::util::load_model(&config.model.camdl).unwrap_or_else(|e| {
+    // Compile `model.camdl` → IR EXACTLY ONCE for the whole fit. Every
+    // per-(cell × sweep point × stage) `FitRunConfig::build` then loads this
+    // pre-compiled IR instead of re-invoking camdlc per unit (a multi-stage
+    // swept fit otherwise recompiled the model dozens of times). The resolved
+    // path is recorded on `config.compiled_ir`; `config.model.camdl` is left
+    // untouched so the fit's content hash still hashes the original `.camdl`
+    // source bytes (identity is unchanged by the hoist). The temp IR persists
+    // for the process — `resolve_ir_path`'s returned path is not a drop guard.
+    let (compiled_ir, _ir_tmp) = crate::util::resolve_ir_path(&config.model.camdl)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+    config.compiled_ir = Some(compiled_ir.clone());
+
+    // Load model and validate completeness (from the pre-compiled IR).
+    let (model, model_json) = crate::util::load_model(&compiled_ir).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
@@ -410,7 +425,9 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     let synthetic_datasets: Vec<synthetic::SyntheticDataset> = if let Some(spec) = &config.synthetic {
         let datasets = synthetic::generate_synthetic_datasets(
             spec,
-            &config.model.camdl,
+            // Pre-compiled IR (compiled once above) so per-dataset generation
+            // doesn't re-invoke camdlc; falls back to the source path.
+            config.compiled_ir.as_deref().unwrap_or(&config.model.camdl),
             &fit_dir,
             config.config.backend,
             config.config.dt,
@@ -449,14 +466,10 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         // per declared observation block, so the fit data map points each
         // stream name at the same ds_NN.tsv file (the data loader picks
         // its named column).
-        let model_for_obs = {
-            let (m, _) = crate::util::load_model(&config.model.camdl).unwrap_or_else(|e| {
-                eprintln!("error loading model for obs stream names: {}", e);
-                std::process::exit(1);
-            });
-            m
-        };
-        let obs_names: Vec<String> = model_for_obs.observations.iter()
+        // Reuse the already-loaded model (compiled once above); no extra
+        // camdlc call. Observation-block names are structural, scenario-
+        // independent, so the validation-load model is the right source.
+        let obs_names: Vec<String> = model.observations.iter()
             .map(|o| o.name.clone()).collect();
         let mut out = Vec::with_capacity(synthetic_datasets.len() * fit_seeds.len());
         for ds in &synthetic_datasets {
@@ -1242,15 +1255,15 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 #[cfg(feature = "ode")]
                 {
                     // Hash data + model for the mle_params.toml provenance
-                    // block (same shape as the IF2 path uses below).
-                    let model_ir_json = std::fs::read_to_string(&sweep_config.model.camdl)
+                    // block (same shape as the IF2 path uses below). Load the
+                    // canonical IR JSON from the pre-compiled IR (set at the
+                    // top of the fit) so this provenance read doesn't re-invoke
+                    // camdlc per PFilter stage. The IR JSON — and thus
+                    // `model_hash` — is byte-identical to compiling `.camdl`.
+                    let model_src = sweep_config.compiled_ir.as_deref()
+                        .unwrap_or(&sweep_config.model.camdl);
+                    let model_ir_json = crate::util::load_model(model_src)
                         .ok()
-                        .and_then(|_| {
-                            // The fit runner has already loaded + compiled
-                            // the model; ask `util::load_model` for the
-                            // canonical IR JSON used to compute the hash.
-                            crate::util::load_model(&sweep_config.model.camdl).ok()
-                        })
                         .map(|(_, ir_json)| ir_json)
                         .unwrap_or_default();
                     let model_hash_for_prov = crate::hashing::model_hash(&model_ir_json);
@@ -1610,7 +1623,11 @@ fn build_fit_sidecar(
     label: Option<String>,
     model_for_priors: Option<&ir::Model>,
 ) -> crate::run_meta::FitSidecar {
-    let model_ir_json = read_ir_json_or_empty(&config.model.camdl);
+    // Prefer the pre-compiled IR (set by `cmd_fit_run_v2`); `read_ir_json_or_empty`
+    // re-invokes camdlc when handed a raw `.camdl`. The IR JSON — and `model_hash`
+    // — is byte-identical either way.
+    let model_src = config.compiled_ir.as_deref().unwrap_or(&config.model.camdl);
+    let model_ir_json = read_ir_json_or_empty(model_src);
     let model_hash = if model_ir_json.is_empty() {
         String::new()
     } else {
