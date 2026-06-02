@@ -1525,6 +1525,42 @@ fn event_log_lands_in_sim_leaf_alongside_traj() {
         "--event-log PATH mirror must be byte-identical to the leaf's event_log.tsv");
 }
 
+/// A `--label` passed to `simulate` must end up on the leaf's
+/// `provenance.label` EVEN WHEN the trajectory is a CAS cache hit — the
+/// content-addressed dedup must not silently drop the user's explicit label.
+/// (Matches `fit run`, which keeps its label current on an all-cache-hit
+/// rerun.) Conversely, a label-less rerun must NOT wipe an existing label.
+#[test]
+fn simulate_label_applies_on_cached_leaf() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("store");
+    let gold = golden_sir_basic();
+    let run = |label: Option<&str>| {
+        let mut args = vec!["simulate".to_string(), gold.to_string_lossy().into_owned(),
+            "--scenario".into(), "baseline".into(), "--seed".into(), "123".into(),
+            "--output-dir".into(), out.to_string_lossy().into_owned()];
+        if let Some(l) = label { args.push("--label".into()); args.push(l.into()); }
+        assert!(Command::new(&bin).args(&args).status().expect("spawn").success());
+    };
+
+    // 1. fresh run, no label → null label.
+    run(None);
+    let leaf = sole_leaf(&out.join("sims"));
+    assert!(read_meta(&leaf)["provenance"]["label"].is_null(),
+        "no --label → null label");
+
+    // 2. re-run SAME params WITH --label: the cached leaf must adopt it.
+    run(Some("added later"));
+    assert_eq!(read_meta(&leaf)["provenance"]["label"].as_str(), Some("added later"),
+        "simulate --label on a cached leaf must apply the label (dedup must not drop it)");
+
+    // 3. label-less rerun must PRESERVE the existing label (absence ≠ clear).
+    run(None);
+    assert_eq!(read_meta(&leaf)["provenance"]["label"].as_str(), Some("added later"),
+        "a label-less rerun must not wipe an existing label");
+}
+
 fn walkdir(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];

@@ -896,6 +896,11 @@ impl crate::engine::RunSink for CasSink {
         let (rel, run_id, traj_digest) = match self.cell_resolve(spec) {
             Ok((rt, dir, rel)) => {
                 let digest = read_traj_digest(&dir);
+                // Keep an explicit `--label` current even on a pure cache-hit
+                // skip (same reasoning as the commit path; no-op when None).
+                if let Some(ref label) = self.label {
+                    let _ = ensure_provenance_label(&dir, label);
+                }
                 (rel, Some(rt.run_id), digest)
             }
             Err(_) => (String::new(), None, None),
@@ -1016,6 +1021,19 @@ impl crate::engine::RunSink for CasSink {
             }
         }
 
+        // A `--label` must land on the leaf even when `commit_atomic` resolved
+        // to an existing (cache-hit) leaf whose `run.json` carried a different
+        // or absent label — the content-addressed dedup must not silently drop
+        // the user's explicit label. `provenance` is metadata, not identity, so
+        // this never changes the run_id (same mechanism as `camdl label`). A
+        // no-op on a fresh commit, whose record already carries `self.label`.
+        if let Some(ref label) = self.label {
+            if let Err(e) = ensure_provenance_label(&dest, label) {
+                self.errors.push(format!("scenario={} seed={}: label update: {}",
+                    name, spec.process_seed, e));
+            }
+        }
+
         self.counter += 1;
         if !self.quiet && !crate::progress::is_none() {
             eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
@@ -1039,6 +1057,30 @@ fn read_traj_digest(dir: &std::path::Path) -> Option<runid::ContentHash> {
     let bytes = std::fs::read(dir.join("run.json")).ok()?;
     let rec: runid::RunRecord = serde_json::from_slice(&bytes).ok()?;
     rec.artifacts.get("traj.tsv").map(|c| c.digest)
+}
+
+/// Ensure a leaf's `run.json` carries `provenance.label == Some(label)`,
+/// rewriting it atomically (tmp + rename) only when it differs. `provenance`
+/// is metadata, not identity — the run_id and exact-set are untouched — so this
+/// is the same in-place relabel `camdl label` performs, applied at write time
+/// so an explicit `--label` survives a CAS cache hit. Idempotent: a no-op when
+/// the leaf already has the requested label (e.g. a fresh commit).
+fn ensure_provenance_label(leaf_dir: &std::path::Path, label: &str) -> Result<(), String> {
+    let path = leaf_dir.join("run.json");
+    let txt = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut rec: runid::RunRecord = serde_json::from_str(&txt)
+        .map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    if rec.provenance.label.as_deref() == Some(label) {
+        return Ok(()); // already current — no rewrite
+    }
+    rec.provenance.label = Some(label.to_string());
+    let tmp = leaf_dir.join("run.json.tmp");
+    let json = serde_json::to_string_pretty(&rec)
+        .map_err(|e| format!("serialize run.json: {}", e))?;
+    std::fs::write(&tmp, json)
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .map_err(|e| format!("write {}: {}", path.display(), e))
 }
 
 // ─── Design experiment execution ─────────────────────────────────────────────
