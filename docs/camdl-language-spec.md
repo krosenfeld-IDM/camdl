@@ -565,6 +565,14 @@ camdl simulate model.ir.json --param-vec R0=r0_posterior.tsv
 
 The TOML format supports both flat and sectioned forms (see §21).
 
+Because values live outside the model, a `--params` TOML is the right home for
+any externally-computed scalar — a demographic rate from a pipeline, a fixed
+constant from the literature. Have preprocessing **generate** that TOML so the
+model consumes the pipeline output directly (single source of truth); do not
+reach for a `tables {}` entry to read a scalar. Tables are indexed data
+(covariates or feature, not observation data which would be in an `observation`
+block) and require at least one dimension (§6).
+
 ### 4.3 Indexed Parameters
 
 Parameters may be declared with a single dimension index, creating one scalar
@@ -788,6 +796,15 @@ tables {
   pop        : patch              = read("data/lga_pop.tsv")
 }
 ```
+
+**Tables are indexed data — they require at least one dimension.** Every table
+above is keyed by `age`, `patch`, etc. There is no 0-dimensional (scalar)
+table: `read()` loads an indexed array, not a single value. A scalar input —
+even one computed by preprocessing (a crude birth rate, an all-age mortality
+rate) — is a **parameter**, not a table. Declare it in `parameters {}` and
+supply its value via `--params` (§4.2); your preprocessing pipeline can emit
+that TOML, keeping a single source of truth without resorting to a dummy
+1-element dimension.
 
 ### 6.1 Dimension and Unit Annotations
 
