@@ -161,7 +161,7 @@ region.
      Consider widening: R0 = { bounds = [15.0, 80.0] }
    ```
    
-   This is reported in `{stage}_summary.json` and `camdl fit status`:
+   This is reported in `{stage}_summary.json` and `camdl fit summary`:
    
    ```
    R0 = 30.2   rw_sd=5.0  bounds=[30, 80]  ⚠ AT LOWER BOUND
@@ -839,17 +839,17 @@ non-overlapping responsibilities:
 
 | command                  | answers                                        | scope                |
 |--------------------------|------------------------------------------------|----------------------|
-| `camdl fit status <dir>` | "what's the state of my filesystem?"           | workflow checker     |
+| `camdl fit table <dir>`  | "what fits live under this tree?"              | cross-fit aggregator |
 | `camdl fit summary <dir>`| "what does this fit say?"                      | single-fit interpretation |
 | `camdl compare`          | "which of these models predicts better?"       | multi-model comparison |
 
-### 7.1 Status
+### 7.1 Summary
 
 ```bash
-camdl fit status fit.toml
+camdl fit summary results/fits/<dir>/
 ```
 
-Reads the output_dir, checks which stages have completed, reports
+Walks the fit dir, checks which stages have completed, reports
 convergence and identifiability:
 
 ```

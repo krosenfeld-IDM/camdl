@@ -919,20 +919,6 @@ fn parse_f64_list(s: &str) -> Result<Vec<f64>, String> {
         .collect()
 }
 
-#[derive(Args)]
-#[command(after_help = colored_help!("\
-Examples:
-  # Completion / convergence summary for a fit config
-  camdl fit status fit.toml
-
-  # Same, by results-directory path
-  camdl fit status results/fits/he2010-abc123/
-"))]
-pub struct FitStatusArgs {
-    /// Fit config file or results directory
-    pub path: Option<PathBuf>,
-}
-
 /// Output format for `camdl fit summary`. `text` is the default
 /// rendered terminal block with ANSI colour; `json` is a versioned
 /// machine-readable schema (`schema.version`); `md` and `latex` are
@@ -1121,57 +1107,45 @@ pub struct FitNewArgs {
     pub dest: PathBuf,
 }
 
-#[derive(Args)]
-#[command(after_help = colored_help!("\
-Examples:
-  # Print the content-addressed output directory for a fit.toml
-  camdl fit where fit.toml
-
-  # Per-seed cell directory (multi-seed fits)
-  camdl fit where fit.toml --seed 42
-"))]
-pub struct FitWhereArgs {
-    /// Fit config file
-    pub config: PathBuf,
-
-    /// Print per-seed cell directory instead of fit root
-    #[arg(long)]
-    pub seed: Option<u64>,
-}
-
 // ─── label ────────────────────────────────────────────────────────────
 
 #[derive(Args)]
 #[command(after_help = colored_help!("\
 Examples:
   # Label any run kind by its short hash
-  camdl label 04ab12cd \"narrow R0, take 1\"
+  camdl label 04ab12cd \"baseline-2024\"
   camdl label 9c5d11f0 \"baseline sim, daily reporting\"
   camdl label 7e2a5d4b \"R0 vs gamma profile, take 2\"
+
+  # Labels are the headline way to find a run again. Label it once,
+  # then list/show surfaces the label so you can spot it by name:
+  camdl label <hash> \"baseline-2024\"
+  camdl list --kind fit          # the labelled fit now shows its name
+  camdl show <hash>              # label appears in the run header
 
 Notes:
   - Labels are 1–64 characters after trim, restricted to:
     letters, digits, spaces, commas, dot, underscore, hyphen.
   - The hash is matched as a prefix (8+ chars recommended) across
-    every kind under <root>/ (sims, fits, profiles, replicate-sets).
+    every kind under <root>/ (sims, fits, profiles, pfilters, surveys).
   - Errors on ambiguous or unmatched prefix.
   - Errors on a still-running fit (RunStatus::Running); the
     runner would otherwise overwrite the label at completion.
   - Concurrent invocations are last-write-wins.
 "))]
 pub struct LabelArgs {
-    /// Hash prefix of the target run (matches against
-    /// `<root>/{sims,fits,profiles}/**/run.json`'s `run_id`, or legacy
-    /// `hash`)
+    /// Hash prefix of the target run (matches against any kind's leaf
+    /// `run.json` `run_id` under
+    /// `<root>/{sims,fits,profiles,pfilters,surveys}/`)
     pub hash: String,
 
     /// New label text. Validated against ^[a-zA-Z0-9 ,._-]{1,64}$
     /// after trim. Empty / whitespace-only labels are rejected.
     pub label: String,
 
-    /// Output root to search under (default: results/)
-    #[arg(long)]
-    pub root: Option<PathBuf>,
+    /// Output root to search under (default: ./results)
+    #[arg(long, default_value = "./results", env = "CAMDL_OUTPUT_DIR")]
+    pub root: PathBuf,
 }
 
 // ─── pfilter ──────────────────────────────────────────────────────────────────

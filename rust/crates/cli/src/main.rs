@@ -255,8 +255,6 @@ See `camdl fit <subcommand> --help` for full options."))]
 pub(crate) enum FitCmd {
     /// Run inference stages defined in a fit.toml
     Run(args::FitRunArgs),
-    /// Show completion status for a fit
-    Status(args::FitStatusArgs),
     /// Render a single-fit interpretation summary (Â, gate verdict, MLE table)
     Summary(args::FitSummaryArgs),
     /// Compare two fit.toml configs
@@ -265,8 +263,6 @@ pub(crate) enum FitCmd {
     Table(args::FitTableArgs),
     /// Derive a new fit.toml from an existing one
     New(args::FitNewArgs),
-    /// Print the output directory path for a fit.toml
-    Where(args::FitWhereArgs),
     /// List supported (algorithm, backend) pairs and their descriptions
     Methods,
 }
@@ -365,12 +361,10 @@ fn main() {
         Command::Batch(BatchCmd::Run(a))    => batch::cmd_batch_run(&a),
         Command::Batch(BatchCmd::Status(a)) => batch::cmd_batch_status(&a),
         Command::Fit(FitCmd::Run(a))    => fit::cmd_fit_run_v2(&a),
-        Command::Fit(FitCmd::Status(a)) => fit::cmd_fit_status(&a),
         Command::Fit(FitCmd::Summary(a))=> fit::cmd_fit_summary(&a),
         Command::Fit(FitCmd::Diff(a))   => fit::cmd_fit_diff(&a),
         Command::Fit(FitCmd::Table(a))  => fit::cmd_fit_table(&a),
         Command::Fit(FitCmd::New(a))    => fit::cmd_fit_new(&a),
-        Command::Fit(FitCmd::Where(a))  => fit::cmd_fit_where(&a),
         Command::Fit(FitCmd::Methods)   => fit::cmd_fit_methods(),
         Command::Label(a)               => fit::cmd_label(&a),
         Command::Pfilter(a)             => pfilter::cmd_pfilter(&a),
@@ -553,12 +547,14 @@ fn run_simulate(a: &args::SimulateArgs) {
     // feature we stop at the first block and trust single-fit
     // workflows.
     let mut from_fit_hash: Option<String> = None;
+    let mut from_fit_params_file: Option<String> = None;
     for pf in &params_files {
         let prov = match crate::fit::provenance::read_mle_provenance(pf) {
             Ok(Some(p)) => p,
             Ok(None) | Err(_) => continue,
         };
         from_fit_hash = prov.fit_hash.clone();
+        from_fit_params_file = Some(pf.clone());
 
         if !backend_explicit {
             // Auto-match path.
@@ -670,9 +666,40 @@ fn run_simulate(a: &args::SimulateArgs) {
         },
         None => None,
     };
-    // `from_fit_hash` is provenance only; the store identity rides in the
-    // resolved levels (model/config/params/scenario/seed).
-    let _ = &from_fit_hash;
+    // Fit → sim lineage. When `--params` consumed a fit-MLE file carrying a
+    // `[provenance]` block, record the upstream fit on every sim leaf's
+    // `RunRecord.deps` (an `ArtifactRef`): the fit's content hash as the
+    // upstream identity, plus the consumed params file's content digest (so a
+    // regenerated fit — different θ̂ — produces a different dep). This is
+    // provenance only — a sim's identity is its factored levels
+    // (resolve_trajectory), never `deps` — so it does not change the run_id or
+    // store path. Empty when no fit-provenance params file was supplied.
+    let fit_dep: Vec<runid::inputs::ArtifactRef> = match (&from_fit_hash, &from_fit_params_file) {
+        (Some(hash), Some(pf)) => {
+            match runid::ContentHash::from_hex(hash) {
+                Ok(run_id) => {
+                    let digest = std::fs::read(pf)
+                        .map(|b| runid::ContentHash::digest_bytes(&b))
+                        .unwrap_or(run_id);
+                    let artifact = std::path::Path::new(pf)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| pf.clone());
+                    vec![runid::inputs::ArtifactRef {
+                        run_id,
+                        kind: runid::ArtifactKind::FitStage,
+                        artifact,
+                        digest,
+                    }]
+                }
+                // A non-hex fit_hash (legacy / malformed provenance) is not a
+                // CAS identity we can record — skip the dep rather than fold a
+                // bogus run_id. The backend-guardrail above still fired.
+                Err(_) => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
 
     // ── Load draws if --draws is specified ─────────────────────────────────
     let draws: Vec<HashMap<String, f64>> = if let Some(ref source) = draws_path {
@@ -845,6 +872,7 @@ fn run_simulate(a: &args::SimulateArgs) {
             || obs_path.is_some() || obs_dir.is_some(),
         a.force,
         label_arg.clone(),
+        fit_dep,
         a.allow_degenerate_rates,
         total_runs,
     ) {
@@ -964,6 +992,7 @@ fn build_simulate_cas_sink(
     obs_enabled: bool,
     force: bool,
     label: Option<String>,
+    fit_dep: Vec<runid::inputs::ArtifactRef>,
     allow_degenerate_rates: bool,
     total_runs: usize,
 ) -> Result<crate::batch::CasSink, String> {
@@ -1041,6 +1070,7 @@ fn build_simulate_cas_sink(
         completed_runs: Vec::new(),
         errors: Vec::new(),
         label,
+        fit_dep,
         quiet: true,
     })
 }

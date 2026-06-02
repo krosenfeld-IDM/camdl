@@ -477,29 +477,11 @@ fn starts_from_resolves_short_hash() {
     }}"#, target_hash);
     std::fs::write(stage.join("run.json"), run_json).unwrap();
 
-    // Run `camdl fit where --help` just to prove --starts-from
-    // resolution runs on the binary path; we don't need a real fit.
-    // Instead, exercise the resolver directly via the browse library
-    // behavior by using an ad-hoc subcommand path — but since we
-    // don't expose resolve_stage_by_hash as a CLI command, do a
-    // smoke test of the `--starts-from <hash>` entry by running
-    // `fit where` which doesn't consume --starts-from. So the
-    // meaningful test here is: the binary accepts `--starts-from
-    // deadbeef` on a fit.toml and doesn't reject on the path check.
-    // We can confirm via `fit run` dry-run... but we have no dry-run.
-    //
-    // Compromise: test the hash resolver by calling `fit where` is a
-    // no-op for --starts-from. Instead, exercise the feature end-to-
-    // end by running cmd_fit_run_v2 with a minimal fit.toml that
-    // references --starts-from <hash>. If resolution fails, the run
-    // exits 1 before it finishes doing useful work; if resolution
-    // succeeds it proceeds to an actual fit (which we don't want).
-    //
-    // Keep it simple: just verify that passing --starts-from <bad
-    // prefix> errors with our custom message, and --starts-from <good
-    // prefix> runs at least to the point of config validation.
-    // Changing from working directory to `results` parent so the
-    // default `./results` resolver finds our stage.
+    // Exercise the short-hash stage resolver through `fit run`: the removed
+    // `--starts-from` flag must error with the actionable replacement
+    // message, and the new `--init from_mle --mle <hash>` spelling resolves
+    // the same planted stage. Run from `tmp` so the default `./results`
+    // resolver finds the leaf planted above.
     std::env::set_current_dir(tmp.path()).unwrap();
 
     // Bad hash: should error with our message.
@@ -576,73 +558,6 @@ init_mle = "{{use CLI}}"
     assert!(!stderr.contains("no fit stage matching hash prefix"),
         "short-hash 'deadbeef' should resolve to the planted stage, \
          got: {}", stderr);
-}
-
-/// `camdl fit where fit.toml` should print the fit root (post-
-/// hardening #8). `camdl fit where fit.toml --seed N` should extend
-/// that path with `real/fit_N`.
-#[test]
-fn fit_where_prints_fit_root_and_cell_dir() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
-    let tmp = tempfile::tempdir().unwrap();
-    // gh#35: fit where now runs the same validation depth as fit run,
-    // so the IR must declare every parameter the fit.toml estimates or
-    // fixes. Pre-gh#35 this fixture was a hand-written minimal IR with
-    // an empty parameters list, which only worked because `where`
-    // didn't validate — exactly the bug gh#35 closed. Use the real
-    // sir_basic golden (4 params: beta, gamma, N0, I0) and align the
-    // fit.toml below.
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let golden_ir = format!("{}/../../../ir/golden/sir_basic.ir.json", manifest);
-    let ir = tmp.path().join("dummy.ir.json");
-    std::fs::copy(&golden_ir, &ir).expect("copy golden IR");
-    let data = tmp.path().join("cases.tsv");
-    std::fs::write(&data, "time\tcases\n1\t5\n").unwrap();
-    let fit_toml = tmp.path().join("myfit.toml");
-    std::fs::write(&fit_toml, format!(r#"
-output_dir = "{}/out"
-
-[model]
-camdl = "{}"
-
-[data.observations]
-cases = "{}"
-
-[estimate]
-beta = {{ bounds = [0.01, 2.0], start = 0.3 }}
-
-[fixed]
-gamma = 0.1
-N0 = 1000
-I0 = 10
-
-[stages.mle]
-algorithm = "if2"
-backend = "chain_binomial"
-chains = 2
-particles = 50
-iterations = 3
-cooling = 0.7
-"#, tmp.path().display(), ir.display(), data.display())).unwrap();
-
-    // No --seed: should print the fit root, ending with `/out/fits/myfit-<8hash>`
-    let out = Command::new(&bin)
-        .args(["fit", "where", &fit_toml.to_string_lossy()])
-        .output().expect("spawn");
-    assert!(out.status.success(), "stderr: {}",
-        String::from_utf8_lossy(&out.stderr));
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(path.contains("/out/fits/myfit-"),
-        "expected .../out/fits/myfit-<hash>, got {}", path);
-
-    // --seed 42: should append real/fit_42.
-    let out = Command::new(&bin)
-        .args(["fit", "where", &fit_toml.to_string_lossy(), "--seed", "42"])
-        .output().expect("spawn");
-    assert!(out.status.success());
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(path.ends_with("/real/fit_42"),
-        "expected .../real/fit_42, got {}", path);
 }
 
 /// `camdl list --kind fit` should hide sim rows entirely; `--kind sim`
@@ -814,12 +729,14 @@ fn cat_emits_cached_trajectory() {
 }
 
 #[test]
-fn batch_sweep_records_sweep_point_in_run_json_and_manifest() {
-    // Regression: before this fix, batch sweeps wrote run.json and
-    // manifest entries with no record of the sweep parameter values —
-    // you could see there were 8 distinct scen_hashes but not which
-    // beta value produced which trajectory. This test runs a minimal
-    // --batch with a 3-point sweep and asserts sweep_point is present.
+fn batch_sweep_records_sweep_point_in_run_json() {
+    // Regression: before this fix, batch sweeps wrote run.json with no
+    // record of the sweep parameter values — you could see there were 8
+    // distinct scen_hashes but not which beta value produced which
+    // trajectory. This test runs a minimal --batch with a 3-point sweep and
+    // asserts the sweep point is recoverable from the live tree (the `params`
+    // level label + `camdl list`). manifest.json was retired (gh#147 item D);
+    // the per-leaf run.json + derived index.json are the only index.
     let Some(bin) = skip_if_missing_binary() else { return; };
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
@@ -876,17 +793,10 @@ beta = [0.2, 0.3, 0.4]
     assert!((beta_values[1] - 0.3).abs() < 1e-9);
     assert!((beta_values[2] - 0.4).abs() < 1e-9);
 
-    // manifest.json must also carry sweep_point on each entry.
-    // Manifest lives under sims/ after the 2026-04-19 unification.
-    let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("sims").join("manifest.json")).unwrap()
-    ).unwrap();
-    let runs = manifest["runs"].as_array().expect("manifest.runs should be an array");
-    assert_eq!(runs.len(), 3);
-    for run in runs {
-        assert!(run["sweep_point"]["beta"].is_number(),
-            "manifest entry missing sweep_point.beta: {:?}", run);
-    }
+    // manifest.json is retired (gh#147 item D) — `batch run` must NOT write
+    // a batch-level index. The live tree (run.json per leaf) is the truth.
+    assert!(!output.join("sims").join("manifest.json").exists(),
+        "batch run must not write sims/manifest.json (retired)");
 
     // `camdl list` should show the beta values in PARAMS column
     let out = Command::new(&bin)

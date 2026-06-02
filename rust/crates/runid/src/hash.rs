@@ -91,8 +91,8 @@ impl ContentHash {
 
     /// Digest of opaque artifact bytes — the *same* pinned hash function
     /// (SHA-256) the structural hasher uses, applied to a file's raw
-    /// contents for the `run.json` manifest. This is the "never serve wrong
-    /// bytes" guarantee verified at consume time; it is distinct from the
+    /// contents for the `run.json` manifest. Recorded for integrity tooling
+    /// (`camdl verify`); it is NOT checked on read today. Distinct from the
     /// structural input hash (which frames typed values), though both use
     /// SHA-256 and migrate together via [`HASH_VERSION`].
     pub fn digest_bytes(bytes: &[u8]) -> Self {

@@ -39,160 +39,6 @@ pub fn cmd_fit_methods() {
     print!("{}", methods::render_matrix());
 }
 
-pub fn cmd_fit_status(a: &crate::args::FitStatusArgs) {
-    let path_str = match &a.path {
-        Some(p) => p.to_string_lossy().into_owned(),
-        None => {
-            eprintln!("usage: camdl fit status [FILE_OR_DIR]");
-            std::process::exit(1);
-        }
-    };
-    let p = std::path::Path::new(&path_str);
-    // Directory → walk it directly
-    if p.is_dir() {
-        run_status_v2_dir(&path_str);
-        return;
-    }
-    // Treat the path as a v2 fit.toml. v1 schema is gone — any fit
-    // config written before the v2-only cleanup landed will fail to
-    // parse here; users on stale toml files get a typed parse error
-    // pointing at the offending key, which is the right signal.
-    let config = config_v2::FitConfigV2::load(&path_str).unwrap_or_else(|e| {
-        eprintln!("error parsing fit.toml: {}", e);
-        std::process::exit(1);
-    });
-    match config.fit_dir(&path_str) {
-        Ok(fit_dir) if fit_dir.exists() => {
-            run_status_v2_dir(&fit_dir.to_string_lossy());
-        }
-        Ok(fit_dir) => {
-            eprintln!("no results found at {}", fit_dir.display());
-        }
-        Err(e) => {
-            eprintln!("error computing fit directory: {}", e);
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Walk a results directory and report status of all stages found.
-fn run_status_v2_dir(dir: &str) {
-    let path = std::path::Path::new(dir);
-    if !path.exists() {
-        eprintln!("no results at {}", dir);
-        return;
-    }
-
-    println!("{}/", dir);
-
-    // Check for sweep subdirectories (contain stage dirs)
-    // or direct stage dirs
-    let mut found_stages = false;
-    let mut entries: Vec<_> = std::fs::read_dir(path)
-        .unwrap_or_else(|e| { eprintln!("cannot read {}: {}", dir, e); std::process::exit(1); })
-        .filter_map(|e| e.ok())
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in &entries {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let entry_path = entry.path();
-
-        if entry_path.is_dir() {
-            // Check if this is a stage dir (has fit_state.toml or run.json)
-            let has_fit_state = entry_path.join("fit_state.toml").exists();
-            let has_run_json  = entry_path.join("run.json").exists();
-
-            if has_fit_state || has_run_json {
-                // Direct stage
-                print_stage_status(&name, &entry_path.to_string_lossy());
-                found_stages = true;
-            } else {
-                // Might be a sweep point dir — check children
-                let mut child_entries: Vec<_> = std::fs::read_dir(&entry_path)
-                    .into_iter().flatten().flatten().collect();
-                child_entries.sort_by_key(|e| e.file_name());
-                let has_child_stages = child_entries.iter().any(|c| {
-                    c.path().join("fit_state.toml").exists() || c.path().join("run.json").exists()
-                });
-                if has_child_stages {
-                    println!("\n  \x1b[1m{}/\x1b[0m", name);
-                    for child in &child_entries {
-                        let child_name = child.file_name().to_string_lossy().to_string();
-                        if child.path().is_dir() {
-                            let child_has = child.path().join("fit_state.toml").exists()
-                                || child.path().join("provenance.json").exists();
-                            if child_has {
-                                print_stage_status(&child_name, &child.path().to_string_lossy());
-                            }
-                        }
-                    }
-                    found_stages = true;
-                }
-            }
-        }
-    }
-
-    if !found_stages {
-        println!("  (no completed stages found)");
-    }
-}
-
-fn print_stage_status(name: &str, stage_dir: &str) {
-    // A completed v2 stage always has a `FitStage` `runid::RunRecord` leaf.
-    // The fit_state.toml path (checked by the caller's directory walk) is
-    // written earlier in the stage, so a dir with fit_state.toml but no
-    // run.json is an interrupted run.
-    let leaf: Option<runid::RunRecord> = std::fs::read(std::path::Path::new(stage_dir).join("run.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<runid::RunRecord>(&b).ok())
-        .filter(|r| r.kind == runid::ArtifactKind::FitStage);
-    match leaf {
-        Some(rec) => {
-            let inputs = rec.inputs.as_object();
-            let get = |k: &str| inputs.and_then(|o| o.get(k));
-            let method = get("method").and_then(|v| v.as_str()).unwrap_or("?");
-            let ll = get("best_loglik")
-                .and_then(|v| v.as_f64())
-                .map(|l| format!("{:.1}", l))
-                .unwrap_or_else(|| "—".into());
-            let chain = get("best_chain")
-                .and_then(|v| v.as_u64())
-                .map(|c| format!(" (chain {})", c + 1))
-                .unwrap_or_default();
-            let wall = get("wall_time_seconds")
-                .and_then(|v| v.as_f64())
-                .map(|t| format!("{:.0}s", t))
-                .unwrap_or_else(|| match rec.status {
-                    runid::RunStatus::Completed => "done".to_string(),
-                    _ => "running".to_string(),
-                });
-            println!("    {:12} \x1b[32m✓\x1b[0m {} — loglik={}{}, {}",
-                name, method, ll, chain, wall);
-        }
-        None => {
-            // GH #18: a stage that ran IF2 + clean-eval but failed
-            // the compound gate exits before writing run.json. The
-            // user has nonzero results on disk (fit_state.toml,
-            // mle_params.toml, etc.) and very much wants to know
-            // *why* refine refused to advance. Detect this case by
-            // checking for fit_state.toml; if present, point them at
-            // `summary` rather than lying with "(no completed stages
-            // found)". Full verdict lives in `camdl fit summary`.
-            let stage_path = std::path::Path::new(stage_dir);
-            if stage_path.join("fit_state.toml").exists() {
-                let parent = stage_path.parent()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| ".".into());
-                println!("    {:12} \x1b[31m✗\x1b[0m gate failed — see `camdl fit summary {}`",
-                    name, parent);
-            } else {
-                println!("    {:12} \x1b[33m⚠\x1b[0m incomplete (no run.json)", name);
-            }
-        }
-    }
-}
-
 // ─── New `camdl fit run` entry point (config_v2) ────────────────────────────
 
 pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
@@ -1797,72 +1643,6 @@ fn format_prior(p: &Option<config_v2::EstimatePriorSpec>) -> String {
 
 /// `camdl fit where FIT.toml [--seed N]`
 ///
-/// Resolves a fit.toml to its fit directory under the content-
-/// addressable output tree and prints the path on stdout. Without
-/// `--seed`, prints the top-level fit root
-/// (`results/fits/<stem>-<hash[:8]>/`); with `--seed N`, prints the
-/// cell dir (`.../real/fit_N/`).
-///
-/// Doesn't run anything — pure path resolution. Useful for scripts
-/// that need to find the fit dir programmatically without globbing
-/// on the stem prefix.
-///
-/// Hardening proposal ship-now #8.
-pub fn cmd_fit_where(a: &crate::args::FitWhereArgs) {
-    let fit_path = a.config.to_string_lossy().into_owned();
-    let seed     = a.seed;
-
-    // v2 fit.toml only — v1 schema deleted in the v1-cleanup pass.
-    let mut config = config_v2::FitConfigV2::load(&fit_path).unwrap_or_else(|e| {
-        eprintln!("error parsing fit.toml: {}", e);
-        std::process::exit(1);
-    });
-
-    // Run the same deeper validation `fit run` runs (gh#35). Loading +
-    // light parsing isn't enough — `[estimate]` entries with missing
-    // `start =`, `[fixed]` blocks that don't cover every model param,
-    // and other completeness checks only fire once the model's
-    // parameter list is known. Without this, `fit where` silently
-    // accepts toml that `fit run` would reject — a misleading
-    // affordance for scripts using `where` as a "is this valid?" probe.
-    let (model, _) = crate::util::load_model(&config.model.camdl).unwrap_or_else(|e| {
-        eprintln!("error loading model '{}': {}", config.model.camdl, e);
-        std::process::exit(1);
-    });
-    // gh#33: expand `[fixed] from_scenario = "name"` (must run before
-    // validate so the every-param-resolved check sees the scenario's
-    // values).
-    config.fixed.expand_from_scenario(&model).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    });
-    let model_params: Vec<String> = model.parameters.iter().map(|p| p.name.clone()).collect();
-    config.validate(&model_params).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    });
-    // gh#75: mirror `cmd_fit_run`'s prior-presence check so `where`
-    // doesn't silently accept a toml that `run` would reject.
-    let ir_prior_params: std::collections::BTreeSet<&str> = model.parameters.iter()
-        .filter(|p| p.prior.is_some() || p.hierarchical.is_some())
-        .map(|p| p.name.as_str())
-        .collect();
-    config.validate_priors_present(&ir_prior_params).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    });
-
-    let root = config.fit_dir(&fit_path).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    });
-    let dir = match seed {
-        None => root,
-        Some(s) => root.join("real").join(format!("fit_{}", s)),
-    };
-    println!("{}", dir.display());
-}
-
 pub fn cmd_fit_diff(args: &crate::args::FitDiffArgs) {
     use config_v2::FitConfigV2;
 
@@ -2117,24 +1897,31 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
         }
     };
 
-    let root = args.root.clone().unwrap_or_else(||
-        std::path::PathBuf::from(crate::run_paths::DEFAULT_OUTPUT_ROOT));
+    let root = args.root.clone();
     if !root.exists() {
         eprintln!("error: no results root at {}", root.display());
         std::process::exit(1);
     }
 
-    // Match by hash prefix. Sims carry a per-leaf `run.json` matched on its
-    // hash. CAS fits (gh#147 M3.2) and profiles (M3.3) have no fit-wide
-    // `run.json` — their fit-/profile-level hash is derived from the leaves
-    // and the label lives in the base sidecar (`fit.meta.json`), so they
-    // resolve by base-hash prefix → segment and relabel that sidecar (NOT
-    // per-leaf: the label is a fit-wide mutable attribute with one home).
+    // Match by hash prefix. Two homes for the label, by kind:
+    //   - sims / pfilters / surveys → a per-leaf `run.json` whose
+    //     `provenance.label` IS the label home; resolved by leaf `run_id`
+    //     prefix via the same `cas_read::resolve_*_prefix` machinery `show`
+    //     uses, so anything `show` can address, `label` can too.
+    //   - fits (gh#147 M3.2) / profiles (M3.3) have no fit-wide `run.json` —
+    //     their fit-/profile-level hash is derived from the leaves and the
+    //     label lives in the base sidecar (`fit.meta.json`), so they resolve
+    //     by base-hash prefix → segment and relabel that sidecar (NOT
+    //     per-leaf: the label is a fit-wide mutable attribute with one home).
+    use std::collections::HashSet;
     let mut matches: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen_leaves: HashSet<std::path::PathBuf> = HashSet::new();
+    for leaf in crate::cas_read::resolve_sim_prefix(&root, &args.hash).into_iter()
+        .chain(crate::cas_read::resolve_pfilter_prefix(&root, &args.hash))
+        .chain(crate::cas_read::resolve_survey_prefix(&root, &args.hash))
     {
-        let subroot = root.join("sims");
-        if subroot.exists() {
-            find_runs_with_prefix(&subroot, &args.hash, &mut matches);
+        if seen_leaves.insert(leaf.dir.clone()) {
+            matches.push(leaf.dir);
         }
     }
     let mut fit_segments: Vec<std::path::PathBuf> = Vec::new();
@@ -2153,7 +1940,6 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
     // level of any leaf) → base segment; relabel via the same sidecar-rewrite
     // path as fits. Dedup so a multi-leaf profile yields one segment.
     {
-        use std::collections::HashSet;
         let mut seen: HashSet<std::path::PathBuf> = HashSet::new();
         for leaf in crate::cas_read::walk_profile_leaves(&root) {
             let base_hash = leaf.record.levels.first()
@@ -2207,8 +1993,9 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
     let run_dir = matches.into_iter().next().unwrap();
     let run_json_path = run_dir.join("run.json");
 
-    // New-format (`runid::RunRecord`) sims: the label lives in `provenance`.
-    // (Sims are always written `Completed`, so there is no in-progress gate.)
+    // Per-leaf kinds (sim / pfilter / survey): the label lives in the leaf's
+    // `run.json` `provenance.label`. These are always written `Completed`, so
+    // there is no in-progress gate. Rewrite atomically (write tmp + rename).
     if let Ok(txt) = std::fs::read_to_string(&run_json_path) {
         if let Ok(mut rec) = serde_json::from_str::<runid::RunRecord>(&txt) {
             let prior = rec.provenance.label.clone();
@@ -2229,51 +2016,14 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
         }
     }
 
-    // The only `run.json` files under `sims/` are new-format `RunRecord`s
-    // (handled above). A match whose `run.json` failed to parse as a
-    // `RunRecord` is malformed — surface it rather than fabricating a label
-    // write.
+    // Leaf matches come from `resolve_*_prefix`, which only surfaces dirs
+    // holding a parseable `RunRecord` `run.json` (handled above). A match
+    // whose `run.json` failed to re-parse here is malformed — surface it
+    // rather than fabricating a label write.
     eprintln!(
         "error: {} is not a recognized (new-format) run.json — cannot relabel",
         run_json_path.display());
     std::process::exit(1);
-}
-
-/// Recursively find directories under `root` whose `run.json` has a
-/// `run_id` (or legacy `hash`) starting with `prefix`. Reads the JSON
-/// shallowly via `serde_json::Value` to avoid deserializing every kind
-/// variant just to check the hash. Bounded depth comes for free from the
-/// on-disk layout (sims: 5 levels, fits: 3, profiles: 5), so a plain
-/// recursive walk is fine without a max-depth guard.
-fn find_runs_with_prefix(
-    root: &std::path::Path,
-    prefix: &str,
-    out: &mut Vec<std::path::PathBuf>,
-) {
-    let entries = match std::fs::read_dir(root) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if !p.is_dir() { continue; }
-        let run_json = p.join("run.json");
-        if run_json.is_file() {
-            if let Ok(txt) = std::fs::read_to_string(&run_json) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    // Legacy `Run.hash` or new-format `RunRecord.run_id`.
-                    let hash = v.get("hash").and_then(|h| h.as_str()).unwrap_or("");
-                    let run_id = v.get("run_id").and_then(|h| h.as_str()).unwrap_or("");
-                    let matched = (!hash.is_empty() && hash.starts_with(prefix))
-                        || (!run_id.is_empty() && run_id.starts_with(prefix));
-                    if matched {
-                        out.push(p.clone());
-                    }
-                }
-            }
-        }
-        find_runs_with_prefix(&p, prefix, out);
-    }
 }
 
 /// Resolve a `--init from_mle --mle <hash-or-path>` argument to a

@@ -226,6 +226,50 @@ fn replicate_count_is_in_the_identity() {
          collision class). Got {:?}", leaves);
 }
 
+/// `camdl label` covers the pfilter kind (gh#147 item C): labelling a pfilter
+/// run by its `run_id` prefix writes `provenance.label` on the leaf's
+/// `run.json`, and `show`/`list` then surface that label. Before item C,
+/// `cmd_label` only resolved sims/fits/profiles, so this errored with
+/// "no run found" even though `show` could resolve the same leaf.
+#[test]
+fn label_works_on_pfilter_runs() {
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("label_pfilter");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    assert!(run_pfilter(&bin, &out_root, &ir, &data, 0.3).status.success(),
+        "pfilter must succeed");
+    let (leaf, rid) = find_pfilter_leaf(&out_root);
+
+    // Label by run_id prefix. `--root` is honoured here; the env path is
+    // exercised by the reader helpers, which set CAMDL_OUTPUT_DIR.
+    let labelled = Command::new(&bin)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .args(["label", &rid[..8], "baseline-pfilter",
+               "--root", &out_root.to_string_lossy()])
+        .output().expect("spawn camdl label");
+    assert!(labelled.status.success(),
+        "label on a pfilter run must succeed (item C). stderr=\n{}",
+        String::from_utf8_lossy(&labelled.stderr));
+
+    // Write side: the label persists on the leaf's RunRecord provenance.
+    let rec: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(leaf.join("run.json")).unwrap()).unwrap();
+    assert_eq!(rec["provenance"]["label"].as_str(), Some("baseline-pfilter"),
+        "label must persist on the pfilter leaf's RunRecord.provenance.label. \
+         got: {:?}", rec["provenance"]);
+
+    // Read side: show + list surface the label.
+    let shown = camdl_read(&bin, &out_root, &["show", &rid[..12]]);
+    assert!(shown.contains("baseline-pfilter"),
+        "show must surface the new label. Got:\n{}", shown);
+    let listed = camdl_read(&bin, &out_root, &["list", "--kind", "pfilter"]);
+    assert!(listed.contains("baseline-pfilter"),
+        "list --kind pfilter must surface the new label. Got:\n{}", listed);
+}
+
 fn all_pfilter_leaves(out_root: &Path) -> Vec<(PathBuf, String)> {
     fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
         if let Ok(b) = std::fs::read_to_string(dir.join("run.json")) {

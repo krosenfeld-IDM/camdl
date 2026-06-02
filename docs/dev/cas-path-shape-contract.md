@@ -12,8 +12,7 @@ Every leaf directory contains a `run.json` (`runid::RunRecord`) with the
 authoritative fields:
 
 - `run_id` — the 64-hex canonical address of the run.
-- `kind` — `"sim" | "fit_stage" | "pfilter" | "survey" | "profile_point" |
-  "obs" | "projection"`.
+- `kind` — `"sim" | "fit_stage" | "pfilter" | "survey" | "profile_point"`.
 - `levels` — the factored identity, in order: each `{ name, label, hash,
   schema_version }`.
 - `status`, `provenance.created_at`, `provenance.label`, `inputs`, `artifacts`.
@@ -30,8 +29,7 @@ lineage from the path — read them from `run.json`.
 results/<kind_dir>/<seg>/<seg>/…/run.json
 ```
 
-- `<kind_dir>`: `sims` | `fits` | `pfilters` | `surveys` | `profiles`
-  (`obs`/`projections` appear nested under a parent leaf).
+- `<kind_dir>`: `sims` | `fits` | `pfilters` | `surveys` | `profiles`.
 - `<seg>` = `<label>-<hash8>`, one segment per level in `levels` order.
 - **Collision suffix:** if two leaves would share a directory name, the
   later one's final segment gets a `~<disambiguator>` suffix
@@ -54,6 +52,15 @@ own — it carries a `fit.meta.json` sidecar (fit-wide provenance: label,
 model/data hashes, estimated/fixed, resolved priors) and one `fit_stage`
 leaf per (cell × stage) underneath. Read the fit-level view by combining the
 sidecar with its stage-leaf `run.json`s.
+
+**Sub-artifacts (no `run.json`).** A trajectory leaf may declare an observation
+ensemble as a child. It is **not** a `RunRecord`: it lives at
+`obs/<obs_hash8>-<obs_seed>/` under the leaf and holds one `<stream>.tsv` per
+observation stream plus an `obs.json` provenance file (`obs_hash`, `obs_seed`,
+`process_seed`, `streams`). Reach it through the parent leaf's `children`, not
+by walking for `run.json`. A `projection` kind is reserved (the lineage
+projections are pure functions over a realized line list and write nothing to
+the store today).
 
 ## What changed from the pre-refactor layout (the migration diff)
 

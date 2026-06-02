@@ -44,8 +44,9 @@ pub struct LevelId {
 
 /// Checksum of one of the leaf's OWN files. `bytes` + `mtime` are the cheap
 /// gate (a *performance* optimization, coarse — `cp -p`/`rsync` preserve
-/// mtime); `digest` is the "never serve wrong bytes" guarantee, verified at
-/// consume time.
+/// mtime). `digest` is the file's SHA-256, recorded in `run.json` for
+/// integrity tooling (`camdl verify`); it is NOT checked on read today — no
+/// read path (`camdl cat`, the readers) recomputes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChecksum {
     pub bytes: u64,

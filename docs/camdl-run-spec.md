@@ -186,7 +186,6 @@ project/
     │   └── 02_fix_beta/
     │       └── ...
     └── sims/                       # batch sim results (hash-addressed)
-        ├── manifest.json
         ├── model.ir.json
         └── {sim_hash_8}/
             └── {scenario_slug}-{scen_hash_8}/
@@ -278,7 +277,6 @@ contract as a hard requirement.
 
 ```
 results/sims/
-  manifest.json              # index of all completed runs
   model.ir.json              # compiled model (self-contained)
   {sim_hash_8}/              # model + base params + backend + dt
     {scenario_slug}-{scen_hash_8}/
@@ -1098,9 +1096,9 @@ The simulation runner:
 3. Generates the run grid (sweep/draws × scenarios × seeds)
 4. Classifies cache hits vs new runs (check for `traj.tsv` at computed path)
 5. Executes new runs with Rayon `par_iter`
-6. Writes `traj.tsv` and `run.json` per run
-7. Writes `manifest.json` at the output root
-8. Copies `model.ir.json` and optional `geo/` to output root
+6. Writes `traj.tsv` and `run.json` per run (the per-leaf run.json is the
+   only batch index — there is no manifest file)
+7. Copies `model.ir.json` and optional `geo/` to output root
 
 ---
 
@@ -1544,7 +1542,7 @@ camdl fit run fits/base.toml --sweep "rho=0.5,0.1,0.02,0.005"
 camdl fit run fits/base.toml --sweep "rho=0.5,0.1" --sweep "k=5,10,20"
 camdl fit run fits/01.toml --stage posterior --skip-chains 2,4
 camdl fit run fits/01_all_free.toml --force
-camdl fit status fits/
+camdl fit table results/fits/
 camdl fit diff fits/01_all_free.toml fits/02_fix_beta.toml
 camdl fit new --from fits/01_all_free.toml fits/02_fix_beta.toml
 ```
@@ -1969,25 +1967,14 @@ artifacts are sibling files (`traj.tsv`, `trace.tsv`). `parameters_provenance`
 records where each resolved parameter value came from (`fixed` / `scenario` /
 `fit-toml` / `model-default` / `--fixed`), per the `ParameterResolver`.
 
-### 9.7 manifest.json — simulation batch index
+### 9.7 Enumerating a batch — no manifest file
 
-```json
-{
-  "model": "models/seir_nigeria.camdl",
-  "scenarios": ["baseline", "with_sia"],
-  "seeds": [1, 2, 3],
-  "total_runs": 6,
-  "completed": 6,
-  "output_dir": "results",
-  "runs": [
-    {
-      "scenario": "with_sia",
-      "seed": 1,
-      "run_path": "3a7f2c1d/with_sia-f9e2b047/seed_1"
-    }
-  ]
-}
-```
+There is no batch-level `manifest.json`. Each completed cell is independently a
+content-addressed `run.json` leaf under `sims/` (the system of record). To
+enumerate a sweep, walk those leaves or read the derived `index.json`
+(`§9.6` / `camdl reindex`); `camdl list` and `camdl batch status` both do this
+live. `batch status` re-plans the sweep from the batch TOML and counts which
+cells already have a committed leaf.
 
 ---
 
@@ -2238,26 +2225,19 @@ conventions.
 
 ## 13. Utility Commands
 
-### 13.1 `camdl fit status`
+### 13.1 `camdl fit table`
+
+Walks a results tree and renders one row per fit (terminal-stage method
+result, gate verdict, Â, MLE). Read-only; all state is recovered from the
+on-disk `run.json` + per-stage outputs.
 
 ```
-$ camdl fit status fits/
-
-fits/01_all_free.toml
-  estimate: beta, gamma, rho, k
-  fixed:    N0, I0
-  stages:
-    mle        [done]  8 chains, best loglik = -342.1
-    posterior   —
-
-fits/02_fix_beta.toml  (derived from: fits/01_all_free.toml)
-  estimate: gamma, rho, k
-  fixed:    beta=0.34, N0, I0
-  stages:
-    mle        [done]  4 chains, best loglik = -340.8
-    posterior  [done]  4 chains, 5000 sweeps, ESS: γ=312 ρ=189 k=445
-    evaluate   [done]  10000 particles, loglik = -341.2 ± 0.8
+$ camdl fit table results/fits/
 ```
+
+To enumerate fits without the per-stage projection, use the generic run
+browser: `camdl list --kind fit`. For a single fit's full interpretation
+(Â / gate verdict / MLE table) use `camdl fit summary <dir>`.
 
 ### 13.2 `camdl fit diff`
 
@@ -2445,7 +2425,8 @@ camdl fit run CONFIG [OPTIONS]
   --output-dir DIR          Output root override
   --force                   Re-run (overwrite stale results)
 
-camdl fit status [DIR]         Show pipeline status and lineage
+camdl fit table [DIR]          One row per fit under a results tree
+camdl fit summary DIR          Â / gate verdict / MLE table for one fit
 camdl fit diff A.toml B.toml   Show differences between fit configs
 camdl fit new --from A B       Create derived fit config with lineage
 camdl summarize DIR            Compute summary statistics from trajectories

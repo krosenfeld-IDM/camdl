@@ -1090,7 +1090,7 @@ camdl fit run    fit.toml --seed 1
 #    init_mle = "fit/he2010/real/fit_1/scout/"`)
 camdl fit run    fit.toml --stage refine
 camdl fit run    fit.toml --stage validate
-camdl fit status fit.toml
+camdl fit summary results/fits/<dir>/
 ```
 
 ### When `start =` is omitted in `[estimate]`

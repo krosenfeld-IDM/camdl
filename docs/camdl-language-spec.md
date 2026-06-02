@@ -2740,7 +2740,6 @@ Outputs are stored in a two-level content-addressable hierarchy inside an
 
 ```
 {output_dir}/
-  manifest.json
   model.ir.json
   geo/boundaries.geojson          (if geo= specified in experiment)
   runs/
@@ -2829,28 +2828,11 @@ data (file paths)    # external file paths change across machines
 | add more seeds                     | unchanged | unchanged         | all existing reused |
 | rename a scenario                  | unchanged | unchanged         | reused (same sim)   |
 
-### 19.3 Manifest
+### 19.3 Enumerating runs
 
-`manifest.json` at the output root lists every completed run:
-
-```json
-{
-  "runs": [
-    {
-      "scenario": "baseline",
-      "seed": 1,
-      "run_path": "3a7f2c1d/baseline-00000000/seed_1"
-    },
-    {
-      "scenario": "with_sia",
-      "seed": 1,
-      "run_path": "3a7f2c1d/with_sia-f9e2b047/seed_1"
-    }
-  ]
-}
-```
-
-The web app constructs trajectory URLs as `GET /runs/{run_path}/traj.tsv`.
+There is no manifest file. Every completed run is its own content-addressed
+`run.json` leaf; to enumerate them, walk those leaves or read the derived
+`index.json`. `camdl list` does this live.
 
 ### 19.4 Caching
 
@@ -3154,8 +3136,9 @@ defaults." That form is **removed**. The two replacements are:
 ### 21.6 Fit Workflow
 
 ```bash
-camdl fit run    fit.toml [--stage NAME] [--seed N] [--force] [--sweep "PARAM=V1,V2,..."]
-camdl fit status fit.toml
+camdl fit run     fit.toml [--stage NAME] [--seed N] [--force] [--sweep "PARAM=V1,V2,..."]
+camdl fit summary results/fits/<dir>/
+camdl fit table   results/fits/
 ```
 
 Driven by `fit.toml` with `[estimate]`, `[fixed]`, `[data]`, and

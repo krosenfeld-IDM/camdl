@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use rayon::prelude::*;
 
 use crate::util::{run_simulation, write_traj_tsv, load_params_toml, resolve_ir_path, SimRun};
@@ -408,48 +408,15 @@ pub fn plan_runs(
     plans
 }
 
-// ─── Manifest / run metadata ─────────────────────────────────────────────────
+// ─── Run metadata ─────────────────────────────────────────────────────────────
 
-// Each completed cell is also a `runid::RunRecord` leaf on disk (written by
-// `CasSink`); this manifest is a flat batch-level index over those leaves so a
-// reader doesn't have to walk the tree to enumerate a sweep.
-
-/// Minimal descriptor for one completed run, included in manifest.json.
-/// The web app uses run_path to construct the URL: /runs/{run_path}/traj.tsv
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Descriptor for one completed cell, accumulated on `CasSink.completed_runs`
+/// and used by the post-run leaf summary (`report_cas_leaves`). Each cell is
+/// independently a `runid::RunRecord` leaf on disk; this is the in-memory
+/// tally, not a file. Only the store-relative path is reported.
+#[derive(Debug, Clone)]
 pub(crate) struct RunEntry {
-    pub(crate) scenario: String,
-    pub(crate) seed: u64,
     pub(crate) run_path: String,
-    /// The cell's sweep point — convenient for aggregating without
-    /// reading every run.json.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(crate) sweep_point: HashMap<String, f64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ParamsProvenance {
-    source: String,
-    content_hash: Option<String>,
-    input_hash: Option<String>,
-    verified: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Manifest {
-    model: String,
-    scenarios: Vec<String>,
-    seeds: Vec<u64>,
-    total_runs: usize,
-    completed: usize,
-    output_dir: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    geo: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    params_provenance: Option<ParamsProvenance>,
-    /// Completed runs. run_path is relative to runs/ and used by the web app
-    /// to fetch trajectories: GET /runs/{run_path}/traj.tsv
-    runs: Vec<RunEntry>,
 }
 
 // ─── cmd_batch_run ──────────────────────────────────────────────────────
@@ -486,46 +453,24 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
     });
     let mhash = model_hash(&ir_json);
 
-    let mut params_provenance: Option<ParamsProvenance> = None;
     let base_params: HashMap<String, f64> = if let Some(ref pf) = exp.config.params {
-        // Check provenance if the params file has a content hash header
-        let prov = match crate::fit::provenance::verify_content_hash(pf) {
+        // Surface fit-provenance status for the params file: a verified MLE
+        // file gets a green check; one edited since inference produced it gets
+        // a hash-mismatch warning. A standalone (no-header) params file is
+        // silent. Side-effect only — the per-cell leaves carry the params
+        // identity in their `params` level.
+        match crate::fit::provenance::verify_content_hash(pf) {
             Ok(crate::fit::provenance::ContentVerification::Valid) => {
                 eprintln!("params: {} \x1b[32m✓ provenance verified\x1b[0m", pf);
-                // Extract input_hash from comment header
-                let input_hash = std::fs::read_to_string(pf).ok()
-                    .and_then(|s| s.lines()
-                        .find(|l| l.starts_with("# Input hash:"))
-                        .and_then(|l| l.split_whitespace().nth(3))
-                        .map(|s| s.to_string()));
-                let content_hash = std::fs::read_to_string(pf).ok()
-                    .and_then(|s| s.lines()
-                        .find(|l| l.starts_with("# Content hash:"))
-                        .and_then(|l| l.split_whitespace().nth(3))
-                        .map(|s| s.to_string()));
-                Some(ParamsProvenance {
-                    source: pf.clone(),
-                    content_hash,
-                    input_hash,
-                    verified: true,
-                })
             }
             Ok(crate::fit::provenance::ContentVerification::Modified { declared, computed }) => {
                 eprintln!("\x1b[33mwarning: params file {} has been modified since inference produced it.\x1b[0m", pf);
                 eprintln!("  Content hash mismatch: expected {}, got {}", declared, computed);
-                Some(ParamsProvenance {
-                    source: pf.clone(),
-                    content_hash: Some(computed),
-                    input_hash: None,
-                    verified: false,
-                })
             }
             _ => {
-                // No provenance header — standalone params file, that's fine
-                None
+                // No provenance header — standalone params file, that's fine.
             }
-        };
-        params_provenance = prov;
+        }
         load_params_toml(pf).unwrap_or_else(|e| {
             eprintln!("error: cannot load params {}: {}", pf, e);
             std::process::exit(1);
@@ -634,17 +579,16 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         eprintln!("warning: could not write model.ir.json: {}", e);
     });
 
-    let geo_url: Option<String> = if let Some(ref geo_src) = exp.config.geo {
+    // Copy any boundary GeoJSON into the output tree as a sibling artifact
+    // (a map viewer reads `<output>/geo/boundaries.geojson`).
+    if let Some(ref geo_src) = exp.config.geo {
         let geo_dest = format!("{}/geo/boundaries.geojson", output_dir);
-        match std::fs::create_dir_all(format!("{}/geo", output_dir))
+        if let Err(e) = std::fs::create_dir_all(format!("{}/geo", output_dir))
             .and_then(|_| std::fs::copy(geo_src, &geo_dest))
         {
-            Ok(_) => Some("geo/boundaries.geojson".to_string()),
-            Err(e) => { eprintln!("warning: could not copy geo file '{}': {}", geo_src, e); None }
+            eprintln!("warning: could not copy geo file '{}': {}", geo_src, e);
         }
-    } else {
-        None
-    };
+    }
 
     if has_sweep {
         eprintln!("Sweep: {} parameter points", sweep_points.len());
@@ -656,8 +600,6 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
             eprintln!("  ... ({} more)", sweep_points.len() - 3);
         }
     }
-
-    let scenario_names: Vec<String> = scenarios.iter().map(|s| s.name.clone()).collect();
 
     if parallel > 0 {
         let _ = rayon::ThreadPoolBuilder::new()
@@ -738,6 +680,7 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         completed_runs: Vec::new(),
         errors: Vec::new(),
         label: None,
+        fit_dep: Vec::new(),
         quiet: false,
     };
 
@@ -754,27 +697,11 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
     }
 
     let completed = completed_runs.len();
-    let manifest = Manifest {
-        model: model_path,
-        scenarios: scenario_names,
-        seeds,
-        total_runs: total,
-        completed,
-        output_dir: output_dir.clone(),
-        geo: geo_url,
-        params_provenance,
-        runs: completed_runs,
-    };
-    // Manifest lives under `sims/` so the output root contains only
-    // the subtree roots (sims/, fits/, …) plus optional geo/.
-    let manifest_path = format!("{}/sims/manifest.json", output_dir);
-    if let Some(parent) = std::path::Path::new(&manifest_path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap_or_default())
-        .unwrap_or_else(|e| eprintln!("warning: could not write manifest.json: {}", e));
-
-    eprintln!("Done: {}/{} runs completed. Manifest: {}", completed, total, manifest_path);
+    // No batch-level index file: each completed cell is its own
+    // `runid::RunRecord` leaf under `sims/` (the system of record). Enumerate
+    // a sweep with `camdl list` / the derived `index.json`, not a manifest.
+    eprintln!("Done: {}/{} runs completed. Leaves under {}/sims/",
+        completed, total, output_dir);
     if !errors.is_empty() { std::process::exit(1); }
 }
 
@@ -812,6 +739,13 @@ pub(crate) struct CasSink {
     /// `RunRecord.provenance.label`. `simulate --label` sets this; batch
     /// leaves it `None`.
     pub(crate) label: Option<String>,
+    /// Upstream-fit lineage recorded on each leaf's `RunRecord.deps`. Set
+    /// when `simulate --params` consumes a fit-MLE params file carrying a
+    /// `[provenance]` block (so the sim records which fit it came from);
+    /// empty for batch and for standalone (non-fit) params. Provenance only —
+    /// a sim's identity is its factored levels (resolve_trajectory), never
+    /// `deps`, so this does not change the sim's run_id or store path.
+    pub(crate) fit_dep: Vec<runid::inputs::ArtifactRef>,
     /// Suppress the `[i/total] scenario=… seed=…` per-cell stderr line.
     /// `simulate` drives its own output and a lone run shows a progress bar,
     /// so it sets this to keep the terminal quiet; batch leaves it `false`.
@@ -913,12 +847,7 @@ impl crate::engine::RunSink for CasSink {
             eprintln!("[{}/{}] scenario={} seed={} (skipped — cache hit)",
                 self.counter, self.total, name, spec.process_seed);
         }
-        self.completed_runs.push(RunEntry {
-            scenario: name,
-            seed: spec.process_seed,
-            run_path: rel,
-            sweep_point: spec.point_overrides.iter().map(|(k, v)| (k.clone(), *v)).collect(),
-        });
+        self.completed_runs.push(RunEntry { run_path: rel });
     }
 
     fn merge_cell(&mut self, cell: &crate::engine::CellResult) -> Result<(), String> {
@@ -962,7 +891,7 @@ impl crate::engine::RunSink for CasSink {
             ir_version: ir::IR_VERSION.trim().to_string(),
             engine_version: version::VERSION_SHORT.to_string(),
             levels: rt.levels,
-            deps: Vec::new(),
+            deps: self.fit_dep.clone(),
             status: runid::RunStatus::Running,
             artifacts: Default::default(),
             children,
@@ -1004,12 +933,7 @@ impl crate::engine::RunSink for CasSink {
         if !self.quiet {
             eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
         }
-        self.completed_runs.push(RunEntry {
-            scenario: name,
-            seed: spec.process_seed,
-            run_path: rel,
-            sweep_point: spec.point_overrides.iter().map(|(k, v)| (k.clone(), *v)).collect(),
-        });
+        self.completed_runs.push(RunEntry { run_path: rel });
         Ok(())
     }
 }
@@ -1325,62 +1249,69 @@ pub fn cmd_batch_status(a: &crate::args::BatchStatusArgs) {
         std::process::exit(1);
     });
 
-    let output_dir   = exp.config.output_dir.clone();
-    let manifest_path = format!("{}/sims/manifest.json", output_dir);
+    let output_dir = exp.config.output_dir.clone();
 
-    if let Ok(src) = std::fs::read_to_string(&manifest_path) {
-        if let Ok(manifest) = serde_json::from_str::<Manifest>(&src) {
-            println!("Experiment status for: {}", toml_path);
-            println!("  Model:      {}", manifest.model);
-            println!("  Output dir: {}", manifest.output_dir);
-            println!("  Scenarios:  {}", manifest.scenarios.join(", "));
-            println!("  Seeds:      {} total ({:?}..={:?})",
-                manifest.seeds.len(),
-                manifest.seeds.first().unwrap_or(&0),
-                manifest.seeds.last().unwrap_or(&0));
-            println!("  Completed:  {}/{}", manifest.completed, manifest.total_runs);
+    // Status is derived live from (a) the batch.toml plan and (b) the
+    // on-disk leaf tree — there is no batch-level manifest. We re-plan the
+    // sweep exactly as `batch run` would and count which cells already have a
+    // committed leaf (`plan_runs` marks each a `CacheHit` when present).
+    println!("Experiment status for: {}", toml_path);
+    println!("  Model:      {}", exp.config.model);
+    println!("  Output dir: {}", output_dir);
 
-            if let Ok(ir_json) = std::fs::read_to_string(&exp.config.model) {
-                let mhash   = model_hash(&ir_json);
-                let base_params: HashMap<String, f64> = exp.config.params.as_ref()
-                    .and_then(|p| load_params_toml(p).ok())
-                    .unwrap_or_default();
-                let shash   = sim_hash(&mhash, &canonical_params(&base_params), exp.config.backend.as_str(), exp.config.dt);
-                let raw_scenarios: Vec<ScenarioEntry> = if exp.scenario.is_empty() {
-                    vec![ScenarioEntry { name: "baseline".to_string(), params: HashMap::new(), enable: vec![], disable: vec![] }]
-                } else {
-                    exp.scenario
-                };
-                // Resolve presets so the cache-hit count uses the same
-                // scen_hash the run path was written under (CLI review #3).
-                let scenarios: Vec<ScenarioEntry> = match ir::from_str(&ir_json) {
-                    Ok(model) => match resolve_batch_scenarios(&raw_scenarios, &model) {
-                        Ok(resolved) => resolved.iter().map(|r| ScenarioEntry {
-                            name: r.name.clone(),
-                            params: r.params.clone(),
-                            enable: r.enable.clone(),
-                            disable: r.disable.clone(),
-                        }).collect(),
-                        Err(_) => raw_scenarios,
-                    },
-                    Err(_) => raw_scenarios,
-                };
-                let seeds   = exp.config.seeds.resolve().unwrap_or_default();
-                let sweep_points = expand_sweep(&exp.sweep);
-                let runs_dir = format!("{}/sims", output_dir);
-                let cache_stem = crate::hashing::path_stem_slug(&exp.config.model);
-                let plans   = plan_runs(&scenarios, &sweep_points, &seeds, &shash,
-                    cache_stem.as_deref(), &runs_dir, false);
-                let live_hits = plans.iter().filter(|p| p.decision == RunDecision::CacheHit).count();
-                println!("  Live count: {}/{} traj.tsv files present", live_hits, plans.len());
-            }
+    let seeds = exp.config.seeds.resolve().unwrap_or_default();
+
+    let ir_json = match std::fs::read_to_string(&exp.config.model) {
+        Ok(j) => j,
+        Err(e) => {
+            println!("  (cannot read model {}: {})", exp.config.model, e);
+            println!("  Run 'camdl batch run {}' to start.", toml_path);
             return;
         }
-    }
+    };
 
-    println!("Experiment status for: {}", toml_path);
-    println!("  No manifest.json found at {}", manifest_path);
-    println!("  Run 'camdl batch run {}' to start.", toml_path);
+    let mhash = model_hash(&ir_json);
+    let base_params: HashMap<String, f64> = exp.config.params.as_ref()
+        .and_then(|p| load_params_toml(p).ok())
+        .unwrap_or_default();
+    let shash = sim_hash(&mhash, &canonical_params(&base_params),
+        exp.config.backend.as_str(), exp.config.dt);
+    let raw_scenarios: Vec<ScenarioEntry> = if exp.scenario.is_empty() {
+        vec![ScenarioEntry { name: "baseline".to_string(), params: HashMap::new(), enable: vec![], disable: vec![] }]
+    } else {
+        exp.scenario
+    };
+    // Resolve presets so the cache-hit count uses the same scen_hash the run
+    // path was written under (CLI review #3).
+    let scenarios: Vec<ScenarioEntry> = match ir::from_str(&ir_json) {
+        Ok(model) => match resolve_batch_scenarios(&raw_scenarios, &model) {
+            Ok(resolved) => resolved.iter().map(|r| ScenarioEntry {
+                name: r.name.clone(),
+                params: r.params.clone(),
+                enable: r.enable.clone(),
+                disable: r.disable.clone(),
+            }).collect(),
+            Err(_) => raw_scenarios,
+        },
+        Err(_) => raw_scenarios,
+    };
+    let scenario_names: Vec<String> = scenarios.iter().map(|s| s.name.clone()).collect();
+    println!("  Scenarios:  {}", scenario_names.join(", "));
+    println!("  Seeds:      {} total ({}..={})",
+        seeds.len(),
+        seeds.first().copied().unwrap_or(0),
+        seeds.last().copied().unwrap_or(0));
+
+    let sweep_points = expand_sweep(&exp.sweep);
+    let runs_dir = format!("{}/sims", output_dir);
+    let cache_stem = crate::hashing::path_stem_slug(&exp.config.model);
+    let plans = plan_runs(&scenarios, &sweep_points, &seeds, &shash,
+        cache_stem.as_deref(), &runs_dir, false);
+    let live_hits = plans.iter().filter(|p| p.decision == RunDecision::CacheHit).count();
+    println!("  Completed:  {}/{} leaves present", live_hits, plans.len());
+    if live_hits == 0 {
+        println!("  Run 'camdl batch run {}' to start.", toml_path);
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

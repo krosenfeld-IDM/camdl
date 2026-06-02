@@ -557,7 +557,8 @@ fn rel_key(root: &Path, file: &Path) -> String {
 ///
 /// This is the **cheap gate**: presence + size + mtime only, no digest, so a
 /// fit with many/large chain files is not re-hashed on every `list`/`lookup`.
-/// The "never serve wrong bytes" digest check runs at consume time.
+/// The per-file `digest` is recorded in `run.json` for integrity tooling
+/// (`camdl verify`); no read path recomputes it today.
 fn check_exact_set(path: &Path, record: &RunRecord) -> ExactSet {
     // 1. Every listed file present at recorded bytes + mtime (keys may be
     //    nested, e.g. `chain_1/trace.tsv`; `Path::join` resolves the `/`).
