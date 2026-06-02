@@ -159,6 +159,85 @@ let test_infection_adult_indices () =
     "infection_adult C_age indices"
     [2.; 3.] (c_age_indices tr)
 
+(* ── Sparse-coupling constant-fold (A/B gate, OCaml half) ─────────────────────
+   `Constant_fold.fold_model` resolves constant-indexed inline-table lookups and
+   drops zero-W terms from the FOI Reduce, collapsing the dense P-term spatial
+   sum to its k nonzero terms. This test proves the pass *fires* at the source:
+   on a sparse ring W (k neighbours per patch) the largest FOI Reduce shrinks
+   from P terms to k. The byte-identical *trajectory* half lives in Rust
+   (gate_constant_fold_ab). A no-op fold (dense W) would leave the term count
+   unchanged and fail the strict-inequality assertion below — the guard against
+   a vacuous green. *)
+
+(** Largest Reduce term count anywhere in an expr tree. The only Reduce in a
+    spatial FOI rate is the coupling sum, so this is its term count. *)
+let rec max_reduce_terms (e : Ir.expr) : int =
+  let open Ir in
+  match e with
+  | Reduce terms ->
+    List.fold_left (fun acc t -> max acc (max_reduce_terms t))
+      (List.length terms) terms
+  | BinOp { left; right; _ } -> max (max_reduce_terms left) (max_reduce_terms right)
+  | UnOp { arg; _ } -> max_reduce_terms arg
+  | Cond { pred; then_; else_ } ->
+    max (max_reduce_terms pred) (max (max_reduce_terms then_) (max_reduce_terms else_))
+  | TableLookup (_, idxs) ->
+    List.fold_left (fun acc i -> max acc (max_reduce_terms i)) 0 idxs
+  | UncheckedDim { inner; _ } -> max_reduce_terms inner
+  | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _
+  | BindingRef _ | Projected -> 0
+
+let max_foi_reduce_terms (m : Ir.model) : int =
+  List.fold_left (fun acc (t : Ir.transition) -> max acc (max_reduce_terms t.rate))
+    0 m.transitions
+
+(* P=4 patches, sparse ring W with k=2 neighbours each (off-diagonal cells:
+   p couples to p-1 and p+1, wrapping; all other W cells are 0). The FOI uses
+   the guarded form `W[p,q] * (if N[q] > 0 then I[q]/N[q] else 0)`, which makes
+   the zero-W fold sound (0 * finite -> 0 in one step). The expander emits a
+   dense 4-term Reduce; the fold collapses it to the 2 nonzero-W terms. *)
+let sparse_ring_src = {|
+    time_unit = 'days
+    dimensions { patch = [p0, p1, p2, p3] }
+    compartments { S, I }
+    stratify(by = patch)
+    parameters { beta : rate  kappa : probability in [0.0, 1.0] }
+    tables {
+      W : patch × patch = [[0.0, 0.5, 0.0, 0.5],
+                           [0.5, 0.0, 0.5, 0.0],
+                           [0.0, 0.5, 0.0, 0.5],
+                           [0.5, 0.0, 0.5, 0.0]]
+    }
+    let N[l in patch] = S[l] + I[l]
+    transitions {
+      infection[l in patch] : S[l] --> I[l]
+        @ beta * S[l] * (
+            (if N[l] > 0 then I[l] / N[l] else 0.0)
+          + kappa * sum(q in patch, W[l, q] * (if N[q] > 0 then I[q] / N[q] else 0.0))
+          )
+      recovery[l in patch] : I[l] --> S[l]  @ beta * I[l]
+    }
+    init { S_p0 = 990  I_p0 = 10 }
+    simulate { from = 0 'days  to = 30 'days }
+  |}
+
+let test_constant_fold_collapses_sparse_foi_reduce () =
+  let m = match Compiler.compile ~name:"sparse_ring" sparse_ring_src with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "compile failed: %s" e
+  in
+  (* `compile` does not fold by default; call the pass directly. *)
+  let folded = Constant_fold.fold_model m in
+  let before = max_foi_reduce_terms m in
+  let after  = max_foi_reduce_terms folded in
+  (* 4 patches → dense 4-term FOI Reduce before the fold. *)
+  Alcotest.(check int) "dense FOI Reduce has P=4 terms before fold" 4 before;
+  (* Sparse ring k=2 → 2 nonzero-W terms survive. The strict drop is the
+     non-vacuity guard: a dense W (no zero cells) would leave this at 4 and
+     fail here, exactly as it should. *)
+  Alcotest.(check int) "fold collapses FOI Reduce to k=2 terms" 2 after;
+  Alcotest.(check bool) "fold strictly shrank the FOI Reduce" true (after < before)
+
 (* min/max wire through the DSL surface to the already-supported Ir.BinOp
    Min/Max (the IR, Rust eval, dimcheck, and autodiff already handle them). *)
 let test_min_max_wire_to_binop () =
@@ -5257,6 +5336,10 @@ let () =
       Alcotest.test_case "single index per lookup" `Quick test_table_lookup_single_index;
       Alcotest.test_case "infection_child row 0"   `Quick test_infection_child_indices;
       Alcotest.test_case "infection_adult row 1"   `Quick test_infection_adult_indices;
+    ];
+    "constant_fold", [
+      Alcotest.test_case "sparse ring FOI Reduce P=4 collapses to k=2"
+        `Quick test_constant_fold_collapses_sparse_foi_reduce;
     ];
     "min_max", [
       Alcotest.test_case "min/max wire to BinOp Min/Max" `Quick test_min_max_wire_to_binop;
