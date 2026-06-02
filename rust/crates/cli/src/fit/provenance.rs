@@ -43,7 +43,7 @@ pub struct MleProvenance {
     /// parameter invalidates this; editing a provenance field does
     /// not.
     pub content_hash: String,
-    /// Full Run.hash of the originating fit, when present.
+    /// Full fit-level hash of the originating fit, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit_hash: Option<String>,
     /// Dynamics fields — load-bearing for the backend-guardrail.

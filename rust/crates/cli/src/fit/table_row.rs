@@ -55,20 +55,20 @@ impl TableRowSchema {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TableRow {
     pub schema: TableRowSchema,
-    /// `Run.hash[..8]` — short, human-quotable.
+    /// `fit_hash[..8]` — short, human-quotable.
     pub fit_id: String,
-    /// Full 64-char `Run.hash`.
+    /// Full 64-char fit-level hash (`FitView.fit_hash`).
     pub fit_hash: String,
     /// User-supplied display label, set at fit-run time via
     /// `--label "..."` or post-hoc via `camdl label <hash>
     /// "<text>"`. None when the user hasn't labelled the fit.
     pub label: Option<String>,
-    /// fit.toml stem — the basename of `FitMeta.fit_toml_path` minus
+    /// fit.toml stem — the basename of `FitView.fit_toml_path` minus
     /// trailing `.fit.toml` / `.toml` extension.
     pub stem: String,
     pub model_hash: String,
     /// Stage names that completed under this fit, in declaration order
-    /// (filtered by `FitMeta.stages_declared`). A multi-stage IF2 fit
+    /// (filtered by `FitView.stages_declared`). A multi-stage IF2 fit
     /// reads `["scout", "refine", "validate"]`; a PGAS-only fit reads
     /// `["pgas"]`. Stages that didn't complete are excluded.
     pub stages: Vec<String>,

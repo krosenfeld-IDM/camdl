@@ -770,8 +770,8 @@ pub enum Stage {
         #[serde(default, rename = "init")]
         init_method: super::init::InitMethod,
         /// Survey CAS directory consumed when `init = "survey_top_k"`.
-        /// Must contain `run.json` (RunKind::Survey)
-        /// and `landscape.tsv`. Ignored otherwise.
+        /// Must contain `run.json` (kind = survey) and `landscape.tsv`.
+        /// Ignored otherwise.
         #[serde(default)]
         survey_path: Option<std::path::PathBuf>,
         /// Number of top-K rows to pull from the survey landscape.
@@ -1097,14 +1097,12 @@ impl Stage {
         }
     }
 
-    /// gh#147 (M3.2). The number of posterior trajectory samples saved to
-    /// disk (PGAS only; default 200). An output-shaping knob that
-    /// `identity_payload` deliberately omits. Commit 1 folds it into the
-    /// stage identity (so changing it yields a distinct leaf — no silent
-    /// reuse of the wrong trajectory count); M3.3 relocates `trajectories/`
-    /// to a root-level child keyed on this value and removes it from the
-    /// stage identity (changing it then becomes a cheap re-save, not a
-    /// re-fit).
+    /// The number of posterior trajectory samples saved to disk (PGAS only;
+    /// default 200). An output-shaping knob that `identity_payload` otherwise
+    /// omits, but it is folded into the stage identity (count-in-the-key):
+    /// because it changes stored output, changing it yields a distinct leaf
+    /// rather than silently reusing the wrong trajectory count, at the cost of
+    /// re-fitting when it changes.
     pub fn cas_n_trajectories(&self) -> u64 {
         match self {
             Stage::PGAS { n_trajectories, .. } => *n_trajectories as u64,

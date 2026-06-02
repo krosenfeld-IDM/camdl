@@ -3043,21 +3043,34 @@ for details.
 camdl pfilter MODEL --params P.toml --data cases.tsv \
     --particles 5000 --dt 1 --seed 42 --tol 1e-18 --trace
 
-# Iterated filtering — explicit rw_sd (the list IS the partition).
-# `--init from_params --params P.toml` warm-starts chains at the
-# point in P.toml; `--fixed` pins specific params at explicit values.
-camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
-    --rw-sd "R0=5,sigma=0.01,gamma=0.01" \
-    --particles 2000 --iterations 100 --cooling 0.95 \
-    --chains 4 --regime scout --ivp "S0,I0"
-
-# Auto rw_sd from parameter bounds; pin specific params with --fixed
-# (NAME=VALUE form is the only form on inference subcommands —
-# the legacy name-only `--fixed "N0,mu,k"` was removed in the
-# 2026-05-25 CLI UX revision; see "Pinning many params" below).
-camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
-    --rw-sd auto --fixed N0=1000 --fixed mu=0.0 --fixed k=10 \
-    --regime scout
+# Iterated filtering (MLE) is a one-stage fit. Write a fit.toml with a
+# single `algorithm = "if2"` stage and run it through `camdl fit run`:
+#
+#   [model]
+#   camdl = "MODEL"
+#
+#   [data.observations]
+#   cases = "cases.tsv"
+#
+#   [estimate]
+#   R0    = { bounds = [0.1, 10.0], start = 5.0 }
+#   sigma = { bounds = [0.0, 1.0],  start = 0.01 }
+#   gamma = { bounds = [0.0, 1.0],  start = 0.01 }
+#
+#   [fixed]
+#   N0 = 1000
+#   mu = 0.0
+#   k  = 10
+#
+#   [stages.fit]
+#   algorithm  = "if2"
+#   backend    = "chain_binomial"
+#   chains     = 4
+#   particles  = 2000
+#   iterations = 100
+#   cooling    = 0.95
+#
+camdl fit run fit.toml --seed 42
 
 # Profile likelihood — parameter identifiability
 camdl profile MODEL --init from_params --params P.toml --data cases.tsv \
@@ -3077,7 +3090,7 @@ the model declares more than one, pass `--stream NAME` to select.
 The legacy `--flow` / `--obs-model` flags were removed in the
 2026-05-25 CLI UX revision.
 
-**`--rw-sd`**: Perturbation scale per parameter. Three modes:
+**`--rw-sd`** (`camdl profile`): Perturbation scale per parameter. Three modes:
 - Explicit: `--rw-sd "R0=5,sigma=0.01"` — the list IS the partition.
   Parameters not listed are held fixed. No `--fixed` needed.
 - Auto: `--rw-sd auto` — heuristic from parameter bounds (`(hi-lo)/6`
@@ -3086,21 +3099,33 @@ The legacy `--flow` / `--obs-model` flags were removed in the
 - Mixed: `--rw-sd "R0=5,sigma=auto"` — explicit where you know, auto
   where you don't.
 
-**`--regime`**: IF2 presets — `scout` (8 chains, 500 particles, 30 iters,
-cooling=0.70 — mild cooling for basin exploration), `refine` (4 chains,
-1000 particles, 50 iters, cooling=0.05 — aggressive cooling to converge
-onto scout's best), `validate` (4 chains, 5000 particles, 100 iters,
-cooling=0.05 — final polish). Authoritative constants:
-`rust/crates/cli/src/fit/{scout,refine}.rs`. Cooling is pomp's cf50
-convention (halfway-SD fraction); see `docs/methods/cooling.md`.
+In a fit, an `algorithm = "if2"` stage derives its perturbation scale from
+each parameter's declared `bounds` — there is no per-parameter `rw_sd` knob
+on the stage. Cooling is pomp's cf50 convention (halfway-SD fraction); see
+`docs/methods/cooling.md`.
 
-**`--ivp "S0,I0"`**: Initial value parameters, perturbed only at t=0.
+**Regimes (scout / refine / validate)**: the scout → refine → validate
+ladder is a sequence of `[stages.X] algorithm = "if2"` blocks in a
+`fit.toml`, not a CLI preset. A scout is a fast, mildly-cooled stage for
+basin exploration (e.g. `chains = 8`, `particles = 500`, `iterations = 30`,
+`cooling = 0.70`); a refine sharpens onto the scout's mode with more
+particles and aggressive cooling (e.g. `chains = 4`, `particles = 1000`,
+`iterations = 50`, `cooling = 0.05`, `init_mle = "scout"`); a validate stage
+is a final high-particle polish. Each stage sets these knobs explicitly; a
+later stage warm-starts from an earlier one's MLE via `init_mle = "<stage>"`.
+A scout-convergence gate (`docs/methods/cooling.md`) guards the transition.
+
+**Initial value parameters (IVP)**: parameters that set the initial
+compartment state (e.g. `S0`, `I0`) are declared on the model and estimated
+like any other parameter — list them under `[estimate]` in the `fit.toml`.
+The fit perturbs / draws their initial values as part of the inference; there
+is no separate CLI flag to nominate them.
 
 **`--fixed NAME=VALUE`**: Pin `NAME` at `VALUE` (repeatable) and remove
 it from the inference `[estimate]` set if present. The universal
-value-setter on every subcommand. Available on `camdl if2`,
-`camdl profile`, `camdl survey`, and `camdl fit run` (where the
-toml-side spelling is `[fixed] NAME = VALUE`).
+value-setter, available on `camdl profile` and `camdl survey`; in a
+`fit.toml` the equivalent is the `[fixed] NAME = VALUE` block read by
+`camdl fit run`.
 
 **Pinning many params (the replacement for the removed name-only `--fixed`).**
 

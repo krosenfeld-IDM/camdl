@@ -427,18 +427,14 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         std::process::exit(1);
     });
 
-    // ── Build + write top-level run.json at the fit root ──────────────
+    // ── Compute the fit-wide identity + sidecar (no fit-root run.json) ──
     //
-    // Per-stage run.json records live inside each stage dir; this one
-    // describes the fit as a whole so `camdl list` / `camdl show` can
-    // surface fits alongside simulate runs. `Run.hash` is the seed-
-    // independent content hash (same suffix used in the directory name).
-    //
-    // We write once here (so the fit is listable even if interrupted)
-    // and rewrite once at end-of-fit to capture `wall_time_seconds`.
-    // The parent fit hash is also reused by every stage to populate
-    // `FitStageMeta.fit_hash` — computing it once here avoids the O(stages
-    // × full-I/O rehash) pattern.
+    // Per-stage run.json records live inside each stage dir; the fit as a
+    // whole is the `fits/{stem}-{h8}/` path segment, not a separate record
+    // (see the note below where `build_fit_run` is called). The
+    // seed-independent parent fit hash computed here is reused by every
+    // stage as its `fit`-level hash — computing it once avoids the
+    // O(stages × full-I/O rehash) pattern.
     let fit_start = std::time::Instant::now();
     // Validate --label early so we fail before any I/O. The same
     // validator is reused by `cmd_label` (post-hoc relabel).
@@ -1530,12 +1526,12 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
             }
         }
 
-        // ── gh#147 (M3.2): finalize the CAS fit-stage leaf ──
+        // ── finalize the CAS fit-stage leaf ──
         // The runners streamed every output (chains, fit_state.toml,
         // draws.tsv, trajectories/, …) into `stage_dir = claim.dir()`;
         // `finalize` builds the recursive exact-set manifest over them and
-        // commits Running→Completed. The FitStageMeta-equivalent rides in
-        // `run.json` `inputs` (recorded, never hashed) for show/status.
+        // commits Running→Completed. The display fields ride in `run.json`
+        // `inputs` (recorded, never hashed) for show/status.
         let stage_elapsed = stage_t0.elapsed();
         let algo_tag = stage.method_name();
         let backend_tag = stage.backend().as_str();
@@ -2058,8 +2054,8 @@ pub fn cmd_fit_new(a: &crate::args::FitNewArgs) {
 }
 
 /// Accept either a directory path or a git-style short hash for
-/// `--starts-from`. The heuristic: contains `/` or `\\` → path
-/// (today's behavior); else → resolve as Run.hash prefix via
+/// `--starts-from`. The heuristic: contains `/` or `\\` → path;
+/// else → resolve as a leaf `run_id` prefix via
 /// `browse::resolve_stage_by_hash` against the default output
 /// root. Errors on zero or multiple matches.
 ///
@@ -2103,10 +2099,10 @@ pub fn validate_label(raw: &str) -> Result<String, String> {
 /// profile, replicate-set, fit-stage).
 ///
 /// Resolves the hash prefix by walking `<root>/{sims,fits,profiles}/**`
-/// for `run.json` files whose `Run.hash` starts with the prefix. The
-/// label is validated, written to `Run.label`, and the run.json is
-/// rewritten atomically. Refuses to relabel a still-running fit
-/// (`status == Running`).
+/// for `run.json` files whose `run_id` (or legacy `hash`) starts with the
+/// prefix. The label is validated, written to the record's `label`, and
+/// the run.json is rewritten atomically. Refuses to relabel a still-running
+/// fit (`status == Running`).
 ///
 /// Concurrent invocations are last-write-wins; we don't lock the
 /// file. For single-user workflows this is fine; if cross-process
@@ -2244,11 +2240,11 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
 }
 
 /// Recursively find directories under `root` whose `run.json` has a
-/// `Run.hash` starting with `prefix`. Reads the JSON shallowly via
-/// `serde_json::Value` to avoid deserializing every kind variant just
-/// to check the hash. Bounded depth comes for free from the on-disk
-/// layout (sims: 3 levels, fits: up to 5, profiles: up to 5), so a
-/// plain recursive walk is fine without a max-depth guard.
+/// `run_id` (or legacy `hash`) starting with `prefix`. Reads the JSON
+/// shallowly via `serde_json::Value` to avoid deserializing every kind
+/// variant just to check the hash. Bounded depth comes for free from the
+/// on-disk layout (sims: 5 levels, fits: 3, profiles: 5), so a plain
+/// recursive walk is fine without a max-depth guard.
 fn find_runs_with_prefix(
     root: &std::path::Path,
     prefix: &str,

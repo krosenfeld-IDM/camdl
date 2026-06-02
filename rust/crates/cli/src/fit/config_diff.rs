@@ -277,8 +277,8 @@ fn baseline_meta_hash(meta: &FitView) -> String {
 
 impl ConfigDiff {
     /// Override the `baseline_hash` field after construction. Used by
-    /// `fit table` to put the actual fit_hash (Run.hash) on the diff
-    /// rather than the fit_toml_hash that [`compare`] defaults to.
+    /// `fit table` to put the actual fit_hash on the diff rather than
+    /// the fit_toml_hash that [`compare`] defaults to.
     pub fn with_baseline_hash(mut self, hash: String) -> Self {
         self.baseline_hash = Some(hash);
         self

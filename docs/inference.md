@@ -483,48 +483,55 @@ Note: Bayesian (PGAS, PMMH) outputs continue to use the name `rhat` for
 their own posterior-mixing diagnostics; only the MLE pipeline (scout /
 refine / validate) uses `chain_agreement` / Â.
 
-### Regime presets
+### Regimes: scout → refine → validate
 
-Three presets for the typical workflow:
+The typical MLE workflow is three `[stages.X] algorithm = "if2"` blocks in a
+`fit.toml`, run in order by `camdl fit run`. Each stage warm-starts from an
+earlier one via `init_mle = "<stage>"`. The three regimes differ only in their
+stage knobs:
 
-**Scout** (`--regime scout`): 8 chains, 500 particles, 30 iterations,
-**cooling = 0.70 (mild)**. Exploration — chains stay hot enough to wander
-across basins rather than quenching onto the first local optimum. Over
-the 30-iter stage the perturbation SD shrinks only from 1.0× to 0.49×
-initial. Use this first to find problems: Is the surface multimodal?
-Which parameters are identifiable? Is the observation model appropriate?
-The cross-chain Â at the end of scout, combined with the loglik-eval
-decibans-spread gate (see camdl-inference-spec §6.1.1), is the
+**Scout** — 8 chains, 500 particles, 30 iterations, **cooling = 0.70 (mild)**.
+Exploration: chains stay hot enough to wander across basins rather than
+quenching onto the first local optimum. Over the 30-iter stage the perturbation
+SD shrinks only from 1.0× to 0.49× initial. Run this first to find problems: Is
+the surface multimodal? Which parameters are identifiable? Is the observation
+model appropriate? The cross-chain Â at the end of the scout, combined with the
+loglik-eval decibans-spread gate (see camdl-inference-spec §6.1.1), is the
 multi-modality diagnostic.
 
-**Refine** (`--regime refine`): 4 chains, 1000 particles, 50 iterations,
-**cooling = 0.05 (aggressive)**. Starts from scout's best-chain parameters
-and collapses chains tightly onto the local MLE — final SD is 0.25% of
-initial, so particle clouds concentrate near scout's endpoint. Check
-Â for convergence across chains.
+```toml
+[stages.scout]
+algorithm  = "if2"
+backend    = "chain_binomial"
+chains     = 8
+particles  = 500
+iterations = 30
+cooling    = 0.70
+```
 
-**Validate** (`--regime validate`): 4 chains, 5000 particles, 100
-iterations, **cooling = 0.05**. Full convergence for publication-quality
-estimates.
+**Refine** — 4 chains, 1000 particles, 50 iterations, **cooling = 0.05
+(aggressive)**, `init_mle = "scout"`. Starts from the scout's best-chain
+parameters and collapses chains tightly onto the local MLE — final SD is 0.25%
+of initial, so particle clouds concentrate near the scout's endpoint. Check Â
+for convergence across chains.
 
-Cooling is pomp's `cooling.fraction.50` (cf50) convention: the parameter
-is the halfway-point SD fraction, the end-of-stage SD is its square.
-Authoritative constants are in `rust/crates/cli/src/fit/{scout,refine}.rs`.
-Formula, worked example, and empirical iter-by-iter table:
-`docs/methods/cooling.md`.
+**Validate** — 4 chains, 5000 particles, 100 iterations, **cooling = 0.05**,
+`init_mle = "refine"`. Full convergence for publication-quality estimates.
+
+Cooling is pomp's `cooling.fraction.50` (cf50) convention: the parameter is the
+halfway-point SD fraction, the end-of-stage SD is its square. Formula, worked
+example, and empirical iter-by-iter table: `docs/methods/cooling.md`.
 
 ### IVP parameters
 
 Initial conditions (S₀, E₀, I₀) set the starting state but don't change during
-simulation. They should only be perturbed at t=0, not at every observation. Use
-`--ivp`:
-
-```bash
-camdl if2 ... --rw-sd "R0=5,S0=5000,I0=5" --ivp "S0,I0"
-```
-
-S₀ and I₀ are jittered once when particles initialize, then held fixed as the
-filter runs forward. R₀ is perturbed at every observation time.
+simulation, so they are perturbed only at t=0, not at every observation. They
+are model-declared parameters: list them under `[estimate]` in the `fit.toml`
+like any other parameter, and the fit estimates them. The filter jitters their
+initial values once when particles initialize, then holds them fixed as it runs
+forward — whereas a parameter like R₀ is perturbed at every observation time.
+PGAS draws stochastic initial states from these parameters (e.g.
+$S_0 \sim \text{Binomial}(N_0, s_0)$); see "IVP parameters (s0, e0)" below.
 
 ---
 

@@ -410,9 +410,9 @@ pub fn plan_runs(
 
 // ─── Manifest / run metadata ─────────────────────────────────────────────────
 
-// RunMeta is the shared cas::RunMeta — both single-run `--cas` and
-// batch `--batch` write the same schema so `camdl list/show/cat` reads
-// both uniformly.
+// Each completed cell is also a `runid::RunRecord` leaf on disk (written by
+// `CasSink`); this manifest is a flat batch-level index over those leaves so a
+// reader doesn't have to walk the tree to enumerate a sweep.
 
 /// Minimal descriptor for one completed run, included in manifest.json.
 /// The web app uses run_path to construct the URL: /runs/{run_path}/traj.tsv
@@ -421,7 +421,7 @@ struct RunEntry {
     scenario: String,
     seed: u64,
     run_path: String,
-    /// Mirrors RunMeta.sweep_point — convenient for aggregating without
+    /// The cell's sweep point — convenient for aggregating without
     /// reading every run.json.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     sweep_point: HashMap<String, f64>,
@@ -667,12 +667,12 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
 
     // ── Build the SimulateJob and route through the unified engine ──────────
     //
-    // `batch run` is now a thin TOML front-end over `engine::run_job` — the
+    // `batch run` is a thin TOML front-end over `engine::run_job` — the
     // SAME engine `camdl simulate` uses (run-spec §3.1). The per-cell seed
     // arithmetic and SimRun construction are shared; the CAS-tree output
-    // shape lives in `CasSink`, which reuses the existing `SimulateInputs`
-    // hashing so the on-disk layout / content-hashes stay byte-identical to
-    // the pre-unification batch path.
+    // shape lives in `CasSink`, which resolves each cell's identity via
+    // `resolve::resolve_trajectory` so the on-disk layout / content-hashes
+    // match the `simulate` path exactly.
     //
     // Scenario routing: a resolved preset → `ScenarioRef::Named` (the
     // params_resolver preset path); an ad-hoc patch → `ScenarioRef::Inline`.
@@ -762,8 +762,7 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         runs: completed_runs,
     };
     // Manifest lives under `sims/` so the output root contains only
-    // the two subtree roots (sims/, fits/) plus optional geo/. Was
-    // `<output>/manifest.json` before 2026-04-19.
+    // the subtree roots (sims/, fits/, …) plus optional geo/.
     let manifest_path = format!("{}/sims/manifest.json", output_dir);
     if let Some(parent) = std::path::Path::new(&manifest_path).parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -777,12 +776,11 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
 
 // ─── CasSink: batch's content-addressed output strategy ───────────────────────
 
-/// `RunSink` for `camdl batch run`: writes each cell into the
-/// content-addressed CAS tree (`sims/<sim>/<scen>-<scen_hash>/seed_N/`),
-/// reusing the existing [`crate::cas::sim_inputs::SimulateInputs`] hashing
-/// so the on-disk layout, `run.json` content-hash, and `kind.sweep_point`
-/// are byte-identical to the pre-unification batch path. Cache hits are
-/// skipped via `should_run` (the engine never simulates them).
+/// `RunSink` for `camdl batch run`: writes each cell into the content-addressed
+/// store under `sims/` (the `runid` factored sim layout), resolving each cell's
+/// identity via [`crate::resolve::resolve_trajectory`] so the path, `run.json`
+/// `run_id`, and recorded sweep point match the `simulate` path exactly. Cache
+/// hits are skipped via `should_run` (the engine never simulates them).
 struct CasSink {
     /// Resolved `[[scenario]]` entries, looked up by name for the
     /// hash-relevant enable/disable/params delta.

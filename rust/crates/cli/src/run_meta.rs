@@ -295,20 +295,21 @@ impl std::fmt::Display for SurveyEvalMethod {
 /// The fit-level provenance sidecar (`fits/{stem}-{h8}/fit.meta.json`). A CAS
 /// fit's fit level is a path segment with no `RunRecord`; this sidecar is the
 /// single authoritative home for the fit-wide attributes that are NOT carried
-/// on the stage leaves — the user `--label` and the fit-wide provenance the
-/// legacy fit-wide record used to hold (`resolved_priors` = gh#75 per-parameter
-/// prior source, `estimated`/`fixed`/`data_hashes`, `model_hash`, paths).
+/// on the stage leaves — the user `--label` and the fit-wide provenance
+/// (`resolved_priors` = gh#75 per-parameter prior source,
+/// `estimated`/`fixed`/`data_hashes`, `model_hash`, paths).
 ///
 /// It is **derived provenance, not a source of truth**: a faithful readable
 /// projection of inputs already hashed into the leaf identity (the `FitDigest`
 /// — different priors already produce a different fit identity). It is written
 /// post-identity and is never fed back into any hash. The producing `fit.toml`
 /// is archived beside it as `fit.toml.original` (the config-diff source for
-/// `fit table`). Interim home that M4's derived index subsumes.
+/// `fit table`).
 ///
 /// Every field except `resolved_priors`-class provenance defaults, so partial
-/// sidecars (test fixtures) round-trip; `read_fit_segment` enforces that a
-/// Bayesian fit's `resolved_priors` is present (no silent default).
+/// sidecars (test fixtures) round-trip; [`crate::fit::fit_view::FitView`]
+/// enforces that a Bayesian fit's `resolved_priors` is present (no silent
+/// default).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FitSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,9 +352,9 @@ pub fn write_fit_sidecar(
     std::fs::write(fit_segment.join("fit.meta.json"), bytes)
 }
 
-/// Read the fit-level sidecar; `None` when absent (an incomplete/legacy
-/// segment — `read_fit_segment` treats that as a malformed fit and skips it
-/// loudly rather than fabricating empty provenance).
+/// Read the fit-level sidecar; `None` when absent (an incomplete segment —
+/// [`crate::fit::fit_view::FitView`] treats that as a malformed fit and skips
+/// it loudly rather than fabricating empty provenance).
 pub fn read_fit_sidecar(fit_segment: &std::path::Path) -> Option<FitSidecar> {
     let bytes = std::fs::read(fit_segment.join("fit.meta.json")).ok()?;
     serde_json::from_slice(&bytes).ok()

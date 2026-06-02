@@ -273,8 +273,8 @@ pub fn run_stage(
         .map_err(|e| format!("writing fit_state.toml: {e}"))?;
 
     // Write mle_params.toml — full parameter vector at the winner with
-    // a [provenance] block. Downstream `camdl fit summary` / grid_summary
-    // walk this file to render per-cell MLE rows.
+    // a [provenance] block. `camdl fit summary` walks this file to render
+    // per-cell MLE rows.
     let mut all_params = std::collections::HashMap::new();
     for (i, name) in arc_config.param_names.iter().enumerate() {
         all_params.insert(name.clone(), arc_config.base_params[i]);

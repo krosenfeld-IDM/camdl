@@ -24,8 +24,7 @@ transform. A few commands delegate to the compiler.
 
 | Command              | Produces                                                                                                               |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `fit run`            | The full inference pipeline: a `fit.toml`'s named stages, in order — MLE, posterior, diagnostics. The production path. |
-| `if2` (alias `mif2`) | A one-shot maximum-likelihood estimate via iterated filtering. A standalone shortcut for a single IF2 stage.           |
+| `fit run`            | The full inference pipeline: a `fit.toml`'s named stages, in order — MLE, posterior, diagnostics. The production path. An MLE-only fit is a `fit.toml` with one `algorithm = "if2"` stage. |
 | `pfilter`            | A log-likelihood at _fixed_ parameters via a bootstrap particle filter (no estimation).                                |
 | `profile`            | A profile-likelihood curve — parallel IF2 over a grid of one focal parameter.                                          |
 
@@ -63,7 +62,7 @@ standalone command for quick one-shot use.
 
 | Method                   | `fit.toml` stage (`algorithm = …`) | Standalone command | Role                                                                       |
 | ------------------------ | ---------------------------------- | ------------------ | -------------------------------------------------------------------------- |
-| IF2 (iterated filtering) | `"if2"`                            | `camdl if2`        | Maximum-likelihood point estimate.                                         |
+| IF2 (iterated filtering) | `"if2"`                            | —                  | Maximum-likelihood point estimate.                                         |
 | PGAS + NUTS              | `"pgas"`                           | —                  | Bayesian posterior (exact complete-data likelihood, analytical gradients). |
 | PMMH                     | `"pmmh"`                           | —                  | Bayesian posterior, gradient-free.                                         |
 | Particle filter          | `"pfilter"`                        | `camdl pfilter`    | Log-likelihood evaluation at fixed θ (diagnostic).                         |
@@ -223,7 +222,9 @@ renders a baseline-centered table of out-of-sample fit.
   Survey samples it broadly to check identifiability; profile traces it along
   one axis. Both can precede or contextualize a fit; neither produces a
   posterior.
-- **`if2` and `pfilter` are shortcuts into machinery `fit run` also uses.** The
-  same IF2 and particle-filter cores back both surfaces; the standalone commands
-  expose a smaller set of knobs for quick one-shot use, while `fit.toml` stages
-  add initialization sources, convergence gates, and post-fit audits.
+- **`pfilter` is a shortcut into machinery `fit run` also uses.** The same
+  particle-filter core backs both surfaces; the standalone command exposes a
+  smaller set of knobs for a quick fixed-θ log-likelihood, while `fit.toml`
+  stages add initialization sources, convergence gates, and post-fit audits. An
+  MLE-only run is not a separate command — it is a `fit.toml` with a single
+  `algorithm = "if2"` stage, run through `camdl fit run`.

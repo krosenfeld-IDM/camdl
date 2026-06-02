@@ -1902,21 +1902,14 @@ impl ConfigHasher {
 
 > **This subsection is the consumer contract.** `run.json` is the API between
 > camdl and everything that reads its output (`camdl list/show/cat`,
-> camdl-viewer, notebooks). The schema below is the tagged-union form actually
-> emitted by `rust/crates/cli/src/run_meta.rs` (`Run` / `RunKind` /
-> `RunStatus`), verified against on-disk artifacts. Consumers must read this
-> shape, not a flattened guess.
->
-> *History: through v0.2, simulations wrote a flat `{sim_hash, scen_hash, …}`
-> object and fits wrote a separate `provenance.json`. Both are superseded by
-> the single tagged `run.json` below — there is now **one** metadata file per
-> run directory, of one schema, for every run kind (verified 2026-05-30: a
-> real fit writes a per-stage `run.json` of kind `fit-stage`, and zero
-> `provenance.json`). Fit-stage staleness is detected by comparing the
-> recorded `config_hash` (§9.4), now carried inside the `fit-stage` run.json
-> rather than a separate file. The camdl-viewer `cas.py` still carries a
-> dual-format `normalize_run_json` shim for the transition — dropped once
-> example/golden output is regenerated.*
+> camdl-viewer, notebooks). The current on-disk schema is the
+> `runid::RunRecord` (in `rust/crates/runid/src/record.rs`): a `run_id`
+> leaf address, the ordered per-level hashes (`levels`), upstream `deps`, a
+> `kind` (`runid::ArtifactKind`), a `RunStatus`, and a recorded-not-hashed
+> `inputs` payload for display. The path-shape and record contract is
+> documented authoritatively in `docs/dev/cas-path-shape-contract.md`; the
+> illustrative envelope below predates the content-addressed store and is
+> retained for orientation only — read `RunRecord` for the exact fields.
 
 Every run directory contains one `run.json` with a shared envelope and a
 kind-specific `kind` payload (serde `tag = "kind"`):
@@ -1958,7 +1951,7 @@ kind-specific `kind` payload (serde `tag = "kind"`):
 | `argv`       | string[]                               | the invocation, for reproducibility |
 | `status`     | enum (below)                           | lifecycle state |
 | `label`      | string \| null                         | optional `--label`; omitted when null |
-| `kind`       | tagged object                          | one of the `RunKind` payloads |
+| `kind`       | string                                 | the `runid::ArtifactKind` (`sim`, `fit_stage`, `pfilter`, `survey`, `profile_point`, …) |
 
 **`status` lifecycle** — written at *start*, updated at *end*, so a run is
 discoverable (in `camdl list` / the viewer) **while it is still running**:

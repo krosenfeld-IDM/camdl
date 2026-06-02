@@ -217,10 +217,8 @@ pub fn fit_content_hash(
     h.update(version::VERSION_SHORT.as_bytes());
     // Full 64-char hex. Directory-name truncation happens at the
     // path layer via `run_paths::fit_run_dir`, not here —
-    // decoupling storage key from display prefix. Prior versions
-    // truncated to 8 chars here, which made `Run.hash`'s "full
-    // 64-char hex" docstring a lie for FitMeta and created
-    // collision risk at ~65k fits. Hardening proposal ship-now #1.
+    // decoupling the storage key from the display prefix (an 8-char
+    // key would risk collisions at ~65k fits).
     hex::encode(h.finalize())
 }
 
@@ -382,10 +380,10 @@ mod tests {
 
     #[test]
     fn golden_hash_fit_content_hash_is_full_64_chars() {
-        // Hardening #1: fit_content_hash used to truncate to 8 hex
-        // chars, contradicting the Run.hash docstring. Lock the new
-        // full-width output here so a future truncation regression
-        // fails CI instead of silently reinstating collision risk.
+        // Lock the full-width (64-hex) output so a future truncation
+        // regression fails CI instead of silently reinstating collision
+        // risk (the directory prefix is truncated at the path layer, not
+        // in the content hash).
         let model_ir = r#"{"compartments":["S","I"],"parameters":[]}"#;
         let fit_toml = b"[estimate]\nbeta = { bounds = [0.1, 2.0] }\n";
         let mut data: Vec<(String, Vec<u8>)> = vec![
@@ -419,9 +417,9 @@ mod tests {
         assert_eq!(h, "3d19534d546efd26118d6983fcd8a58a559c9791477db4316d3edfc357dadc78");
     }
 
-    // The legacy `run_hash(sim, scen, seed)` content hash is gone: the
-    // CAS migration replaced it with the factored `runid` identity
-    // (`runid::run_id` over the per-level hashes; see `cas::sim_inputs`).
+    // There is no single `run_hash(sim, scen, seed)` content hash: a run's
+    // identity is the factored `runid` identity (`runid::run_id` over the
+    // per-level hashes; see `crate::resolve::resolve_trajectory`).
 
     // ── scen_hash ────────────────────────────────────────────────────────────
 

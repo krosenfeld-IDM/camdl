@@ -161,12 +161,11 @@ pub(crate) fn emit_unlabelled_warning(unlabelled_count: usize) {
     eprintln!("      Set CAMDL_UNLABELED_THRESHOLD=0 to disable this hint.");
 }
 
-/// Load the fit.toml archived inside `<fit_dir>/fit.toml.original`
-/// (step 6 of the experiment-management proposal). Hard-cut on
-/// missing archive: legacy fit_dirs created before step 6 do not
-/// have it, and per the back-compat-is-a-non-goal posture the
-/// reader errors with an actionable message rather than silently
-/// falling back to `FitMeta.fit_toml_path` (which can move/change).
+/// Load the fit.toml archived inside `<fit_dir>/fit.toml.original`.
+/// Hard-cut on a missing archive: per the back-compat-is-a-non-goal
+/// posture the reader errors with an actionable message rather than
+/// silently falling back to `FitView.fit_toml_path` (which can
+/// move/change).
 fn load_archived_fit_toml(fit_dir: &std::path::Path) -> Result<FitConfigV2, String> {
     let archive = fit_dir.join("fit.toml.original");
     if !archive.exists() {

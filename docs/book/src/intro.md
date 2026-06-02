@@ -30,11 +30,10 @@ camdlc model.camdl > model.ir.json
 # Simulate
 camdl simulate model.ir.json --params params.toml
 
-# Inference (MLE via IF2)
-camdl fit if2 --model model.ir.json --data cases.tsv
-
-# Inference (Bayesian via PGAS)
-camdl fit pgas --model model.ir.json --data cases.tsv
+# Inference (MLE via IF2, or Bayesian via PGAS) — write a fit.toml
+# declaring the model, data, parameters to estimate, and one or more
+# [stages.X] blocks (algorithm = "if2" / "pgas"), then run it:
+camdl fit run fit.toml
 ```
 
 ## Documentation

@@ -1,10 +1,9 @@
-//! gh#147 (M3.2). The fit-stage CAS identity: map a resolved fit stage into
-//! the `runid` factored levels (`fit` / `NN-stage` / `seed`) and its leaf
-//! `run_id`.
+//! The fit-stage CAS identity: map a resolved fit stage into the `runid`
+//! factored levels (`fit` / `NN-stage` / `seed`) and its leaf `run_id`.
 //!
-//! Factoring (per the proposal — `FitDigest` excludes `[stages.*]` so editing
-//! the posterior's block doesn't re-key the scout; cross-stage invalidation
-//! rides the deps-DAG):
+//! Factoring (`FitDigest` excludes `[stages.*]` so editing the posterior's
+//! block doesn't re-key the scout; cross-stage invalidation rides the
+//! deps-DAG):
 //!
 //! - **fit level** = [`FitDigest`] = whole-IR model digest + per-stream data
 //!   digests + the canonicalized fit-wide config (with `stages` / `fit_seeds`
@@ -15,16 +14,13 @@
 //!   identity).
 //! - **seed level** = [`Seed`] = the resolved fit RNG seed.
 //!
-//! **Commit-1 deviation (tracked to M3.3):** PGAS `n_trajectories` is an
-//! output-shaping knob that `identity_payload` omits, and PGAS writes
-//! `chain_N/trajectories/` nested under the leaf. To avoid a silent reuse of
-//! the wrong trajectory count (the same stage `run_id` serving a different
-//! `n_trajectories`'s output), Commit 1 folds `n_trajectories` into the stage
-//! identity ([`Stage::cas_n_trajectories`]) — so each value yields a distinct
-//! leaf (correct), at the cost of re-fitting when it changes. M3.3 relocates
-//! `trajectories/` to a root-level child keyed on `n_trajectories` and removes
-//! it from the stage identity, at which point changing it is a cheap re-save;
-//! existing Commit-1 fit leaves re-key once when that lands (fine pre-beta).
+//! `n_trajectories` (the count of posterior trajectories PGAS writes to
+//! `chain_N/trajectories/` under the leaf) is folded into the stage identity
+//! ([`Stage::cas_n_trajectories`]). It is an output-shaping knob that
+//! `identity_payload` otherwise omits, but it must be in the key: a count that
+//! changes stored output has to change the `run_id`, else a stage `run_id`
+//! could serve a different trajectory count's output. So each value yields a
+//! distinct leaf (count-in-the-key), at the cost of re-fitting when it changes.
 
 use indexmap::IndexMap;
 
@@ -281,8 +277,8 @@ fn fit_config_blob_hash(config: &FitConfigV2) -> Result<ContentHash, String> {
 }
 
 /// The stage-level config hash: the stage's `identity_payload` (which omits
-/// the extension dim + `n_trajectories`) re-augmented with `n_trajectories`
-/// (the Commit-1 deviation — see the module note and
+/// the extension dim + `n_trajectories`) re-augmented with `n_trajectories`,
+/// which is count-in-the-key (see the module note and
 /// [`Stage::cas_n_trajectories`]).
 fn stage_config_hash(stage: &Stage) -> Result<ContentHash, String> {
     // Gate the Stage struct itself: `identity_payload()` already built its
@@ -338,9 +334,10 @@ pub fn resolve_fit_stage(ctx: &FitStageCtx) -> Result<ResolvedFitStage, String> 
 }
 
 /// Build the `RunRecord` for a fit-stage leaf. `inputs` carries the
-/// (recorded-not-hashed) FitStageMeta-equivalent for `show`/`status` display;
-/// identity is the `levels` + `deps`. `artifacts` is filled by the store at
-/// `finalize` (the recursive exact-set of everything the runners streamed).
+/// recorded-not-hashed display fields (method / backend / n_chains /
+/// best_chain / best_loglik) for `show`/`status`; identity is the `levels` +
+/// `deps`. `artifacts` is filled by the store at `finalize` (the recursive
+/// exact-set of everything the runners streamed).
 pub fn build_fit_stage_record(
     resolved: &ResolvedFitStage,
     deps: &[ArtifactRef],

@@ -25,9 +25,7 @@ use crate::fit::fit_tree::{derive_axes, StageAxes};
 use crate::run_meta::{Backend, MethodKind, ParameterProvenance, ResolvedPriorEntry};
 
 /// One fit-stage leaf, projected to the headline numbers the fit consumers
-/// read. Reproduces the fields the retired `from_fit_record` adapter exposed
-/// via a synthesized `FitStageMeta`, but read directly from the leaf's
-/// `RunRecord` (`inputs` + path-derived `axes`).
+/// read directly from the leaf's `RunRecord` (`inputs` + path-derived `axes`).
 #[derive(Debug, Clone)]
 pub struct FitStageView {
     /// Stage directory holding this leaf's `run.json` (the consumer loads the
@@ -38,7 +36,7 @@ pub struct FitStageView {
     /// Inference algorithm tag.
     pub method: MethodKind,
     /// Simulation backend the stage ran on. Defaults to `ChainBinomial` when
-    /// absent (matches the retired adapter's fallback).
+    /// absent.
     pub backend: Backend,
     pub seed: u64,
     pub n_chains: usize,
@@ -50,8 +48,8 @@ pub struct FitStageView {
 }
 
 /// Fit-level view of a CAS fit segment: the fit-wide identity + provenance plus
-/// one [`FitStageView`] per stage leaf. Reproduces the fold the retired
-/// `read_fit_segment` adapter performed into a `RunKind::Fit` `Run`.
+/// one [`FitStageView`] per stage leaf, folded from the segment's stage-leaf
+/// `RunRecord`s and the fit-level `FitSidecar`.
 #[derive(Debug, Clone)]
 pub struct FitView {
     // ── identity / provenance (some from leaves, some from the sidecar) ──
@@ -297,9 +295,7 @@ mod tests {
     /// sidecar provenance, execution-order `stages_declared`) and the per-stage
     /// fold (stage / method / backend / seed / n_chains / best_loglik /
     /// best_chain). Asserts real values — not `None == None` — so a degenerate
-    /// projection (all-empty / all-None) fails. This is the safety net the
-    /// retired `read_fit_segment` + `from_fit_record` adapters had; the values
-    /// match what those adapters produced (verified before they were deleted).
+    /// projection (all-empty / all-None) fails.
     #[test]
     fn fit_view_folds_segment_field_for_field() {
         let tmp = crate::test_support::unique_temp_dir("fit_view_equiv");

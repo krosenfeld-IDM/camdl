@@ -12,11 +12,12 @@
 //! Each `(grid point × seed × start)` is an independent content-
 //! addressed mini-fit, keyed by the five factored `runid` levels
 //! (`profile` / `point` / `stage` / `seed` / `start`) resolved in
-//! [`crate::profile_cas`]. The leaf is a `RunKind::ProfilePoint` run:
+//! [`crate::profile_cas`]. The leaf is an `ArtifactKind::ProfilePoint` run
+//! under `profiles/`; each path segment is `{label}-{hash8}`:
 //!
 //! ```text
-//! <root>/<profile-base>/<point>/<stage>/<seed>/<start>/
-//!   run.json                                # RunKind::ProfilePoint
+//! results/profiles/{stem}-{h8}/{point}-{h8}/{stage}-{h8}/seed_{n}-{h8}/start_{k}-{h8}/
+//!   run.json                                # RunRecord (kind = profile_point)
 //!   mle.toml                                # MLE at this (point, seed, start)
 //! ```
 //!
@@ -25,8 +26,7 @@
 //! so the next invocation reruns only that leaf while completed leaves
 //! are reused bit-for-bit. The per-seed profile curve and the
 //! cross-seed summary are cross-leaf aggregates with no single home in
-//! the factored tree — they are rebuilt by the derived index (gh#154)
-//! and land in M4.
+//! the factored tree — they are rebuilt from the derived index.
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;

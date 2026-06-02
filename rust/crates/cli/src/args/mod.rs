@@ -774,7 +774,7 @@ pub struct FitRunArgs {
     pub _removed_starts_from: Option<String>,
 
     /// Survey CAS directory consumed when `--init survey_top_k` is in
-    /// effect (gh#51). Must contain `run.json` (RunKind::Survey) and
+    /// effect (gh#51). Must contain `run.json` (kind = survey) and
     /// `landscape.tsv`. Overrides any `survey_path` set on the stage
     /// in fit.toml. Requires --stage; ignored unless the effective
     /// init mode is `survey_top_k`.
@@ -1071,7 +1071,7 @@ pub struct FitTableArgs {
     #[arg(long, value_name = "HASH_PREFIX")]
     pub model: Option<String>,
 
-    /// Filter to fits whose `fit_hash` (Run.hash) starts with the
+    /// Filter to fits whose `fit_hash` starts with the
     /// given prefix. Useful for projecting to one row in JSON without
     /// piping through `jq`. The `summary ⊆ table` Deliverable C test
     /// uses this.
@@ -1157,7 +1157,8 @@ Notes:
 "))]
 pub struct LabelArgs {
     /// Hash prefix of the target run (matches against
-    /// `<root>/{sims,fits,profiles}/**/run.json`'s `Run.hash`)
+    /// `<root>/{sims,fits,profiles}/**/run.json`'s `run_id`, or legacy
+    /// `hash`)
     pub hash: String,
 
     /// New label text. Validated against ^[a-zA-Z0-9 ,._-]{1,64}$

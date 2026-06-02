@@ -12,8 +12,8 @@
 //! This is the identity half of the wiring; the caller supplies resolved
 //! config/params/scenario/seed (from `params_resolver`, the model, and the
 //! seed mixer) and feeds the resulting path + record to `runid`'s `Layout`
-//! and `CasStore`. The model digest is the M2-interim whole-IR digest
-//! (over-invalidates an obs-only edit, never under); M2.5 splits it.
+//! and `CasStore`. The model digest is the whole-IR digest (so an obs-only
+//! edit over-invalidates the trajectory, but never under-invalidates).
 
 use std::collections::{BTreeMap, HashMap};
 

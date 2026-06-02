@@ -18,8 +18,10 @@ use crate::cas_index;
 
 /// Recursively collect every `(dir, RunRecord)` under `subtree` whose dir holds
 /// a parseable `RunRecord` `run.json`. Hidden dirs (`.staging`, `.quarantine`)
-/// are skipped. Descends through leaves too, so declared child sub-artifacts
-/// (`obs/…`, added in M2.5) are discovered as their own records.
+/// are skipped. Descends through leaves too, but a leaf's declared child
+/// sub-artifacts under `obs/…` carry an `obs.json` (not a `run.json`), so they
+/// are not surfaced here as standalone records — they're reached as the
+/// trajectory leaf's `children`.
 pub fn walk_records(subtree: &Path) -> Vec<(PathBuf, RunRecord)> {
     let mut out = Vec::new();
     if !subtree.exists() {

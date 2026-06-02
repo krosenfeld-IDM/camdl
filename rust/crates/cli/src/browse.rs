@@ -339,9 +339,9 @@ fn show_sim_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
     println!("  {}", rec.provenance.argv.join(" "));
 }
 
-/// Render a new-format (`RunRecord`) fit-stage leaf: the factored levels, the
-/// run_id address, the `deps` (lineage), and the recorded FitStageMeta
-/// `inputs` (display-only). Mirrors `show_sim_record` for the CAS fit path.
+/// Render a `RunRecord` fit-stage leaf: the factored levels, the run_id
+/// address, the `deps` (lineage), and the recorded `inputs` (display-only).
+/// Mirrors `show_sim_record` for the CAS fit path.
 fn show_fit_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
     let rec = &leaf.record;
     println!("{}", "path".bright_black()); println!("  {}", rel_path.cyan());
@@ -360,7 +360,7 @@ fn show_fit_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
             println!("  {} {} ({})", d.run_id.short8().dimmed(), d.artifact, d.digest.short8().dimmed());
         }
     }
-    // FitStageMeta-equivalent recorded in `inputs` (display-only, never hashed).
+    // Display fields recorded in `inputs` (display-only, never hashed).
     if let Some(obj) = rec.inputs.as_object() {
         for key in ["method", "backend", "n_chains", "best_chain", "best_loglik"] {
             if let Some(v) = obj.get(key) {
@@ -1042,10 +1042,9 @@ fn leaf_created(leaf: &cas_read::Leaf) -> SystemTime {
         })
 }
 
-/// Find the fit-stage directory whose `run.json` has `Run.hash`
-/// starting with `hash_prefix`. Walks every
-/// `<root>/fits/**/run.json` `FitStage` leaf, matched on its `run_id` hex
-/// prefix.
+/// Find the fit-stage directory whose `run.json` `run_id` starts with
+/// `hash_prefix`. Walks every `<root>/fits/**/run.json` `FitStage` leaf,
+/// matched on its `run_id` hex prefix.
 ///
 /// Returns `Ok(path)` for exactly one match, `Err` on zero or
 /// multiple matches (with the candidates enumerated in the
@@ -1059,8 +1058,7 @@ pub fn resolve_stage_by_hash(root: &str, hash_prefix: &str)
     if !fits.exists() {
         return Err(format!("no fits/ tree under {}", root));
     }
-    // FitStage leaves under fits/, matched on the leaf `run_id` hex prefix —
-    // the same address `from_fit_record` previously surfaced as `Run.hash`.
+    // FitStage leaves under fits/, matched on the leaf `run_id` hex prefix.
     let matches: Vec<std::path::PathBuf> = cas_read::resolve_fit_prefix(Path::new(root), hash_prefix)
         .into_iter()
         .map(|leaf| leaf.dir)

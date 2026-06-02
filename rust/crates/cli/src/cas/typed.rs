@@ -1,25 +1,7 @@
-//! Typed CAS inputs — the unified abstraction for content-addressed runs.
-//!
-//! Every CAS-emitting subcommand (`profile`, `simulate --cas`,
-//! `batch run`, `fit run`) implements [`CasInputs`] for its
-//! single-realization input set. The trait fixes how a run is hashed
-//! and where it lands on disk, so the four commands can't drift on
-//! canonical-string conventions or layout decisions.
-//!
-//! ## Four roles every input plays
-//!
-//! - **Content** (in hash, determines validity): model IR bytes, data
-//!   bytes, algorithm hyperparams, seed for stochastic methods,
-//!   `starts_from` upstream lineage.
-//! - **Path** (in path, determines readability): the 8-char hash
-//!   prefix plus a human stem.
-//! - **Replicate** (parent-child relationship): inputs that *vary*
-//!   an otherwise-identical run for sensitivity analysis (e.g. `seed`
-//!   across a multi-seed sweep).
-//! - **Ephemeral** (nowhere): `--parallel`, progress mode, output
-//!   mirror paths. Recorded in `argv` for forensics, not in any hash.
-//!
-//! See `docs/dev/proposals/2026-04-28-cas-typed-runs-and-profile-stages.md`.
+//! [`ContentHash`] — a SHA-256 newtype the CLI uses to keep content hashes
+//! type-distinct from arbitrary strings. Constructed from canonicalized input
+//! bytes via [`ContentHash::from_bytes`]; used by `profile` / `survey` /
+//! `pfilter` at the sites that fold an input slice into a level hash.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

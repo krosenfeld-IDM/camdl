@@ -26,9 +26,14 @@ pub enum ArtifactKind {
     Survey,
     /// One grid-point × start of a profile scan (`profile`).
     ProfilePoint,
-    /// A synthetic-observation sub-artifact under a trajectory.
+    /// Reserved for a synthetic-observation sub-artifact under a trajectory.
+    /// Not yet constructed: `--cas` obs draws currently live in an `obs/`
+    /// child dir (carrying `obs.json`, not a `RunRecord`); this variant is the
+    /// store kind for promoting them to first-class leaves.
     Obs,
-    /// A lineage projection (`realize`/`tree`/`cohort`/`sojourn`).
+    /// Reserved for a lineage projection (`realize`/`tree`/`cohort`/`sojourn`).
+    /// Not yet constructed; defined so its store partition + run-id tag are
+    /// pinned ahead of wiring the `lineage` subcommands into the CAS store.
     Projection,
 }
 

@@ -7,7 +7,7 @@ mod cas_read;       // generic RunRecord reader (new-format sims); transitional 
 mod cas_index;      // derived run_id→leaf index + `camdl reindex` (gh#147 M4)
 mod hashing;
 mod resolve;        // Resolve bridge: CLI inputs → runid identity (CAS run-identity refactor, gh#147)
-mod run_meta;       // unified Run/RunKind ADT — see docs/dev/proposals/2026-04-19-unified-output-tree.md
+mod run_meta;       // cross-cutting run-metadata value types (MethodKind, Backend, provenance records, FitSidecar)
 mod run_paths;      // canonical output-path helpers
 mod cas;
 mod browse;
@@ -1262,7 +1262,7 @@ struct CasCtx {
     record: runid::RunRecord,
 }
 
-/// Resolve the CAS run directory and build a `RunMeta` template for a
+/// Resolve the CAS run directory and build the `runid::RunRecord` for a
 /// single (model, scenario, seed) triple. Mirrors the relevant bits of
 /// `util::run_simulation`'s model-load + scenario-resolve pipeline so
 /// the hash inputs match exactly without re-running the sim.

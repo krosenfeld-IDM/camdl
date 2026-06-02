@@ -1721,7 +1721,7 @@ fn escape_latex(s: &str) -> String {
 ///
 /// `stage_filter` selects an explicit stage (must be present in
 /// `discovered`); when `None`, picks the *terminal* stage in
-/// declaration order (`FitMeta.stages_declared` walked in reverse).
+/// declaration order (`FitView.stages_declared` walked in reverse).
 fn dump_params_only(
     dir: &str,
     stage_filter: Option<&str>,

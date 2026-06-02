@@ -1,31 +1,42 @@
 //! Content-addressable storage helpers shared between `camdl simulate --cas`
 //! (one-shot cache opt-in) and `camdl batch run` (bulk experiments).
 //!
-//! Canonical layout (as of the 2026-04-19 output-tree unification):
+//! The on-disk store is the `runid` factored layout, rooted at `results/`
+//! (the default output root). A leaf's path is one `{label}-{hash8}` segment
+//! per identity level in path order; the label is provenance, the `hash8` is
+//! identity (see `runid::layout`). For a forward simulation the levels are
+//! `model` / `config` / `params` / `scenario` / `seed`
+//! (`resolve::resolve_trajectory`):
 //!
 //! ```text
-//! <root>/                                     # default: ./output
-//!   sims/                                     # was `runs/` before 2026-04-19
-//!     {sim_hash[:8]}/                         # model + base params + backend + dt + version
-//!       {scenario_slug}-{scen_hash[:8]}/      # scenario delta (enable/disable/overrides)
-//!         seed_{n}/
-//!           traj.tsv                          # trajectory output (canonical)
-//!           run.json                          # run metadata
-//!           obs/                              # optional, one dir per (obs-model, obs-seed)
-//!             {obs_hash[:8]}-{obs_seed}/
-//!               <stream>.tsv                  # observation draws (wide or per-stream)
-//!               obs.json                      # obs metadata
-//!   fits/                                     # was `results/fits/` before 2026-04-19
-//!     <config_stem>/
-//!       real/fit_<seed>/<stage>/              # or synthetic/ds_NN/fit_<seed>/<stage>/
+//! results/
+//!   sims/
+//!     {model_stem}-{h8}/                      # whole-IR model digest (+ version)
+//!       {backend}-dt{dt}-{h8}/                # backend + dt + output schedule
+//!         {param_label}-{h8}/                 # resolved base params (+ sweep point)
+//!           {scenario}-{h8}/                  # scenario delta (enable/disable/overrides)
+//!             seed_{n}-{h8}/
+//!               traj.tsv                      # trajectory output (canonical)
+//!               run.json                      # RunRecord (kind = sim)
+//!               obs/                          # optional, one dir per (obs-model, obs-seed)
+//!                 {obs_hash[:8]}-{obs_seed}/
+//!                   <stream>.tsv              # observation draws (wide or per-stream)
+//!                   obs.json                  # obs metadata (NOT a RunRecord)
+//!   fits/
+//!     {fit_stem}-{h8}/                        # FitDigest (model + data + fit-wide config)
+//!       {NN}-{stage}-{h8}/                    # e.g. 01-scout-{h8}, 02-posterior-{h8}
+//!         seed_{n}-{h8}/
+//!           run.json                          # RunRecord (kind = fit_stage)
 //! ```
 //!
-//! Browsed uniformly by `camdl list / show / cat`.
+//! Browsed uniformly by `camdl list / show / cat`, which read `run.json`
+//! (never the path segments).
 //!
-//! The split between `traj.tsv` (outer run dir) and `obs/{obs_hash}-{obs_seed}/`
-//! lets users iterate observation draws without recomputing the trajectory —
-//! the trajectory cache key is `(sim_hash, scen_hash, seed)`; the obs cache
-//! key is `(trajectory, obs_hash, obs_seed)`.
+//! The split between `traj.tsv` (the trajectory leaf) and its
+//! `obs/{obs_hash}-{obs_seed}/` child lets users iterate observation draws
+//! without recomputing the trajectory: the trajectory identity is the five
+//! levels above; the obs child is keyed on `(trajectory run_id, obs_hash,
+//! obs_seed)`.
 
 pub mod typed;
 

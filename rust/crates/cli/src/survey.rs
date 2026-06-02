@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! <root>/surveys/<stem>-<hash[:8]>/
-//!   run.json            # RunKind::Survey(SurveyMeta)
+//!   run.json            # RunRecord (kind = survey)
 //!   landscape.tsv       # primary artifact (always)
 //!   summary.json        # SE distribution, top-K stats, dimensionality info
 //!   landscape.html      # interactive pair-plot (only when --render)
@@ -960,7 +960,7 @@ fn eval_point_pfilter(
             skip_first_obs_from_loglik: false,
             record_ancestry: false,
             record_prequential: false,
-            // Non-CAS legacy path keeps the env-resolved wall-clock budget.
+            // Keep the env-resolved wall-clock budget for the PF.
             pf_wallclock_disabled: false,
         };
         match bootstrap_filter(process, obs_model, params, &cfg, seed) {
