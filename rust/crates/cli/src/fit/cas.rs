@@ -292,17 +292,62 @@ fn stage_config_hash(stage: &Stage) -> Result<ContentHash, String> {
     Ok(digest_value(&v))
 }
 
+/// Build the `fit`-level [`FitDigest`] — the seed-independent, stage-
+/// independent identity shared by every stage leaf of a fit. This is the
+/// single source of truth for the `fit` level: [`resolve_fit_stage`] folds it
+/// into the leaf, and [`fit_segment_dir`] hashes it into the `fits/{stem}-{h8}/`
+/// directory name, so the announced fit directory and the directory the leaves
+/// actually land in are guaranteed identical (they share this function).
+pub fn fit_level_digest(
+    model: &ir::Model,
+    ir_version: &str,
+    engine_version: &str,
+    config: &FitConfigV2,
+    data_paths: &IndexMap<String, String>,
+) -> Result<FitDigest, String> {
+    Ok(FitDigest {
+        model: crate::resolve::model_digest(model, ir_version, engine_version),
+        data: build_data_digests(data_paths)?,
+        fit_toml: fit_config_blob_hash(config)?,
+        engine: EngineVersion(engine_version.to_string()),
+    })
+}
+
+/// The fit-level content hash (the `fit` level's `ContentHash`). Identical to
+/// the hash `resolve_fit_stage` puts on the `fit` level, so a fit's directory
+/// name (`fits/{stem}-{short8}/`) and its leaves' `fit` level always agree.
+pub fn fit_level_hash(
+    model: &ir::Model,
+    ir_version: &str,
+    engine_version: &str,
+    config: &FitConfigV2,
+    data_paths: &IndexMap<String, String>,
+) -> Result<ContentHash, String> {
+    Ok(fit_level_digest(model, ir_version, engine_version, config, data_paths)?.content_hash())
+}
+
+/// The fit segment directory for a known fit-level hash:
+/// `<root>/fits/{path_label(stem)}-{short8}/`. This is the grandparent of
+/// every stage leaf (`store_path` factors the leaf as
+/// `fits/{fit}/{NN-stage}/{seed}/`), so the directory this returns is exactly
+/// where `resolve_fit_stage`'s leaves land — `fit run` can announce it and be
+/// right. Pass the hash from [`fit_level_hash`] (the `fit`-level
+/// `ContentHash`).
+pub fn fit_segment_dir(root: &Path, stem: &str, fit_hash: &ContentHash) -> std::path::PathBuf {
+    root.join(ArtifactKind::FitStage.store_dir())
+        .join(format!("{}-{}", runid::path_label(stem), fit_hash.short8()))
+}
+
 /// Resolve a fit-stage leaf's identity: the three factored levels (fit /
 /// `NN-stage` / seed) and the `run_id` derived from their hashes.
 pub fn resolve_fit_stage(ctx: &FitStageCtx) -> Result<ResolvedFitStage, String> {
-    let model = crate::resolve::model_digest(ctx.model, ctx.ir_version, ctx.engine_version);
-    let data = build_data_digests(ctx.data_paths)?;
-    let fit = FitDigest {
-        model,
-        data,
-        fit_toml: fit_config_blob_hash(ctx.config)?,
-        engine: EngineVersion(ctx.engine_version.to_string()),
-    };
+    let fit = fit_level_digest(
+        ctx.model,
+        ctx.ir_version,
+        ctx.engine_version,
+        ctx.config,
+        ctx.data_paths,
+    )?;
 
     let stage_config = StageConfig {
         config: stage_config_hash(ctx.stage)?,

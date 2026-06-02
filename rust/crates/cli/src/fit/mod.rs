@@ -302,8 +302,56 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     // (consumed by the match-arm provenance below). The fit-level outputs
     // (grid summary, sweep_failures) still use `fit_dir` for swept/synthetic
     // multi-cell fits — their CAS-segment relocation is M3.3.
-    let (parent_fit_hash, fit_sidecar) =
-        build_fit_run(&config, &fit_path, validated_label, Some(&model));
+    // The fit-level identity (the `fit` CAS level) and the directory its
+    // stage leaves actually land in. `parent_fit_hash` is the fit-level
+    // `ContentHash` (the same hash `resolve_fit_stage` puts on the `fit`
+    // level, and the same one `FitView.fit_hash` reads back from `run.json`),
+    // and `announced_fit_dir` is `fits/{stem}-{h8}/` built from it — so the
+    // path `fit run` announces is exactly where the `NN-stage-{h8}` leaves
+    // are written, not the divergent legacy `fit_content_hash` directory.
+    //
+    // Computable only for real-data fits (the base `[data]` streams); a
+    // synthetic fit generates its data per-cell under `fit_dir`, so its
+    // FitDigest isn't known until generation. For synthetic we fall back to
+    // the legacy `fit_dir` for the announcement (also where the synthetic
+    // data is written), and per-cell leaves still resolve their own segment.
+    let announce_cas_root = crate::run_paths::output_root(None, config.output_dir.as_deref());
+    let announce_stem = crate::hashing::path_stem_slug(&fit_path)
+        .unwrap_or_else(|| "fit".to_string());
+    let announce_ir_version = ir::IR_VERSION.trim().to_string();
+    let base_data_paths: Option<indexmap::IndexMap<String, String>> = config.data_spec().ok().and_then(|ds| {
+        let model_obs_names: Vec<String> =
+            model.observations.iter().map(|o| o.name.clone()).collect();
+        ds.effective_observations(&model_obs_names).ok()
+    });
+    let (parent_fit_hash, announced_fit_dir) = match &base_data_paths {
+        Some(data_paths) => {
+            let h = cas::fit_level_hash(
+                &model,
+                &announce_ir_version,
+                crate::version::VERSION_SHORT,
+                &config,
+                data_paths,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: fit-level identity: {}", e);
+                std::process::exit(1);
+            });
+            let dir = cas::fit_segment_dir(&announce_cas_root, &announce_stem, &h);
+            (h.to_hex(), dir)
+        }
+        // Synthetic: keep the legacy fit-content hash + fit_dir for the
+        // announcement; per-cell stage leaves resolve their own segment.
+        None => (
+            config.fit_content_hash(&fit_path).unwrap_or_else(|e| {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }),
+            fit_dir.clone(),
+        ),
+    };
+
+    let fit_sidecar = build_fit_sidecar(&config, &fit_path, validated_label, Some(&model));
 
     eprintln!("fit: {} ({} stage{})",
         fit_path,
@@ -317,7 +365,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         let resolved = config.fixed.resolve().unwrap_or_default();
         resolved.keys().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
     });
-    eprintln!("  output:   {}", fit_dir.display());
+    eprintln!("  output:   {}", announced_fit_dir.display());
 
     // IC-free inference diagnostic: when ic_free = true, make it
     // visible on the startup block so the user can confirm the PF is
@@ -1442,7 +1490,12 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
             eprintln!("    cell {:>2} / pt {:>2} ({}) stage={} reason={}",
                 cell_i + 1, pt_idx + 1, slug, stage, reason);
         }
-        let path = fit_dir.join("sweep_failures.tsv");
+        // Land beside the leaves: the fit segment dir `fit run` announced
+        // (the FitDigest `fits/{stem}-{h8}/`), not the divergent legacy
+        // `fit_dir`. Create it first — a sweep keys each cell's own segment,
+        // so the base segment may not yet exist on disk.
+        let _ = std::fs::create_dir_all(&announced_fit_dir);
+        let path = announced_fit_dir.join("sweep_failures.tsv");
         let mut tsv = String::from("cell\tsweep_point\tsweep_values\tstage\treason\n");
         for (cell_i, pt_idx, stage, reason) in &sweep_failures {
             let slug: String = sweep_points[*pt_idx].iter()
@@ -1551,16 +1604,12 @@ fn copy_resume_carryover(base: &std::path::Path, new_leaf: &std::path::Path) -> 
 /// flat_explicit`); pass `None` when no model is in scope (`fit
 /// where` doesn't load the IR for a path-only resolution) and the
 /// `resolved_priors` audit will be empty in that case.
-fn build_fit_run(
+fn build_fit_sidecar(
     config: &config_v2::FitConfigV2,
     fit_path: &str,
     label: Option<String>,
     model_for_priors: Option<&ir::Model>,
-) -> (String, crate::run_meta::FitSidecar) {
-    let fit_hash = config.fit_content_hash(fit_path).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    });
+) -> crate::run_meta::FitSidecar {
     let model_ir_json = read_ir_json_or_empty(&config.model.camdl);
     let model_hash = if model_ir_json.is_empty() {
         String::new()
@@ -1617,7 +1666,7 @@ fn build_fit_run(
         _ => Vec::new(),
     };
     let _ = stages_declared; // stages come from the leaves; sidecar omits them.
-    let sidecar = crate::run_meta::FitSidecar {
+    crate::run_meta::FitSidecar {
         label,
         model_path: config.model.camdl.clone(),
         model_hash,
@@ -1630,8 +1679,7 @@ fn build_fit_run(
         // gh#83/gh#85 step 9: top-level parameter provenance is populated by
         // the fit-finalization layer that owns the resolved-params view.
         parameters_provenance: Default::default(),
-    };
-    (fit_hash, sidecar)
+    }
 }
 
 fn format_prior(p: &Option<config_v2::EstimatePriorSpec>) -> String {

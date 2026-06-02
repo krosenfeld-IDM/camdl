@@ -253,3 +253,97 @@ fn fit_theta_hat_identical_across_parallelism() {
         "θ̂ (scout mle_params.toml) must be bit-identical at --parallel 1 vs 8 \
          (CAS fits are watchdog-None and the engine is parallel-invariant)");
 }
+
+/// Property 3 (Q2): `fit run` must announce the directory its stage leaves
+/// actually land in. The leaves are written by `resolve_fit_stage` under the
+/// `FitDigest` fit-level segment (`fits/{stem}-{h8}/`); the announced
+/// `output:` line must be exactly that segment — i.e. the announced path
+/// EXISTS and is the parent of the `NN-stage-{h8}` leaf dirs.
+///
+/// Pre-fix, the announcement used `config.fit_dir()` (a `fit_content_hash`-
+/// keyed dir) while the leaves landed under the divergent `FitDigest` dir, so
+/// the announced path was empty / nonexistent. This pins them to one basis.
+#[test]
+fn fit_run_announces_the_real_leaf_directory() {
+    let Some(bin) = bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let data = write_data(tmp.path());
+
+    let toml = write_fit_toml(tmp.path(), &out, &data, 4);
+    let r = run_fit(&bin, &toml, 1);
+    assert!(r.status.success(), "fit run failed: {}", String::from_utf8_lossy(&r.stderr));
+    let stderr = String::from_utf8_lossy(&r.stderr);
+
+    // Parse the announced `output:` directory from the startup block.
+    let announced = stderr
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("output:"))
+        .map(|s| PathBuf::from(s.trim()))
+        .unwrap_or_else(|| panic!("no `output:` line in fit run stderr:\n{stderr}"));
+
+    // The announced dir must exist (pre-fix it was an empty/absent
+    // fit_content_hash directory while the leaves went elsewhere).
+    assert!(
+        announced.is_dir(),
+        "announced output dir must exist on disk: {}\nstderr:\n{stderr}",
+        announced.display(),
+    );
+
+    // Locate the actual stage leaf (the dir holding a fit_stage run.json) and
+    // confirm the announced dir is its grandparent — the fit segment that
+    // `store_path` factors as fits/{fit}/{NN-stage}/{seed}/.
+    let leaf_dir = {
+        let mut stack = vec![out.join("fits")];
+        let mut hit = None;
+        while let Some(d) = stack.pop() {
+            if d.join("run.json").exists() {
+                let txt = std::fs::read_to_string(d.join("run.json")).unwrap_or_default();
+                if txt.contains("\"fit_stage\"") {
+                    hit = Some(d.clone());
+                    break;
+                }
+            }
+            if let Ok(es) = std::fs::read_dir(&d) {
+                for e in es.flatten() {
+                    if e.path().is_dir() {
+                        stack.push(e.path());
+                    }
+                }
+            }
+        }
+        hit.unwrap_or_else(|| panic!("no fit_stage leaf under {}", out.join("fits").display()))
+    };
+
+    // Leaf factoring: fits/{fit}/{NN-stage}/{seed}/run.json — so the fit
+    // segment is the seed dir's grandparent (= leaf_dir.parent().parent()).
+    let fit_segment = leaf_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or_else(|| panic!("leaf {} has no fit-segment grandparent", leaf_dir.display()));
+
+    assert_eq!(
+        announced.canonicalize().unwrap(),
+        fit_segment.canonicalize().unwrap(),
+        "the announced `output:` dir ({}) must equal the actual fit segment \
+         that holds the NN-stage leaf dirs ({})",
+        announced.display(),
+        fit_segment.display(),
+    );
+
+    // And the segment really contains the stage tree (a NN-stage-* child).
+    let has_stage_child = std::fs::read_dir(&fit_segment)
+        .unwrap()
+        .flatten()
+        .any(|e| {
+            e.path().is_dir()
+                && e.file_name().to_string_lossy().contains("-stage-")
+                || e.file_name().to_string_lossy().contains("scout")
+                || e.file_name().to_string_lossy().contains("posterior")
+        });
+    assert!(
+        has_stage_child,
+        "announced fit segment {} must contain the NN-stage leaf dirs",
+        fit_segment.display(),
+    );
+}
