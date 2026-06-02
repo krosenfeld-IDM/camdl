@@ -669,6 +669,9 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         model_stem: model_stem.clone(),
         base_model: batch_model.clone(),
         base_params: base_params.clone(),
+        // Batch TOML has no `--table` mechanism (its `[config]` carries no
+        // table field); embedded tables ride the whole-IR model digest.
+        table_files: HashMap::new(),
         backend,
         dt,
         allow_degenerate_rates: a.allow_degenerate_rates,
@@ -724,6 +727,14 @@ pub(crate) struct CasSink {
     /// Resolved base parameter values; per cell, the sweep point is layered on
     /// top into the `params` level (a resolved value, not the scenario delta).
     pub(crate) base_params: HashMap<String, f64>,
+    /// External `--table NAME=PATH` overrides (name → file path). The table
+    /// reference in the IR is identity-inert on its own; the file's *content*
+    /// is what enters the run_id, so each resolve reads the bytes and folds
+    /// their digest into the `params` level (`ResolvedParams.tables`). Empty
+    /// for batch (its TOML has no `--table` mechanism); populated by
+    /// `simulate --table`. An edit to a `--table` file re-keys the run, so a
+    /// changed `matrix.tsv` cannot serve a stale cached trajectory.
+    pub(crate) table_files: HashMap<String, String>,
     pub(crate) backend: crate::args::types::Backend,
     pub(crate) dt: f64,
     pub(crate) allow_degenerate_rates: bool,
@@ -759,6 +770,29 @@ impl CasSink {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("."))
+    }
+
+    /// Content digests of the external `--table` files, sorted by table name,
+    /// for folding into the `params` level (`ResolvedParams.tables`). Each
+    /// file's *bytes* are hashed (never its path), so a regenerated or edited
+    /// table re-keys the run and a stale cached trajectory is never served.
+    ///
+    /// Mirrors `profile_cas::data_digests`: sort by name, `digest_bytes` per
+    /// file (= `ContentHash::from_hex(sha256_hex(bytes))`). Empty `table_files`
+    /// → empty vec, identical to the no-`--table` path (so a plain `simulate`
+    /// is unaffected).
+    fn table_digests(&self) -> Result<Vec<runid::inputs::DataDigest>, String> {
+        let mut names: Vec<&String> = self.table_files.keys().collect();
+        names.sort();
+        names
+            .iter()
+            .map(|name| {
+                let path = &self.table_files[*name];
+                let bytes = std::fs::read(path)
+                    .map_err(|e| format!("cannot read --table file '{}' ({}): {}", name, path, e))?;
+                Ok(runid::inputs::DataDigest(runid::ContentHash::digest_bytes(&bytes)))
+            })
+            .collect()
     }
 
     /// Resolve a cell's trajectory identity + factored store path.
@@ -804,7 +838,7 @@ impl CasSink {
             output: &self.base_model.output.times,
             allow_degenerate_rates: self.allow_degenerate_rates,
             base_params: &params,
-            table_digests: Vec::new(),
+            table_digests: self.table_digests()?,
             enable: &resolved.enable,
             disable: &resolved.disable,
             scen_params: &resolved.params,
@@ -1716,5 +1750,161 @@ mod tests {
         let plans = plan_runs(&[sc("baseline"), sc("with_sia")], &points, &[1, 2, 3],
             "aaaa1111bbbb2222", None, dir.path().to_str().unwrap(), false);
         assert_eq!(plans.len(), 30);
+    }
+
+    // ── --table content folds into the run identity (Q1) ─────────────────────
+
+    use ir::model::{
+        InitialConditions, Model, OutputConfig, OutputSchedule, RegularOutputSchedule,
+        SimulationConfig,
+    };
+
+    fn tiny_model() -> Model {
+        Model {
+            name: "sir".into(),
+            version: "1".into(),
+            time_unit: "days".into(),
+            description: None,
+            origin: None,
+            origin_rata_die: None,
+            compartments: vec![],
+            transitions: vec![],
+            ode_equations: vec![],
+            time_functions: vec![],
+            tables: vec![],
+            interventions: vec![],
+            observations: vec![],
+            parameters: vec![],
+            bindings: vec![],
+            initial_conditions: InitialConditions::Explicit(Default::default()),
+            output: OutputConfig {
+                times: OutputSchedule::Regular(RegularOutputSchedule { start: 0.0, step: 1.0, end: 100.0 }),
+                format: "tsv".into(),
+                trajectory: true,
+                observations: false,
+            },
+            simulation: SimulationConfig {
+                t_start: 0.0,
+                t_end: 100.0,
+                time_semantics: "continuous".into(),
+                dt: Some(1.0),
+                rng_seed: None,
+            },
+            presets: vec![],
+            model_structure: None,
+            balance: None,
+            identity_tracked_compartments: vec![],
+        }
+    }
+
+    /// A `CasSink` whose only non-default identity input is the `--table` map,
+    /// so a run_id difference between two such sinks is attributable to the
+    /// table content alone.
+    fn sink_with_tables(runs_dir: &str, table_files: HashMap<String, String>) -> CasSink {
+        CasSink {
+            resolved_scenarios: vec![ResolvedEntry {
+                name: "baseline".to_string(),
+                route: None,
+                enable: vec![],
+                disable: vec![],
+                params: HashMap::new(),
+            }],
+            model_path: "model.ir.json".to_string(),
+            model_stem: Some("sir".to_string()),
+            base_model: tiny_model(),
+            base_params: HashMap::new(),
+            table_files,
+            backend: crate::args::types::Backend::ChainBinomial,
+            dt: 1.0,
+            allow_degenerate_rates: false,
+            runs_dir: runs_dir.to_string(),
+            obs_enabled: false,
+            force: false,
+            total: 1,
+            counter: 0,
+            completed_runs: Vec::new(),
+            errors: Vec::new(),
+            label: None,
+            fit_dep: Vec::new(),
+            quiet: true,
+        }
+    }
+
+    fn baseline_spec() -> crate::engine::CellSpec {
+        crate::engine::CellSpec {
+            run_idx: 0,
+            point_idx: 0,
+            scenario: crate::sim_job::ScenarioRef::Inline {
+                name: "baseline".to_string(),
+                enable: vec![],
+                disable: vec![],
+                params: indexmap::IndexMap::new(),
+            },
+            point_overrides: indexmap::IndexMap::new(),
+            process_seed: 1,
+            obs_seed: 1 ^ crate::util::SEED_MIX_OBS,
+            sim_run: crate::util::SimRun::default(),
+        }
+    }
+
+    /// `--table NAME=PATH` is a runtime override: the IR carries only the
+    /// table reference, so the file's *content* must enter the run_id. Two
+    /// tables with the same NAME but different CONTENT must resolve to
+    /// DIFFERENT sim run_ids (else a changed `matrix.tsv` silently serves the
+    /// stale cached trajectory); identical content → the same run_id
+    /// (count-in-the-key for tables). Exercises the shared `CasSink`, so the
+    /// fix covers both `simulate` and `batch`.
+    #[test]
+    fn table_content_folds_into_sim_run_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs_dir = dir.path().join("sims");
+        let runs_dir = runs_dir.to_str().unwrap();
+
+        let path_a = dir.path().join("matrix.tsv");
+        let path_b = dir.path().join("matrix2.tsv");
+        let path_c = dir.path().join("matrix3.tsv");
+        std::fs::write(&path_a, b"1.0\t2.0\n3.0\t4.0\n").unwrap();
+        std::fs::write(&path_b, b"9.9\t8.8\n7.7\t6.6\n").unwrap(); // different content
+        std::fs::write(&path_c, b"1.0\t2.0\n3.0\t4.0\n").unwrap(); // same content as A
+
+        let spec = baseline_spec();
+
+        let mk = |p: &std::path::Path| {
+            let mut tf = HashMap::new();
+            tf.insert("contact".to_string(), p.to_str().unwrap().to_string());
+            sink_with_tables(runs_dir, tf)
+        };
+
+        let (rt_a, _, _) = mk(&path_a).cell_resolve(&spec).unwrap();
+        let (rt_b, _, _) = mk(&path_b).cell_resolve(&spec).unwrap();
+        let (rt_c, _, _) = mk(&path_c).cell_resolve(&spec).unwrap();
+
+        // Negative control: with NO --table, the run_id is yet another value,
+        // and it must differ from the with-table run_ids (so the table digest
+        // is genuinely folded in, not silently dropped).
+        let (rt_none, _, _) = sink_with_tables(runs_dir, HashMap::new())
+            .cell_resolve(&spec)
+            .unwrap();
+
+        assert_ne!(
+            rt_a.run_id, rt_b.run_id,
+            "different --table content (same name) MUST produce different sim run_ids"
+        );
+        assert_eq!(
+            rt_a.run_id, rt_c.run_id,
+            "identical --table content MUST produce the same sim run_id"
+        );
+        assert_ne!(
+            rt_a.run_id, rt_none.run_id,
+            "a --table override must change the run_id vs no table (digest folded in)"
+        );
+
+        // The difference is isolated to the params level (tables live there),
+        // never the model/config/scenario/seed levels.
+        assert_eq!(rt_a.levels[0].hash, rt_b.levels[0].hash, "model level unchanged");
+        assert_eq!(rt_a.levels[1].hash, rt_b.levels[1].hash, "config level unchanged");
+        assert_ne!(rt_a.levels[2].hash, rt_b.levels[2].hash, "params level (tables) must differ");
+        assert_eq!(rt_a.levels[3].hash, rt_b.levels[3].hash, "scenario level unchanged");
+        assert_eq!(rt_a.levels[4].hash, rt_b.levels[4].hash, "seed level unchanged");
     }
 }

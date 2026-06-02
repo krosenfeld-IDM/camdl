@@ -1059,6 +1059,10 @@ fn build_simulate_cas_sink(
         model_stem,
         base_model,
         base_params,
+        // External `--table NAME=PATH` overrides: the model IR carries only the
+        // table *reference*; the file content is read at run time, so its bytes
+        // must enter the run_id (folded into the params level by `cell_resolve`).
+        table_files: run.table_files.clone(),
         backend: run.backend,
         dt: run.dt,
         allow_degenerate_rates,
