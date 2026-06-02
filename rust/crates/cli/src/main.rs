@@ -473,7 +473,10 @@ fn run_simulate(a: &args::SimulateArgs) {
     let n_draws_arg: Option<usize>   = a.n_draws;
     let fit_path_for_draws: Option<String> = a.fit.as_ref().map(|p| p.to_string_lossy().into_owned());
     let dry_run     = a.dry_run;
-    let cas_enabled = a.cas;
+    // Content-addressed storage is the default for every `simulate` run.
+    // `--cas` is accepted (and ignored) for compatibility; `--output`/`--obs`
+    // are additive mirrors of the store, never replacements.
+    let _ = a.cas;
     let output_dir_arg: Option<String> = Some(a.output_dir.to_string_lossy().into_owned());
 
     // --obs-only implies --obs or --obs-dir (infer from path: trailing / or existing dir → obs-dir)
@@ -532,19 +535,6 @@ fn run_simulate(a: &args::SimulateArgs) {
         scenario_names.iter().map(|s| Some(s.clone())).collect()
     };
 
-    // --cas currently supports single-run invocations. For sweeps or
-    // replicates, redirect users to `batch run` which has robust CAS.
-    if cas_enabled {
-        let multi_seeds = seeds.len() > 1;
-        let multi_scenarios = scenario_list.len() > 1;
-        let has_draws = draws_path.is_some();
-        if multi_seeds || multi_scenarios || replicates > 1 || has_draws {
-            eprintln!("error: --cas supports single runs only.");
-            eprintln!("  For sweeps (multiple seeds/scenarios/draws/replicates), use");
-            eprintln!("  `camdl batch run FILE` with a TOML config.");
-            std::process::exit(1);
-        }
-    }
     let cas_root = output_dir_arg.clone()
         .unwrap_or_else(|| run_paths::DEFAULT_OUTPUT_ROOT.to_string());
 
@@ -668,12 +658,8 @@ fn run_simulate(a: &args::SimulateArgs) {
     }
 
     use std::io::Write;
-    use owo_colors::OwoColorize;
 
-    // ── CAS preparation (single-run --cas) ─────────────────────────────────
-    // Compute hashes, resolve run path, check for cache hit. If the cached
-    // trajectory already exists, we short-circuit: read it, emit to user's
-    // destination, log 'cache hit' to stderr, and return.
+    // The display label rides on every leaf's `RunRecord.provenance.label`.
     let label_arg: Option<String> = match a.label.as_deref() {
         Some(raw) => match crate::fit::validate_label(raw) {
             Ok(l) => Some(l),
@@ -684,55 +670,9 @@ fn run_simulate(a: &args::SimulateArgs) {
         },
         None => None,
     };
-    let mut cas_ctx: Option<CasCtx> = if cas_enabled {
-        match prepare_cas_ctx(&base_sim_run, scenario_list[0].clone(), seeds[0],
-                              &cas_root, from_fit_hash.clone(), label_arg.clone(),
-                              a.allow_degenerate_rates) {
-            Ok(ctx) => Some(ctx),
-            Err(e) => {
-                eprintln!("error preparing CAS: {}", e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        None
-    };
-    let cas_sim_t0 = std::time::Instant::now();
-
-    if let Some(ref ctx) = cas_ctx {
-        // Identity-gated cache check via the store: a Hit is a Completed leaf
-        // whose run_id + level hashes match and whose exact-set manifest is
-        // intact. Stale/Miss fall through to re-run; a Collision (a different
-        // identity sharing the short-hash path) is left to the commit's
-        // disambiguation, never served.
-        let store = runid::FsCasStore::new(std::path::Path::new(&cas_root));
-        let id = runid::LeafIdentity::new(ctx.record.run_id);
-        match store.lookup(&ctx.run_dir, &id) {
-            runid::Lookup::Hit(_) => {
-                let cached = std::fs::read(ctx.run_dir.join("traj.tsv"))
-                    .unwrap_or_else(|e| {
-                        eprintln!("error reading cached traj.tsv: {}", e);
-                        std::process::exit(1);
-                    });
-                if !suppress_trajectory {
-                    match &output_path {
-                        Some(path) => std::fs::write(path, &cached).unwrap_or_else(|e| {
-                            eprintln!("cannot write {}: {}", path, e); std::process::exit(1);
-                        }),
-                        None => { std::io::stdout().write_all(&cached).unwrap(); }
-                    }
-                }
-                eprintln!("{} {}", "cache hit:".bright_green().bold(), ctx.relative.cyan());
-                return;
-            }
-            runid::Lookup::Stale(reason) => {
-                eprintln!("{} {:?} — re-running", "stale cache:".yellow().bold(), reason);
-            }
-            // Collision: a different artifact occupies the short-hash path;
-            // the commit disambiguates. Miss: nothing cached.
-            runid::Lookup::Collision(_) | runid::Lookup::Miss => {}
-        }
-    }
+    // `from_fit_hash` is provenance only; the store identity rides in the
+    // resolved levels (model/config/params/scenario/seed).
+    let _ = &from_fit_hash;
 
     // ── Load draws if --draws is specified ─────────────────────────────────
     let draws: Vec<HashMap<String, f64>> = if let Some(ref source) = draws_path {
@@ -838,14 +778,17 @@ fn run_simulate(a: &args::SimulateArgs) {
         scenario_names.iter().map(|n| ScenarioRef::Named(n.clone())).collect()
     };
 
-    // ParamSource: --draws yields Draws rows; otherwise a single Point.
+    // ParamSource: --draws yields Draws rows; otherwise a single Point run
+    // `replicates` times. With explicit --seeds the seed-list length is the
+    // replicate count (the engine ignores `Point.replicates` then), so passing
+    // `replicates` is correct in both cases.
     let source = if draws_path.is_some() {
         let rows: Vec<indexmap::IndexMap<String, f64>> = draws.iter()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
             .collect();
         ParamSource::Draws { rows, replicates }
     } else {
-        ParamSource::Point
+        ParamSource::Point { replicates }
     };
 
     // Seeds: explicit --seeds list, else single base seed (replicates
@@ -885,28 +828,52 @@ fn run_simulate(a: &args::SimulateArgs) {
         parallel: 1,
     };
 
-    // The trajectory writer: stdout / -o file / CAS buffer (single-run --cas).
-    // Trajectory suppression is driven by `job.obs` (run-spec §3.1.1).
-    let cas_buffer: Option<cas::RunBuffer> = cas_ctx.as_ref().map(|_| cas::RunBuffer::new());
+    // ── Build the per-cell CAS sink (the system of record) ──────────────────
+    //
+    // Content-addressed storage is the default. Each engine cell (scenario ×
+    // param-point × replicate) commits its own leaf, byte-identical to the
+    // leaf `camdl batch run` writes for the same (model, config, params,
+    // scenario, process_seed) cell — both go through the SAME `CasSink`
+    // (resolve identity via `resolve::resolve_trajectory`, then
+    // `commit_atomic`, plus the per-cell obs child). The `--output`/`--obs`
+    // mirror is layered on top by `StreamSink` (below).
+    let cas_sink = match build_simulate_cas_sink(
+        &base_sim_run,
+        &scenario_names,
+        &cas_root,
+        want_obs || obs_only.is_some() || obs_only_dir.is_some()
+            || obs_path.is_some() || obs_dir.is_some(),
+        a.force,
+        label_arg.clone(),
+        a.allow_degenerate_rates,
+        total_runs,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error preparing CAS: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // The trajectory mirror: stdout / -o file. Trajectory suppression is
+    // driven by `job.obs` (run-spec §3.1.1). The canonical bytes live in the
+    // store; this is the convenience view.
     let traj_out: Option<Box<dyn Write>> = if !job.obs.suppresses_trajectory() {
-        Some(match (&cas_buffer, &output_path) {
-            (Some(buf), _) => Box::new(buf.clone()),
-            (None, Some(path)) => {
+        Some(match &output_path {
+            Some(path) => {
                 let f = std::fs::File::create(path)
                     .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
-                Box::new(std::io::BufWriter::new(f))
+                Box::new(std::io::BufWriter::new(f)) as Box<dyn Write>
             }
-            (None, None) => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
+            None => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
         })
     } else {
         None
     };
 
-    // The combined-obs sink fields are derived from `job.obs` so the
-    // SimulateJob's ObsOutput is the single source of truth (run-spec
-    // §3.1.1). `wants_obs()` gates obs sampling; `file_path`/`dir_path`
-    // select the writer.
-    let mut sink = StreamSink {
+    // The combined-obs / wide-format mirror sink. Its ObsOutput is derived
+    // from `job.obs` (run-spec §3.1.1, single source of truth).
+    let stream = StreamSink {
         traj_out,
         traj_header_written: false,
         dates: a.dates,
@@ -921,59 +888,175 @@ fn run_simulate(a: &args::SimulateArgs) {
         n_draws: 1,
     };
 
+    let mut sink = SimSink { cas: cas_sink, stream };
+
     engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
 
-    // Flush trajectory output before the post-loop writers / CAS write read it.
-    let _ = sink.traj_out.take();
+    // Flush the mirror writer (stdout / -o) before the post-loop obs writer.
+    let _ = sink.stream.traj_out.take();
     if let Some(ref path) = output_path {
-        if !suppress_trajectory && cas_buffer.is_none() {
+        if !suppress_trajectory {
             eprintln!("trajectory written to {}", path);
         }
     }
 
-    // ── CAS commit (single-run --cas on cache miss) ────────────────────────
-    if let (Some(ctx), Some(buf)) = (cas_ctx.as_mut(), cas_buffer.as_ref()) {
-        let bytes = buf.bytes();
-        // Mirror to the user's destination (the canonical artifact bytes are
-        // what gets committed; this is the requested view).
-        if !suppress_trajectory {
-            match &output_path {
-                Some(path) => std::fs::write(path, &bytes).unwrap_or_else(|e| {
-                    eprintln!("cannot write {}: {}", path, e); std::process::exit(1);
-                }),
-                None => {
-                    std::io::stdout().write_all(&bytes).unwrap();
-                }
-            }
+    // Surface any per-cell CAS commit failures (the store is the system of
+    // record; a failed commit is fatal to the run's purpose).
+    if !sink.cas.errors.is_empty() {
+        for e in &sink.cas.errors {
+            eprintln!("error: {}", e);
         }
-        // Commit through the store: atomic stage-then-rename, the exact-set
-        // manifest, and Running → Completed. The store owns the file write —
-        // we hand it the captured bytes rather than touching disk ourselves.
-        let _ = cas_sim_t0; // wall time now lives in provenance timestamps
-        ctx.record.provenance.finished_at =
-            Some(cas::iso8601_utc(std::time::SystemTime::now()));
-        let mut artifacts = runid::Artifacts::new();
-        artifacts.insert("traj.tsv", bytes);
-        let store = runid::FsCasStore::new(std::path::Path::new(&cas_root));
-        let dest = store
-            .commit_atomic(&ctx.run_dir, ctx.record.clone(), artifacts)
-            .unwrap_or_else(|e| {
-                eprintln!("cannot commit CAS run: {}", e);
-                std::process::exit(1);
-            });
-        let rel = dest
-            .strip_prefix(std::path::Path::new(&cas_root))
-            .unwrap_or(&dest)
-            .to_string_lossy()
-            .into_owned();
-        eprintln!("{} {}", "cached:".bright_green().bold(), rel.cyan());
+        std::process::exit(1);
     }
 
-    // ── Write combined observation output ───────────────────────────────────
-    sink.write_obs_output();
+    // Report where the leaves landed.
+    report_cas_leaves(&sink.cas.completed_runs, &cas_root);
+
+    // ── Write the combined observation mirror ───────────────────────────────
+    sink.stream.write_obs_output();
+}
+
+/// `RunSink` for `camdl simulate`: writes the per-cell content-addressed
+/// leaf (`cas`, shared with `batch run`) AND the `--output`/`--obs` mirror
+/// (`stream`, the combined wide-format TSV). The store is the system of
+/// record; the mirror is the convenience view. Every planned cell runs —
+/// `should_run` is never overridden to skip — because the combined mirror
+/// needs every cell's rows; cache hits are handled idempotently by the
+/// store's `commit_atomic`.
+struct SimSink {
+    cas: crate::batch::CasSink,
+    stream: StreamSink,
+}
+
+impl engine::RunSink for SimSink {
+    fn on_start(&mut self, grid: &engine::Grid) {
+        self.stream.on_start(grid);
+    }
+
+    fn merge_cell(&mut self, cell: &engine::CellResult) -> Result<(), String> {
+        // Leaf first (system of record), then the mirror. A commit error is
+        // accumulated on `cas.errors` and surfaced after the loop, never
+        // silently dropped.
+        self.cas.merge_cell(cell)?;
+        self.stream.merge_cell(cell)
+    }
+}
+
+/// Build the simulate-side [`crate::batch::CasSink`] so each cell's leaf is
+/// byte-identical to the leaf `batch run` writes for the same logical cell.
+///
+/// The identity inputs mirror batch exactly:
+///   - `base_model` is the **raw** parsed IR (params NOT applied), so the
+///     model level digest is constant across the grid and carries no param
+///     values — those live in the `params` level.
+///   - `base_params` is the resolved base parameter map (`--params` ∪
+///     `--param`), the same resolved values the `params` level hashes.
+///   - `resolved_scenarios` carry the hash-relevant enable/disable/params
+///     delta (a model preset's own fields, or the CLI ad-hoc patch).
+#[allow(clippy::too_many_arguments)]
+fn build_simulate_cas_sink(
+    run: &util::SimRun,
+    scenario_names: &[String],
+    cas_root: &str,
+    obs_enabled: bool,
+    force: bool,
+    label: Option<String>,
+    allow_degenerate_rates: bool,
+    total_runs: usize,
+) -> Result<crate::batch::CasSink, String> {
+    // Parse the raw IR (envelope-aware) — params NOT applied (batch parity).
+    let (ir_path_resolved, _tmp) = util::resolve_ir_path(&run.ir_path)?;
+    let src = std::fs::read_to_string(&ir_path_resolved)
+        .map_err(|e| format!("cannot read {}: {}", ir_path_resolved, e))?;
+    let base_model: ir::Model = ir::from_str(&src)
+        .map_err(|e| format!("IR load error from {}: {}", ir_path_resolved, e))?;
+
+    // Resolved base params: model defaults overlaid by --params then --param,
+    // filtered to the params that resolved to a value (a param that relies on
+    // the scenario half is supplied there, not here — mirrors prepare_cas_ctx).
+    let mut params_model = base_model.clone();
+    for path in &run.params_files {
+        util::apply_params_file(&mut params_model, path)?;
+    }
+    for (k, v) in &run.overrides {
+        if let Some(p) = params_model.parameters.iter_mut().find(|p| &p.name == k) {
+            p.value = Some(*v);
+        }
+    }
+    util::validate_parameter_values(&params_model)?;
+    let base_params: HashMap<String, f64> = params_model.parameters.iter()
+        .filter_map(|p| p.value.map(|v| (p.name.clone(), v)))
+        .collect();
+
+    // Resolve each simulate scenario into the hash-relevant delta. A name
+    // matching a model preset reads the preset's own enable/disable/params
+    // (preset route); the no-scenario case is the CLI ad-hoc baseline.
+    let resolved_scenarios: Vec<crate::batch::ResolvedEntry> = if scenario_names.is_empty() {
+        vec![crate::batch::ResolvedEntry {
+            name: "baseline".to_string(),
+            route: None,
+            enable: run.adhoc_enable.clone(),
+            disable: run.adhoc_disable.clone(),
+            params: HashMap::new(),
+        }]
+    } else {
+        scenario_names.iter().map(|name| {
+            let preset = base_model.presets.iter().find(|p| &p.name == name)
+                .ok_or_else(|| {
+                    let available: Vec<&str> = base_model.presets.iter()
+                        .map(|p| p.name.as_str()).collect();
+                    format!("scenario '{}' not found. Available: {}", name,
+                        if available.is_empty() { "(none)".into() } else { available.join(", ") })
+                })?;
+            Ok(crate::batch::ResolvedEntry {
+                name: name.clone(),
+                route: Some(preset.name.clone()),
+                enable: preset.enable.clone(),
+                disable: preset.disable.clone(),
+                params: preset.params.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            })
+        }).collect::<Result<Vec<_>, String>>()?
+    };
+
+    let model_stem = hashing::path_stem_slug(&run.ir_path);
+    let runs_dir = format!("{}/sims", cas_root);
+
+    Ok(crate::batch::CasSink {
+        resolved_scenarios,
+        model_path: run.ir_path.clone(),
+        model_stem,
+        base_model,
+        base_params,
+        backend: run.backend,
+        dt: run.dt,
+        allow_degenerate_rates,
+        runs_dir,
+        obs_enabled,
+        force,
+        total: total_runs,
+        counter: 0,
+        completed_runs: Vec::new(),
+        errors: Vec::new(),
+        label,
+        quiet: true,
+    })
+}
+
+/// Print the relative store paths of the committed leaves. A lone leaf gets
+/// the familiar `cached: <path>` line (the path is already store-relative,
+/// e.g. `sims/model-…/…/seed_…`); a multi-run prints a one-line summary.
+fn report_cas_leaves(runs: &[crate::batch::RunEntry], _cas_root: &str) {
+    use owo_colors::OwoColorize;
+    match runs.len() {
+        0 => {}
+        1 => eprintln!("{} {}", "cached:".bright_green().bold(),
+            runs[0].run_path.cyan()),
+        n => eprintln!("{} {} leaves under {}",
+            "cached:".bright_green().bold(), n, "sims/".cyan()),
+    }
 }
 
 /// One sampled observation row in the combined-obs accumulator.
@@ -1245,172 +1328,6 @@ impl StreamSink {
 }
 
 // ── Observation helpers ─────────────────────────────────────��───────────────
-
-// ── CAS preparation (single-run --cas) ──────────────────────────────────────
-
-/// Everything needed to write a single-run CAS entry: resolved run
-/// directory + metadata template. Built before simulation so we can
-/// check for a cache hit and skip work if possible.
-struct CasCtx {
-    /// Relative path under the CAS root (the factored
-    /// `sims/{model}-{h8}/…/seed_{n}-{h8}` tree). Logged to stderr.
-    relative: String,
-    /// Absolute path to the run directory (`runid::store_path`).
-    run_dir: std::path::PathBuf,
-    /// The leaf's run record — written through `CasStore` after a
-    /// successful run (status flips Running → Completed at commit).
-    record: runid::RunRecord,
-}
-
-/// Resolve the CAS run directory and build the `runid::RunRecord` for a
-/// single (model, scenario, seed) triple. Mirrors the relevant bits of
-/// `util::run_simulation`'s model-load + scenario-resolve pipeline so
-/// the hash inputs match exactly without re-running the sim.
-fn prepare_cas_ctx(
-    run: &util::SimRun,
-    scenario_name: Option<String>,
-    seed: u64,
-    cas_root: &str,
-    _from_fit_hash: Option<String>,
-    label: Option<String>,
-    allow_degenerate_rates: bool,
-) -> Result<CasCtx, String> {
-    // Load IR source + parse model
-    let (ir_path_resolved, _tmp) = util::resolve_ir_path(&run.ir_path)?;
-    let src = std::fs::read_to_string(&ir_path_resolved)
-        .map_err(|e| format!("cannot read {}: {}", ir_path_resolved, e))?;
-    // gh#audit-C8. Envelope-aware load (see util::load_model).
-    let mut model: ir::Model = ir::from_str(&src)
-        .map_err(|e| format!("IR load error from {}: {}", ir_path_resolved, e))?;
-
-    // Apply --params files and --param overrides to collect base_params
-    // (scenario deltas are the other side of the cache key — don't apply
-    // here). This is a deliberate partial-resolution case: the unified
-    // resolver enforces `UnsetRequired` immediately, which would fail
-    // models that declare a parameter without a default but rely on the
-    // scenario half to supply the value. See
-    // `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`
-    // §"prepare_cas_ctx partial resolution" for the discussion.
-    //
-    // The `apply_params_file` helper is kept solely for this call site;
-    // every other subcommand routes through `params_resolver`.
-    for path in &run.params_files {
-        util::apply_params_file(&mut model, path)?;
-    }
-    for (k, v) in &run.overrides {
-        if let Some(p) = model.parameters.iter_mut().find(|p| &p.name == k) {
-            p.value = Some(*v);
-        }
-    }
-    // Bounds + finite-value check on the params that DID resolve;
-    // params relying on the scenario half are filtered out by
-    // validate_parameter_values' "value = None → skip" rule.
-    util::validate_parameter_values(&model)?;
-    let base_params: HashMap<String, f64> = model.parameters.iter()
-        .filter_map(|p| p.value.map(|v| (p.name.clone(), v)))
-        .collect();
-
-    // Scenario delta
-    let (enable, disable, scen_params) = if let Some(ref name) = scenario_name {
-        let preset = model.presets.iter().find(|p| p.name == *name).cloned()
-            .ok_or_else(|| {
-                let available: Vec<&str> = model.presets.iter().map(|p| p.name.as_str()).collect();
-                format!("scenario '{}' not found. Available: {}",
-                    name,
-                    if available.is_empty() { "(none)".into() } else { available.join(", ") })
-            })?;
-        let params: HashMap<String, f64> =
-            preset.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        (preset.enable.clone(), preset.disable.clone(), params)
-    } else {
-        (run.adhoc_enable.clone(), run.adhoc_disable.clone(), HashMap::new())
-    };
-
-    // External `--table NAME=PATH` injections enter the params identity as
-    // content digests (name ++ content, sorted by name) — never as paths, and
-    // never dropped (a table-file edit must re-key, or it is a silent wrong
-    // answer). Inline tables are already baked into the IR (the model digest).
-    let table_digests = table_content_digests(&run.table_files)?;
-
-    let model_stem = hashing::path_stem_slug(&run.ir_path).unwrap_or_else(|| "model".to_string());
-    let ir_version = ir::IR_VERSION.trim();
-    let scenario_label = scenario_name.clone().unwrap_or_else(|| "baseline".to_string());
-
-    let rctx = crate::resolve::TrajectoryCtx {
-        model: &model,
-        model_stem: &model_stem,
-        ir_version,
-        engine_version: version::VERSION_SHORT,
-        backend: run.backend,
-        dt: run.dt,
-        // The resolved horizon/output live on the (post-resolution) model; a
-        // preset that overrides t_end is already reflected here.
-        t_start: model.simulation.t_start,
-        t_end: model.simulation.t_end,
-        output: &model.output.times,
-        allow_degenerate_rates,
-        base_params: &base_params,
-        table_digests,
-        enable: &enable,
-        disable: &disable,
-        scen_params: &scen_params,
-        param_label: "base",
-        scenario_label: &scenario_label,
-        // single `--cas`: total_runs == 1, so process_seed == base seed.
-        base_seed: seed,
-        process_seed: seed,
-    };
-    let resolved = crate::resolve::resolve_trajectory(&rctx)
-        .map_err(|e| format!("resolve error: {e}"))?;
-
-    let root = std::path::Path::new(cas_root);
-    let run_dir = runid::store_path(root, runid::ArtifactKind::Sim, &resolved.levels);
-    let relative = run_dir.strip_prefix(root).unwrap_or(&run_dir).to_string_lossy().into_owned();
-
-    let record = runid::RunRecord {
-        format_version: runid::FORMAT_VERSION,
-        kind: runid::ArtifactKind::Sim,
-        run_id: resolved.run_id,
-        hash_version: runid::HASH_VERSION,
-        ir_version: ir_version.to_string(),
-        engine_version: version::VERSION_SHORT.to_string(),
-        levels: resolved.levels,
-        deps: Vec::new(),
-        status: runid::RunStatus::Running,
-        artifacts: Default::default(),
-        children: Default::default(),
-        inputs: serde_json::Value::Null,
-        provenance: runid::Provenance {
-            argv: std::env::args().collect(),
-            label,
-            created_at: Some(cas::iso8601_utc(std::time::SystemTime::now())),
-            source_paths: vec![run.ir_path.clone()],
-            camdl_version: Some(version::VERSION_SHORT.to_string()),
-            ..Default::default()
-        },
-    };
-
-    Ok(CasCtx { relative, run_dir, record })
-}
-
-/// Content digests of `--table NAME=PATH` injections: SHA-256 of
-/// `name ++ \0 ++ file_bytes`, sorted by name for determinism. Folds in the
-/// name so re-binding the same bytes to a different table also re-keys.
-fn table_content_digests(
-    tables: &HashMap<String, String>,
-) -> Result<Vec<runid::inputs::DataDigest>, String> {
-    let mut names: Vec<(&String, &String)> = tables.iter().collect();
-    names.sort_by(|a, b| a.0.cmp(b.0));
-    let mut out = Vec::with_capacity(names.len());
-    for (name, path) in names {
-        let bytes = std::fs::read(path).map_err(|e| format!("cannot read table {path}: {e}"))?;
-        let mut framed = name.as_bytes().to_vec();
-        framed.push(0);
-        framed.extend_from_slice(&bytes);
-        out.push(runid::inputs::DataDigest(runid::ContentHash::digest_bytes(&framed)));
-    }
-    Ok(out)
-}
 
 /// Generate observation times from an IR schedule.
 pub(crate) fn obs_schedule_times(

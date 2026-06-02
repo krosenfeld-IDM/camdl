@@ -89,11 +89,15 @@ pub struct SimulateJob {
 /// "sweep points" in batch's loop — unified here).
 #[derive(Debug, Clone)]
 pub enum ParamSource {
-    /// Single point: base params + CLI overrides. One param-point.
-    Point,
+    /// Single point: base params + CLI overrides. One param-point, run
+    /// `replicates` times (each replicate a distinct XOR-mixed seed when
+    /// `Seeds::Single`). `simulate --replicates N` (no `--draws`) sets this.
+    Point { replicates: usize },
     /// Deterministic grid: Cartesian product of swept values. Each point
-    /// overrides the corresponding key in the base params.
-    Sweep { points: Vec<IndexMap<String, f64>> },
+    /// overrides the corresponding key in the base params, run `replicates`
+    /// times. (Batch sweeps drive replication through explicit `seeds`, so
+    /// `replicates` is 1 there; the field keeps the variant symmetric.)
+    Sweep { points: Vec<IndexMap<String, f64>>, replicates: usize },
     /// Pre-resolved parameter draws (posterior file / prior / uniform).
     /// Each row is a complete (or override) parameter vector.
     Draws {
@@ -108,19 +112,22 @@ impl ParamSource {
     /// this is a single empty map (base params unchanged).
     pub fn param_points(&self) -> Vec<IndexMap<String, f64>> {
         match self {
-            ParamSource::Point => vec![IndexMap::new()],
-            ParamSource::Sweep { points } => {
+            ParamSource::Point { .. } => vec![IndexMap::new()],
+            ParamSource::Sweep { points, .. } => {
                 if points.is_empty() { vec![IndexMap::new()] } else { points.clone() }
             }
             ParamSource::Draws { rows, .. } => rows.clone(),
         }
     }
 
-    /// Replicates per param-point (Draws only; 1 elsewhere).
+    /// Replicates per param-point. Honored for every variant so
+    /// `--replicates N` produces N stochastic replicates regardless of
+    /// whether params come from a point, a sweep, or a draw set.
     pub fn replicates(&self) -> usize {
         match self {
-            ParamSource::Draws { replicates, .. } => *replicates,
-            _ => 1,
+            ParamSource::Point { replicates }
+            | ParamSource::Sweep { replicates, .. }
+            | ParamSource::Draws { replicates, .. } => *replicates,
         }
     }
 }

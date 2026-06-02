@@ -521,7 +521,11 @@ pub struct SimulateArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Write output to content-addressable cache
+    /// Accepted for compatibility — content-addressed storage is now the
+    /// default for every `simulate` run (one leaf per cell under
+    /// `--output-dir`). `--output`/`--obs` mirror the store; they no longer
+    /// replace it. The flag is a no-op kept so existing invocations and
+    /// scripts that pass `--cas` keep working.
     #[arg(long)]
     pub cas: bool,
 

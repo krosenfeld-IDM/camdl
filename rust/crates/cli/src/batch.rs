@@ -417,14 +417,14 @@ pub fn plan_runs(
 /// Minimal descriptor for one completed run, included in manifest.json.
 /// The web app uses run_path to construct the URL: /runs/{run_path}/traj.tsv
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RunEntry {
-    scenario: String,
-    seed: u64,
-    run_path: String,
+pub(crate) struct RunEntry {
+    pub(crate) scenario: String,
+    pub(crate) seed: u64,
+    pub(crate) run_path: String,
     /// The cell's sweep point — convenient for aggregating without
     /// reading every run.json.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    sweep_point: HashMap<String, f64>,
+    pub(crate) sweep_point: HashMap<String, f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -696,9 +696,11 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         let points: Vec<indexmap::IndexMap<String, f64>> = sweep_points.iter()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
             .collect();
-        ParamSource::Sweep { points }
+        // Batch replicates ride on the explicit `seeds` list, so the engine
+        // uses that length (not `replicates`) for the rep count.
+        ParamSource::Sweep { points, replicates: 1 }
     } else {
-        ParamSource::Point
+        ParamSource::Point { replicates: 1 }
     };
 
     let job = SimulateJob {
@@ -735,6 +737,8 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         counter: 0,
         completed_runs: Vec::new(),
         errors: Vec::new(),
+        label: None,
+        quiet: false,
     };
 
     crate::engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
@@ -781,29 +785,37 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
 /// identity via [`crate::resolve::resolve_trajectory`] so the path, `run.json`
 /// `run_id`, and recorded sweep point match the `simulate` path exactly. Cache
 /// hits are skipped via `should_run` (the engine never simulates them).
-struct CasSink {
+pub(crate) struct CasSink {
     /// Resolved `[[scenario]]` entries, looked up by name for the
     /// hash-relevant enable/disable/params delta.
-    resolved_scenarios: Vec<ResolvedEntry>,
-    model_path: String,
-    model_stem: Option<String>,
+    pub(crate) resolved_scenarios: Vec<ResolvedEntry>,
+    pub(crate) model_path: String,
+    pub(crate) model_stem: Option<String>,
     /// The **base** model — its whole-IR digest is the (constant-across-cells)
     /// model level. Never `cell.model` (which has scenario + sweep applied).
-    base_model: ir::Model,
+    pub(crate) base_model: ir::Model,
     /// Resolved base parameter values; per cell, the sweep point is layered on
     /// top into the `params` level (a resolved value, not the scenario delta).
-    base_params: HashMap<String, f64>,
-    backend: crate::args::types::Backend,
-    dt: f64,
-    allow_degenerate_rates: bool,
+    pub(crate) base_params: HashMap<String, f64>,
+    pub(crate) backend: crate::args::types::Backend,
+    pub(crate) dt: f64,
+    pub(crate) allow_degenerate_rates: bool,
     /// Absolute `<output>/sims` subtree.
-    runs_dir: String,
-    obs_enabled: bool,
-    force: bool,
-    total: usize,
-    counter: usize,
-    completed_runs: Vec<RunEntry>,
-    errors: Vec<String>,
+    pub(crate) runs_dir: String,
+    pub(crate) obs_enabled: bool,
+    pub(crate) force: bool,
+    pub(crate) total: usize,
+    pub(crate) counter: usize,
+    pub(crate) completed_runs: Vec<RunEntry>,
+    pub(crate) errors: Vec<String>,
+    /// User-supplied display label, recorded on each leaf's
+    /// `RunRecord.provenance.label`. `simulate --label` sets this; batch
+    /// leaves it `None`.
+    pub(crate) label: Option<String>,
+    /// Suppress the `[i/total] scenario=… seed=…` per-cell stderr line.
+    /// `simulate` drives its own output and a lone run shows a progress bar,
+    /// so it sets this to keep the terminal quiet; batch leaves it `false`.
+    pub(crate) quiet: bool,
 }
 
 impl CasSink {
@@ -897,8 +909,10 @@ impl crate::engine::RunSink for CasSink {
         let rel = self.cell_resolve(spec).map(|(_, _, rel)| rel).unwrap_or_default();
         let name = spec.scenario.name().to_string();
         self.counter += 1;
-        eprintln!("[{}/{}] scenario={} seed={} (skipped — cache hit)",
-            self.counter, self.total, name, spec.process_seed);
+        if !self.quiet {
+            eprintln!("[{}/{}] scenario={} seed={} (skipped — cache hit)",
+                self.counter, self.total, name, spec.process_seed);
+        }
         self.completed_runs.push(RunEntry {
             scenario: name,
             seed: spec.process_seed,
@@ -955,6 +969,7 @@ impl crate::engine::RunSink for CasSink {
             inputs: serde_json::Value::Null,
             provenance: runid::Provenance {
                 argv: std::env::args().collect(),
+                label: self.label.clone(),
                 created_at: Some(cas::iso8601_utc(std::time::SystemTime::now())),
                 source_paths: vec![self.model_path.clone()],
                 camdl_version: Some(version::VERSION_SHORT.to_string()),
@@ -986,7 +1001,9 @@ impl crate::engine::RunSink for CasSink {
         }
 
         self.counter += 1;
-        eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
+        if !self.quiet {
+            eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
+        }
         self.completed_runs.push(RunEntry {
             scenario: name,
             seed: spec.process_seed,

@@ -97,7 +97,12 @@ fn cas_first_run_writes_cache_and_metadata() {
 }
 
 #[test]
-fn cas_second_identical_run_is_cache_hit() {
+fn cas_second_identical_run_does_not_rewrite_leaf() {
+    // CAS is the default. A second, byte-identical run re-simulates (the
+    // trajectory is needed for the -o mirror) but the store commit is
+    // idempotent: `commit_atomic` resolves the existing identical leaf to
+    // `AlreadyCompleted` and never re-writes its `traj.tsv`. The proof is the
+    // unchanged mtime.
     let Some(bin) = skip_if_missing_binary() else { return; };
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
@@ -107,7 +112,6 @@ fn cas_second_identical_run_is_cache_hit() {
             .args(["simulate", &golden_sir_basic().to_string_lossy(),
                    "--scenario", "baseline",
                    "--seed", "42",
-                   "--cas",
                    "--output-dir", &output.to_string_lossy(),
                    "-o", &tmp.path().join("traj.tsv").to_string_lossy()])
             .output()
@@ -119,7 +123,7 @@ fn cas_second_identical_run_is_cache_hit() {
     let stderr1 = String::from_utf8_lossy(&first.stderr);
     assert!(stderr1.contains("cached:"), "first run stderr should say 'cached:': {}", stderr1);
 
-    // Wait long enough that the filesystem mtime would differ if rewritten
+    // Wait long enough that the filesystem mtime would differ if rewritten.
     let cache_path = walkdir(&output.join("sims")).into_iter()
         .find(|p| p.join("traj.tsv").exists()).unwrap()
         .join("traj.tsv");
@@ -129,13 +133,10 @@ fn cas_second_identical_run_is_cache_hit() {
 
     let second = run_once();
     assert!(second.status.success());
-    let stderr2 = String::from_utf8_lossy(&second.stderr);
-    assert!(stderr2.contains("cache hit:"),
-        "second run stderr should say 'cache hit:': {}", stderr2);
 
-    // mtime unchanged — second run must not have re-written the file
+    // mtime unchanged — the idempotent commit must not re-write the leaf.
     let mtime2 = std::fs::metadata(&cache_path).unwrap().modified().unwrap();
-    assert_eq!(mtime1, mtime2, "cache hit must not overwrite traj.tsv");
+    assert_eq!(mtime1, mtime2, "idempotent commit must not overwrite traj.tsv");
 }
 
 #[test]
@@ -258,24 +259,159 @@ fn cas_different_models_do_not_collide() {
 }
 
 #[test]
-fn cas_rejects_multi_seeds() {
+fn cas_multi_seeds_writes_one_leaf_per_seed() {
+    // `--cas supports single runs only` is gone: CAS is the default and
+    // multi-run writes one content-addressed leaf per cell — exactly like
+    // `batch run`. `--seeds 1:3` is three seed-slots → three leaves with
+    // three distinct seed-level segments.
     let Some(bin) = skip_if_missing_binary() else { return; };
     let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("output");
 
     let out = Command::new(&bin)
         .args(["simulate", &golden_sir_basic().to_string_lossy(),
                "--scenario", "baseline",
                "--seeds", "1:3",
-               "--cas",
-               "--output-dir", &tmp.path().to_string_lossy()])
+               "--output-dir", &output.to_string_lossy()])
         .output()
         .expect("spawn");
-    assert!(!out.status.success(), "multi-seed + --cas should fail");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--cas supports single runs only"),
-        "error should name the limitation: {}", stderr);
-    assert!(stderr.contains("batch run"),
-        "error should hint at `batch run`: {}", stderr);
+    assert!(out.status.success(), "multi-seed simulate should succeed: {}",
+        String::from_utf8_lossy(&out.stderr));
+
+    let dirs: Vec<_> = walkdir(&output.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(dirs.len(), 3, "three seeds must produce three leaves");
+
+    // Three distinct run_ids (the seed is in the key — count-in-the-key).
+    let mut run_ids: Vec<String> = dirs.iter()
+        .map(|d| read_meta(d)["run_id"].as_str().unwrap().to_string())
+        .collect();
+    run_ids.sort();
+    run_ids.dedup();
+    assert_eq!(run_ids.len(), 3, "three seeds must yield three distinct run_ids");
+
+    // The seed labels cover 1, 2, 3 (explicit --seeds are used verbatim).
+    let labels: Vec<String> = dirs.iter()
+        .map(|d| level_label(&read_meta(d), "seed").to_string()).collect();
+    for s in ["seed_1", "seed_2", "seed_3"] {
+        assert!(labels.iter().any(|l| l == s), "missing {s} in {labels:?}");
+    }
+}
+
+/// Count-in-the-key: `--replicates N` (no `--draws`) writes N distinct leaves,
+/// one per stochastic replicate, each with its own XOR-mixed seed and a
+/// distinct `run_id`. A lone run writes exactly one leaf. This guards the
+/// engine wiring that maps `--replicates` onto the rep dimension for the
+/// `Point` param-source (regression: it previously collapsed to one run).
+#[test]
+fn cas_replicates_write_one_leaf_each_and_single_run_writes_one() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+
+    // 3 replicates → 3 leaves, 3 distinct run_ids.
+    let out3 = tmp.path().join("out3");
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42", "--replicates", "3",
+               "--output-dir", &out3.to_string_lossy(),
+               "-o", &tmp.path().join("c3.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "3-replicate simulate should succeed");
+    let dirs3: Vec<_> = walkdir(&out3.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(dirs3.len(), 3, "3 replicates must write 3 leaves");
+    let mut ids3: Vec<String> = dirs3.iter()
+        .map(|d| read_meta(d)["run_id"].as_str().unwrap().to_string()).collect();
+    ids3.sort(); ids3.dedup();
+    assert_eq!(ids3.len(), 3, "3 replicates must have 3 distinct run_ids (seed in key)");
+
+    // 1 run (no --replicates) → exactly one leaf.
+    let out1 = tmp.path().join("out1");
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42",
+               "--output-dir", &out1.to_string_lossy(),
+               "-o", &tmp.path().join("c1.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "single-run simulate should succeed");
+    let dirs1: Vec<_> = walkdir(&out1.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(dirs1.len(), 1, "a lone simulate run must write exactly one leaf");
+}
+
+/// The load-bearing invariant: `simulate --seeds …` and `batch run` write
+/// leaves at the SAME store paths with the SAME `run_id`s and BYTE-IDENTICAL
+/// `traj.tsv` for the same (model, config, params, scenario, process_seed)
+/// cells. Both go through the shared `CasSink` write path, so divergence here
+/// means the two entry points resolved identity differently — a silent-wrong-
+/// answer class bug (a `simulate` leaf would never be served to a `batch`
+/// cache lookup, or vice versa).
+#[test]
+fn simulate_and_batch_leaves_are_byte_identical() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+
+    let params = tmp.path().join("params.toml");
+    std::fs::write(&params, "beta = 0.3\ngamma = 0.1\nN0 = 1000\nI0 = 10\n").unwrap();
+
+    let sim_out = tmp.path().join("sim_out");
+    let batch_out = tmp.path().join("batch_out");
+
+    // simulate over an explicit seed list.
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline",
+               "--params", &params.to_string_lossy(),
+               "--seeds", "10,11,12",
+               "--output-dir", &sim_out.to_string_lossy(),
+               "-o", &tmp.path().join("c.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "simulate --seeds should succeed");
+
+    // The equivalent batch run: same model, params, seed list, baseline.
+    let batch_toml = tmp.path().join("b.toml");
+    std::fs::write(&batch_toml, format!(r#"
+[config]
+model = "{model}"
+params = "{params}"
+output_dir = "{out}"
+seeds = {{ list = [10, 11, 12] }}
+parallel = 1
+
+[[scenario]]
+name = "baseline"
+"#,
+        model = golden_sir_basic().display(),
+        params = params.display(),
+        out = batch_out.display(),
+    )).unwrap();
+    let st = Command::new(&bin)
+        .args(["batch", "run", &batch_toml.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "batch run should succeed");
+
+    // Enumerate the simulate leaves; for each, the same store-relative path
+    // must exist under batch with the same run_id and identical traj bytes.
+    let sims_root = sim_out.join("sims");
+    let sim_leaves: Vec<_> = walkdir(&sims_root).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(sim_leaves.len(), 3, "expected 3 simulate leaves");
+
+    for sl in &sim_leaves {
+        let rel = sl.strip_prefix(&sims_root).unwrap();
+        let bl = batch_out.join("sims").join(rel);
+        assert!(bl.join("run.json").exists(),
+            "batch missing the same-path leaf: {}", rel.display());
+
+        let sid = read_meta(sl)["run_id"].as_str().unwrap().to_string();
+        let bid = read_meta(&bl)["run_id"].as_str().unwrap().to_string();
+        assert_eq!(sid, bid, "run_id mismatch at {}", rel.display());
+
+        let sbytes = std::fs::read(sl.join("traj.tsv")).unwrap();
+        let bbytes = std::fs::read(bl.join("traj.tsv")).unwrap();
+        assert_eq!(sbytes, bbytes,
+            "traj.tsv bytes differ between simulate and batch at {}", rel.display());
+    }
 }
 
 #[test]
@@ -572,12 +708,14 @@ fn list_shows_fit_entries() {
         "fit STAGES column should show declared stages: {}", stdout);
 }
 
-/// Tamper-with-metadata regression: if `run.json`'s stored hash no
-/// longer matches the current sim config, `camdl simulate --cas`
-/// should print a "stale cache" warning and re-run, not silently
-/// serve the old trajectory.
+/// Tamper-with-artifact regression: a corrupted `traj.tsv` whose bytes no
+/// longer match the leaf's exact-set manifest must never be served. With CAS
+/// the default, a re-run always re-simulates and commits idempotently; the
+/// commit's claim resolution classifies the tampered leaf as `Stale` and
+/// repairs it (the staging leaf is renamed into place), so the corrupt bytes
+/// are replaced with the correct trajectory.
 #[test]
-fn cas_stale_metadata_warns_and_reruns() {
+fn cas_tampered_leaf_is_repaired_on_rerun() {
     let Some(bin) = skip_if_missing_binary() else { return; };
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
@@ -587,26 +725,30 @@ fn cas_stale_metadata_warns_and_reruns() {
             .args(["simulate", &golden_sir_basic().to_string_lossy(),
                    "--scenario", "baseline",
                    "--seed", "42",
-                   "--cas",
                    "--output-dir", &output.to_string_lossy(),
                    "-o", &tmp.path().join("traj.tsv").to_string_lossy()])
             .output().expect("spawn")
     };
 
-    let _ = run_once();
-    // Locate the run dir, then tamper with traj.tsv so the exact-set manifest
-    // (size) no longer matches — the tiered-integrity lookup returns Stale and
-    // the run is recomputed (never served corrupt bytes).
+    let first = run_once();
+    assert!(first.status.success());
     let dir = walkdir(&output.join("sims")).into_iter()
         .find(|p| p.join("run.json").exists()).expect("one run");
+    let good = std::fs::read(dir.join("traj.tsv")).unwrap();
+
+    // Corrupt the cached trajectory.
     std::fs::write(dir.join("traj.tsv"), b"tampered-and-shorter").unwrap();
 
-    // Second run should detect the stale cache and warn, then re-run.
+    // The re-run repairs it: the leaf's traj.tsv is back to the correct bytes,
+    // never left holding the corrupt content.
     let out = run_once();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("stale cache"),
-        "expected stale cache warning on stderr, got: {}", stderr);
-    assert!(out.status.success(), "re-run should still succeed");
+    assert!(out.status.success(), "re-run should succeed");
+    let repaired = walkdir(&output.join("sims")).into_iter()
+        .find(|p| p.join("run.json").exists()).expect("one run");
+    let after = std::fs::read(repaired.join("traj.tsv")).unwrap();
+    assert_ne!(after, b"tampered-and-shorter",
+        "tampered bytes must not survive a re-run");
+    assert_eq!(after, good, "re-run must restore the correct trajectory bytes");
 }
 
 #[test]
@@ -658,7 +800,11 @@ fn cat_emits_cached_trajectory() {
         .output().expect("spawn");
     assert!(out.status.success(), "cat short-hash should resolve uniquely");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.starts_with("# camdl"), "cat should emit trajectory header");
+    // The canonical leaf carries no `# camdl <version>` provenance header
+    // (that lives in run.json's `engine_version`); the trajectory TSV is the
+    // batch-converged form starting with the `t` column header.
+    assert!(stdout.starts_with("t\t"), "cat should emit the trajectory header row: {:?}",
+        &stdout[..stdout.len().min(40)]);
     assert!(stdout.contains("\tS\t") || stdout.contains("\tI\t"),
         "cat should include compartment columns");
 

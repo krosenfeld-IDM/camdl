@@ -1067,13 +1067,11 @@ pub fn load_params_toml(path: &str) -> Result<HashMap<String, f64>, String> {
 
 /// Load a TOML params file and apply values to the model's parameters.
 ///
-/// **Used only by `main::prepare_cas_ctx`** for partial parameter
-/// resolution — the cas-ctx hashing path deliberately holds back the
-/// scenario half so that scenario and base params hash separately
-/// (per the documented cas cache key). Every other subcommand routes
-/// through `params_resolver::resolve_parameters` instead. See
-/// `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`
-/// §"prepare_cas_ctx partial resolution" for the rationale.
+/// **Used only by the simulate CAS-identity path** (`build_simulate_cas_sink`)
+/// for partial parameter resolution: it deliberately holds back the scenario
+/// half so the base params and the scenario delta hash into separate identity
+/// levels (the `params` vs `scenario` levels). Every other subcommand routes
+/// through `params_resolver::resolve_parameters` instead.
 ///
 /// Validates the resulting `model.parameters` after applying — if the
 /// supplied file leaves any *resolved* parameter with a non-finite
