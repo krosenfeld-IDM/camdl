@@ -280,9 +280,7 @@ pub struct InferenceModelOverrides {
     // `--init from_params`. Trapping `--params` here would shadow
     // that companion (two clap defs with `long = "params"` in the
     // same Args graph: the trap field wins by definition order, the
-    // companion is silently unreachable). Subcommands without a
-    // companion (currently if2) carry their own `--params` trap
-    // field; see [`If2RemovedParamsTrap`].
+    // companion is silently unreachable).
     //
     // Per CLAUDE.md alpha posture: no back-compat shims, no aliases —
     // these traps exist purely so the error message is actionable.
@@ -304,31 +302,6 @@ impl InferenceModelOverrides {
                  --fixed-file <toml>            (load fixed values from a TOML file)\n\
                  See `camdl {} --help` (SET PARAMETER VALUES section).",
                 subcmd, subcmd);
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Subcommand-specific `--params` trap for inference subcommands that
-/// have **no** `--init from_params` companion (currently just `if2`).
-/// Kept separate from [`InferenceModelOverrides`] because profile and
-/// fit-run *do* have a `--params` companion — sharing the trap would
-/// shadow their legitimate companion.
-#[derive(Args, Clone, Default)]
-pub struct If2RemovedParamsTrap {
-    #[arg(long = "params", value_name = "FILE", hide = true)]
-    pub _removed_params: Vec<PathBuf>,
-}
-
-impl If2RemovedParamsTrap {
-    pub fn check(&self) {
-        if !self._removed_params.is_empty() {
-            eprintln!(
-                "error: --params is no longer accepted on `camdl if2`. \
-                 Replacement:\n  \
-                 --fixed NAME=VALUE             (set & freeze specific values)\n  \
-                 --fixed-file <toml>            (load fixed values from a TOML file)\n\
-                 See `camdl if2 --help` (SET PARAMETER VALUES section).");
             std::process::exit(1);
         }
     }
@@ -1294,92 +1267,18 @@ pub struct PfilterArgs {
     pub no_save_samples: bool,
 }
 
-// ─── if2 ──────────────────────────────────────────────────────────────────────
+// ─── if2 (removed; deprecation stub) ────────────────────────────────────────────
 
+/// `camdl if2` is removed (gh#147). A one-method IF2 fit is now a fit
+/// with a single `algorithm = "if2"` stage, run through `camdl fit run`.
+/// This catch-all accepts and ignores any arguments so an old invocation
+/// lands on the actionable migration message in [`crate::if2::cmd_if2`]
+/// rather than a clap parse error — a deprecation redirect, not a
+/// back-compat shim.
 #[derive(Args)]
-#[command(after_help = colored_help!("\
-Examples:
-  # IF2 from scratch with explicit rw-sd map
-  camdl if2 sir.camdl --data cases.tsv \\
-      --rw-sd \"R0=5,sigma=0.01\" --particles 2000 --iterations 100
-
-  # Use a regime preset (scout / refine / validate)
-  camdl if2 sir.camdl --data cases.tsv --regime scout --rw-sd auto
-
-  # Multiple chains in parallel
-  camdl if2 sir.camdl --data cases.tsv --rw-sd auto \\
-      --regime refine --chains 4 --parallel 4
-
-  # Pin parameters at specific values with --fixed (universal
-  # value-setter; removes the named params from rw_sd-auto estimation)
-  camdl if2 sir.camdl --data cases.tsv --rw-sd auto \\
-      --fixed N0=1000 --fixed mu=0.0
-
-  # Load fixed values from a layered TOML file
-  camdl if2 sir.camdl --data cases.tsv --rw-sd auto \\
-      --fixed-file fixed.toml
-"))]
 pub struct If2Args {
-    /// IR JSON or .camdl model file
-    pub model: PathBuf,
-
-    #[command(flatten)]
-    pub model_overrides: InferenceModelOverrides,
-
-    /// `--params` trap, if2-only. profile/fit-run have a legitimate
-    /// `--params <TOML>` companion to `--init from_params`, so they
-    /// can't share the InferenceModelOverrides-level trap.
-    #[command(flatten)]
-    pub _params_trap: If2RemovedParamsTrap,
-
-    #[command(flatten)]
-    pub scenario: ScenarioArgs,
-
-    #[command(flatten)]
-    pub inference: InferenceCore,
-
-    #[command(flatten)]
-    pub flow: FlowProjection,
-
-    /// Observation data TSV
-    #[arg(long)]
-    pub data: PathBuf,
-
-    /// IF2 iterations
-    #[arg(long, conflicts_with = "regime")]
-    pub iterations: Option<usize>,
-
-    /// Number of chains
-    #[arg(long, conflicts_with = "regime")]
-    pub chains: Option<usize>,
-
-    /// Cooling schedule factor (0–1)
-    #[arg(long, conflicts_with = "regime")]
-    pub cooling: Option<f64>,
-
-    /// Preset configuration: scout, refine, or validate
-    #[arg(long, conflicts_with_all = ["chains", "iterations", "cooling"])]
-    pub regime: Option<String>,
-
-    /// Random-walk standard deviations, e.g. "beta=0.05,rho=0.01" or "auto"
-    #[arg(long)]
-    pub rw_sd: Option<RwSd>,
-
-    /// Initial-value-problem parameters (comma-separated)
-    #[arg(long, value_delimiter = ',')]
-    pub ivp: Vec<String>,
-
-    /// Write IF2 iteration-by-iteration diagnostics TSV
-    #[arg(long)]
-    pub trace: Option<PathBuf>,
-
-    /// Output file (default: stdout)
-    #[arg(short, long)]
-    pub output: Option<PathBuf>,
-
-    /// Write per-chain traces and summary to this directory
-    #[arg(long)]
-    pub output_dir: Option<PathBuf>,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+    pub _ignored: Vec<String>,
 }
 
 // ─── profile ──────────────────────────────────────────────────────────────────
@@ -2370,12 +2269,12 @@ mod tests {
             "error must point user at --init from_params: {}", err);
     }
 
-    /// if2 has no `--init from_params` companion, so `--params` is
-    /// trapped at the parse layer via [`If2RemovedParamsTrap`]. This
-    /// trap is *separate* from the InferenceModelOverrides trap that
-    /// got removed (which would have shadowed profile's init_params).
+    /// `camdl if2` is removed (gh#147); its arg struct is a catch-all so
+    /// an old invocation still PARSES and reaches the deprecation message
+    /// in `if2::cmd_if2`, rather than dying on a clap "unexpected
+    /// argument" error before the migration hint can be shown.
     #[test]
-    fn if2_params_flag_is_trapped_at_parse() {
+    fn if2_is_a_deprecation_catch_all() {
         let full = ["camdl", "if2", "model.camdl",
                     "--data", "cases.tsv",
                     "--rw-sd", "auto",
@@ -2383,12 +2282,11 @@ mod tests {
                     "--regime", "scout",
                     "--params", "truth.toml"];
         let parsed = Cli::try_parse_from(full)
-            .expect("clap must accept --params on if2 (lands in if2-specific trap)");
+            .expect("camdl if2 must still parse so the stub can show the migration message");
         match parsed.command {
             Command::If2(a) => {
-                assert_eq!(a._params_trap._removed_params.len(), 1,
-                    "expected 1 trapped --params, got: {:?}",
-                    a._params_trap._removed_params);
+                assert!(!a._ignored.is_empty(),
+                    "old if2 args must be swallowed into the catch-all");
             }
             _ => unreachable!(),
         }

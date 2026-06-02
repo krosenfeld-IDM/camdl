@@ -450,12 +450,22 @@ suggested adjustments.
 ### Multi-chain and chain-agreement Â
 
 Run multiple independent IF2 chains from different random seeds to detect
-multimodality and assess convergence:
+multimodality and assess convergence. A single-method IF2 fit is a fit with
+one `algorithm = "if2"` stage:
+
+```toml
+# fit.toml
+[stages.fit]
+algorithm  = "if2"
+backend    = "chain_binomial"
+chains     = 4
+particles  = 1000
+iterations = 50
+cooling    = 0.7
+```
 
 ```bash
-camdl if2 model.camdl --init from_params --params p.toml --data cases.tsv \
-    --chains 4 --rw-sd "R0=5,gamma=0.01" \
-    --particles 1000 --iterations 50 --seed 42
+camdl fit run fit.toml --seed 42
 ```
 
 **Chain-agreement Â** measures across-chain agreement (Gelman–Rubin 1992
@@ -1020,9 +1030,10 @@ distinguish.
 
 ## The fit workflow
 
-The low-level commands (`camdl pfilter`, `camdl if2`, `camdl profile`) are
-building blocks. For routine model fitting, `camdl fit` provides a structured
-three-stage workflow driven by a `fit.toml` configuration file:
+The low-level commands (`camdl pfilter`, `camdl profile`) are building
+blocks. IF2 is not a standalone command — a single-method IF2 fit is just a
+fit with one `algorithm = "if2"` stage. For all model fitting, `camdl fit`
+provides a structured workflow driven by a `fit.toml` configuration file:
 
 ```
 fit.toml + model.camdl + data.tsv
