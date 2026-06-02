@@ -3005,8 +3005,8 @@ compartment state produce an error.
 ### 21.4 Batch simulation
 
 ```bash
-camdl simulate batch    BATCH.toml [--parallel N] [--force] [--dry-run]
-camdl simulate status   BATCH.toml
+camdl batch run     BATCH.toml [--parallel N] [--force] [--dry-run]
+camdl batch status  BATCH.toml
 camdl list              [RESULTS_DIR]          # browse cached runs
 camdl show  <short-hash>
 camdl cat   <short-hash> [--stream NAME]
@@ -3190,11 +3190,19 @@ camdl pfilter MODEL --params P.toml --data train.tsv \
 
 ### 21.9 Value of Information
 
+> **Planned — not yet implemented.** No `camdl voi` subcommand exists in the
+> current CLI. The batch `[design.*]` machinery that feeds it is in place (it
+> emits `outputs.tsv` for a downstream VOI consumer), but the consumer is not
+> yet wired. Tracking: `docs/dev/proposals/2026-05-14-reactive-interventions-and-evsi.md`.
+
 ```bash
 camdl voi run voi.toml
 ```
 
 ### 21.10 Web Server
+
+> **Planned — not yet implemented.** No `camdl serve` subcommand exists in the
+> current CLI.
 
 ```bash
 camdl serve [--port 8080] [DIR]
