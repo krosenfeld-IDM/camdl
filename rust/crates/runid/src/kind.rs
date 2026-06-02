@@ -35,6 +35,12 @@ pub enum ArtifactKind {
     /// Not yet constructed; defined so its store partition + run-id tag are
     /// pinned ahead of wiring the `lineage` subcommands into the CAS store.
     Projection,
+    /// The combined-across-cells wide-format trajectory TSV of a multi-cell
+    /// `simulate` (`--replicates`/`--seeds`/multi-scenario/`--draws`). Derived
+    /// from — and `deps` on — the N per-cell [`Sim`](ArtifactKind::Sim) leaves;
+    /// its identity is the model/config/params plus the full sorted cell set
+    /// (the cell COUNT is in the key).
+    SimEnsemble,
 }
 
 impl ArtifactKind {
@@ -49,6 +55,7 @@ impl ArtifactKind {
             ArtifactKind::ProfilePoint => 4,
             ArtifactKind::Obs => 5,
             ArtifactKind::Projection => 6,
+            ArtifactKind::SimEnsemble => 7,
         }
     }
 }

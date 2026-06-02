@@ -63,6 +63,26 @@ fn resolve_format_with_path(
     Ok(LineListFormat::Parquet)
 }
 
+/// Open the `--output` path of a `lineage` projection (`tree`/`sojourn`/
+/// `cohort`) as a buffered writer. The lineage projections are NOT
+/// content-addressed, so there is no system-of-record artifact behind them:
+/// `--output PATH` is the only sink. With no path, exit with a clear error
+/// rather than dumping a TSV/Newick stream to stdout.
+fn open_required_output(sub: &str, output: Option<&Path>) -> Box<dyn Write> {
+    match output {
+        Some(p) => Box::new(std::io::BufWriter::new(
+            std::fs::File::create(p).unwrap_or_else(|e| {
+                eprintln!("error: cannot create {}: {}", p.display(), e);
+                std::process::exit(1);
+            }),
+        )),
+        None => {
+            eprintln!("error: `camdl lineage {sub}` requires --output PATH");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Default output path for a given format and stem, when no explicit output is
 /// requested.
 fn default_out(stem: &str, format: LineListFormat) -> PathBuf {
@@ -156,23 +176,25 @@ pub fn run_simulate_event_log(a: &SimulateArgs, run: &SimRun) {
         }
     );
 
-    // Count trajectory output (stdout or --output). The trajectory is
-    // byte-identical to a run without --event-log at the same seed.
+    // Count-trajectory mirror: `-o PATH` only, never stdout (Item C — the
+    // trajectory is byte-identical to a run without --event-log at the same
+    // seed; the canonical bytes are the event log on disk). With no `-o` there
+    // is nothing to mirror, so emit nothing.
     let output_path = a.output.as_ref().map(|p| p.to_string_lossy().into_owned());
     let suppress_traj = a.obs_only.is_some();
     if suppress_traj {
         return;
     }
-
-    let mut out: Box<dyn Write> = match &output_path {
-        Some(p) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(p).unwrap_or_else(|e| {
-                eprintln!("error: cannot create {}: {}", p, e);
-                std::process::exit(1);
-            }),
-        )),
-        None => Box::new(std::io::stdout()),
+    let Some(out_path) = output_path else {
+        return;
     };
+
+    let mut out: Box<dyn Write> = Box::new(std::io::BufWriter::new(
+        std::fs::File::create(&out_path).unwrap_or_else(|e| {
+            eprintln!("error: cannot create {}: {}", out_path, e);
+            std::process::exit(1);
+        }),
+    ));
 
     let int_names: Vec<&str> = model
         .compartments
@@ -401,15 +423,7 @@ pub fn cmd_lineage_tree(a: &LineageTreeArgs) {
     let trees = forest.prune_to(&sampled);
 
     // Emit one Newick line per pruned tree (forest → multiple roots possible).
-    let mut out: Box<dyn Write> = match &a.output {
-        Some(p) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(p).unwrap_or_else(|e| {
-                eprintln!("error: cannot create {}: {}", p.display(), e);
-                std::process::exit(1);
-            }),
-        )),
-        None => Box::new(std::io::stdout()),
-    };
+    let mut out = open_required_output("tree", a.output.as_deref());
     for t in &trees {
         writeln!(out, "{}", t.to_newick()).ok();
     }
@@ -432,16 +446,8 @@ pub fn cmd_lineage_sojourn(a: &LineageSojournArgs) {
 
     let result = sim::lineage::project::sojourn(&entries, a.compartment);
 
-    // Per-individual sojourns to stdout / --output (TSV).
-    let mut out: Box<dyn Write> = match &a.output {
-        Some(p) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(p).unwrap_or_else(|e| {
-                eprintln!("error: cannot create {}: {}", p.display(), e);
-                std::process::exit(1);
-            }),
-        )),
-        None => Box::new(std::io::stdout()),
-    };
+    // Per-individual sojourns to --output (TSV).
+    let mut out = open_required_output("sojourn", a.output.as_deref());
     writeln!(out, "individual\tentry\texit\tdwell").ok();
     for s in &result.completed {
         writeln!(out, "{}\t{}\t{}\t{}", s.individual, s.entry, s.exit, s.dwell).ok();
@@ -493,15 +499,7 @@ pub fn cmd_lineage_cohort(a: &LineageCohortArgs) {
 
     let bins = sim::lineage::project::cohort(&entries, event, a.window, a.align_zero);
 
-    let mut out: Box<dyn Write> = match &a.output {
-        Some(p) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(p).unwrap_or_else(|e| {
-                eprintln!("error: cannot create {}: {}", p.display(), e);
-                std::process::exit(1);
-            }),
-        )),
-        None => Box::new(std::io::stdout()),
-    };
+    let mut out = open_required_output("cohort", a.output.as_deref());
     writeln!(out, "window_start\twindow_end\tincidence\tcumulative").ok();
     for b in &bins {
         writeln!(out, "{}\t{}\t{}\t{}", b.start, b.end, b.incidence, b.cumulative).ok();

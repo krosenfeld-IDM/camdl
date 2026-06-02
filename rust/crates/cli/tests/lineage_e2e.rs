@@ -184,6 +184,34 @@ fn lineage_end_to_end_tsv_and_parquet() {
     );
     assert!(ll_pq.exists(), "Parquet line list not written by realize");
 
+    // 3c. The offline projections (tree/sojourn/cohort) are NOT
+    //     content-addressed, so `--output PATH` is the only sink: invoked
+    //     without it they MUST exit non-zero with a clear error and write
+    //     NOTHING to stdout (no Newick/TSV stream dumped to a pipe).
+    for (sub, extra) in [
+        ("tree", vec!["--scheme", "flat:1.0"]),
+        ("sojourn", vec!["--compartment", "1"]),
+        ("cohort", vec!["--event", "infection", "--window", "7"]),
+    ] {
+        let mut args: Vec<&str> = vec!["lineage", sub, ll_tsv_s];
+        args.extend(extra);
+        let out = run(&camdl, &args);
+        assert!(
+            !out.status.success(),
+            "lineage {sub} without --output must exit non-zero"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "lineage {sub} without --output must write NOTHING to stdout, got {} bytes",
+            out.stdout.len()
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("requires --output"),
+            "lineage {sub} without --output must explain the requirement, got: {stderr}"
+        );
+    }
+
     // 4. Offline tree from TSV at flat:1.0 (all tips).
     let tree_tsv = tmp.join("tree_tsv.nwk");
     let tree_tsv_s = tree_tsv.to_str().unwrap();

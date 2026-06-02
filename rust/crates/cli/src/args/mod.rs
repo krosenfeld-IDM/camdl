@@ -1856,11 +1856,11 @@ Examples:
   # Flat 10% sampling over ALL individuals, write Newick
   camdl lineage tree line_list.parquet --scheme flat:0.1 --output tree.newick
 
-  # TSV line list, sample everyone (rate 1.0), to stdout
-  camdl lineage tree line_list.tsv
+  # TSV line list, sample everyone (rate 1.0)
+  camdl lineage tree line_list.tsv --output tree.newick
 
   # Per-deme rates: deme 0 sampled at 0.5, deme 1 at 0.05, rest at 0.1
-  camdl lineage tree line_list.tsv --scheme stratified:0=0.5,1=0.05,default=0.1
+  camdl lineage tree line_list.tsv --scheme stratified:0=0.5,1=0.05,default=0.1 --output tree.newick
 "))]
 pub struct LineageTreeArgs {
     /// Line-list file (.tsv or .parquet). Format auto-detected by extension.
@@ -1881,7 +1881,7 @@ pub struct LineageTreeArgs {
     #[arg(long, default_value = "flat:1.0")]
     pub scheme: String,
 
-    /// Newick output path (default: stdout).
+    /// Newick output path (required).
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -1913,8 +1913,8 @@ pub struct LineageSojournArgs {
     #[arg(long)]
     pub compartment: usize,
 
-    /// Output TSV path for the per-individual sojourns (default: stdout). A
-    /// summary (count, censored, mean, quantiles) is always printed to stderr.
+    /// Output TSV path for the per-individual sojourns (required). A summary
+    /// (count, censored, mean, quantiles) is always printed to stderr.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 }
@@ -1948,7 +1948,7 @@ pub struct LineageCohortArgs {
     #[arg(long, default_value_t = true)]
     pub align_zero: bool,
 
-    /// Output TSV path (default: stdout).
+    /// Output TSV path (required).
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 }
@@ -1990,7 +1990,8 @@ pub struct ListArgs {
     #[arg(long)]
     pub since: Option<ListDuration>,
 
-    /// Filter by run kind: sim, fit, profile, or all (default).
+    /// Filter by run kind: sim, fit, profile, pfilter, survey, ensemble, or
+    /// all (default).
     #[arg(long, default_value = "all")]
     pub kind: String,
 

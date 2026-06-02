@@ -1199,6 +1199,223 @@ fn removed_leaf_does_not_resolve_to_dead_path() {
         "expected clean 'no run matches', got: {}", stderr);
 }
 
+// ─── SimEnsemble (multi-cell combined TSV) tests ─────────────────────────────
+
+/// The single ensemble leaf written by a multi-cell run (under
+/// `<out>/ensembles/`). Panics if not exactly one.
+fn sole_ensemble_leaf(out: &Path) -> PathBuf {
+    let leaves: Vec<_> = walkdir(&out.join("ensembles")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(leaves.len(), 1, "expected exactly one ensemble leaf, got {}", leaves.len());
+    leaves.into_iter().next().unwrap()
+}
+
+/// Count-in-the-key: a 3-replicate run and a 4-replicate run produce DIFFERENT
+/// ensemble `run_id`s — the combined TSV has a different number of rows, so the
+/// cell set (and its count) is in the key (the n_trajectories collision class).
+#[test]
+fn ensemble_cell_count_is_in_the_run_id() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+
+    let out3 = tmp.path().join("out3");
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42", "--replicates", "3",
+               "--output-dir", &out3.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "3-replicate simulate should succeed");
+
+    let out4 = tmp.path().join("out4");
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42", "--replicates", "4",
+               "--output-dir", &out4.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "4-replicate simulate should succeed");
+
+    let id3 = read_meta(&sole_ensemble_leaf(&out3))["run_id"].as_str().unwrap().to_string();
+    let id4 = read_meta(&sole_ensemble_leaf(&out4))["run_id"].as_str().unwrap().to_string();
+    assert_ne!(id3, id4,
+        "3 vs 4 replicates must give DIFFERENT ensemble run_ids (cell count in the key)");
+
+    // Sanity: the leaf-side count-in-the-key still holds (3 vs 4 Sim leaves).
+    let n3 = walkdir(&out3.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).count();
+    let n4 = walkdir(&out4.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).count();
+    assert_eq!((n3, n4), (3, 4), "per-cell Sim leaf counts must be 3 and 4");
+}
+
+/// Round-trip: a 3-replicate run writes ONE ensemble leaf whose `deps` are
+/// exactly the 3 per-cell `Sim` leaf run_ids; `cat <ensemble>` emits the
+/// combined wide-format TSV (with a `replicate` column, 3 replicates),
+/// byte-identical to the `-o` mirror; `list --kind ensemble` surfaces it.
+#[test]
+fn ensemble_round_trip_deps_cat_and_list() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let mirror = tmp.path().join("combined.tsv");
+
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42", "--replicates", "3",
+               "--output-dir", &out.to_string_lossy(),
+               "-o", &mirror.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "3-replicate simulate should succeed");
+
+    // The 3 per-cell Sim leaf run_ids.
+    let sim_leaves: Vec<_> = walkdir(&out.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(sim_leaves.len(), 3, "expected 3 Sim leaves");
+    let mut sim_ids: Vec<String> = sim_leaves.iter()
+        .map(|d| read_meta(d)["run_id"].as_str().unwrap().to_string()).collect();
+    sim_ids.sort();
+
+    // The ensemble leaf: kind = sim_ensemble, deps = the 3 Sim leaves.
+    let ens = sole_ensemble_leaf(&out);
+    let ens_meta = read_meta(&ens);
+    assert_eq!(ens_meta["kind"].as_str().unwrap(), "sim_ensemble");
+    let deps = ens_meta["deps"].as_array().expect("ensemble has deps");
+    assert_eq!(deps.len(), 3, "ensemble deps must be the 3 per-cell Sim leaves");
+    let mut dep_ids: Vec<String> = deps.iter()
+        .map(|d| d["run_id"].as_str().unwrap().to_string()).collect();
+    dep_ids.sort();
+    assert_eq!(dep_ids, sim_ids, "ensemble deps must be exactly the 3 Sim leaf run_ids");
+    for d in deps {
+        assert_eq!(d["kind"].as_str().unwrap(), "sim");
+        assert_eq!(d["artifact"].as_str().unwrap(), "traj.tsv");
+    }
+
+    // `cat <ensemble-hash>` emits the combined TSV byte-identical to the `-o`
+    // mirror, and that TSV has a `replicate` column with 3 replicates.
+    let ens_id = ens_meta["run_id"].as_str().unwrap();
+    let cat = Command::new(&bin)
+        .args(["cat", &ens_id[..16], "--root", &out.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(cat.status.success(), "cat <ensemble> failed: {}",
+        String::from_utf8_lossy(&cat.stderr));
+    let mirror_bytes = std::fs::read(&mirror).unwrap();
+    assert!(!mirror_bytes.is_empty(), "the -o mirror must be non-empty");
+    assert_eq!(cat.stdout, mirror_bytes,
+        "cat <ensemble> must equal the -o combined TSV byte-for-byte");
+
+    // The combined TSV header carries a `replicate` column, and the data has
+    // exactly 3 distinct replicate values.
+    let text = String::from_utf8(mirror_bytes).unwrap();
+    let header = text.lines().find(|l| !l.starts_with('#')).expect("a header line");
+    assert_eq!(header.split('\t').next().unwrap(), "replicate",
+        "multi-replicate combined TSV must lead with a `replicate` column, got: {header}");
+    let reps: std::collections::BTreeSet<&str> = text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .skip(1) // header
+        .filter_map(|l| l.split('\t').next())
+        .filter(|c| !c.is_empty())
+        .collect();
+    assert_eq!(reps, ["1", "2", "3"].into_iter().collect(),
+        "combined TSV must contain replicates 1,2,3, got {reps:?}");
+
+    // `list --kind ensemble` surfaces the ensemble (table to stderr; json to
+    // stdout, one record per line).
+    let list = Command::new(&bin)
+        .args(["list", &out.to_string_lossy(), "--kind", "ensemble", "--format", "json"])
+        .output().expect("spawn");
+    assert!(list.status.success(), "list --kind ensemble failed: {}",
+        String::from_utf8_lossy(&list.stderr));
+    // The json mode emits one record per line; collect the `sim_ensemble`
+    // records (other kinds' printers may emit an empty `[]` line — tolerate it).
+    let list_out = String::from_utf8(list.stdout).unwrap();
+    let ensemble_rows: Vec<serde_json::Value> = list_out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some("sim_ensemble"))
+        .collect();
+    assert_eq!(ensemble_rows.len(), 1,
+        "list --kind ensemble must surface exactly the one ensemble, got: {list_out}");
+    assert_eq!(ensemble_rows[0]["run_id"].as_str().unwrap(), ens_id);
+}
+
+/// Single-run simulate writes NO ensemble (the one Sim leaf is the whole
+/// thing).
+#[test]
+fn single_run_writes_no_ensemble() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let st = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42",
+               "--output-dir", &out.to_string_lossy(),
+               "-o", &tmp.path().join("c.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "single-run simulate should succeed");
+    let ensembles: Vec<_> = walkdir(&out.join("ensembles")).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert!(ensembles.is_empty(), "a single-run simulate must write NO ensemble");
+}
+
+/// Item C: `simulate` (single AND multi-cell) with NO `-o` writes NOTHING to
+/// stdout — the CAS leaf/ensemble are the system of record. The `-o` mirror
+/// still works, and the leaf/ensemble exist either way.
+#[test]
+fn simulate_writes_nothing_to_stdout_without_output_flag() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Single-run, no -o: empty stdout, one Sim leaf, no ensemble.
+    let out1 = tmp.path().join("out1");
+    let single = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42",
+               "--output-dir", &out1.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(single.status.success(), "single-run simulate (no -o) should succeed: {}",
+        String::from_utf8_lossy(&single.stderr));
+    assert!(single.stdout.is_empty(),
+        "single-run simulate with no -o must write NOTHING to stdout, got {} bytes",
+        single.stdout.len());
+    assert_eq!(walkdir(&out1.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).count(), 1,
+        "the Sim leaf must still be written");
+
+    // Multi-cell, no -o: empty stdout, but the leaves AND ensemble exist.
+    let out3 = tmp.path().join("out3");
+    let multi = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42", "--replicates", "3",
+               "--output-dir", &out3.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(multi.status.success(), "multi-cell simulate (no -o) should succeed: {}",
+        String::from_utf8_lossy(&multi.stderr));
+    assert!(multi.stdout.is_empty(),
+        "multi-cell simulate with no -o must write NOTHING to stdout, got {} bytes",
+        multi.stdout.len());
+    assert_eq!(walkdir(&out3.join("sims")).into_iter()
+        .filter(|p| p.join("run.json").exists()).count(), 3,
+        "the 3 Sim leaves must still be written");
+    let _ = sole_ensemble_leaf(&out3); // ensemble exists even with no -o
+
+    // With -o, the mirror is written and matches `cat <ensemble>`.
+    let out3b = tmp.path().join("out3b");
+    let mirror = tmp.path().join("m.tsv");
+    let mirrored = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "42", "--replicates", "3",
+               "--output-dir", &out3b.to_string_lossy(),
+               "-o", &mirror.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(mirrored.status.success(), "multi-cell simulate (-o) should succeed");
+    assert!(mirrored.stdout.is_empty(),
+        "even WITH -o, simulate writes the trajectory to the file, not stdout");
+    let mirror_bytes = std::fs::read(&mirror).unwrap();
+    let ens = sole_ensemble_leaf(&out3b);
+    let ens_tsv = std::fs::read(ens.join("ensemble.tsv")).unwrap();
+    assert_eq!(mirror_bytes, ens_tsv,
+        "the -o mirror must be byte-identical to the stored ensemble.tsv");
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Collect all directory paths under `root` (non-recursive children of

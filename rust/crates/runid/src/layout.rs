@@ -33,6 +33,7 @@ impl ArtifactKind {
             ArtifactKind::ProfilePoint => "profiles",
             ArtifactKind::Obs => "obs",
             ArtifactKind::Projection => "projections",
+            ArtifactKind::SimEnsemble => "ensembles",
         }
     }
 }

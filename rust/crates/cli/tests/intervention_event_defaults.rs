@@ -97,13 +97,26 @@ fn s_at(traj: &str, t: f64) -> i64 {
     panic!("no trajectory row at t={}: {}", t, traj);
 }
 
+/// Run `camdl simulate` and return the trajectory TSV. The trajectory is the
+/// `-o PATH` mirror (the CAS leaf is the system of record; the trajectory is
+/// never written to stdout — Item C). A unique `-o` file + isolated
+/// `--output-dir` are appended so concurrent test runs never share a CAS root.
 fn run_simulate(args: &[&str]) -> String {
     let bin = skip_if_missing_binary().expect("binary");
-    let out = Command::new(&bin).args(args).output().expect("spawn");
+    let tmp = tempfile::tempdir().unwrap();
+    let traj_path = tmp.path().join("traj.tsv");
+    let cas_dir = tmp.path().join("results");
+    let out = Command::new(&bin)
+        .args(args)
+        .args(["-o", &traj_path.to_string_lossy(),
+               "--output-dir", &cas_dir.to_string_lossy()])
+        .output()
+        .expect("spawn");
     if !out.status.success() {
         panic!("simulate failed: stderr={}", String::from_utf8_lossy(&out.stderr));
     }
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    std::fs::read_to_string(&traj_path)
+        .unwrap_or_else(|e| panic!("reading trajectory mirror {}: {}", traj_path.display(), e))
 }
 
 // ─── simulate defaults ───────────────────────────────────────────────────────

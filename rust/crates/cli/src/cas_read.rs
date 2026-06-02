@@ -198,3 +198,20 @@ pub fn walk_survey_leaves(root: &Path) -> Vec<Leaf> {
 pub fn resolve_survey_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
     resolve_prefix_indexed(root, ArtifactKind::Survey, prefix, walk_survey_leaves)
 }
+
+/// All `ensembles/` leaves of kind `SimEnsemble` (the combined-across-cells
+/// wide-format TSV of a multi-cell `simulate`). Each references its N per-cell
+/// `Sim` leaves via `deps`; the combined TSV is its `ensemble.tsv` artifact.
+pub fn walk_sim_ensemble_leaves(root: &Path) -> Vec<Leaf> {
+    walk_records(&root.join("ensembles"))
+        .into_iter()
+        .filter(|(_, r)| r.kind == ArtifactKind::SimEnsemble)
+        .map(|(dir, record)| Leaf { dir, record })
+        .collect()
+}
+
+/// New-format ensembles whose `run_id` hex matches `prefix` (for `show`/`cat`
+/// prefix resolution alongside `resolve_sim_prefix`).
+pub fn resolve_sim_ensemble_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
+    resolve_prefix_indexed(root, ArtifactKind::SimEnsemble, prefix, walk_sim_ensemble_leaves)
+}

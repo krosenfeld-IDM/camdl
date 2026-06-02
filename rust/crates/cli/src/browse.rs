@@ -74,19 +74,46 @@ fn discover_pfilter_rows(root: &str) -> Vec<PfilterRow> {
         .collect()
 }
 
+/// A new-format `SimEnsemble` leaf, prepared for the `list` display. The
+/// kind-SimEnsemble filter happens in [`cas_read::walk_sim_ensemble_leaves`].
+struct EnsembleRow {
+    leaf: cas_read::Leaf,
+    rel_path: String,
+    created: SystemTime,
+}
+
+/// Discover the new-format ensemble leaves under `root/ensembles/` for `list`.
+fn discover_ensemble_rows(root: &str) -> Vec<EnsembleRow> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    cas_read::walk_sim_ensemble_leaves(Path::new(root))
+        .into_iter()
+        .map(|leaf| {
+            let created = leaf.record.provenance.created_at.as_deref()
+                .and_then(parse_iso8601)
+                .unwrap_or_else(|| {
+                    std::fs::metadata(&leaf.dir).and_then(|m| m.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                });
+            let rel_path = pathdiff_str(&leaf.dir, &cwd);
+            EnsembleRow { leaf, rel_path, created }
+        })
+        .collect()
+}
+
 // ── cmd_list ─────────────────────────────────────────────────────────────────
 
-/// `--kind` filter: which of sims / fits / profiles / surveys to
-/// surface. `All` is the default and includes all four.
+/// `--kind` filter: which of sims / fits / profiles / surveys / pfilters /
+/// ensembles to surface. `All` is the default and includes every kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KindFilter { Sim, Fit, Profile, Pfilter, Survey, All }
+enum KindFilter { Sim, Fit, Profile, Pfilter, Survey, Ensemble, All }
 
 impl KindFilter {
-    fn includes_sims(self)     -> bool { matches!(self, Self::Sim     | Self::All) }
-    fn includes_fits(self)     -> bool { matches!(self, Self::Fit     | Self::All) }
-    fn includes_profiles(self) -> bool { matches!(self, Self::Profile | Self::All) }
-    fn includes_pfilters(self) -> bool { matches!(self, Self::Pfilter | Self::All) }
-    fn includes_surveys(self)  -> bool { matches!(self, Self::Survey  | Self::All) }
+    fn includes_sims(self)      -> bool { matches!(self, Self::Sim      | Self::All) }
+    fn includes_fits(self)      -> bool { matches!(self, Self::Fit      | Self::All) }
+    fn includes_profiles(self)  -> bool { matches!(self, Self::Profile  | Self::All) }
+    fn includes_pfilters(self)  -> bool { matches!(self, Self::Pfilter  | Self::All) }
+    fn includes_surveys(self)   -> bool { matches!(self, Self::Survey   | Self::All) }
+    fn includes_ensembles(self) -> bool { matches!(self, Self::Ensemble | Self::All) }
 }
 
 pub fn cmd_list(a: &crate::args::ListArgs) {
@@ -107,6 +134,7 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         "profile" | "profiles"  => KindFilter::Profile,
         "pfilter" | "pfilters"  => KindFilter::Pfilter,
         "survey" | "surveys"    => KindFilter::Survey,
+        "ensemble" | "ensembles" => KindFilter::Ensemble,
         _                       => KindFilter::All,
     };
     let format_json = a.format.as_deref() == Some("json");
@@ -135,6 +163,11 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         Vec::new()
     } else {
         discover_pfilter_rows(&root)
+    };
+    let ensembles = if !filter_kind.includes_ensembles() {
+        Vec::new()
+    } else {
+        discover_ensemble_rows(&root)
     };
 
     let now = SystemTime::now();
@@ -188,12 +221,23 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         .collect();
     filtered_pfilters.sort_by(|x, y| y.created.cmp(&x.created));
 
+    let mut filtered_ensembles: Vec<EnsembleRow> = ensembles.into_iter()
+        .filter(|e| a.model.as_deref().is_none_or(|m| e.leaf.level_label("model").contains(m)))
+        .filter(|_| a.scenario.is_none())
+        .filter(|e| match filter_since {
+            Some(dur) => now.duration_since(e.created).is_ok_and(|d| d <= dur),
+            None => true,
+        })
+        .collect();
+    filtered_ensembles.sort_by(|x, y| y.created.cmp(&x.created));
+
     if !a.all {
         filtered_runs.truncate(a.limit);
         filtered_fits.truncate(a.limit);
         filtered_profiles.truncate(a.limit);
         filtered_surveys.truncate(a.limit);
         filtered_pfilters.truncate(a.limit);
+        filtered_ensembles.truncate(a.limit);
     }
 
     if format_json {
@@ -202,11 +246,18 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         print_profiles_json(&filtered_profiles);
         print_survey_json(&filtered_surveys);
         print_pfilter_json(&filtered_pfilters);
+        print_ensemble_json(&filtered_ensembles);
     } else {
         let any_other = !filtered_fits.is_empty()
             || !filtered_profiles.is_empty()
             || !filtered_surveys.is_empty()
-            || !filtered_pfilters.is_empty();
+            || !filtered_pfilters.is_empty()
+            || !filtered_ensembles.is_empty();
+        if !filtered_ensembles.is_empty() {
+            eprintln!("{}", "ensembles".bold());
+            print_ensemble_table(&filtered_ensembles, now);
+            eprintln!();
+        }
         if !filtered_fits.is_empty() {
             eprintln!("{}", "fits".bold());
             print_fits_table(&filtered_fits, now);
@@ -303,6 +354,7 @@ pub fn cmd_show(a: &crate::args::ShowArgs) {
         Ok(Resolved::Profile { leaf, rel_path, created }) => show_profile_record(&leaf, &rel_path, created),
         Ok(Resolved::Pfilter { leaf, rel_path, created }) => show_pfilter_record(&leaf, &rel_path, created),
         Ok(Resolved::Survey { leaf, rel_path, created }) => show_survey_record(&leaf, &rel_path, created),
+        Ok(Resolved::SimEnsemble { leaf, rel_path, created }) => show_sim_ensemble_record(&leaf, &rel_path, created),
         Err(e) => {
             eprintln!("error: {}", e);
             std::process::exit(1);
@@ -563,6 +615,61 @@ fn show_survey_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime
     println!("{}", "engine".bright_black()); println!("  {}", rec.engine_version);
 }
 
+/// Render a new-format (`RunRecord`) `SimEnsemble` leaf: the four factored
+/// levels (`model`/`config`/`params`/`grid`), the run_id address, the cell
+/// count + scenario/seed/draw summary from `inputs`, the `deps` (the N per-cell
+/// `Sim` leaves the combined TSV is derived from), and the `ensemble.tsv` size.
+fn show_sim_ensemble_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
+    let rec = &leaf.record;
+    println!("{}", "path".bright_black()); println!("  {}", rel_path.cyan());
+    println!("{}", "kind".bright_black()); println!("  sim_ensemble");
+    if let Some(ref l) = rec.provenance.label {
+        println!("{}", "label".bright_black()); println!("  {}", l);
+    }
+    for lvl_name in ["model", "config", "params", "grid"] {
+        println!("{}", lvl_name.bright_black());
+        println!("  {}", leaf.level_label(lvl_name));
+    }
+    println!("{}", "run_id".bright_black()); println!("  {}", rec.run_id.to_hex().dimmed());
+    println!("{}", "levels".bright_black());
+    for lvl in &rec.levels {
+        println!("  {:<9} {}-{}", lvl.name, lvl.label, lvl.hash.short8().dimmed());
+    }
+    if let Some(obj) = rec.inputs.as_object() {
+        for key in ["n_cells", "n_scenarios", "n_seeds", "n_draws"] {
+            if let Some(v) = obj.get(key) {
+                if v.is_null() { continue; }
+                println!("{}", key.bright_black()); println!("  {}", v);
+            }
+        }
+        if let Some(sc) = obj.get("scenarios").and_then(|v| v.as_array()) {
+            let names: Vec<&str> = sc.iter().filter_map(|v| v.as_str()).collect();
+            if !names.is_empty() {
+                println!("{}", "scenarios".bright_black()); println!("  {}", names.join(", "));
+            }
+        }
+    }
+    // The deps are the N per-cell Sim leaves the combined TSV concatenates.
+    if !rec.deps.is_empty() {
+        println!("{}", "deps".bright_black());
+        println!("  {} per-cell sim leaves", rec.deps.len());
+        for d in &rec.deps {
+            println!("  {} {} ({})", d.run_id.short8().dimmed(), d.artifact, d.digest.short8().dimmed());
+        }
+    }
+    let ensemble = leaf.dir.join("ensemble.tsv");
+    if ensemble.exists() {
+        let bytes = std::fs::metadata(&ensemble).map(|m| m.len()).unwrap_or(0);
+        println!("{}", "ensemble".bright_black());
+        println!("  ensemble.tsv ({} bytes)", bytes);
+    }
+    println!("{}", "created".bright_black());
+    println!("  {}  ({})",
+        rec.provenance.created_at.as_deref().unwrap_or("?"),
+        fmt_relative_time(created, SystemTime::now()));
+    println!("{}", "engine".bright_black()); println!("  {}", rec.engine_version);
+}
+
 // ── cmd_cat ──────────────────────────────────────────────────────────────────
 
 pub fn cmd_cat(a: &crate::args::CatArgs) {
@@ -634,6 +741,18 @@ pub fn cmd_cat(a: &crate::args::CatArgs) {
         // `landscape.html`).
         Resolved::Survey { leaf, rel_path, .. } => {
             let name = a.stream.as_deref().unwrap_or("landscape.tsv");
+            let path = leaf.dir.join(name);
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                eprintln!("error reading {} in {}: {}", name, rel_path, e);
+                std::process::exit(1);
+            });
+            let _ = std::io::stdout().write_all(&bytes);
+            return;
+        }
+        // New-format ensemble: default to `ensemble.tsv` (the combined
+        // wide-format trajectory — byte-identical to the `-o` mirror).
+        Resolved::SimEnsemble { leaf, rel_path, .. } => {
+            let name = a.stream.as_deref().unwrap_or("ensemble.tsv");
             let path = leaf.dir.join(name);
             let bytes = std::fs::read(&path).unwrap_or_else(|e| {
                 eprintln!("error reading {} in {}: {}", name, rel_path, e);
@@ -903,6 +1022,8 @@ enum Resolved {
     Pfilter { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     /// `Survey` leaf under `surveys/`.
     Survey { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
+    /// `SimEnsemble` leaf under `ensembles/` (the combined multi-cell TSV).
+    SimEnsemble { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
 }
 
 /// Resolve a user-supplied key to a single new-format leaf. Accepts either a
@@ -926,6 +1047,7 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
                     runid::ArtifactKind::ProfilePoint => Resolved::Profile { leaf, rel_path, created },
                     runid::ArtifactKind::Pfilter => Resolved::Pfilter { leaf, rel_path, created },
                     runid::ArtifactKind::Survey => Resolved::Survey { leaf, rel_path, created },
+                    runid::ArtifactKind::SimEnsemble => Resolved::SimEnsemble { leaf, rel_path, created },
                     _ => Resolved::Sim { leaf, rel_path, created },
                 });
             }
@@ -987,8 +1109,16 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
         survey_matches.push((leaf, rel, created));
     }
 
+    // New-format sim ensembles: match the run_id hex prefix under ensembles/.
+    let mut ensemble_matches: Vec<(cas_read::Leaf, String, SystemTime)> = Vec::new();
+    for leaf in cas_read::resolve_sim_ensemble_prefix(Path::new(root), hash_prefix) {
+        let created = leaf_created(&leaf);
+        let rel = pathdiff_str(&leaf.dir, &cwd);
+        ensemble_matches.push((leaf, rel, created));
+    }
+
     match sim_matches.len() + fit_matches.len() + profile_matches.len()
-        + pfilter_matches.len() + survey_matches.len() {
+        + pfilter_matches.len() + survey_matches.len() + ensemble_matches.len() {
         0 => Err(format!("no run matches '{}' in {}", key, root)),
         1 => {
             if let Some((leaf, rel_path, created)) = sim_matches.into_iter().next() {
@@ -999,9 +1129,11 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
                 Ok(Resolved::Profile { leaf, rel_path, created })
             } else if let Some((leaf, rel_path, created)) = pfilter_matches.into_iter().next() {
                 Ok(Resolved::Pfilter { leaf, rel_path, created })
-            } else {
-                let (leaf, rel_path, created) = survey_matches.into_iter().next().unwrap();
+            } else if let Some((leaf, rel_path, created)) = survey_matches.into_iter().next() {
                 Ok(Resolved::Survey { leaf, rel_path, created })
+            } else {
+                let (leaf, rel_path, created) = ensemble_matches.into_iter().next().unwrap();
+                Ok(Resolved::SimEnsemble { leaf, rel_path, created })
             }
         }
         n => {
@@ -1020,6 +1152,9 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
             }
             for (_, rel, _) in &survey_matches {
                 msg.push_str(&format!("  {:<14} {}\n", "survey", rel));
+            }
+            for (_, rel, _) in &ensemble_matches {
+                msg.push_str(&format!("  {:<14} {}\n", "sim_ensemble", rel));
             }
             msg.push_str("refine by appending /<scenario> and/or /<seed_N>, \
                          or pass a longer hash prefix");
@@ -1198,6 +1333,53 @@ fn print_pfilter_table(rows: &[PfilterRow], now: SystemTime) {
         ]);
     }
     println!("{table}");
+}
+
+fn print_ensemble_table(rows: &[EnsembleRow], now: SystemTime) {
+    use comfy_table::{Table, Cell, ContentArrangement, presets::NOTHING};
+    let mut table = Table::new();
+    table
+        .load_preset(NOTHING)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            Cell::new("CREATED").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("RUN_ID").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("LABEL").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("MODEL").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("CONFIG").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("CELLS").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("SIZE").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("PATH").add_attribute(comfy_table::Attribute::Bold),
+        ]);
+    for r in rows {
+        let rel_time = fmt_relative_time(r.created, now);
+        let model    = model_display_name(r.leaf.level_label("model"));
+        let n_cells  = r.leaf.record.inputs.get("n_cells")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.to_string())
+            // Fall back to the dep count (one dep per cell) if inputs lacks it.
+            .unwrap_or_else(|| r.leaf.record.deps.len().to_string());
+        let size = format_size(
+            std::fs::metadata(r.leaf.dir.join("ensemble.tsv")).map(|m| m.len()).unwrap_or(0));
+        table.add_row(vec![
+            Cell::new(rel_time).fg(comfy_table::Color::Yellow),
+            short_hash_cell(&r.leaf.run_id_hex()),
+            label_cell(&r.leaf.record.provenance.label),
+            Cell::new(model),
+            Cell::new(r.leaf.level_label("config")).add_attribute(comfy_table::Attribute::Dim),
+            Cell::new(n_cells).fg(comfy_table::Color::Green),
+            Cell::new(size),
+            Cell::new(&r.rel_path).fg(comfy_table::Color::Cyan),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn print_ensemble_json(rows: &[EnsembleRow]) {
+    for r in rows {
+        let json = serde_json::to_string(&r.leaf.record).unwrap_or_default();
+        println!("{}", json);
+    }
 }
 
 fn print_fits_json(fits: &[FitEntry]) {

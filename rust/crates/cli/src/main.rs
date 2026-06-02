@@ -30,6 +30,7 @@ mod progress;
 mod evidence;
 mod survey;
 mod survey_cas;     // gh#147 (M3.3): survey CAS identity (model/config/box/seed)
+mod sim_ensemble_cas; // gh#147: multi-cell simulate ensemble CAS identity (model/config/params/grid)
 mod landscape_html;
 mod lineage;        // three-layer lineage: --event-log record + realize + tree
 pub mod version;
@@ -671,8 +672,6 @@ fn run_simulate(a: &args::SimulateArgs) {
         });
     }
 
-    use std::io::Write;
-
     // The display label rides on every leaf's `RunRecord.provenance.label`.
     let label_arg: Option<String> = match a.label.as_deref() {
         Some(raw) => match crate::fit::validate_label(raw) {
@@ -904,18 +903,14 @@ fn run_simulate(a: &args::SimulateArgs) {
         }
     };
 
-    // The trajectory mirror: stdout / -o file. Trajectory suppression is
-    // driven by `job.obs` (run-spec §3.1.1). The canonical bytes live in the
-    // store; this is the convenience view.
-    let traj_out: Option<Box<dyn Write>> = if !job.obs.suppresses_trajectory() {
-        Some(match &output_path {
-            Some(path) => {
-                let f = std::fs::File::create(path)
-                    .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
-                Box::new(std::io::BufWriter::new(f)) as Box<dyn Write>
-            }
-            None => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
-        })
+    // The trajectory mirror, accumulated in memory. The canonical bytes live
+    // in the store (per-cell leaves + multi-run ensemble); this buffer is the
+    // convenience view, written to `-o PATH` post-loop and (multi-run) stored
+    // verbatim as the `SimEnsemble` artifact. NEVER stdout (Item C): with no
+    // `-o` the user gets the `cached:` stderr line + `camdl cat <hash>`.
+    // `None` ⟺ trajectory suppressed (`--obs-only`, run-spec §3.1.1).
+    let traj_out: Option<Vec<u8>> = if !job.obs.suppresses_trajectory() {
+        Some(Vec::new())
     } else {
         None
     };
@@ -944,10 +939,16 @@ fn run_simulate(a: &args::SimulateArgs) {
         std::process::exit(1);
     });
 
-    // Flush the mirror writer (stdout / -o) before the post-loop obs writer.
-    let _ = sink.stream.traj_out.take();
-    if let Some(ref path) = output_path {
+    // The combined wide-format trajectory bytes (None ⟺ --obs-only). The CAS
+    // leaves/ensemble are the system of record; this buffer is the mirror —
+    // written to `-o PATH` only, NEVER stdout (Item C).
+    let combined_traj: Option<Vec<u8>> = sink.stream.traj_out.take();
+    if let (Some(ref path), Some(ref bytes)) = (&output_path, &combined_traj) {
         if !suppress_trajectory {
+            std::fs::write(path, bytes).unwrap_or_else(|e| {
+                eprintln!("cannot write {}: {}", path, e);
+                std::process::exit(1);
+            });
             eprintln!("trajectory written to {}", path);
         }
     }
@@ -959,6 +960,20 @@ fn run_simulate(a: &args::SimulateArgs) {
             eprintln!("error: {}", e);
         }
         std::process::exit(1);
+    }
+
+    // ── Store the combined-across-cells TSV as a `SimEnsemble` artifact ──────
+    //
+    // A multi-cell run (total_runs > 1) keeps its N per-cell `Sim` leaves AND
+    // additionally writes the combined wide-format TSV as a content-addressed
+    // ensemble that REFERENCES them (deps). The ensemble's artifact bytes are
+    // the same `combined_traj` buffer the `-o` mirror uses, so `cat <ensemble>`
+    // == the `-o` combined TSV. A single-run simulate writes NO ensemble (the
+    // one leaf is the whole thing).
+    if total_runs > 1 && !suppress_trajectory {
+        if let Some(ref bytes) = combined_traj {
+            write_sim_ensemble(&sink.cas, bytes, &cas_root, label_arg.clone());
+        }
     }
 
     // Report where the leaves landed.
@@ -1116,6 +1131,114 @@ fn build_simulate_cas_sink(
     })
 }
 
+/// Store the combined-across-cells wide-format TSV of a multi-cell `simulate`
+/// as a content-addressed `SimEnsemble` leaf that references (deps) the N
+/// per-cell `Sim` leaves. `combined_bytes` are the exact bytes the `-o` mirror
+/// writes, so `camdl cat <ensemble>` == the `-o` combined TSV.
+///
+/// Failure here is reported but non-fatal: the per-cell `Sim` leaves are the
+/// primary system of record and are already committed; the ensemble is a
+/// derived convenience view, so a write hiccup must not fail the whole run
+/// (mirrors the obs-child non-fatal posture).
+fn write_sim_ensemble(
+    cas: &crate::batch::CasSink,
+    combined_bytes: &[u8],
+    cas_root: &str,
+    label: Option<String>,
+) {
+    // Build the cell list from the committed leaves. A cell without a resolved
+    // run_id failed identity resolution (already on `errors`, which aborted
+    // above) — defensively skip it so we never fold a bogus dep.
+    let cells: Vec<crate::sim_ensemble_cas::EnsembleCell> = cas
+        .completed_runs
+        .iter()
+        .filter_map(|r| {
+            Some(crate::sim_ensemble_cas::EnsembleCell {
+                scenario_label: r.scenario.clone(),
+                process_seed: r.process_seed,
+                draw_idx: r.draw_idx,
+                sim_run_id: r.run_id?,
+                traj_digest: r.traj_digest?,
+            })
+        })
+        .collect();
+    if cells.len() != cas.completed_runs.len() {
+        eprintln!("warning: ensemble: {} of {} cells lacked a resolved identity; \
+                   skipping ensemble artifact",
+            cas.completed_runs.len() - cells.len(), cas.completed_runs.len());
+        return;
+    }
+
+    let ctx = crate::sim_ensemble_cas::EnsembleCtx {
+        model: &cas.base_model,
+        ir_version: ir::IR_VERSION.trim(),
+        engine_version: version::VERSION_SHORT,
+        stem: cas.model_stem.as_deref().unwrap_or("model"),
+        backend: cas.backend,
+        dt: cas.dt,
+        base_params: &cas.base_params,
+        cells: &cells,
+    };
+    let resolved = match crate::sim_ensemble_cas::resolve_sim_ensemble(&ctx) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("warning: ensemble identity: {}", e);
+            return;
+        }
+    };
+
+    let root = std::path::Path::new(cas_root);
+    let dir = runid::store_path(root, runid::ArtifactKind::SimEnsemble, &resolved.levels);
+
+    // Distinct scenarios (sorted, deduped) for the display payload.
+    let mut scenarios: Vec<String> = cells.iter().map(|c| c.scenario_label.clone()).collect();
+    scenarios.sort();
+    scenarios.dedup();
+    let n_seeds = {
+        let mut s: Vec<u64> = cells.iter().map(|c| c.process_seed).collect();
+        s.sort_unstable();
+        s.dedup();
+        s.len()
+    };
+    let n_draws = {
+        let mut d: Vec<usize> = cells.iter().map(|c| c.draw_idx).collect();
+        d.sort_unstable();
+        d.dedup();
+        d.len()
+    };
+    let inputs = serde_json::json!({
+        "n_cells": cells.len(),
+        "scenarios": scenarios,
+        "n_scenarios": scenarios.len(),
+        "n_seeds": n_seeds,
+        "n_draws": n_draws,
+    });
+
+    let deps = crate::sim_ensemble_cas::ensemble_deps(&cells);
+    let record = crate::sim_ensemble_cas::build_ensemble_record(
+        &resolved,
+        ir::IR_VERSION.trim(),
+        runid::RunStatus::Running,
+        deps,
+        inputs,
+        &cas.model_path,
+        label,
+    );
+
+    let mut artifacts = runid::Artifacts::new();
+    artifacts.insert("ensemble.tsv", combined_bytes.to_vec());
+    let store = runid::FsCasStore::new(root);
+    match store.commit_atomic(&dir, record, artifacts) {
+        Ok(dest) => {
+            use owo_colors::OwoColorize;
+            let rel = dest.strip_prefix(root).unwrap_or(&dest);
+            eprintln!("{} {}", "ensemble:".bright_green().bold(),
+                rel.to_string_lossy().cyan());
+        }
+        Err(e) => eprintln!("warning: ensemble commit failed: {}", e),
+    }
+}
+
 /// Print the relative store paths of the committed leaves. A lone leaf gets
 /// the familiar `cached: <path>` line (the path is already store-relative,
 /// e.g. `sims/model-…/…/seed_…`); a multi-run prints a one-line summary.
@@ -1138,7 +1261,13 @@ struct ObsRow { time: f64, replicate: usize, draw: usize, scenario: String, valu
 /// shape) and accumulates synthetic observations for a post-loop combined
 /// write. Reproduces the pre-unification `run_simulate` output byte-for-byte.
 struct StreamSink {
-    traj_out: Option<Box<dyn std::io::Write>>,
+    /// The combined wide-format trajectory TSV, accumulated in memory across
+    /// cells. `None` ⟺ the trajectory is suppressed (`--obs-only`). Post-loop
+    /// this buffer is the single source of bytes for BOTH the `-o` mirror and
+    /// (multi-run) the content-addressed `SimEnsemble` artifact, so the two are
+    /// byte-identical by construction. Never streamed to stdout (Item C — the
+    /// CAS leaf/ensemble are the system of record).
+    traj_out: Option<Vec<u8>>,
     traj_header_written: bool,
     dates: bool,
     dates_render: Option<(String, String)>,

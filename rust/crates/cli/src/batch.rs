@@ -417,6 +417,19 @@ pub fn plan_runs(
 #[derive(Debug, Clone)]
 pub(crate) struct RunEntry {
     pub(crate) run_path: String,
+    /// The leaf's `run_id` — the ensemble (simulate, multi-cell) records these
+    /// as its `deps` and folds them into its `grid` identity. `None` only if
+    /// identity resolution failed (the cell is then also on `errors`).
+    pub(crate) run_id: Option<runid::ContentHash>,
+    /// SHA-256 of the cell's `traj.tsv` (the artifact the ensemble's combined
+    /// TSV is derived from). Pins which upstream file the dep consumed.
+    pub(crate) traj_digest: Option<runid::ContentHash>,
+    /// Scenario label, resolved process seed, and 0-based draw index — the
+    /// per-cell coordinates the ensemble's `grid` digest sorts over (alongside
+    /// the cell `run_id`).
+    pub(crate) scenario: String,
+    pub(crate) process_seed: u64,
+    pub(crate) draw_idx: usize,
 }
 
 // ─── cmd_batch_run ──────────────────────────────────────────────────────
@@ -877,14 +890,30 @@ impl crate::engine::RunSink for CasSink {
     }
 
     fn on_skip(&mut self, spec: &crate::engine::CellSpec) {
-        let rel = self.cell_resolve(spec).map(|(_, _, rel)| rel).unwrap_or_default();
+        // A cache hit still contributes to a multi-cell ensemble's deps, so
+        // recover the leaf's run_id (from the resolve) and its traj.tsv digest
+        // (from the existing leaf's run.json, recorded at first commit).
+        let (rel, run_id, traj_digest) = match self.cell_resolve(spec) {
+            Ok((rt, dir, rel)) => {
+                let digest = read_traj_digest(&dir);
+                (rel, Some(rt.run_id), digest)
+            }
+            Err(_) => (String::new(), None, None),
+        };
         let name = spec.scenario.name().to_string();
         self.counter += 1;
         if !self.quiet && !crate::progress::is_none() {
             eprintln!("[{}/{}] scenario={} seed={} (skipped — cache hit)",
                 self.counter, self.total, name, spec.process_seed);
         }
-        self.completed_runs.push(RunEntry { run_path: rel });
+        self.completed_runs.push(RunEntry {
+            run_path: rel,
+            run_id,
+            traj_digest,
+            scenario: name,
+            process_seed: spec.process_seed,
+            draw_idx: spec.point_idx,
+        });
     }
 
     fn merge_cell(&mut self, cell: &crate::engine::CellResult) -> Result<(), String> {
@@ -901,6 +930,7 @@ impl crate::engine::RunSink for CasSink {
         };
 
         let traj_bytes = crate::util::traj_tsv_bytes(&cell.model, &cell.traj, true);
+        let traj_digest = runid::ContentHash::digest_bytes(&traj_bytes);
 
         // Declare the obs ensemble as a child sub-artifact so the leaf's
         // exact-set doesn't orphan the `obs/` subdir (written after the
@@ -970,9 +1000,25 @@ impl crate::engine::RunSink for CasSink {
         if !self.quiet && !crate::progress::is_none() {
             eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
         }
-        self.completed_runs.push(RunEntry { run_path: rel });
+        self.completed_runs.push(RunEntry {
+            run_path: rel,
+            run_id: Some(rt.run_id),
+            traj_digest: Some(traj_digest),
+            scenario: name,
+            process_seed: spec.process_seed,
+            draw_idx: spec.point_idx,
+        });
         Ok(())
     }
+}
+
+/// Read a committed leaf's `traj.tsv` SHA-256 from its `run.json` artifact
+/// manifest (recorded at commit). Used by the cache-hit path (`on_skip`) to
+/// recover the dep digest without re-reading the trajectory bytes.
+fn read_traj_digest(dir: &std::path::Path) -> Option<runid::ContentHash> {
+    let bytes = std::fs::read(dir.join("run.json")).ok()?;
+    let rec: runid::RunRecord = serde_json::from_slice(&bytes).ok()?;
+    rec.artifacts.get("traj.tsv").map(|c| c.digest)
 }
 
 // ─── Design experiment execution ─────────────────────────────────────────────
