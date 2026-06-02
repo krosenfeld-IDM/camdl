@@ -372,15 +372,20 @@ fn fit_summary_walks_real_fit_run_v2_output() {
 /// `exec_fit_run_v2()`'s output. Fragile-but-loud is intentional:
 /// no markdown AST, no special-casing.
 ///
-/// gh#147 (M3.2): the single-fit path moved to the content-addressed store,
-/// but the spec docs this test reads still describe the *multi-cell grid*
-/// layout (`real/fit_<seed>/`, `synthetic/ds_NN/fit_<seed>/`), which is still
-/// the active code path (`grid_summary::read_cell_row`) and is migrated in
-/// M3.3. Re-enabling needs both the grid migration + the doc rewrite AND a
-/// verification-model redesign (literal-path-on-disk resolution is incompatible
-/// with hash-bearing CAS paths). Tracked in gh#150.
+/// gh#147 (M3.3-E): the grid cells now land in the content-addressed store
+/// (each dataset × fit-seed is its own CAS fit), so the legacy literal paths
+/// this test resolves (`real/fit_<seed>/`, `synthetic/ds_NN/fit_<seed>/`) no
+/// longer exist. Re-enabling is NOT a layout reframe: the spec docs still
+/// describe the legacy tree, and a CAS leaf path is hash-bearing
+/// (`fits/<base-h8>/<NN>-mle-<h8>/seed_<S>-<h8>/`), which cannot be matched by
+/// the current literal-path-on-disk model. It needs (1) the spec-doc rewrite
+/// to the CAS layout and (2) a shape/template verification model (match path
+/// *shape* with `<h8>` placeholders, not literal strings). Tracked in gh#159
+/// (M4); gh#150 (the grid migration) is closed by M3.3-E.
 #[test]
-#[ignore = "asserts the multi-cell CAS grid layout introduced in M3.3 (gh#150); not migrated in M3.2"]
+#[ignore = "spec-vs-code parity test: literal-path model is incompatible with \
+            hash-bearing CAS paths; needs the spec-doc rewrite + a \
+            shape/template verification redesign — M4 (gh#159)"]
 fn spec_layout_diagrams_match_fit_run_v2_output() {
     let Some(camdl) = camdl_bin() else { return };
     let Some(camdlc) = camdlc_bin() else { return };

@@ -126,8 +126,8 @@ fn generate_one_dataset(
     // --obs-only` (main.rs), so the same nominal seed produces
     // identical observation bytes whether generated via CLI or via
     // the `[synthetic]` block. Diverging these constants in the past
-    // caused an SBC discrepancy that looked like a +59% β bias — see
-    // the 2026-04-18 downstream incident report.
+    // caused a parameter-recovery discrepancy that looked like a +59% β
+    // bias — see the 2026-04-18 downstream incident report.
     let compiled = Arc::new(
         CompiledModel::new(model.clone())
             .map_err(|e| format!("compile error: {:?}", e))?,
@@ -162,8 +162,8 @@ fn generate_one_dataset(
     // Write wide-format TSV: time column + one column per obs stream.
     // Uses the union of all obs times across streams, sorted; missing
     // values are blank (NA-compatible with the fit-loader). Streams
-    // that share the same schedule (the common case for SBC) collapse
-    // to one row per time, no NAs.
+    // that share the same schedule (the common case for parameter-
+    // recovery studies) collapse to one row per time, no NAs.
     let mut union_times: Vec<f64> = all_times.iter().flatten().copied().collect();
     union_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     union_times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);

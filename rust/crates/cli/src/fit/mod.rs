@@ -17,7 +17,6 @@ pub mod config_diff;
 pub mod table_row;
 pub mod fit_table;
 pub use fit_table::cmd_fit_table;
-pub mod grid_summary;
 pub mod fit_summary;
 pub use fit_summary::cmd_fit_summary;
 pub mod pmmh;
@@ -481,12 +480,14 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
 
     // ── Build the replicate grid: (dataset_idx, fit_seed) cells ──────────
     //
-    // Four canonical modes, all routed through the same grid:
-    //   Mode                     synthetic?  fit_seeds     Cells
-    //   Single fit               no          None/scalar   1       → real/fit_<base>/
-    //   Start-sensitivity        no          list of M     M       → real/fit_<s_i>/
-    //   SBC (classical)          yes         None/scalar   N       → synthetic/ds_NN/fit_<base>/
-    //   SBC × start-sensitivity  yes         list of M     N × M   → synthetic/ds_NN/fit_<s_i>/
+    // Four canonical modes, all routed through the same grid. Each cell is a
+    // content-addressed fit (its own FitDigest base); the legacy literal cell
+    // dirs (`real/fit_<seed>/`, `synthetic/ds_NN/fit_<seed>/`) are retired.
+    //   Mode                           synthetic?  fit_seeds     Cells
+    //   Single fit                     no          None/scalar   1
+    //   Start-sensitivity              no          list of M     M  (seed levels, one base)
+    //   Parameter recovery             yes         None/scalar   N  (one base per dataset)
+    //   Parameter recovery × starts    yes         list of M     N × M
     //
     // For synthetic modes the datasets are generated once up front and the
     // per-cell DataSpec is materialised from their on-disk paths. See
@@ -1618,57 +1619,17 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         }
     }
 
-    // ── Post-grid aggregation: summary.tsv (+ coverage.tsv for synthetic)
+    // ── Grid roll-ups (summary.tsv / coverage.tsv): deferred to M4 ──
     //
-    // Walk each cell's terminal-stage output, parse the `mle_params.toml`
-    // back into a row, and write the tables. `summary.tsv` lives under
-    // `real/` or `synthetic/` — the visual subdir that groups all of a
-    // fit's cells.
-    let terminal_stage = stages_to_run.last()
-        .map(|(n, _)| n.to_string())
-        .unwrap_or_else(|| "mle".to_string());
-
-    let source = if config.synthetic.is_some() { "synthetic" } else { "real" };
-    let mut rows: Vec<grid_summary::SummaryRow> = Vec::new();
-    for cell in cells.iter() {
-        let (dataset, cell_dir) = match cell.dataset_idx {
-            Some(idx) => {
-                let ds = format!("ds_{:02}", idx);
-                let dir = fit_dir.join("synthetic").join(&ds).join(format!("fit_{}", cell.fit_seed));
-                (ds, dir)
-            }
-            None => {
-                let dir = fit_dir.join("real").join(format!("fit_{}", cell.fit_seed));
-                ("real".to_string(), dir)
-            }
-        };
-        if let Some(r) = grid_summary::read_cell_row(&cell_dir, &terminal_stage, &dataset, cell.fit_seed) {
-            rows.push(r);
-        }
-    }
-
-    if rows.is_empty() {
-        // gh#147 (M3.2): the grid summary still aggregates the *legacy*
-        // multi-cell cell dirs (`real/fit_<seed>/`,
-        // `synthetic/ds_NN/fit_<seed>/`). CAS fits write their leaves under the
-        // content-addressed tree, so there are no legacy cells to aggregate yet
-        // — this is the visible seam, not a failure. The grid summary's CAS
-        // migration lands in M3.3 (gh#150).
-        eprintln!("note: grid summary not yet available for CAS fits — lands in M3.3 (gh#150)");
-    } else {
-        match grid_summary::write_summary(&fit_dir, source, &rows) {
-            Ok(p)  => eprintln!("summary: {}", p.display()),
-            Err(e) => eprintln!("warning: could not write summary.tsv: {}", e),
-        }
-        if config.synthetic.is_some() {
-            match grid_summary::load_truth(&fit_dir) {
-                Ok(truth) => match grid_summary::write_coverage(&fit_dir, &truth, &rows) {
-                    Ok(p)  => eprintln!("coverage: {}", p.display()),
-                    Err(e) => eprintln!("warning: could not write coverage.tsv: {}", e),
-                },
-                Err(e) => eprintln!("warning: no truth for coverage: {}", e),
-            }
-        }
+    // Each grid cell is now a content-addressed fit — its own FitDigest base,
+    // keyed by that cell's dataset digest × fit-seed — readable individually
+    // via `camdl list`/`show`/`cat`. The cross-cell summary and the synthetic
+    // parameter-recovery coverage table are derived views with no home in the
+    // per-cell tree; the M4 reindex rebuilds them from the CAS leaves (gh#150 /
+    // gh#154), where coverage gains a truth-within-interval correctness check.
+    if cells.len() > 1 || config.synthetic.is_some() {
+        eprintln!("note: grid summary / coverage are derived views — \
+                   rebuilt by the reindex in M4 (gh#150 / gh#154)");
     }
 
     // gh#147 (M3.2): no fit-wide `run.json` rewrite — the fit identity is a

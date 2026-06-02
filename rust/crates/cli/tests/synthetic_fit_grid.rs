@@ -158,6 +158,65 @@ fn cas_stage_leaf(fit_dir: &Path, stage_substr: &str) -> PathBuf {
     panic!("no CAS '{}' stage leaf under {}", stage_substr, fit_dir.display());
 }
 
+/// Every CAS fit-stage leaf dir under `root` whose `stage` level contains
+/// `stage_substr` — the multi-cell analog of `cas_stage_leaf` (one entry per
+/// `seed_<S>` leaf, across one or more fit-bases).
+fn all_stage_leaves(root: &Path, stage_substr: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(d.join("run.json")).unwrap_or_default(),
+        ) {
+            if v.get("kind").and_then(|k| k.as_str()) == Some("fit_stage") {
+                let stage = v["levels"].as_array().into_iter().flatten()
+                    .find(|l| l["name"].as_str() == Some("stage"))
+                    .and_then(|l| l["label"].as_str()).unwrap_or("");
+                if stage.contains(stage_substr) { out.push(d.clone()); }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(&d) {
+            for e in es.flatten() { if e.path().is_dir() { stack.push(e.path()); } }
+        }
+    }
+    out
+}
+
+/// The `seed` level (`seed_<N>`) of a CAS fit-stage leaf, parsed to `N`.
+fn seed_of(leaf: &Path) -> u64 {
+    let v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(leaf.join("run.json")).unwrap()).unwrap();
+    v["levels"].as_array().into_iter().flatten()
+        .find(|l| l["name"].as_str() == Some("seed"))
+        .and_then(|l| l["label"].as_str())
+        .and_then(|s| s.strip_prefix("seed_"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no seed level on {}", leaf.display()))
+}
+
+/// The distinct CAS fit-base dirs under `fits/` holding an `mle` stage leaf —
+/// the cell fits (one per dataset for a synthetic grid), excluding the
+/// synthetic dataset-generation segment (which carries no stage leaf).
+fn cell_fit_bases(out: &Path) -> Vec<PathBuf> {
+    let fits = out.join("fits");
+    let mut bases: Vec<PathBuf> = std::fs::read_dir(&fits).unwrap()
+        .flatten().map(|e| e.path())
+        .filter(|p| p.is_dir() && !all_stage_leaves(p, "mle").is_empty())
+        .collect();
+    bases.sort();
+    bases
+}
+
+/// The synthetic dataset-generation segment under `fits/` — the fit-base that
+/// holds `synthetic/data/` (generated `ds_NN.tsv` + `truth.toml`), distinct
+/// from the per-dataset cell fits.
+fn datagen_segment(out: &Path) -> PathBuf {
+    let fits = out.join("fits");
+    std::fs::read_dir(&fits).unwrap().flatten().map(|e| e.path())
+        .find(|p| p.join("synthetic").join("data").is_dir())
+        .unwrap_or_else(|| panic!("no synthetic dataset-gen segment under {}", fits.display()))
+}
+
 // ── mode 1: a single fit lands at its CAS stage leaf ───────────────────
 #[test]
 fn single_fit_lands_at_cas_stage_leaf() {
@@ -194,9 +253,8 @@ cases = "{}"
         "the legacy real/fit_<seed>/ wrapper must NOT exist under {}", fit_dir.display());
 }
 
-// ── mode 2: fit_seeds list → one dir per seed under real/ ──────────────
+// ── mode 2: fit_seeds list → one CAS stage leaf per seed ───────────────
 #[test]
-#[ignore = "multi-cell grid layout (per-seed dirs + summary.tsv) not yet migrated to CAS — M3.3 (gh#150)"]
 fn fit_seeds_list_produces_per_seed_dirs() {
     let Some(bin) = camdl_sim() else { return; };
     if camdlc().is_none() { return; }
@@ -220,17 +278,21 @@ cases = "{}"
 
     run_fit(&bin, &fit_toml);
 
-    let base = find_fit_dir(&out, "fit").join("real");
-    for s in [11u64, 22, 33] {
-        let dir = base.join(format!("fit_{}", s)).join("mle");
-        assert!(dir.exists(), "fit_{}/mle/ must exist at {}", s, dir.display());
+    // Real multi-seed: one fit-base (same model + data + config), one CAS
+    // `mle` stage leaf per fit-seed. The legacy `real/fit_<seed>/` wrapper is
+    // retired; the cross-seed summary.tsv is the deferred M4 view (gh#150).
+    let fit_dir = find_fit_dir(&out, "fit");
+    let leaves = all_stage_leaves(&fit_dir, "mle");
+    let seeds: std::collections::HashSet<u64> = leaves.iter().map(|l| seed_of(l)).collect();
+    assert_eq!(seeds, [11u64, 22, 33].into_iter().collect(),
+        "expected one mle stage leaf per fit-seed {{11,22,33}}; got {:?} from {:?}",
+        seeds, leaves);
+    for l in &leaves {
+        assert!(l.join("mle_params.toml").is_file(),
+            "each seed leaf must hold mle_params.toml: {}", l.display());
     }
-    let summary = find_fit_dir(&out, "fit").join("real").join("summary.tsv");
-    assert!(summary.exists(), "real/summary.tsv must be written");
-    let text = std::fs::read_to_string(&summary).unwrap();
-    // Header + 3 rows = 4 lines.
-    assert!(text.lines().count() >= 4,
-        "summary.tsv should have at least 3 data rows: {}", text);
+    assert!(!fit_dir.join("real").exists(),
+        "the legacy real/fit_<seed>/ wrapper must NOT exist under {}", fit_dir.display());
 }
 
 // ── gh#110 follow-up: IF2 skips a degenerate chain instead of aborting ──
@@ -307,9 +369,8 @@ cooling = 0.7
         "surviving chains must still write the mle stage leaf at {}", leaf.display());
 }
 
-// ── mode 3: synthetic generation — N datasets, synthetic/ prefix ───────
+// ── mode 3: synthetic generation — N datasets → N content-addressed cells ──
 #[test]
-#[ignore = "multi-cell SBC grid layout (synthetic/ds_NN/) not yet migrated to CAS — M3.3 (gh#150)"]
 fn synthetic_generates_n_datasets_and_fits() {
     let Some(bin) = camdl_sim() else { return; };
     if camdlc().is_none() { return; }
@@ -331,22 +392,28 @@ sim_seeds = [1, 2, 3]
 
     run_fit(&bin, &fit_toml);
 
-    let syn = find_fit_dir(&out, "fit").join("synthetic");
+    // The dataset-generation segment holds the N generated datasets + truth;
+    // each dataset is then fit as its own content-addressed cell (distinct
+    // data digest → distinct fit-base). The cross-dataset summary.tsv and the
+    // parameter-recovery coverage.tsv are the deferred M4 views (gh#150).
+    let datagen = datagen_segment(&out);
     for i in 1..=3 {
-        let ds_tsv = syn.join("data").join(format!("ds_{:02}.tsv", i));
-        assert!(ds_tsv.exists(), "ds_{:02}.tsv must exist", i);
-        let fit_dir = syn.join(format!("ds_{:02}", i)).join("fit_1").join("mle");
-        assert!(fit_dir.exists(), "synthetic/ds_{:02}/fit_1/mle/ must exist", i);
+        assert!(datagen.join("synthetic").join("data").join(format!("ds_{:02}.tsv", i)).is_file(),
+            "ds_{:02}.tsv must be generated under {}", i, datagen.display());
     }
-    assert!(syn.join("truth.toml").exists(),
-        "truth.toml must be copied for provenance");
-    assert!(syn.join("summary.tsv").exists());
-    assert!(syn.join("coverage.tsv").exists());
+    assert!(datagen.join("synthetic").join("truth.toml").is_file(),
+        "truth.toml must be recorded for provenance");
+    let bases = cell_fit_bases(&out);
+    assert_eq!(bases.len(), 3,
+        "3 datasets → 3 distinct content-addressed cell fits; got {:?}", bases);
+    for b in &bases {
+        assert!(!all_stage_leaves(b, "mle").is_empty(),
+            "each cell fit must have an mle stage leaf: {}", b.display());
+    }
 }
 
 // ── mode 4: synthetic × fit_seeds full matrix ─────────────────────────
 #[test]
-#[ignore = "multi-cell SBC × fit_seeds grid layout not yet migrated to CAS — M3.3 (gh#150)"]
 fn synthetic_and_fit_seeds_full_matrix() {
     let Some(bin) = camdl_sim() else { return; };
     if camdlc().is_none() { return; }
@@ -369,20 +436,18 @@ sim_seeds = [10, 20]
 
     run_fit(&bin, &fit_toml);
 
-    let syn = find_fit_dir(&out, "fit").join("synthetic");
-    for ds in 1..=2 {
-        for fs in [1u64, 2] {
-            let p = syn.join(format!("ds_{:02}", ds))
-                .join(format!("fit_{}", fs))
-                .join("mle");
-            assert!(p.exists(), "cell ds_{:02} × fit_{} must exist at {}",
-                ds, fs, p.display());
-        }
+    // 2 datasets × 2 fit-seeds: 2 distinct cell fit-bases (one per dataset),
+    // each with one CAS `mle` stage leaf per fit-seed. The 2×2 summary.tsv is
+    // the deferred M4 view (gh#150).
+    let bases = cell_fit_bases(&out);
+    assert_eq!(bases.len(), 2, "2 datasets → 2 cell fit-bases; got {:?}", bases);
+    for b in &bases {
+        let seeds: std::collections::HashSet<u64> =
+            all_stage_leaves(b, "mle").iter().map(|l| seed_of(l)).collect();
+        assert_eq!(seeds, [1u64, 2].into_iter().collect(),
+            "cell fit {} must have a leaf per fit-seed {{1,2}}; got {:?}",
+            b.display(), seeds);
     }
-    let summary = std::fs::read_to_string(syn.join("summary.tsv")).unwrap();
-    // Header + 4 data rows.
-    assert!(summary.lines().count() >= 5,
-        "summary.tsv should have 4 rows for 2×2 grid: {}", summary);
 }
 
 // ── per-chain random starts: an IF2 stage with N > 1 chains and no
@@ -483,9 +548,8 @@ cooling    = 0.9
 
 // ── seeding parity: --obs-only and [synthetic] must produce byte-identical
 //    data at the same nominal seed. Regression against the 2026-04-18
-//    SBC-bias discrepancy. ───────────────────────────────────────────────
+//    parameter-recovery bias discrepancy. ──────────────────────────────────
 #[test]
-#[ignore = "multi-cell synthetic grid layout not yet migrated to CAS — M3.3 (gh#150)"]
 fn obs_only_and_synthetic_agree_byte_for_byte_at_same_seed() {
     let Some(bin) = camdl_sim() else { return; };
     if camdlc().is_none() { return; }
@@ -519,15 +583,14 @@ sim_seeds = [10]
 "#, out.display(), ir.display(), truth.display(), stages_block())).unwrap();
     run_fit(&bin, &fit_toml);
 
-    let syn_tsv = find_fit_dir(&out, "fit").join("synthetic")
-        .join("data").join("ds_01.tsv");
+    let syn_tsv = datagen_segment(&out).join("synthetic").join("data").join("ds_01.tsv");
 
     let cli_bytes = std::fs::read(&cli_tsv).unwrap();
     let syn_bytes = std::fs::read(&syn_tsv).unwrap();
     assert_eq!(cli_bytes, syn_bytes,
         "--obs-only (seed=N) and [synthetic] (sim_seeds=[N]) must produce \
          byte-identical observations. Diverging these paths caused the \
-         2026-04-18 SBC-bias discrepancy. CLI:\n{}\nsynthetic:\n{}",
+         2026-04-18 parameter-recovery bias discrepancy. CLI:\n{}\nsynthetic:\n{}",
         String::from_utf8_lossy(&cli_bytes),
         String::from_utf8_lossy(&syn_bytes));
 }

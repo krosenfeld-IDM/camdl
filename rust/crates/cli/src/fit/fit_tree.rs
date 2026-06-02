@@ -12,9 +12,8 @@
 //!   top-level [`FitMeta`] for filter use without a second `run.json`
 //!   read per row.
 //!
-//! Replaces three current walkers (the buggy v1 walker in
-//! `fit_summary.rs::format_text`, `grid_summary::iter_cells`, and
-//! `browse::resolve_stage_by_hash`). See
+//! Replaces the buggy v1 walker in `fit_summary.rs::format_text` and
+//! `browse::resolve_stage_by_hash`. See
 //! `docs/dev/proposals/2026-04-28-fit-experiment-management.md` §1.
 //!
 //! `StageNode` is method-agnostic by construction: it does not carry a
