@@ -1978,9 +1978,16 @@ Examples:
   camdl list --format json
 "))]
 pub struct ListArgs {
-    /// Root directory to scan (default: ./results)
+    /// Root directory to scan, as a positional: `camdl list [ROOT]`
+    /// (default: ./results, or $CAMDL_OUTPUT_DIR). You may also pass it as
+    /// `--root DIR`, matching `camdl cat`/`show`.
     #[arg(default_value = "./results", env = "CAMDL_OUTPUT_DIR")]
     pub root: PathBuf,
+
+    /// Root directory to scan (alias for the positional ROOT, for consistency
+    /// with `camdl cat`/`show`). Wins over the positional when both are given.
+    #[arg(long = "root", value_name = "DIR")]
+    pub root_flag: Option<PathBuf>,
 
     /// Filter by model path substring
     #[arg(long)]
@@ -2016,6 +2023,16 @@ pub struct ListArgs {
     /// Output format: human (default) or json
     #[arg(long)]
     pub format: Option<String>,
+}
+
+impl ListArgs {
+    /// The store root to scan: `--root DIR` if given, else the positional
+    /// ROOT (which itself defaults to ./results / $CAMDL_OUTPUT_DIR). Lets
+    /// `camdl list` accept the same `--root` as `cat`/`show` without losing
+    /// the documented `camdl list [ROOT]` positional form.
+    pub fn resolved_root(&self) -> &std::path::Path {
+        self.root_flag.as_deref().unwrap_or(&self.root)
+    }
 }
 
 #[derive(Args)]

@@ -122,11 +122,11 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
     // enumeration because it's a more specific request; the other
     // filters (since, limit, format) still apply.
     if let Some(parent_hash) = a.parent.as_ref() {
-        list_profile_children(&a.root.to_string_lossy(), parent_hash, a);
+        list_profile_children(&a.resolved_root().to_string_lossy(), parent_hash, a);
         return;
     }
 
-    let root = a.root.to_string_lossy();
+    let root = a.resolved_root().to_string_lossy();
     let filter_since: Option<std::time::Duration> = a.since.as_ref().map(|d| d.0);
     let filter_kind = match a.kind.as_str() {
         "sim" | "simulate"      => KindFilter::Sim,
@@ -171,7 +171,21 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
     };
 
     let now = SystemTime::now();
+
+    // Ensemble grouping: a multi-cell `simulate` writes N per-cell `Sim` leaves
+    // AND one `SimEnsemble` that references them (deps). In any view that shows
+    // ensembles, the ensemble row REPRESENTS its members — don't also print one
+    // row per replicate/cell (that's the messy N-row spam). `--kind sim`
+    // (ensembles excluded) keeps showing the individual leaves, since that's an
+    // explicit request for the per-cell level. Built before truncation so the
+    // collapse is independent of `--limit`.
+    let ensemble_member_ids: std::collections::HashSet<runid::ContentHash> =
+        ensembles.iter()
+            .flat_map(|e| e.leaf.record.deps.iter().map(|d| d.run_id))
+            .collect();
+
     let mut filtered_runs: Vec<SimRow> = runs.into_iter()
+        .filter(|r| !ensemble_member_ids.contains(&r.leaf.record.run_id))
         .filter(|r| a.model.as_deref().is_none_or(|m| r.leaf.level_label("model").contains(m)))
         .filter(|r| a.scenario.as_deref().is_none_or(|s| r.leaf.level_label("scenario") == s))
         .filter(|r| match filter_since {

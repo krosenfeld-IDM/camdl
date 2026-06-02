@@ -1280,17 +1280,20 @@ fn write_sim_ensemble(
     }
 }
 
-/// Print the relative store paths of the committed leaves. A lone leaf gets
-/// the familiar `cached: <path>` line (the path is already store-relative,
-/// e.g. `sims/model-…/…/seed_…`); a multi-run prints a one-line summary.
-fn report_cas_leaves(runs: &[crate::batch::RunEntry], _cas_root: &str) {
+/// Print the store paths of the committed leaves. A lone leaf gets the
+/// familiar `cached: <path>` line; a multi-run prints a one-line summary. The
+/// path is rooted at `cas_root` (the `--output-dir`) — e.g.
+/// `./results/sims/model-…/…/seed_…` — so it is copy-paste ready, not just the
+/// store-relative `sims/…` tail.
+fn report_cas_leaves(runs: &[crate::batch::RunEntry], cas_root: &str) {
     use owo_colors::OwoColorize;
+    let root = cas_root.trim_end_matches('/');
     match runs.len() {
         0 => {}
         1 => eprintln!("{} {}", "cached:".bright_green().bold(),
-            runs[0].run_path.cyan()),
+            format!("{}/{}", root, runs[0].run_path).cyan()),
         n => eprintln!("{} {} leaves under {}",
-            "cached:".bright_green().bold(), n, "sims/".cyan()),
+            "cached:".bright_green().bold(), n, format!("{}/sims/", root).cyan()),
     }
 }
 

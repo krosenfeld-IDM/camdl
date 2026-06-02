@@ -1561,6 +1561,67 @@ fn simulate_label_applies_on_cached_leaf() {
         "a label-less rerun must not wipe an existing label");
 }
 
+/// `camdl list` collapses ensemble members: a multi-replicate `simulate`
+/// writes N per-cell `Sim` leaves + one `SimEnsemble`, and the default/`all`
+/// view shows ONLY the ensemble (not one row per replicate). `--kind sim` still
+/// surfaces the individual leaves. `--root DIR` is accepted as an alias for the
+/// positional ROOT (consistency with `cat`/`show`).
+#[test]
+fn list_collapses_ensemble_members_and_accepts_root_flag() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let store_s = store.to_string_lossy().into_owned();
+    assert!(Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "5", "--replicates", "3",
+               "--output-dir", &store_s])
+        .status().expect("spawn").success());
+
+    // JSONL: one `RunRecord` per line on stdout. Parse each line and inspect
+    // the TOP-LEVEL `kind` — a substring match would be fooled by the
+    // ensemble record's embedded `deps`, each of which carries `"kind":"sim"`.
+    let count_kind = |args: &[&str], kind: &str| -> usize {
+        let out = Command::new(&bin).args(args).output().expect("spawn");
+        String::from_utf8_lossy(&out.stdout).lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == kind)
+            .count()
+    };
+
+    // Default view (positional ROOT): one ensemble, zero loose sim rows.
+    assert_eq!(count_kind(&["list", &store_s, "--format", "json"], "sim_ensemble"), 1,
+        "default list must show the ensemble");
+    assert_eq!(count_kind(&["list", &store_s, "--format", "json"], "sim"), 0,
+        "default list must NOT print one row per replicate (members collapse into the ensemble)");
+
+    // `--root DIR` alias behaves identically to the positional.
+    assert_eq!(count_kind(&["list", "--root", &store_s, "--format", "json"], "sim_ensemble"), 1,
+        "`list --root DIR` must work like the positional ROOT");
+
+    // `--kind sim`: the individual per-cell leaves ARE surfaced (3 replicates).
+    assert_eq!(count_kind(&["list", "--root", &store_s, "--kind", "sim", "--format", "json"], "sim"), 3,
+        "`list --kind sim` must surface all 3 replicate leaves");
+}
+
+/// The `cached:` line printed after a `simulate` includes the `--output-dir`
+/// prefix (a copy-paste-ready path), not just the store-relative `sims/…` tail.
+#[test]
+fn cached_line_includes_output_dir_prefix() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let out = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "7",
+               "--output-dir", &store.to_string_lossy()])
+        .output().expect("spawn");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let prefix = format!("{}/sims", store.to_string_lossy());
+    assert!(stderr.contains(&prefix),
+        "the `cached:` line must include the --output-dir prefix '{prefix}':\n{stderr}");
+}
+
 fn walkdir(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
