@@ -22,6 +22,7 @@ mod fit;
 mod compare;
 mod if2;
 mod profile;
+mod profile_cas;     // gh#147 M3.3: profile-point CAS identity (resolve_profile_point)
 mod profile_diagnostics;
 mod progress;
 mod evidence;

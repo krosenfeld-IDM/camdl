@@ -99,74 +99,54 @@ fn profile_pmmh_smoke_writes_mle_and_algorithm_block() {
         .expect("spawn camdl profile pmmh");
     assert!(status.success(), "pmmh profile run failed");
 
-    // Walk the seed_1 tree and check that every grid point has a
-    // start_0/mle.toml + start_0/run.json with the PMMH algorithm
-    // block.
+    // Collect the new-format ProfilePoint leaves:
+    // profiles/<base>/<point>/<stage>/<seed>/<start>/{mle.toml, run.json}.
+    // Two grid points × 1 seed × 1 start ⇒ two leaves.
+    fn collect_leaves(dir: &Path, out: &mut Vec<PathBuf>) {
+        if dir.join("run.json").is_file() {
+            if let Ok(b) = std::fs::read_to_string(dir.join("run.json")) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&b) {
+                    if v.get("kind").and_then(|k| k.as_str()) == Some("profile_point") {
+                        out.push(dir.to_path_buf());
+                    }
+                }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(dir) {
+            for e in es.flatten() { if e.path().is_dir() { collect_leaves(&e.path(), out); } }
+        }
+    }
     let profiles_dir = out_root.join("profiles");
-    let entries: Vec<_> = std::fs::read_dir(&profiles_dir)
-        .expect("profiles dir must exist")
-        .filter_map(|e| e.ok())
-        .collect();
-    assert!(!entries.is_empty(), "no profile output written under {}",
-        profiles_dir.display());
+    let mut leaves = Vec::new();
+    collect_leaves(&profiles_dir, &mut leaves);
+    assert_eq!(leaves.len(), 2,
+        "expected 2 ProfilePoint leaves (2 grid points × 1 seed × 1 start), got {:?}",
+        leaves);
 
-    // The umbrella is the only entry; under it sit replicates/seed_<n>/.
-    let umbrella = entries.into_iter().next().unwrap().path();
-    let seed_dirs: Vec<_> = std::fs::read_dir(umbrella.join("replicates"))
-        .expect("replicates dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
-    assert_eq!(seed_dirs.len(), 1, "expected exactly one seed dir, got {:?}",
-        seed_dirs);
-    let seed_dir = &seed_dirs[0];
-
-    let points_dir = seed_dir.join("points");
-    let mut point_dirs: Vec<_> = std::fs::read_dir(&points_dir)
-        .expect("points dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
-    point_dirs.sort();
-    assert_eq!(point_dirs.len(), 2,
-        "expected 2 grid points, got {:?}", point_dirs);
-
-    for pd in &point_dirs {
-        let start_dir = pd.join("start_0");
-        let mle_toml = start_dir.join("mle.toml");
-        assert!(mle_toml.exists(),
-            "missing mle.toml under {}", start_dir.display());
+    for leaf in &leaves {
+        let mle_toml = leaf.join("mle.toml");
+        assert!(mle_toml.exists(), "missing mle.toml under {}", leaf.display());
         let body = std::fs::read_to_string(&mle_toml).unwrap();
         assert!(body.contains("final_loglik = "),
             "mle.toml missing final_loglik:\n{}", body);
 
-        let run_json = start_dir.join("run.json");
-        assert!(run_json.exists(),
-            "missing run.json under {}", start_dir.display());
-        let run_body = std::fs::read_to_string(&run_json).unwrap();
-        let run: serde_json::Value = serde_json::from_str(&run_body)
+        let run: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(leaf.join("run.json")).unwrap())
             .expect("parse run.json");
-        // Run.kind serializes as a tagged object: the FitStage payload
-        // lives under run["kind"] with an internal `kind = "fit-stage"`
-        // discriminator from `#[serde(tag = "kind", rename_all = "kebab-case")]`.
-        let fs = run.get("kind").expect("run.kind block");
-        assert_eq!(fs.get("kind").and_then(|v| v.as_str()),
-            Some("fit-stage"),
-            "expected kind.kind = fit-stage, got: {:?}", fs.get("kind"));
-        assert_eq!(fs.get("method").and_then(|v| v.as_str()), Some("pmmh"),
-            "method should be pmmh, got: {:?}", fs.get("method"));
-        assert_eq!(fs.get("backend").and_then(|v| v.as_str()),
-            Some("chain_binomial"),
-            "backend should be chain_binomial, got: {:?}", fs.get("backend"));
-        let alg = fs.get("algorithm").expect("algorithm block");
+        assert_eq!(run.get("kind").and_then(|v| v.as_str()), Some("profile_point"),
+            "expected kind = profile_point, got: {:?}", run.get("kind"));
+        // The PMMH method + algorithm hyperparams live in the recorded
+        // (display-only) `inputs` of the leaf record.
+        let inputs = run.get("inputs").expect("inputs block");
+        assert_eq!(inputs.get("method").and_then(|v| v.as_str()), Some("pmmh"),
+            "method should be pmmh, got: {:?}", inputs.get("method"));
+        let alg = inputs.get("algorithm").expect("algorithm block");
         assert_eq!(alg.get("steps").and_then(|v| v.as_u64()), Some(100),
             "algorithm.steps mismatch: {:?}", alg);
         assert_eq!(alg.get("particles").and_then(|v| v.as_u64()), Some(100),
             "algorithm.particles mismatch: {:?}", alg);
-        let rho = alg.get("rho").expect("algorithm.rho");
-        assert!(rho.is_f64() || rho.is_null(),
-            "algorithm.rho expected float or null, got: {:?}", rho);
-        let rho_v = rho.as_f64().expect("rho should be a finite float here");
+        let rho_v = alg.get("rho").and_then(|v| v.as_f64())
+            .expect("algorithm.rho should be a finite float");
         assert!((rho_v - 0.99).abs() < 1e-12,
             "algorithm.rho expected 0.99, got: {}", rho_v);
     }

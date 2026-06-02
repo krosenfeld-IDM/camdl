@@ -223,6 +223,9 @@ fn run_profile_if2(
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "gh#154: asserts the per-cell diagnostic rollup (summary.tsv), the \
+            deferred M4 derived view; raw per-start [diagnostics] survive per \
+            leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_pmmh_emits_acc_rate_columns() {
     let Some(bin) = camdl_bin() else { return };
     if camdlc_bin().is_none() { return }
@@ -274,6 +277,9 @@ fn profile_pmmh_emits_acc_rate_columns() {
 }
 
 #[test]
+#[ignore = "gh#154: asserts the per-cell diagnostic rollup (summary.tsv), the \
+            deferred M4 derived view; raw per-start [diagnostics] survive per \
+            leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_pmmh_loglik_rhat_nan_at_k_lt_3() {
     // Gelman-Rubin R-hat is undefined / unstable for K < 3 chains.
     // With --starts 2 the column must hold NaN; the K<3 rule is
@@ -300,6 +306,9 @@ fn profile_pmmh_loglik_rhat_nan_at_k_lt_3() {
 }
 
 #[test]
+#[ignore = "gh#154: asserts the per-cell diagnostic rollup (summary.tsv), the \
+            deferred M4 derived view; raw per-start [diagnostics] survive per \
+            leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_pmmh_loglik_rhat_finite_at_k_3() {
     // At K=3 starts the K<3 rule lifts and R-hat must hold a finite
     // numeric value.
@@ -325,6 +334,9 @@ fn profile_pmmh_loglik_rhat_finite_at_k_3() {
 }
 
 #[test]
+#[ignore = "gh#154: asserts the per-cell diagnostic rollup (summary.tsv), the \
+            deferred M4 derived view; raw per-start [diagnostics] survive per \
+            leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_if2_emits_diagnostic_columns() {
     // IF2 path exposes per-cell iterations_used + cooling_final plus
     // the shared loglik_spread / loglik_rhat / starts_n_completed
@@ -370,6 +382,9 @@ fn profile_if2_emits_diagnostic_columns() {
 }
 
 #[test]
+#[ignore = "gh#154: asserts the per-cell diagnostic rollup (summary.tsv), the \
+            deferred M4 derived view; raw per-start [diagnostics] survive per \
+            leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_tsv_schema_stable_across_runs() {
     // Two runs with different seeds must produce a byte-identical
     // header. The schema doesn't reorder based on data.
@@ -398,6 +413,9 @@ fn profile_tsv_schema_stable_across_runs() {
 }
 
 #[test]
+#[ignore = "gh#154: asserts the per-cell diagnostic rollup (summary.tsv), the \
+            deferred M4 derived view; raw per-start [diagnostics] survive per \
+            leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_starts_n_completed_reflects_diverged_chains() {
     // Plumbing test: assert `starts_n_completed` is wired through
     // the rollup. On the live fixture all three starts typically
@@ -462,5 +480,69 @@ fn profile_starts_n_completed_reflects_diverged_chains() {
         let v = parse_cell(&row[i_completed]);
         assert!(v.is_finite() && v >= 0.0 && v <= 3.0,
             "starts_n_completed must be a finite count in [0, K=3], got {}", v);
+    }
+}
+
+/// Collect every `ProfilePoint` leaf's `mle.toml` body under `<out_root>`.
+fn collect_leaf_mle(out_root: &Path) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        if dir.join("mle.toml").is_file() {
+            if let Ok(b) = std::fs::read_to_string(dir.join("run.json")) {
+                if b.contains("\"profile_point\"") {
+                    if let Ok(m) = std::fs::read_to_string(dir.join("mle.toml")) {
+                        out.push(m);
+                    }
+                }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(dir) {
+            for e in es.flatten() { if e.path().is_dir() { walk(&e.path(), out); } }
+        }
+    }
+    let mut v = Vec::new();
+    walk(&out_root.join("profiles"), &mut v);
+    v
+}
+
+/// The cross-start aggregate rollup is deferred (gh#154), but the raw
+/// per-start diagnostic data it aggregates is still written: each
+/// `ProfilePoint` leaf's `mle.toml` carries a `[diagnostics]` block tagged
+/// with the algorithm. This pins write→disk of that block — the input the
+/// deferred M4 reindex re-aggregates — so the raw data can't silently vanish.
+#[test]
+fn profile_leaf_mle_carries_per_start_diagnostics() {
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("leaf_diag");
+    let (ir, data) = write_fixture(tmp.path());
+
+    // PMMH: the per-start [diagnostics] carries algorithm + acc_rate.
+    let out_pmmh = tmp.path().join("out_pmmh");
+    let o = run_profile_pmmh(&bin, &out_pmmh, &ir, &data, 1, 1);
+    assert!(o.status.success(), "pmmh profile failed:\n{}",
+        String::from_utf8_lossy(&o.stderr));
+    let pmmh_mles = collect_leaf_mle(&out_pmmh);
+    assert_eq!(pmmh_mles.len(), 2, "expected 2 pmmh leaves, got {}", pmmh_mles.len());
+    for mle in &pmmh_mles {
+        assert!(mle.contains("[diagnostics]"),
+            "leaf mle.toml missing [diagnostics] block:\n{}", mle);
+        assert!(mle.contains("algorithm = \"pmmh\""),
+            "pmmh leaf [diagnostics] must tag algorithm = pmmh:\n{}", mle);
+        assert!(mle.contains("acc_rate ="),
+            "pmmh leaf [diagnostics] must record acc_rate:\n{}", mle);
+    }
+
+    // IF2: the per-start [diagnostics] is present and tagged if2.
+    let out_if2 = tmp.path().join("out_if2");
+    let o = run_profile_if2(&bin, &out_if2, &ir, &data, 1, 1);
+    assert!(o.status.success(), "if2 profile failed:\n{}",
+        String::from_utf8_lossy(&o.stderr));
+    let if2_mles = collect_leaf_mle(&out_if2);
+    assert_eq!(if2_mles.len(), 2, "expected 2 if2 leaves, got {}", if2_mles.len());
+    for mle in &if2_mles {
+        assert!(mle.contains("[diagnostics]"),
+            "if2 leaf mle.toml missing [diagnostics] block:\n{}", mle);
+        assert!(mle.contains("algorithm = \"if2\""),
+            "if2 leaf [diagnostics] must tag algorithm = if2:\n{}", mle);
     }
 }

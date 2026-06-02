@@ -68,31 +68,36 @@ fn synth_obs_tsv(bin: &Path, tmp: &Path) -> PathBuf {
     obs_path
 }
 
-/// Read the loglik values from a profile.tsv (the umbrella's
-/// `summary.tsv` mirror). Skips the comment header and TSV header
-/// rows; returns one f64 per data row.
-fn parse_logliks(profile_tsv: &Path) -> Vec<f64> {
-    let body = std::fs::read_to_string(profile_tsv).expect("read profile.tsv");
-    let mut out = Vec::new();
-    let mut header_seen = false;
-    for line in body.lines() {
-        if line.starts_with('#') || line.is_empty() { continue; }
-        if !header_seen {
-            // First non-comment line is the column header.
-            header_seen = true;
-            continue;
-        }
-        let cols: Vec<&str> = line.split('\t').collect();
-        // Layout: <focal_1> ... <focal_K> | loglik | <param_1> ...
-        // We hardcode a single focal column here (the tests sweep one
-        // axis); column 1 is loglik.
-        if cols.len() >= 2 {
-            if let Ok(v) = cols[1].parse::<f64>() {
-                out.push(v);
+/// Collect the per-grid-point best loglik from the new-format
+/// `ProfilePoint` leaves under `<out_root>/profiles/`, ordered by the
+/// `point`-level label (so the returned Vec is grid-traversal order). The
+/// cross-point rollup TSV is the deferred M4 derived view (gh#154); the
+/// per-point loglik lives on each leaf's recorded `inputs.best_loglik`.
+fn collect_logliks(out_root: &Path) -> Vec<f64> {
+    fn walk(dir: &Path, out: &mut Vec<(String, f64)>) {
+        if let Ok(b) = std::fs::read_to_string(dir.join("run.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&b) {
+                if v.get("kind").and_then(|k| k.as_str()) == Some("profile_point") {
+                    let point = v.get("levels").and_then(|ls| ls.as_array())
+                        .and_then(|a| a.iter().find(|l|
+                            l.get("name").and_then(|n| n.as_str()) == Some("point")))
+                        .and_then(|l| l.get("label").and_then(|x| x.as_str()))
+                        .unwrap_or("").to_string();
+                    if let Some(ll) = v.get("inputs")
+                        .and_then(|i| i.get("best_loglik")).and_then(|x| x.as_f64()) {
+                        out.push((point, ll));
+                    }
+                }
             }
         }
+        if let Ok(es) = std::fs::read_dir(dir) {
+            for e in es.flatten() { if e.path().is_dir() { walk(&e.path(), out); } }
+        }
     }
-    out
+    let mut pairs = Vec::new();
+    walk(&out_root.join("profiles"), &mut pairs);
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs.into_iter().map(|(_, ll)| ll).collect()
 }
 
 /// Run `camdl profile` once and return the parsed loglik values.
@@ -124,7 +129,8 @@ fn run_profile(
         .status()
         .expect("spawn camdl profile");
     assert!(status.success(), "profile run failed for --obs {}", obs_arg);
-    parse_logliks(out_tsv)
+    let _ = out_tsv; // --output is accepted; the rollup TSV is the deferred M4 view.
+    collect_logliks(output_root)
 }
 
 #[test]

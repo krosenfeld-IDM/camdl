@@ -7,37 +7,26 @@
 //! intervals, and parameter interactions. 2D profiles (two `--sweep`
 //! flags) produce a likelihood surface suitable for contour plotting.
 //!
-//! ## CAS integration (2026-04-24 rewrite)
+//! ## Content-addressed layout
 //!
-//! Every profile is laid out as a `ReplicateSet` umbrella over its
-//! seeds — N=1 is the trivial case, N>1 is the IF2-stochastic-
-//! sensitivity sweep. Every (grid_point × start) under each seed is
-//! a cacheable mini-fit:
+//! Each `(grid point × seed × start)` is an independent content-
+//! addressed mini-fit, keyed by the five factored `runid` levels
+//! (`profile` / `point` / `stage` / `seed` / `start`) resolved in
+//! [`crate::profile_cas`]. The leaf is a `RunKind::ProfilePoint` run:
 //!
 //! ```text
-//! <root>/profiles/<stem>-<umbrella_hash[:8]>/
-//!   run.json                                    # RunKind::ReplicateSet { child_kind: "profile" }
-//!   summary.tsv                                 # cross-seed aggregate (1 row at N=1)
-//!   replicates/
-//!     seed_<n>/
-//!       run.json                                # RunKind::Profile (per-seed)
-//!       profile.tsv                             # per-seed rollup
-//!       points/
-//!         {point_idx:05d}/
-//!           focal.toml                          # pinned focal values
-//!           start_{start_idx}/
-//!             run.json                          # RunKind::FitStage
-//!             mle.toml                          # MLE at this start
+//! <root>/<profile-base>/<point>/<stage>/<seed>/<start>/
+//!   run.json                                # RunKind::ProfilePoint
+//!   mle.toml                                # MLE at this (point, seed, start)
 //! ```
 //!
-//! Each `start_{k}/run.json` is written atomically (tmp-then-rename);
-//! crash mid-IF2 leaves no run.json and the next invocation reruns
-//! that start. Completed starts are preserved bit-for-bit. The rollup
-//! is rewritten atomically after every completion, so it's always
-//! current-as-of-last-finished-start.
-//!
-//! Design: docs/dev/proposals/2026-04-24-profile-cas-integration.md.
-//! Supersedes GH #15's streaming-TSV + --resume approach.
+//! Leaves are written via the store's streaming claim (staging dir +
+//! atomic finalize): a crash mid-IF2 leaves no finalized `run.json`,
+//! so the next invocation reruns only that leaf while completed leaves
+//! are reused bit-for-bit. The per-seed profile curve and the
+//! cross-seed summary are cross-leaf aggregates with no single home in
+//! the factored tree — they are rebuilt by the derived index (gh#154)
+//! and land in M4.
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
@@ -51,16 +40,10 @@ use sim::{
     },
 };
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::cas::typed::{
-    self, CasInputs, ContentHash, ReplicateSet, hash_canonical,
-};
-use crate::run_meta::{FitStageMeta, GridAxis, ProfileMeta, Run, RunKind, RunStatus};
-use crate::run_paths::{
-    output_root, profile_point_dir, profile_point_start_dir,
-};
+use crate::cas::typed::ContentHash;
+use crate::run_paths::output_root;
 
 /// Per-cell optimizer choice. `--algorithm if2 --backend chain_binomial`
 /// (the default) keeps the historical PF-based per-cell MLE; the new
@@ -85,13 +68,6 @@ impl ProfileAlgo {
                 crate::run_meta::MethodKind::NlBobyqa,
         }
     }
-    fn backend(self) -> crate::run_meta::Backend {
-        match self {
-            ProfileAlgo::If2      => crate::run_meta::Backend::ChainBinomial,
-            ProfileAlgo::Pmmh     => crate::run_meta::Backend::ChainBinomial,
-            ProfileAlgo::Nlopt(_) => crate::run_meta::Backend::Ode,
-        }
-    }
 }
 
 // Observation family resolution lives in `crate::util::resolve_data_specs`
@@ -100,240 +76,6 @@ impl ProfileAlgo {
 // name starts with `<root>_`, and `--data NAME=PATH` (gh#90 named form)
 // also expands NAME as a family root. Same semantics, single dispatch.
 
-// ─── ProfileInputs ───────────────────────────────────────────────────────────
-
-/// Typed CAS inputs for a single-realization profile run. The struct
-/// carries every content-bearing input (model, base params, focal
-/// grid, fixed list, IF2 hyperparams, starts_from lineage, seed) plus
-/// presentation hints (model_path, stem). Ephemeral inputs (parallel,
-/// progress, output mirror) live on `ProfileArgs` and don't appear here.
-///
-/// `inner_hash` excludes seed and is the umbrella hash for a multi-seed
-/// `ReplicateSet`. `content_hash` (the trait method) includes seed via
-/// `compose_with_replicate(inner_hash, "seed", seed)` — so a standalone
-/// `--seed N` invocation and one child of a `--seeds 1,N,...` set hit
-/// the same cache key.
-#[derive(Clone, Debug)]
-pub struct ProfileInputs {
-    /// Display-only model path. Recorded in `ProfileMeta.model`.
-    pub model_path: String,
-    /// Slugified stem from the model path; used as the `<stem>-<hash>`
-    /// directory prefix.
-    pub stem: Option<String>,
-    /// Full SHA-256 of the IR JSON.
-    pub model_hash: String,
-    /// Canonical-form hash of the base parameter vector.
-    pub base_params_hash: String,
-    /// Per-stream SHA-256 of each bound `--data` file's bytes. gh#90
-    /// extends the gh#39 single-file hash to multi-stream: every
-    /// (stream_name, content_hash) pair the resolver bound participates
-    /// in the cache key. Sorted by stream name before hashing for
-    /// deterministic order independent of how the user spelled
-    /// `--data NAME=PATH` on the command line.
-    ///
-    /// Content-only — paths are not part of these hashes, so two users
-    /// with the same TSVs at different filesystem locations share a
-    /// cache entry, while two users with different TSVs at the same
-    /// path do not. gh#39: editing any bound stream's data file in
-    /// place must invalidate the cache.
-    pub data_hashes: Vec<(String, String)>,
-    /// Focal grid (one axis per `--sweep` flag).
-    pub focal_grid: Vec<GridAxis>,
-    /// Fixed parameters (`--fixed`): excluded from IF2 estimation. Order
-    /// doesn't matter; sorted before hashing.
-    pub fixed: Vec<String>,
-    /// `--obs <NAME>` argument as resolved against the IR. Either an
-    /// exact stream name (single-stream profile) or a family root that
-    /// expanded to N>1 concrete streams (joint multi-stream profile).
-    /// Empty string when the model has exactly one observation and
-    /// `--obs` was omitted. gh#38: this **must** be in the cache key —
-    /// switching `--obs cases` ↔ `--obs cases_p1` changes the loglik
-    /// scale by orders of magnitude (5 streams summed vs 1).
-    pub obs_family: String,
-    /// IF2 hyperparameter set.
-    pub if2_config: ProfileIf2Config,
-    /// gh#89: per-cell algorithm name (`if2`, `pmmh`, `nl-sbplx`, …).
-    /// Resolved against the methods registry at dispatch time. Part of
-    /// the cache key because switching algorithms with otherwise
-    /// identical inputs (same particles, iterations, etc.) is a real
-    /// content change — re-running `--algorithm if2 → pmmh` MUST
-    /// produce a fresh cache entry, not return the IF2 result.
-    pub algorithm: String,
-    /// gh#89: PMMH steps per cell (`--pmmh-steps`). Bumping this is
-    /// the canonical "give it more budget" knob — must invalidate the
-    /// cache so the higher-budget run actually computes.
-    pub pmmh_steps: usize,
-    /// gh#89: PMMH particles per PF evaluation (`--pmmh-particles`).
-    /// Same rationale as `pmmh_steps`.
-    pub pmmh_particles: usize,
-    /// gh#89: Crank-Nicolson correlation for CPM-MCMC (`--pmmh-rho`).
-    /// `None` = vanilla PMMH (rho ≤ 0 at the CLI); `Some(r)` for
-    /// 0 < r < 1. Affects MCMC mixing dynamics, so toggling on/off
-    /// or changing the value is a content distinction.
-    pub pmmh_rho: Option<f64>,
-    /// Hash of an upstream stage's content this profile starts from.
-    /// `None` for standalone profile invocations.
-    pub starts_from_lineage: Option<String>,
-    /// SHA-256 of the `--fit <toml>` file's bytes (gh#73). Part of
-    /// the CAS key so re-running with a different fit toml against
-    /// the same model produces a different cache dir.
-    pub fit_toml_hash: Option<String>,
-    /// Per-parameter prior-resolution audit (gh#73). Recorded into
-    /// `run.json` via `ProfileMeta.resolved_priors`; included in the
-    /// hash so that switching the prior source for any parameter
-    /// (e.g. user adds a `~` to the model file) invalidates the
-    /// cached profile.
-    pub resolved_priors: Vec<(String, String)>,
-    /// Diagnostic warnings the user suppressed (gh#73). Recorded but
-    /// NOT part of the CAS hash — suppression is metadata, not a
-    /// content distinction; two otherwise-identical profiles should
-    /// hit the same cache regardless of which one suppressed the
-    /// warning.
-    pub suppressed_warnings: Vec<String>,
-    /// Per-seed: the actual seed value. `inner_hash` excludes this;
-    /// `content_hash` (trait method) includes it.
-    pub seed: u64,
-    /// gh#83/gh#85 step 9: per-parameter resolver provenance for the
-    /// profile-level run.json. NOT part of the CAS hash — provenance
-    /// is metadata about *how* a run was specified, not what was
-    /// computed; identical content produces identical CAS keys
-    /// regardless of which `--fixed-file` shape the user used.
-    pub parameters_provenance: std::collections::HashMap<
-        String, crate::run_meta::ParameterProvenance>,
-    /// gh#83/gh#85 step 9: per-start init provenance. NOT part of the
-    /// CAS hash; the per-cell `FitStage` children carry their own.
-    pub init_provenance: Option<crate::run_meta::InitProvenance>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProfileIf2Config {
-    pub n_particles:  usize,
-    pub n_iterations: usize,
-    pub cooling:      f64,
-    pub dt:           f64,
-    pub n_starts:     usize,
-}
-
-impl ProfileInputs {
-    /// Hash of all content fields *except* seed. Used as the
-    /// inner_hash of a `ReplicateSet` umbrella when running multi-seed.
-    pub fn inner_hash(&self) -> ContentHash {
-        let grid_canonical = serde_json::to_string(&self.focal_grid).unwrap_or_default();
-        let mut fixed_sorted = self.fixed.clone();
-        fixed_sorted.sort();
-        let if2 = format!(
-            "particles={};iterations={};cooling={};dt={};starts={}",
-            self.if2_config.n_particles, self.if2_config.n_iterations,
-            self.if2_config.cooling, self.if2_config.dt, self.if2_config.n_starts,
-        );
-        // gh#89: the PMMH-specific budget knobs. Encoded as a single
-        // canonical string so the canonical-keys vec stays flat. `rho`
-        // is serialised as either `off` (None) or its f64 repr so
-        // toggling the CPM mode invalidates the cache.
-        let pmmh = format!(
-            "steps={};particles={};rho={}",
-            self.pmmh_steps, self.pmmh_particles,
-            self.pmmh_rho.map(|r| r.to_string()).unwrap_or_else(|| "off".into()),
-        );
-        // gh#73: canonicalize the resolved-prior table for hashing.
-        // Sort by param name so the order the resolver emitted them
-        // (declaration order today) doesn't leak into the cache key —
-        // adding a new estimated parameter is a real change, but
-        // re-ordering an existing list is not.
-        let mut priors_sorted = self.resolved_priors.clone();
-        priors_sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        let priors_canonical: String = priors_sorted.iter()
-            .map(|(n, s)| format!("{}={}", n, s))
-            .collect::<Vec<_>>().join(",");
-        // gh#90: every bound stream contributes its (name,
-        // content_hash) pair. Sort by stream name so CLI ordering
-        // (`--data cases=... --data deaths=...` vs `--data deaths=...
-        // --data cases=...`) doesn't move the cache key, and so two
-        // profiles with the same N streams in any order hit the same
-        // entry. Concatenated with a NUL separator that can't appear
-        // in a stream name to avoid `cases:hashA,deaths` colliding
-        // with `cases:hashA-deaths:` style sneaky merges.
-        let mut data_pairs_sorted = self.data_hashes.clone();
-        data_pairs_sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        let data_canonical: String = data_pairs_sorted.iter()
-            .map(|(n, h)| format!("{}={}", n, h))
-            .collect::<Vec<_>>().join("\x00");
-        hash_canonical(&[
-            ("model",       &self.model_hash),
-            ("base_params", &self.base_params_hash),
-            ("focal_grid",  &grid_canonical),
-            ("fixed",       &fixed_sorted.join(",")),
-            ("obs_family",  &self.obs_family),
-            ("algorithm",   &self.algorithm),
-            ("if2",         &if2),
-            ("pmmh",        &pmmh),
-            ("starts_from", self.starts_from_lineage.as_deref().unwrap_or("")),
-            ("data",        &data_canonical),
-            ("fit_toml",    self.fit_toml_hash.as_deref().unwrap_or("")),
-            ("priors",      &priors_canonical),
-        ])
-    }
-}
-
-impl CasInputs for ProfileInputs {
-    fn content_hash(&self) -> ContentHash {
-        // Per-seed leaf hash. Composes with `seed` so the same value
-        // is obtained whether the run was invoked standalone or as
-        // one child of a multi-seed ReplicateSet.
-        typed::compose_with_replicate(
-            &self.inner_hash(), "seed", &self.seed.to_string(),
-        )
-    }
-
-    fn cas_path(&self, root: &Path) -> PathBuf {
-        let h = self.content_hash();
-        let dirname = match &self.stem {
-            Some(s) if !s.is_empty() => format!("{}-{}", s, h.short()),
-            _ => h.short().to_string(),
-        };
-        root.join("profiles").join(dirname)
-    }
-
-    fn run_kind(&self) -> RunKind {
-        let total_jobs = self.focal_grid.iter()
-            .map(|g| g.values.len()).product::<usize>()
-            * self.if2_config.n_starts;
-        // The if2_config_hash and base_params_hash fields on
-        // ProfileMeta are diagnostic; ProfileInputs.content_hash() is
-        // the authoritative cache key. Keeping the meta fields for
-        // human inspection in `camdl show`.
-        let if2_canonical = format!(
-            "particles={};iterations={};cooling={};dt={};starts={}",
-            self.if2_config.n_particles, self.if2_config.n_iterations,
-            self.if2_config.cooling, self.if2_config.dt, self.if2_config.n_starts,
-        );
-        let if2_config_hash = ContentHash::from_bytes(if2_canonical.as_bytes())
-            .full().to_string();
-        RunKind::Profile(ProfileMeta {
-            model:            self.model_path.clone(),
-            model_hash:       self.model_hash.clone(),
-            focal_params:     self.focal_grid.iter().map(|g| g.param.clone()).collect(),
-            grid:             self.focal_grid.clone(),
-            n_starts:         self.if2_config.n_starts,
-            if2_config_hash,
-            base_params_hash: self.base_params_hash.clone(),
-            seed_base:        self.seed,
-            total_jobs,
-            fit_toml_hash:    self.fit_toml_hash.clone(),
-            resolved_priors:  self.resolved_priors.iter().map(|(n, s)| {
-                crate::run_meta::ResolvedPriorEntry {
-                    param: n.clone(), source: s.clone(),
-                }
-            }).collect(),
-            suppressed_warnings: self.suppressed_warnings.clone(),
-            // gh#83/gh#85 step 9: provenance threaded in post-CAS
-            // by the run-finalization layer (which has the
-            // `ResolvedParameters` / `ChainStarts` in scope).
-            parameters_provenance: self.parameters_provenance.clone(),
-            init_provenance: self.init_provenance.clone(),
-        })
-    }
-}
 
 pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     crate::args::apply_pf_wallclock_env(&a.inference);  // gh#133
@@ -1019,12 +761,12 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         grid_points = expanded;
     }
 
-    // ── Build typed CAS inputs ─────────────────────────────────────────
+    // ── Resolve content-bearing inputs ─────────────────────────────────
     //
-    // ProfileInputs encapsulates every content-bearing input. inner_hash
-    // (seed-free) drives the multi-seed umbrella; per-seed content_hash
-    // = compose_with_replicate(inner, "seed", seed) — same as a
-    // standalone --seed N invocation, so cache lookup is uniform.
+    // Each profile leaf's identity is resolved per (point, seed, start)
+    // by `profile_cas::resolve_profile_point`; the values gathered here
+    // (model + data hashes, base params, fixed list, priors, fit.toml,
+    // method config) are its content-bearing inputs.
     let model_hash = crate::hashing::model_hash(&model_json);
     let base_params_hash = {
         let mut lines: Vec<String> = model.parameters.iter()
@@ -1034,11 +776,6 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         lines.sort();
         ContentHash::from_bytes(lines.join("\n").as_bytes()).full().to_string()
     };
-    let grid_spec: Vec<GridAxis> = focal_grids.iter().map(|fg| GridAxis {
-        param: fg.name.clone(),
-        values: fg.values.clone(),
-    }).collect();
-
     // Resolve seeds. --seeds wins; default is the single --seed.
     let seeds: Vec<u64> = match &a.seeds {
         Some(spec) => spec.expand(),
@@ -1049,7 +786,6 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         std::process::exit(1);
     }
 
-    let argv: Vec<String> = std::env::args().collect();
     let root = output_root(None, None);
     let stem = crate::hashing::path_stem_slug(&ir_path);
 
@@ -1192,112 +928,56 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             crate::run_meta::InitProvenance::from_chain_starts(&cs)
         });
 
-    let template_inputs = ProfileInputs {
-        model_path: ir_path.clone(),
-        stem: stem.clone(),
-        model_hash: model_hash.clone(),
-        base_params_hash,
-        data_hashes,
-        focal_grid: grid_spec,
-        fixed: fixed_for_cas,
-        obs_family: obs_family_key,
-        if2_config: ProfileIf2Config {
-            n_particles, n_iterations, cooling, dt, n_starts,
-        },
-        // gh#89: cache-key inputs for non-IF2 algorithms.
-        algorithm: format!("{:?}", profile_algo).to_lowercase(),
-        pmmh_steps,
-        pmmh_particles,
-        pmmh_rho: pmmh_rho_opt,
-        starts_from_lineage: None,
-        fit_toml_hash: fit_toml_hash.clone(),
-        resolved_priors: resolved_priors_kv,
-        suppressed_warnings: suppressed_warnings.clone(),
-        seed: seeds[0],   // overwritten per-seed below
-        parameters_provenance,
-        init_provenance,
-    };
+    // Run-level provenance recorded into every profile-point leaf's
+    // `RunRecord.inputs` — display payload, NOT identity-bearing, so it
+    // does not affect the leaf `run_id`. Folds forward the audit data
+    // the old per-run `ProfileMeta` carried: per-parameter resolution
+    // provenance (gh#83/gh#85), per-chain init provenance, and the loud
+    // `--suppress-warnings` waiver trail.
+    let run_provenance_json = serde_json::json!({
+        "parameters_provenance":
+            serde_json::to_value(&parameters_provenance).unwrap_or(serde_json::Value::Null),
+        "init_provenance":
+            serde_json::to_value(&init_provenance).unwrap_or(serde_json::Value::Null),
+        "suppressed_warnings":
+            serde_json::to_value(&suppressed_warnings).unwrap_or(serde_json::Value::Null),
+    });
 
-    // ── Layout: every profile is a ReplicateSet umbrella (N=1 trivially).
-    // The single-seed case is just the degenerate replicate-set; the
-    // disk layout, run.json schema, and resolution path are uniform.
-    let replicate_set = ReplicateSet {
-        inner_hash: template_inputs.inner_hash(),
-        dim_name:   "seed".to_string(),
-        keys:       seeds.iter().map(|s| format!("seed_{}", s)).collect(),
-        child_kind: "profile".to_string(),
-    };
-    let umbrella_dir: PathBuf = {
-        let parent_hash = replicate_set.parent_hash();
-        let dirname = match &stem {
-            Some(s) if !s.is_empty() => format!("{}-{}", s, parent_hash.short()),
-            _ => parent_hash.short().to_string(),
-        };
-        let dir = root.join("profiles").join(dirname);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("error: cannot create {}: {}", dir.display(), e);
-            std::process::exit(1);
-        }
-        let umbrella_run = Run {
-            hash:              parent_hash.full().to_string(),
-            version:           crate::version::VERSION_SHORT.to_string(),
-            created_at:        crate::cas::iso8601_utc(std::time::SystemTime::now()),
-            argv:              argv.clone(),
-            status: RunStatus::Running,
-            label:             label_arg.clone(),
-            kind:              replicate_set.run_kind(),
-        };
-        if let Err(e) = umbrella_run.write(&dir) {
-            eprintln!("warning: could not write umbrella run.json: {}", e);
-        }
-        eprintln!("profile ({} replicate{}): {}",
-            seeds.len(),
-            if seeds.len() == 1 { "" } else { "s" },
-            dir.display());
-        dir
-    };
+    // gh#89: lowercased algorithm tag — a cache-key input for the
+    // method `stage` and the `stage`-segment display label.
+    let algorithm = format!("{:?}", profile_algo).to_lowercase();
 
-    // Per-seed directories + content hashes (the latter populates
-    // FitStageMeta.parent_profile_hash on each leaf start_run.json).
-    let mut seed_dirs: Vec<PathBuf> = Vec::with_capacity(seeds.len());
-    let mut per_seed_hashes: Vec<String> = Vec::with_capacity(seeds.len());
-    for &seed in &seeds {
-        let inputs_seed = ProfileInputs { seed, ..template_inputs.clone() };
-        let dir = replicate_set.child_dir(&umbrella_dir, &format!("seed_{}", seed));
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("error: cannot create {}: {}", dir.display(), e);
-            std::process::exit(1);
-        }
-        let profile_run = Run {
-            hash:              inputs_seed.content_hash().full().to_string(),
-            version:           crate::version::VERSION_SHORT.to_string(),
-            created_at:        crate::cas::iso8601_utc(std::time::SystemTime::now()),
-            argv:              argv.clone(),
-            status: RunStatus::Running,
-            label:             None,
-            kind:              inputs_seed.run_kind(),
-        };
-        if let Err(e) = profile_run.write(&dir) {
-            eprintln!("warning: could not write profile run.json: {}", e);
-        }
-        // focal.toml per grid point inside this seed's tree.
-        for (gi, point) in grid_points.iter().enumerate() {
-            let point_dir = profile_point_dir(&dir, gi);
-            if let Err(e) = std::fs::create_dir_all(&point_dir) {
-                eprintln!("warning: cannot create {}: {}", point_dir.display(), e);
-                continue;
-            }
-            let focal_toml_path = point_dir.join("focal.toml");
-            if focal_toml_path.exists() { continue; }
-            let mut body = String::from("# Pinned focal parameter values for this grid point.\n\n");
-            for (fg, &(_, val)) in focal_grids.iter().zip(point.iter()) {
-                body.push_str(&format!("{} = {}\n", fg.name, val));
-            }
-            let _ = std::fs::write(&focal_toml_path, body);
-        }
-        per_seed_hashes.push(inputs_seed.content_hash().full().to_string());
-        seed_dirs.push(dir);
-    }
+    // ── gh#147 (M3.3): content-addressed profile-point identity inputs ──
+    // A profile point is a CAS leaf at `profiles/<base>/<point>/<stage>/
+    // <seed>/<start>/`. The base is a path segment (no base-level record).
+    // profile-base = the inference *problem*, with the focal GRID and the
+    // method config EXCLUDED (guardrail 1) — the grid rides `point`, the
+    // method `stage`. The base fit's `starts_from` rides the base as a dep.
+    let mut fixed_blob = fixed_for_cas.clone();
+    fixed_blob.sort();
+    let mut priors_blob = resolved_priors_kv.clone();
+    priors_blob.sort_by(|a, b| a.0.cmp(&b.0));
+    let base_config_blob = serde_json::json!({
+        "base_params": base_params_hash,
+        "fixed":       fixed_blob,
+        "obs_family":  obs_family_key,
+        "fit_toml":    fit_toml_hash,
+        "priors":      priors_blob,
+    });
+    let method_config_blob = serde_json::json!({
+        "algorithm": algorithm,
+        "if2": { "particles": n_particles, "iterations": n_iterations,
+                 "cooling": cooling, "dt": dt, "starts": n_starts },
+        "pmmh": { "steps": pmmh_steps, "particles": pmmh_particles, "rho": pmmh_rho_opt },
+    });
+    // The base fit's `starts_from` lineage would fold into the base as
+    // a dep (guardrail 3-base). `camdl profile` does not currently
+    // thread a base-fit lineage, so the dep list is empty; when it
+    // does, push the resolved `FitStage` ArtifactRef here.
+    let profile_deps: Vec<runid::inputs::ArtifactRef> = Vec::new();
+    let store = runid::FsCasStore::new(&root);
+    let ir_version_str = ir::IR_VERSION.trim().to_string();
+    let stem_label = stem.clone().unwrap_or_else(|| "profile".to_string());
 
     let total_jobs = grid_points.len() * n_starts * seeds.len();
     let dim_str = focal_grids.iter()
@@ -1331,21 +1011,98 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             grid_points.len(), n_starts, seeds.len(), total_jobs);
     }
 
-    // Job tuple: (seed_idx, grid_idx, start_idx). Cache hit if the
-    // start_dir under this seed's profile tree has a parseable run.json.
+    // ── gh#147 (M3.3): pre-resolve every job's CAS identity ──────────
+    // Job tuple (seed_idx, grid_idx, start_idx). The grid lives in the
+    // `point` level + the method in `stage`; (seed, point, start) pins the
+    // job's RNG deterministically (job_seed below).
     let jobs: Vec<(usize, usize, usize)> = (0..seeds.len())
         .flat_map(|seed_idx| (0..grid_points.len())
             .flat_map(move |gi| (0..n_starts).map(move |si| (seed_idx, gi, si))))
         .collect();
 
-    let mut cached: Vec<(usize, usize, usize)> = Vec::new();
-    let mut remaining: Vec<(usize, usize, usize)> = Vec::new();
-    for &(seed_idx, gi, si) in &jobs {
-        let start_dir = profile_point_start_dir(&seed_dirs[seed_idx], gi, si);
-        if Run::read(&start_dir).is_ok() {
-            cached.push((seed_idx, gi, si));
+    let resolve_pt = |gi: usize, si: usize, seed: u64|
+        -> Result<crate::profile_cas::ResolvedProfilePoint, String>
+    {
+        let focal: Vec<(String, f64)> = focal_grids.iter()
+            .zip(grid_points[gi].iter())
+            .map(|(fg, &(_, v))| (fg.name.clone(), v))
+            .collect();
+        crate::profile_cas::resolve_profile_point(&crate::profile_cas::ProfilePointCtx {
+            model: &model,
+            ir_version: &ir_version_str,
+            engine_version: crate::version::VERSION_SHORT,
+            stem: &stem_label,
+            method_name: &algorithm,
+            data: &data_hashes,
+            base_config: &base_config_blob,
+            method_config: &method_config_blob,
+            focal: &focal,
+            seed,
+            start_index: si as u32,
+            deps: profile_deps.clone(),
+        })
+    };
+
+    // (seed_idx, gi, si, resolved, cas_path) per job, resolved sequentially.
+    let resolved_jobs: Vec<(usize, usize, usize,
+        crate::profile_cas::ResolvedProfilePoint, std::path::PathBuf)> =
+        jobs.iter().map(|&(seed_idx, gi, si)| {
+            let resolved = resolve_pt(gi, si, seeds[seed_idx]).unwrap_or_else(|e| {
+                eprintln!("error: profile-point identity: {}", e);
+                std::process::exit(1);
+            });
+            let cas_path = runid::store_path(
+                &root, runid::ArtifactKind::ProfilePoint, &resolved.levels);
+            (seed_idx, gi, si, resolved, cas_path)
+        }).collect();
+
+    // The profile-base segment is shared across all jobs — a path segment
+    // with no base-level record (guardrail 2). Write the provenance sidecar
+    // there once (guardrail 4: resolved_priors/estimated/data_hashes carried
+    // with no silent default; not identity-bearing).
+    if let Some((_, _, _, resolved0, _)) = resolved_jobs.first() {
+        let base_seg = runid::store_path(
+            &root, runid::ArtifactKind::ProfilePoint, &resolved0.levels[..1]);
+        let sidecar = crate::run_meta::FitSidecar {
+            label: label_arg.clone(),
+            model_path: ir_path.clone(),
+            model_hash: model_hash.clone(),
+            fit_toml_path: a.fit.as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            fit_toml_hash: fit_toml_hash.clone().unwrap_or_default(),
+            data_hashes: data_hashes.iter().cloned().collect(),
+            estimated: resolved_priors_kv.iter()
+                .map(|(n, _)| n.clone()).collect(),
+            resolved_priors: resolved_priors_kv.iter()
+                .map(|(n, s)| crate::run_meta::ResolvedPriorEntry {
+                    param: n.clone(), source: s.clone() })
+                .collect(),
+            ..Default::default()
+        };
+        // Archive the producing `fit.toml` (best-effort; `write_fit_sidecar`
+        // skips when the path isn't a file, i.e. a CLI-only profile).
+        let archive_src = a.fit.clone().unwrap_or_else(|| std::path::PathBuf::from(""));
+        if let Err(e) = crate::run_meta::write_fit_sidecar(
+            &base_seg, &archive_src, &sidecar)
+        {
+            eprintln!("warning: cannot write profile sidecar {}: {}",
+                base_seg.display(), e);
+        }
+    }
+
+    // Cache scan: a job is cached when its leaf already exists. `cached` /
+    // `remaining` hold indices into `resolved_jobs`.
+    let mut cached: Vec<usize> = Vec::new();
+    let mut remaining: Vec<usize> = Vec::new();
+    for (ji, (_, _, _, resolved, cas_path)) in resolved_jobs.iter().enumerate() {
+        if matches!(
+            store.lookup(cas_path, &runid::LeafIdentity::new(resolved.run_id)),
+            runid::Lookup::Hit(_)
+        ) {
+            cached.push(ji);
         } else {
-            remaining.push((seed_idx, gi, si));
+            remaining.push(ji);
         }
     }
     if !cached.is_empty() {
@@ -1363,17 +1120,10 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // Throttled rollup rewrites: per-seed profile.tsv (1s throttle) and
     // (multi-seed only) the cross-seed summary.tsv (2s throttle, since
     // it reads N seeds' rollups). Last-completion-wins.
-    let rollup_throttle = Mutex::new(std::time::Instant::now()
-        - std::time::Duration::from_secs(10));
-    let summary_throttle = Mutex::new(std::time::Instant::now()
-        - std::time::Duration::from_secs(10));
-    let start_time = std::time::Instant::now();
-
-    let focal_names_ordered: Vec<String> =
-        focal_grids.iter().map(|fg| fg.name.clone()).collect();
 
     // ── Run remaining jobs in parallel ──────────────────────────────
-    remaining.par_iter().for_each(|&(seed_idx, grid_idx, start_idx)| {
+    remaining.par_iter().for_each(|&ji| {
+        let (seed_idx, grid_idx, start_idx, ref resolved_pt_id, ref cas_path) = resolved_jobs[ji];
         let process = Arc::clone(&process);
         let obs_model_obj = Arc::clone(&obs_model_obj);
         let if2_params = Arc::clone(&if2_params);
@@ -1764,79 +1514,55 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         };
         let elapsed = job_t0.elapsed().as_secs_f64();
 
-        let seed_dir = &seed_dirs[seed_idx];
-        let start_dir = profile_point_start_dir(seed_dir, grid_idx, start_idx);
-        if let Err(e) = std::fs::create_dir_all(&start_dir) {
-            eprintln!("warning: cannot create {}: {}", start_dir.display(), e);
-            return;
-        }
+        // gh#147 (M3.3): claim the CAS leaf, write the cell's mle.toml there,
+        // finalize. The profile-base is never written (path segment only);
+        // each (point, stage, seed, start) is its own leaf. The display
+        // payload (method/algorithm/loglik) is recorded in `inputs`, not
+        // hashed.
+        let algorithm_payload = match profile_algo {
+            ProfileAlgo::If2 => serde_json::json!({
+                "particles": n_particles, "iterations": n_iterations,
+                "cooling": cooling, "dt": dt }),
+            ProfileAlgo::Pmmh => serde_json::json!({
+                "steps": pmmh_steps, "particles": pmmh_particles,
+                "rho": pmmh_rho_opt, "dt": dt }),
+            ProfileAlgo::Nlopt(_) => serde_json::json!({
+                "tolerance": 1e-4, "max_evals": 1500,
+                "dt": compiled.model.simulation.dt.unwrap_or(dt) }),
+        };
+        let inputs_json = serde_json::json!({
+            "method": profile_algo.method_kind().as_str(),
+            "seed": job_seed,
+            "n_chains": 1,
+            "algorithm": algorithm_payload,
+            "grid_point": grid_idx,
+            "start": start_idx,
+            "best_loglik": if final_loglik.is_finite() { Some(final_loglik) } else { None },
+            "wall_time_seconds": elapsed,
+            "provenance": run_provenance_json.clone(),
+        });
+        let running = crate::profile_cas::build_profile_point_record(
+            resolved_pt_id, &profile_deps, &ir_version_str,
+            runid::RunStatus::Running, serde_json::Value::Null, &ir_path);
+        let claim = match store.claim_streaming(cas_path, running) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("warning: claim profile point {}: {}", cas_path.display(), e);
+                return;
+            }
+        };
+        let start_dir = claim.dir().to_path_buf();
 
         let mle_toml = render_mle_toml(&if2_params, &focal_values,
             &focal_grids.iter().map(|fg| fg.name.as_str()).collect::<Vec<_>>(),
             &mle_params, final_loglik, final_log_posterior, &diag);
         let _ = std::fs::write(start_dir.join("mle.toml"), mle_toml);
 
-        // Per-start run.json. parent_profile_hash references THIS
-        // seed's profile content hash (not the umbrella's), so leaves
-        // walk back to their per-seed parent regardless of single- vs
-        // multi-seed layout.
-        let parent_profile_hash = &per_seed_hashes[seed_idx];
-        let start_hash_input = format!(
-            "{}|point={}|start={}|seed={}",
-            parent_profile_hash, grid_idx, start_idx, job_seed,
-        );
-        let start_hash = ContentHash::from_bytes(start_hash_input.as_bytes())
-            .full().to_string();
-        let start_run = Run {
-            hash: start_hash,
-            version: crate::version::VERSION_SHORT.to_string(),
-            created_at: crate::cas::iso8601_utc(std::time::SystemTime::now()),
-            argv: argv.clone(),
-            status: RunStatus::Completed { wall_time_seconds: elapsed },
-            label: None,
-            kind: RunKind::FitStage(FitStageMeta {
-                fit_hash: String::new(),
-                stage: profile_algo.method_kind().as_str().to_string(),
-                method: profile_algo.method_kind(),
-                backend: profile_algo.backend(),
-                seed: job_seed,
-                n_chains: 1,
-                algorithm: match profile_algo {
-                    ProfileAlgo::If2 => serde_json::json!({
-                        "particles":  n_particles,
-                        "iterations": n_iterations,
-                        "cooling":    cooling,
-                        "dt":         dt,
-                    }),
-                    ProfileAlgo::Pmmh => serde_json::json!({
-                        "steps":     pmmh_steps,
-                        "particles": pmmh_particles,
-                        "rho":       pmmh_rho_opt,
-                        "dt":        dt,
-                    }),
-                    ProfileAlgo::Nlopt(_) => serde_json::json!({
-                        "tolerance": 1e-4,
-                        "max_evals": 1500,
-                        "dt":        compiled.model.simulation.dt.unwrap_or(dt),
-                    }),
-                },
-                best_loglik: if final_loglik.is_finite() { Some(final_loglik) } else { None },
-                best_chain:  Some(0),
-                starts_from: None,
-                derived_from: None,
-                parent_profile_hash: Some(parent_profile_hash.clone()),
-                profile_point_idx:   Some(grid_idx),
-                profile_start_idx:   Some(start_idx),
-                // gh#83/gh#85 step 9: per-cell provenance is the
-                // *parent* profile's responsibility — the cell run
-                // here only carries the grid-point payload.
-                parameters_provenance: Default::default(),
-                init_provenance: None,
-            }),
-        };
-        if let Err(e) = start_run.write(&start_dir) {
-            eprintln!("warning: could not write {}/run.json: {}",
-                start_dir.display(), e);
+        let completed = crate::profile_cas::build_profile_point_record(
+            resolved_pt_id, &profile_deps, &ir_version_str,
+            runid::RunStatus::Completed, inputs_json, &ir_path);
+        if let Err(e) = claim.finalize(completed) {
+            eprintln!("warning: finalize profile point {}: {}", cas_path.display(), e);
         }
 
         // Progress tick.
@@ -1850,86 +1576,26 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             }
         }
 
-        // Per-seed rollup (throttled).
-        let should_rewrite = {
-            let mut last = rollup_throttle.lock().unwrap();
-            let now = std::time::Instant::now();
-            if now.duration_since(*last) >= std::time::Duration::from_secs(1) {
-                *last = now;
-                true
-            } else { false }
-        };
-        if should_rewrite {
-            if let Err(e) = rewrite_rollup(seed_dir, &focal_names_ordered,
-                &if2_params, grid_points.len()) {
-                eprintln!("warning: rollup rewrite failed: {}", e);
-            }
-        }
-
-        // Cross-seed summary (throttled). For N=1 the aggregate is
-        // the trivial copy of the single seed's profile.tsv with
-        // zero-width spread columns — still written so the umbrella's
-        // summary.tsv is the universal user-facing artifact.
-        let should_summary = {
-            let mut last = summary_throttle.lock().unwrap();
-            let now = std::time::Instant::now();
-            if now.duration_since(*last) >= std::time::Duration::from_secs(2) {
-                *last = now;
-                true
-            } else { false }
-        };
-        if should_summary {
-            if let Err(e) = write_cross_seed_summary(
-                &umbrella_dir, &seed_dirs, &focal_names_ordered, &if2_params)
-            {
-                eprintln!("warning: summary rewrite failed: {}", e);
-            }
-        }
     });
 
     overall_pb.finish_with_message("done");
 
-    // Final per-seed rollup rewrites + cross-seed summary (unthrottled).
-    for seed_dir in &seed_dirs {
-        if let Err(e) = rewrite_rollup(seed_dir, &focal_names_ordered,
-            &if2_params, grid_points.len())
-        {
-            eprintln!("warning: final rollup rewrite failed: {}", e);
-        }
-    }
-    if let Err(e) = write_cross_seed_summary(
-        &umbrella_dir, &seed_dirs, &focal_names_ordered, &if2_params)
-    {
-        eprintln!("warning: final summary rewrite failed: {}", e);
-    }
-
-    // Patch each per-seed (and umbrella) run.json with total wall time.
-    let total_wall = start_time.elapsed().as_secs_f64();
-    for seed_dir in &seed_dirs {
-        if let Ok(mut pr) = Run::read(seed_dir) {
-            pr.status = RunStatus::Completed { wall_time_seconds: total_wall };
-            let _ = pr.write(seed_dir);
-        }
-    }
-    if let Ok(mut pr) = Run::read(&umbrella_dir) {
-        pr.status = RunStatus::Completed { wall_time_seconds: total_wall };
-        let _ = pr.write(&umbrella_dir);
-    }
-
-    // Mirror the user-facing TSV: the umbrella's summary.tsv is the
-    // universal artifact — for N=1 it's a one-row aggregate of the
-    // single seed; for N>1 it's the cross-seed sensitivity summary.
-    let mirror_src = umbrella_dir.join("summary.tsv");
+    // gh#147 (M3.3): the per-seed profile.tsv curve + the cross-seed
+    // summary.tsv are cross-point / cross-seed aggregates with no home in the
+    // base/point/stage/seed/start tree — they are M4-derived views over the
+    // per-cell leaves (same as the grid summary). gh#154 restores them via
+    // `reindex`. Until then a profile run writes per-cell leaves but no curve.
+    let n_cells = resolved_jobs.len();
+    eprintln!(
+        "profile: {} cell{} written under {}; the profile curve / summary is \
+         a derived view (gh#154 / reindex) and lands in M4.",
+        n_cells, if n_cells == 1 { "" } else { "s" },
+        root.join("profiles").display());
     if let Some(ref path) = output_tsv_path {
-        if mirror_src.exists() {
-            match std::fs::copy(&mirror_src, path) {
-                Ok(_) => eprintln!("written to {}", path),
-                Err(e) => eprintln!("warning: could not copy {} to {}: {}",
-                    mirror_src.display(), path, e),
-            }
-        }
-    } else {
-        eprintln!("output: {}", mirror_src.display());
+        eprintln!(
+            "note: --output {} not written — the profile curve is an M4 derived \
+             view (gh#154); the per-cell leaves carry each point's loglik.",
+            path);
     }
 }
 
@@ -2093,500 +1759,11 @@ fn render_mle_toml(
     body
 }
 
-/// Scan the per-start CAS tree and rewrite `profile.tsv` as the
-/// derived rollup. One row per grid point, each row the winning start
-/// (max final_loglik) across `n_starts`. Written atomically via
-/// tmp-then-rename so concurrent rollups (from racing threads) never
-/// expose a truncated intermediate.
-///
-/// gh#74 Option B: each row gains seven per-cell diagnostic columns
-/// (`DIAG_COLUMNS`). Aggregated by `CellDiagnostics::aggregate` from
-/// the K per-start `[diagnostics]` blocks parsed back out of each
-/// `mle.toml`.
-fn rewrite_rollup(
-    profile_dir: &Path,
-    focal_names: &[String],
-    if2_params: &[sim::inference::if2::EstimatedParam],
-    n_grid_points: usize,
-) -> std::io::Result<()> {
-    // For each grid point, find the winning start by scanning its
-    // start_{k}/ subdirs for mle.toml. If no starts have finished yet
-    // for this point, skip the row (partial rollup — consumers see
-    // only completed points).
-    let mut rows: Vec<RollupRow> = Vec::new();
-    for gi in 0..n_grid_points {
-        let point_dir = profile_point_dir(profile_dir, gi);
-        let Ok(dir_iter) = std::fs::read_dir(&point_dir) else { continue; };
-
-        let mut best: Option<ParsedMle> = None;
-        let mut wall_time_sum: f64 = 0.0;
-        let mut best_start: Option<usize> = None;
-        // gh#74 Option B: collect per-start diagnostics + final logliks
-        // so the rollup can aggregate them into per-cell columns. The
-        // vectors are keyed by start_idx via the parallel `(starts,
-        // finals)` arrays — order doesn't matter for the aggregator
-        // (it's symmetric across starts).
-        let mut starts_diag: Vec<crate::profile_diagnostics::PerStartDiagnostics>
-            = Vec::new();
-        let mut starts_final_ll: Vec<f64> = Vec::new();
-        for entry in dir_iter.flatten() {
-            let fname = entry.file_name();
-            let name = fname.to_string_lossy();
-            let Some(start_idx_str) = name.strip_prefix("start_") else { continue; };
-            let Ok(start_idx) = start_idx_str.parse::<usize>() else { continue; };
-            let start_dir = entry.path();
-
-            // Use run.json's wall time for summation. Skip starts
-            // with missing/broken run.json or still-running starts —
-            // they're incomplete.
-            let Ok(start_run) = Run::read(&start_dir) else { continue; };
-            let Some(t) = start_run.status.wall_time_seconds() else { continue; };
-            wall_time_sum += t;
-
-            let mle_path = start_dir.join("mle.toml");
-            let Ok(mle_text) = std::fs::read_to_string(&mle_path) else { continue; };
-            let Some(parsed) = parse_mle_toml(&mle_text, if2_params, focal_names) else { continue; };
-            // Re-parse the same TOML doc for the diagnostics table.
-            // Cheap (the file is small); keeps `parse_mle_toml` focused
-            // on its existing surface.
-            let doc: toml::Value = match toml::from_str(&mle_text) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let diag = crate::profile_diagnostics::PerStartDiagnostics::from_toml(&doc);
-            starts_diag.push(diag);
-            starts_final_ll.push(parsed.final_loglik);
-
-            match &best {
-                Some(b) if parsed.final_loglik <= b.final_loglik => {}
-                _ => {
-                    best = Some(parsed);
-                    best_start = Some(start_idx);
-                }
-            }
-        }
-
-        if let (Some(best), Some(best_start)) = (best, best_start) {
-            let _ = gi;  // order preserved by outer loop; field elided.
-            let cell_diag = crate::profile_diagnostics::CellDiagnostics::aggregate(
-                &starts_diag, &starts_final_ll,
-            );
-            rows.push(RollupRow {
-                focal_values: best.focal_values,
-                best_loglik: best.final_loglik,
-                best_log_posterior: best.final_log_posterior,
-                best_start_idx: best_start,
-                mle: best.mle,
-                wall_time_sum,
-                diag: cell_diag,
-            });
-        }
-    }
-
-    // Render.
-    let mut body = String::new();
-    body.push_str(&format!("# {}\n", crate::version::VERSION));
-    body.push_str(&format!("# total_points={} completed={}\n",
-        n_grid_points, rows.len()));
-    for name in focal_names { body.push_str(&format!("{}\t", name)); }
-    // gh#109: `best_log_posterior` sits next to `best_loglik` for
-    // natural grouping. Header-based parsers (the camdl-book scripts
-    // grep by column name) are unaffected; position-based parsers
-    // shift by one column (already brittle pre-change).
-    body.push_str("best_loglik\tbest_log_posterior\tbest_start_idx\twall_time_seconds");
-    for spec in if2_params.iter() { body.push_str(&format!("\t{}", spec.name)); }
-    for c in crate::profile_diagnostics::DIAG_COLUMNS {
-        body.push_str(&format!("\t{}", c));
-    }
-    body.push('\n');
-    for row in &rows {
-        for v in &row.focal_values { body.push_str(&format!("{:.4}\t", v)); }
-        // NaN-as-text: `nan` is the TSV-friendly form (Python pandas,
-        // R read.table, jq all parse this). On IF2/NLopt cells the
-        // column reads `nan`; on PMMH cells it reads a real f64.
-        let lp_field = if row.best_log_posterior.is_finite() {
-            format!("{:.4}", row.best_log_posterior)
-        } else {
-            "nan".to_string()
-        };
-        body.push_str(&format!("{:.4}\t{}\t{}\t{:.3}",
-            row.best_loglik, lp_field, row.best_start_idx, row.wall_time_sum));
-        for spec in if2_params.iter() {
-            body.push_str(&format!("\t{:.6}", row.mle[spec.index]));
-        }
-        body.push('\t');
-        body.push_str(&row.diag.render_tsv_row());
-        body.push('\n');
-    }
-
-    // Atomic write.
-    let final_path = profile_dir.join("profile.tsv");
-    let tmp_path = profile_dir.join("profile.tsv.tmp");
-    std::fs::write(&tmp_path, body)?;
-    std::fs::rename(&tmp_path, &final_path)?;
-    Ok(())
-}
-
-struct RollupRow {
-    focal_values: Vec<f64>,
-    best_loglik: f64,
-    /// gh#109: MAP joint log-posterior for the winning start. NaN on
-    /// IF2 / NLopt cells (point-MLE algorithms with no posterior),
-    /// and on cells whose mle.toml predates gh#109 (cached CAS dirs).
-    best_log_posterior: f64,
-    best_start_idx: usize,
-    mle: Vec<f64>,
-    wall_time_sum: f64,
-    /// Per-cell aggregate diagnostics (gh#74 Option B).
-    diag: crate::profile_diagnostics::CellDiagnostics,
-}
-
-struct ParsedMle {
-    final_loglik: f64,
-    /// gh#109: MAP joint log-posterior. NaN when the per-start
-    /// mle.toml omits the field (older / non-PMMH cells).
-    final_log_posterior: f64,
-    focal_values: Vec<f64>,
-    mle: Vec<f64>,
-}
-
-fn parse_mle_toml(
-    text: &str,
-    if2_params: &[sim::inference::if2::EstimatedParam],
-    focal_names: &[String],
-) -> Option<ParsedMle> {
-    let doc: toml::Value = toml::from_str(text).ok()?;
-    let final_loglik = toml_as_f64(doc.get("final_loglik")?)?;
-    // gh#109: optional — present on PMMH cells, omitted on
-    // IF2/NLopt. Missing → NaN; the rollup TSV column reads NaN
-    // as missing.
-    let final_log_posterior = doc.get("final_log_posterior")
-        .and_then(toml_as_f64)
-        .unwrap_or(f64::NAN);
-    let focal = doc.get("focal")?.as_table()?;
-    let mle = doc.get("mle")?.as_table()?;
-
-    // Extract focal values in the caller's declared order (the column
-    // order of the rollup TSV header), not in TOML key order.
-    let mut focal_values: Vec<f64> = Vec::with_capacity(focal_names.len());
-    for name in focal_names {
-        let v = focal.get(name).and_then(toml_as_f64)?;
-        focal_values.push(v);
-    }
-
-    let mle_len = if2_params.iter().map(|s| s.index).max().unwrap_or(0) + 1;
-    let mut mle_values: Vec<f64> = vec![0.0; mle_len];
-    for spec in if2_params.iter() {
-        if let Some(v) = mle.get(&spec.name).and_then(toml_as_f64) {
-            if mle_values.len() <= spec.index {
-                mle_values.resize(spec.index + 1, 0.0);
-            }
-            mle_values[spec.index] = v;
-        }
-    }
-
-    Some(ParsedMle { final_loglik, final_log_posterior, focal_values, mle: mle_values })
-}
-
-/// Accept TOML numeric values whether they serialised as Integer
-/// (`R0 = 50`) or Float (`R0 = 50.0`). `toml::Value::as_float()`
-/// returns `None` for Integers, which would silently drop any focal
-/// value that happened to be a whole number.
-fn toml_as_f64(v: &toml::Value) -> Option<f64> {
-    match v {
-        toml::Value::Float(f)   => Some(*f),
-        toml::Value::Integer(i) => Some(*i as f64),
-        _ => None,
-    }
-}
-
-/// Cross-seed aggregator. Reads each per-seed `profile.tsv` and emits
-/// `summary.tsv` at the umbrella directory: one row per grid point.
-///
-/// Schema (per gh#30 — option A):
-///
-/// * Bare-name columns (`loglik`, `<param>`) are always present and
-///   carry the central value: the single per-seed value when
-///   n_seeds=1, the mean across seeds when n_seeds>1. A reader doing
-///   `df["loglik"]` and `df["R0"]` works identically in both cases —
-///   the n_seeds=1 case (the common case for first-time profiles, the
-///   camdl-book chapters, and "what does the surface look like"
-///   checks) doesn't have to learn the multi-seed schema to read the
-///   single value back.
-/// * Spread-diagnostic columns (`loglik_sd / _min / _max`,
-///   `<param>_sd`) are emitted *additively* and only when n_seeds>1,
-///   where they describe stochastic IF2 instability across replicate
-///   chains. High `loglik_sd` at a grid point flags an untrustworthy
-///   conditional MLE.
-///
-/// Header preserves bare/`_sd` adjacency (`R0  R0_sd  alpha
-/// alpha_sd`) so per-parameter pairs read together. The per-cell
-/// finite-seed count is inlined as elevated `loglik_sd` rather than a
-/// separate column; users who need the raw count can read the
-/// per-seed `replicates/seed_*/profile.tsv` files.
-///
-/// Atomic write (tmp-then-rename) so concurrent throttled rewrites
-/// from the rayon pool can't expose a half-written summary.
-fn write_cross_seed_summary(
-    umbrella_dir: &Path,
-    seed_dirs: &[PathBuf],
-    focal_names: &[String],
-    if2_params: &[sim::inference::if2::EstimatedParam],
-) -> std::io::Result<()> {
-    use std::collections::BTreeMap;
-    use crate::profile_diagnostics::{CellDiagnostics, DIAG_COLUMNS};
-
-    // Per-cell sample bag. For each focal-key (canonicalised TSV
-    // column string) we accumulate a (best_loglik, mle_vec,
-    // per_seed_diag) tuple per seed. The per-seed diag is parsed out
-    // of the trailing diagnostic columns of each row of the per-seed
-    // profile.tsv (gh#74 Option B); cross-seed averaging happens in
-    // the render loop below via `CellDiagnostics::average_across_seeds`.
-    struct PerSeedSample {
-        loglik:    f64,
-        /// gh#109: MAP joint log-posterior. NaN when the per-seed
-        /// profile.tsv's cell shows `nan` (IF2/NLopt or pre-gh#109
-        /// cached cells).
-        lp:        f64,
-        mle:       Vec<f64>,
-        diag:      CellDiagnostics,
-    }
-    let mut by_grid: BTreeMap<Vec<String>, Vec<PerSeedSample>> = BTreeMap::new();
-    let mle_len = if2_params.iter().map(|s| s.index).max().unwrap_or(0) + 1;
-
-    for seed_dir in seed_dirs {
-        let path = seed_dir.join("profile.tsv");
-        let Ok(text) = std::fs::read_to_string(&path) else { continue; };
-        for line in text.lines() {
-            if line.starts_with('#') { continue; }
-            let cols: Vec<&str> = line.split('\t').collect();
-            // Header row uses literal column names; skip it.
-            if cols.get(focal_names.len()).copied() == Some("best_loglik") {
-                continue;
-            }
-            // Layout (gh#74 + gh#109): focal_1 ... focal_N |
-            //   best_loglik | best_log_posterior | best_start_idx |
-            //   wall_time_seconds | mle_param_1 ... mle_param_M |
-            //   acc_rate_avg | acc_rate_min | loglik_spread_starts |
-            //   loglik_rhat_starts | starts_n_completed |
-            //   iterations_used | cooling_final
-            let base_cols = focal_names.len() + 4 + if2_params.len();
-            if cols.len() < base_cols { continue; }
-
-            let focal_key: Vec<String> = cols[..focal_names.len()]
-                .iter().map(|s| s.trim().to_string()).collect();
-            let Ok(best_loglik) = cols[focal_names.len()].parse::<f64>() else { continue; };
-            // gh#109: best_log_posterior in the next column. `nan`
-            // for non-PMMH cells or cached pre-gh#109 rollups (the
-            // rollup writer emits the literal "nan" for those).
-            let best_lp = parse_summary_cell(cols[focal_names.len() + 1]);
-
-            let mle_start = focal_names.len() + 4;
-            let mut mle = vec![f64::NAN; mle_len];
-            for (i, spec) in if2_params.iter().enumerate() {
-                if let Some(s) = cols.get(mle_start + i) {
-                    if let Ok(v) = s.parse::<f64>() {
-                        if spec.index < mle.len() {
-                            mle[spec.index] = v;
-                        }
-                    }
-                }
-            }
-
-            // Diagnostic columns sit at fixed offsets after the MLE
-            // block. Parse them positionally — DIAG_COLUMNS pins the
-            // order. Missing cells (older `profile.tsv` from before
-            // gh#74) parse as NaN / 0, which the aggregator then
-            // surfaces as NaN at the summary level.
-            let diag_start = base_cols;
-            let parse_at = |off: usize| -> f64 {
-                cols.get(diag_start + off)
-                    .map(|s| parse_summary_cell(s)).unwrap_or(f64::NAN)
-            };
-            let starts_n_completed = cols.get(diag_start + 4)
-                .and_then(|s| s.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            let diag = CellDiagnostics {
-                acc_rate_avg:        parse_at(0),
-                acc_rate_min:        parse_at(1),
-                loglik_spread_starts: parse_at(2),
-                loglik_rhat_starts:   parse_at(3),
-                starts_n_completed,
-                iterations_used:      parse_at(5),
-                cooling_final:        parse_at(6),
-            };
-
-            by_grid.entry(focal_key).or_default().push(PerSeedSample {
-                loglik: best_loglik, lp: best_lp, mle, diag,
-            });
-        }
-    }
-
-    let n_seeds = seed_dirs.len();
-    let multi_seed = n_seeds > 1;
-
-    let mut body = String::new();
-    body.push_str(&format!("# {} cross-seed summary across {} seed{}\n",
-        crate::version::VERSION, n_seeds, if multi_seed { "s" } else { "" }));
-    body.push_str(&format!("# n_grid_points={} n_seeds={}\n",
-        by_grid.len(), n_seeds));
-
-    // Header: focal | loglik [| loglik_sd loglik_min loglik_max] |
-    //         <param_1> [| <param_1>_sd] | <param_2> [| <param_2>_sd] | ...
-    //         | <diagnostic_1> | <diagnostic_2> | ... (gh#74 Option B,
-    //         always appended; per-algorithm columns NaN where the
-    //         algorithm has no value).
-    for name in focal_names { body.push_str(&format!("{}\t", name)); }
-    body.push_str("loglik");
-    if multi_seed {
-        body.push_str("\tloglik_sd\tloglik_min\tloglik_max");
-    }
-    // gh#109: log_posterior column (and multi-seed spread) sits
-    // alongside loglik so the cross-seed summary mirrors the
-    // per-seed profile.tsv layout.
-    body.push_str("\tlog_posterior");
-    if multi_seed {
-        body.push_str("\tlog_posterior_sd\tlog_posterior_min\tlog_posterior_max");
-    }
-    for spec in if2_params.iter() {
-        body.push_str(&format!("\t{}", spec.name));
-        if multi_seed {
-            body.push_str(&format!("\t{}_sd", spec.name));
-        }
-    }
-    for c in DIAG_COLUMNS {
-        body.push_str(&format!("\t{}", c));
-    }
-    body.push('\n');
-
-    for (focal_key, samples) in &by_grid {
-        for v in focal_key { body.push_str(&format!("{}\t", v)); }
-        let logliks: Vec<f64> = samples.iter().map(|s| s.loglik)
-            .filter(|x| x.is_finite()).collect();
-        let (mean_ll, sd_ll, min_ll, max_ll) = summary_stats(&logliks);
-        body.push_str(&format!("{:.4}", mean_ll));
-        if multi_seed {
-            body.push_str(&format!("\t{:.4}\t{:.4}\t{:.4}", sd_ll, min_ll, max_ll));
-        }
-        // gh#109: log_posterior cross-seed aggregate. Same shape as
-        // loglik. When every seed's sample is NaN (e.g. all IF2 cells),
-        // emit "nan" so the column is round-trippable.
-        let lps: Vec<f64> = samples.iter().map(|s| s.lp)
-            .filter(|x| x.is_finite()).collect();
-        let (mean_lp, sd_lp, min_lp, max_lp) = summary_stats(&lps);
-        if mean_lp.is_finite() {
-            body.push_str(&format!("\t{:.4}", mean_lp));
-        } else {
-            body.push_str("\tnan");
-        }
-        if multi_seed {
-            if sd_lp.is_finite() || mean_lp.is_finite() {
-                body.push_str(&format!("\t{:.4}\t{:.4}\t{:.4}", sd_lp, min_lp, max_lp));
-            } else {
-                body.push_str("\tnan\tnan\tnan");
-            }
-        }
-        for spec in if2_params.iter() {
-            let vals: Vec<f64> = samples.iter()
-                .filter_map(|s| s.mle.get(spec.index).copied())
-                .filter(|x| x.is_finite()).collect();
-            let (m, s, _, _) = summary_stats(&vals);
-            body.push_str(&format!("\t{:.6}", m));
-            if multi_seed {
-                body.push_str(&format!("\t{:.6}", s));
-            }
-        }
-        // Cross-seed aggregate of the per-seed diagnostic blocks.
-        // For n_seeds=1 this is a passthrough; for n>1 we average
-        // each diagnostic across seeds (starts_n_completed sums).
-        let per_seed_diags: Vec<CellDiagnostics> =
-            samples.iter().map(|s| s.diag.clone()).collect();
-        let agg = CellDiagnostics::average_across_seeds(&per_seed_diags);
-        body.push('\t');
-        body.push_str(&agg.render_tsv_row());
-        body.push('\n');
-    }
-
-    let final_path = umbrella_dir.join("summary.tsv");
-    let tmp_path = umbrella_dir.join("summary.tsv.tmp");
-    std::fs::write(&tmp_path, body)?;
-    std::fs::rename(&tmp_path, &final_path)?;
-    Ok(())
-}
-
-/// Parse a per-seed `profile.tsv` diagnostic cell into f64. Accepts
-/// `NaN`/`Inf`/`-Inf` plus standard numerics; everything else falls
-/// through to NaN so a malformed row doesn't poison the rollup.
-fn parse_summary_cell(s: &str) -> f64 {
-    match s.trim() {
-        "NaN"  => f64::NAN,
-        "Inf"  => f64::INFINITY,
-        "-Inf" => f64::NEG_INFINITY,
-        v      => v.parse::<f64>().unwrap_or(f64::NAN),
-    }
-}
-
-/// (mean, sd, min, max) of a slice. Empty input returns NaN/0/inf/-inf;
-/// callers should treat NaN as "no data" not "zero data."
-fn summary_stats(xs: &[f64]) -> (f64, f64, f64, f64) {
-    if xs.is_empty() {
-        return (f64::NAN, 0.0, f64::INFINITY, f64::NEG_INFINITY);
-    }
-    let n = xs.len() as f64;
-    let mean = xs.iter().sum::<f64>() / n;
-    let sd = if xs.len() > 1 {
-        (xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
-    } else { 0.0 };
-    let min = xs.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    (mean, sd, min, max)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use sim::inference::if2::EstimatedParam;
     use sim::inference::types::Transform;
-
-    fn estimated(name: &str, index: usize) -> EstimatedParam {
-        EstimatedParam {
-            name: name.into(), index, initial: 0.0, rw_sd: 0.0,
-            transform: Transform::None, lower: 0.0, upper: 1.0,
-            rw_sd_auto: false, ivp: false,
-        }
-    }
-
-    /// Helper: write a per-seed `profile.tsv` in the expected
-    /// pre-aggregation layout (matches what the in-process profile
-    /// driver emits on disk, line 929-930 of this file).
-    fn write_per_seed_profile(
-        seed_dir: &std::path::Path,
-        focal_names: &[&str],
-        rows: &[(Vec<f64>, f64, Vec<f64>)],  // (focal vals, best_loglik, mle vals)
-    ) {
-        std::fs::create_dir_all(seed_dir).unwrap();
-        let mut s = String::new();
-        for n in focal_names { s.push_str(&format!("{}\t", n)); }
-        // gh#109: best_log_posterior column sits between best_loglik
-        // and best_start_idx in the per-seed profile.tsv. Test
-        // helpers emit `nan` for the new column (the test rows
-        // model IF2/legacy cells — no posterior); the gh#109-
-        // specific tests below override with explicit values.
-        s.push_str("best_loglik\tbest_log_posterior\tbest_start_idx\twall_time_seconds");
-        for i in 0..rows[0].2.len() { s.push_str(&format!("\tparam_{}", i)); }
-        s.push('\n');
-        for (focal, ll, mle) in rows {
-            for v in focal { s.push_str(&format!("{}\t", v)); }
-            s.push_str(&format!("{:.4}\tnan\t0\t0.0", ll));
-            for v in mle { s.push_str(&format!("\t{:.6}", v)); }
-            s.push('\n');
-        }
-        std::fs::write(seed_dir.join("profile.tsv"), s).unwrap();
-    }
-
-    fn data_lines(text: &str) -> Vec<&str> {
-        text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).collect()
-    }
 
     /// gh#118 regression: `log_posterior` in profile output was built
     /// from the nuisance-only prior sum, silently excluding focal-
@@ -2676,369 +1853,6 @@ mod tests {
         assert_eq!(offset, 0.0);
     }
 
-    #[test]
-    fn n1_summary_uses_bare_names_only() {
-        // gh#30 option A, n=1 (the common case): the schema is
-        //   <focal>  loglik  <param_1>  <param_2>  ... | <diag_cols>
-        // No `_sd` / `_min` / `_max` — there's no aggregation to
-        // describe. Diagnostic columns (gh#74 Option B) are appended
-        // after the bare param block in `DIAG_COLUMNS` order.
-        let tmp = tempfile::tempdir().unwrap();
-        let umbrella = tmp.path();
-        let seed_dir = umbrella.join("replicates").join("seed_1");
-        write_per_seed_profile(
-            &seed_dir,
-            &["s0"],
-            &[
-                (vec![0.10], -42.5, vec![1.5, 0.3]),
-                (vec![0.20], -38.1, vec![1.7, 0.4]),
-            ],
-        );
-        let if2 = vec![estimated("R0", 0), estimated("alpha", 1)];
-        write_cross_seed_summary(umbrella, &[seed_dir], &["s0".into()], &if2).unwrap();
-
-        let text = std::fs::read_to_string(umbrella.join("summary.tsv")).unwrap();
-        let lines = data_lines(&text);
-        let header = lines[0];
-        let cols: Vec<&str> = header.split('\t').collect();
-        // gh#109: `log_posterior` sits next to `loglik` in the cross-seed
-        // summary, mirroring the per-seed profile.tsv layout.
-        let mut expected = vec!["s0", "loglik", "log_posterior", "R0", "alpha"];
-        for c in crate::profile_diagnostics::DIAG_COLUMNS { expected.push(c); }
-        assert_eq!(cols, expected,
-            "n=1 schema must be focal + bare loglik + bare log_posterior \
-             + bare params + diagnostics; got {:?}", cols);
-
-        // Cross-seed spread columns must not leak through (gh#30
-        // option A); the diagnostic columns are unrelated and are
-        // expected to be present.
-        for forbidden in &["loglik_sd", "loglik_min", "loglik_max",
-                           "R0_sd", "alpha_sd", "n_seeds",
-                           "mean_loglik", "max_loglik", "R0_mean", "alpha_mean"] {
-            assert!(!header.contains(forbidden),
-                "n=1 header must not contain {:?}: {}", forbidden, header);
-        }
-
-        assert_eq!(lines.len(), 3, "expected header + 2 grid rows: {:?}", lines);
-        // gh#109: row_cols = focal(1) + loglik(1) + log_posterior(1) +
-        // params(2) + DIAG_COLUMNS(7) = 12. Previously 11 before
-        // log_posterior column.
-        let row_cols = 5 + crate::profile_diagnostics::DIAG_COLUMNS.len();
-        assert_eq!(lines[1].split('\t').count(), row_cols);
-        assert_eq!(lines[2].split('\t').count(), row_cols);
-    }
-
-    #[test]
-    fn multi_seed_summary_appends_spread_columns() {
-        // gh#30 option A, n>1: bare names stay, `_sd / _min / _max`
-        // are appended additively. Bare loglik = mean across seeds;
-        // bare param = mean across seeds. gh#74 Option B diagnostic
-        // columns are appended after the spread columns.
-        let tmp = tempfile::tempdir().unwrap();
-        let umbrella = tmp.path();
-        let mut seed_dirs = Vec::new();
-        for (idx, ll_offset, r0_off) in
-            [(1usize, 0.0_f64, 0.0_f64), (2, 0.5, 0.05), (3, -0.5, -0.05)]
-        {
-            let seed_dir = umbrella.join("replicates").join(format!("seed_{}", idx));
-            write_per_seed_profile(
-                &seed_dir,
-                &["s0"],
-                &[
-                    (vec![0.10], -42.5 + ll_offset, vec![1.5 + r0_off, 0.3]),
-                    (vec![0.20], -38.1 + ll_offset, vec![1.7 + r0_off, 0.4]),
-                ],
-            );
-            seed_dirs.push(seed_dir);
-        }
-        let if2 = vec![estimated("R0", 0), estimated("alpha", 1)];
-        write_cross_seed_summary(umbrella, &seed_dirs, &["s0".into()], &if2).unwrap();
-
-        let text = std::fs::read_to_string(umbrella.join("summary.tsv")).unwrap();
-        let lines = data_lines(&text);
-        let cols: Vec<&str> = lines[0].split('\t').collect();
-        let mut expected = vec![
-            "s0", "loglik", "loglik_sd", "loglik_min", "loglik_max",
-            // gh#109: log_posterior aggregate sits between loglik
-            // group and per-param group.
-            "log_posterior", "log_posterior_sd", "log_posterior_min", "log_posterior_max",
-            "R0", "R0_sd", "alpha", "alpha_sd",
-        ];
-        for c in crate::profile_diagnostics::DIAG_COLUMNS { expected.push(c); }
-        assert_eq!(cols, expected, "n>1 schema: {:?}", cols);
-
-        // Bare `loglik` value is the mean across seeds at the first
-        // grid cell: mean(-42.5, -42.0, -43.0) = -42.5
-        let row1: Vec<&str> = lines[1].split('\t').collect();
-        let bare_loglik: f64 = row1[1].parse().unwrap();
-        assert!((bare_loglik - (-42.5)).abs() < 1e-3,
-            "bare loglik should be the cross-seed mean, got {}", bare_loglik);
-    }
-
-    // ── gh#39 data-file content hashing ─────────────────────────────────
-    //
-    // Note: the gh#38 `resolve_obs_family` standalone helper and its
-    // tests moved to `crate::util::resolve_data_specs` (gh#90), where
-    // single-PATH + --obs and named-pair forms share one dispatch.
-    // Equivalence tests for family expansion live in
-    // `util.rs::gh90_resolver_tests`.
-
-    /// Construct a `ProfileInputs` with all content fields fixed to
-    /// stable placeholders. Caller overrides only the field under
-    /// test (typically `data_hashes`) so cross-test comparisons are
-    /// crisp. The single-element `data_hashes` mirrors the
-    /// single-stream profile case; multi-stream tests append more.
-    fn fixture_inputs(data_hash: &str) -> ProfileInputs {
-        ProfileInputs {
-            model_path: "model.camdl".into(),
-            stem: Some("model".into()),
-            model_hash: "deadbeef".repeat(8),
-            base_params_hash: "cafef00d".repeat(8),
-            data_hashes: vec![("cases".into(), data_hash.to_string())],
-            focal_grid: vec![GridAxis {
-                param: "R0".into(),
-                values: vec![1.5, 2.0, 2.5],
-            }],
-            fixed: vec![],
-            obs_family: "cases".into(),
-            if2_config: ProfileIf2Config {
-                n_particles: 100, n_iterations: 50, cooling: 0.5, dt: 1.0, n_starts: 4,
-            },
-            // gh#89: stable defaults so fixture-based tests for the
-            // *other* fields don't accidentally vary on these.
-            algorithm: "if2".into(),
-            pmmh_steps: 500,
-            pmmh_particles: 500,
-            pmmh_rho: Some(0.99),
-            starts_from_lineage: None,
-            fit_toml_hash: None,
-            resolved_priors: vec![],
-            suppressed_warnings: vec![],
-            seed: 1,
-            parameters_provenance: Default::default(),
-            init_provenance: None,
-        }
-    }
-
-    #[test]
-    fn inner_hash_same_data_same_hash() {
-        // Sanity: two identical input sets produce identical hashes.
-        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
-        let a = fixture_inputs(&h_data);
-        let b = fixture_inputs(&h_data);
-        assert_eq!(a.inner_hash().full(), b.inner_hash().full());
-    }
-
-    #[test]
-    fn inner_hash_different_data_different_hash() {
-        // gh#39 core fix: changing the bytes the user supplied as
-        // `--data` MUST invalidate the cache. Two TSVs with the same
-        // shape but different observation values must hash differently.
-        let h_a = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
-        let h_b = crate::hashing::sha256_hex(b"time\tvalue\n1\t8\n2\t9\n");
-        assert_ne!(h_a, h_b, "sanity: distinct bytes must hash differently");
-        let a = fixture_inputs(&h_a);
-        let b = fixture_inputs(&h_b);
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "editing --data file bytes must invalidate the profile CAS \
-             key (gh#39); otherwise the cache silently returns stale \
-             logliks against the old observations");
-    }
-
-    #[test]
-    fn inner_hash_data_via_different_paths_same_hash() {
-        // Locks the "content not path" invariant: two users with
-        // identical TSVs at different filesystem paths must share a
-        // cache entry. Implemented by hashing only the bytes of
-        // `--data` at construction time, never the path string.
-        let tmp = tempfile::tempdir().unwrap();
-        let body = b"time\tvalue\n1\t5\n2\t7\n";
-        let path_a = tmp.path().join("dir_a/cases.tsv");
-        let path_b = tmp.path().join("dir_b/cases.tsv");
-        std::fs::create_dir_all(path_a.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(path_b.parent().unwrap()).unwrap();
-        std::fs::write(&path_a, body).unwrap();
-        std::fs::write(&path_b, body).unwrap();
-
-        // Hash exactly the way `cmd_profile` does at launch.
-        let h_a = crate::hashing::sha256_hex(&std::fs::read(&path_a).unwrap());
-        let h_b = crate::hashing::sha256_hex(&std::fs::read(&path_b).unwrap());
-        assert_eq!(h_a, h_b,
-            "same TSV bytes at different paths must hash identically");
-
-        let a = fixture_inputs(&h_a);
-        let b = fixture_inputs(&h_b);
-        assert_eq!(a.inner_hash().full(), b.inner_hash().full(),
-            "two profiles with identical content but different --data \
-             paths must share a cache entry (path is not part of the \
-             hash, only bytes are)");
-    }
-
-    // ── gh#89: pmmh-* knobs AND --algorithm must be in the cache key ──
-    //
-    // Symptom that triggered this: a user re-runs `camdl profile` with
-    // `--pmmh-steps 5000` after a first run at `--pmmh-steps 1000`
-    // (everything else identical, including seed). The CAS layer sees
-    // the existing cached results and "resumes" them — silently
-    // returning the lower-steps results instead of computing fresh.
-    //
-    // Project-stakes consideration: silently returning stale samples
-    // when the user explicitly bumped the MCMC budget is a
-    // public-health-grade footgun. The user thinks they got tighter
-    // posterior coverage and got the old run instead. These tests
-    // pin the invariants.
-
-    #[test]
-    fn inner_hash_changes_when_pmmh_steps_changes() {
-        // The gh#89 minimal repro. Two ProfileInputs differing ONLY in
-        // pmmh_steps must hash to different CAS keys.
-        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
-        let a = fixture_inputs(&h_data);
-        let b = ProfileInputs { pmmh_steps: a.pmmh_steps * 5, ..a.clone() };
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "bumping --pmmh-steps MUST invalidate the cache (gh#89); \
-             otherwise the user silently gets the lower-steps results");
-    }
-
-    #[test]
-    fn inner_hash_changes_when_pmmh_particles_changes() {
-        // Same shape as --pmmh-steps: this is a budget knob that
-        // materially affects PF noise and thus MCMC mixing.
-        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
-        let a = fixture_inputs(&h_data);
-        let b = ProfileInputs { pmmh_particles: a.pmmh_particles * 2, ..a.clone() };
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "bumping --pmmh-particles MUST invalidate the cache");
-    }
-
-    #[test]
-    fn inner_hash_changes_when_pmmh_rho_changes() {
-        // Crank-Nicolson correlation; affects MCMC mixing dynamics.
-        // Off (None) vs on (Some(0.99)) is a content change.
-        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
-        let a = ProfileInputs { pmmh_rho: None,        ..fixture_inputs(&h_data) };
-        let b = ProfileInputs { pmmh_rho: Some(0.99),  ..fixture_inputs(&h_data) };
-        let c = ProfileInputs { pmmh_rho: Some(0.50),  ..fixture_inputs(&h_data) };
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "toggling --pmmh-rho on/off MUST invalidate the cache");
-        assert_ne!(b.inner_hash().full(), c.inner_hash().full(),
-            "changing --pmmh-rho value MUST invalidate the cache");
-    }
-
-    #[test]
-    fn inner_hash_changes_when_algorithm_changes() {
-        // Same-class bug, surfaced while writing gh#89: --algorithm
-        // selects between IF2, PMMH, NL-Sbplx, etc. A user who runs
-        // `--algorithm if2` then re-runs `--algorithm pmmh` with the
-        // same particle/iter counts would silently hit the if2 cache
-        // (or the pmmh cache, depending on which ran first). The
-        // resolved algorithm string must be in the canonical key.
-        let h_data = crate::hashing::sha256_hex(b"time\tvalue\n1\t5\n2\t7\n");
-        let a = ProfileInputs { algorithm: "if2".into(),       ..fixture_inputs(&h_data) };
-        let b = ProfileInputs { algorithm: "pmmh".into(),      ..fixture_inputs(&h_data) };
-        let c = ProfileInputs { algorithm: "nl-sbplx".into(),  ..fixture_inputs(&h_data) };
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "switching --algorithm if2 → pmmh MUST invalidate the cache");
-        assert_ne!(b.inner_hash().full(), c.inner_hash().full(),
-            "switching --algorithm pmmh → nl-sbplx MUST invalidate the cache");
-    }
-
-    #[test]
-    fn inner_hash_data_field_is_load_bearing() {
-        // Cross-check against the canonical-key implementation: with
-        // every other field fixed, varying only `data_hashes[0]` must
-        // move the inner_hash. This catches a future refactor that
-        // accidentally drops the `("data", ...)` entry from the
-        // canonical-keys vector.
-        let a = fixture_inputs(&"a".repeat(64));
-        let b = fixture_inputs(&"b".repeat(64));
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "data_hashes must be wired into inner_hash's canonical keys");
-    }
-
-    // ── gh#90 multi-stream cache key invariants ──────────────────────
-    //
-    // The data_hashes Vec replaces the gh#39 single data_hash to
-    // carry every bound stream's (name, content_hash) pair into the
-    // cache key. These tests pin the invariants that the dispatch
-    // requires.
-
-    #[test]
-    fn profile_inner_hash_changes_when_stream_set_changes() {
-        // Adding a stream to the bound set is a real content change
-        // — the profile that scores `cases + deaths` jointly is NOT
-        // the same as the one that scores only `cases`.
-        let h_cases  = "a".repeat(64);
-        let h_deaths = "b".repeat(64);
-        let one = fixture_inputs(&h_cases);
-        let two = ProfileInputs {
-            data_hashes: vec![
-                ("cases".into(),  h_cases.clone()),
-                ("deaths".into(), h_deaths.clone()),
-            ],
-            ..fixture_inputs(&h_cases)
-        };
-        assert_ne!(one.inner_hash().full(), two.inner_hash().full(),
-            "adding a bound stream MUST invalidate the profile CAS \
-             key (gh#90); otherwise the cache silently returns the \
-             1-stream loglik for what the user thinks is a 2-stream \
-             joint score");
-    }
-
-    #[test]
-    fn profile_inner_hash_changes_when_stream_data_content_changes() {
-        // Per-stream gh#39 invariant: editing the bytes of any bound
-        // stream's data file must invalidate the cache, including
-        // streams beyond the first.
-        let h_cases  = "a".repeat(64);
-        let h_deaths_v1 = "b".repeat(64);
-        let h_deaths_v2 = "c".repeat(64);
-        let a = ProfileInputs {
-            data_hashes: vec![
-                ("cases".into(),  h_cases.clone()),
-                ("deaths".into(), h_deaths_v1.clone()),
-            ],
-            ..fixture_inputs(&h_cases)
-        };
-        let b = ProfileInputs {
-            data_hashes: vec![
-                ("cases".into(),  h_cases.clone()),
-                ("deaths".into(), h_deaths_v2.clone()),
-            ],
-            ..fixture_inputs(&h_cases)
-        };
-        assert_ne!(a.inner_hash().full(), b.inner_hash().full(),
-            "editing the bytes of any bound stream's --data file MUST \
-             invalidate the cache (gh#39 generalised to multi-stream \
-             per gh#90)");
-    }
-
-    #[test]
-    fn profile_inner_hash_invariant_under_stream_reordering() {
-        // The CLI ordering of --data NAME=PATH flags is presentation,
-        // not content — `--data cases=... --data deaths=...` and
-        // `--data deaths=... --data cases=...` must hit the same
-        // cache entry. The inner_hash sort-by-name normalises this.
-        let h_cases  = "a".repeat(64);
-        let h_deaths = "b".repeat(64);
-        let a = ProfileInputs {
-            data_hashes: vec![
-                ("cases".into(),  h_cases.clone()),
-                ("deaths".into(), h_deaths.clone()),
-            ],
-            ..fixture_inputs(&h_cases)
-        };
-        let b = ProfileInputs {
-            data_hashes: vec![
-                ("deaths".into(), h_deaths.clone()),
-                ("cases".into(),  h_cases.clone()),
-            ],
-            ..fixture_inputs(&h_cases)
-        };
-        assert_eq!(a.inner_hash().full(), b.inner_hash().full(),
-            "reordering --data NAME=PATH flags must NOT change the \
-             cache key — that's presentation, not content");
-    }
 
     // ── seed_params_from_init_method: Phase 3 → Phase 2 bridge ────────
     //
@@ -3218,38 +2032,5 @@ mod tests {
             "NaN log_posterior must be omitted, not emitted as 'nan': {}", body);
     }
 
-    #[test]
-    fn parse_mle_toml_reads_final_log_posterior() {
-        // Round-trip: render + parse must preserve the field.
-        let if2 = vec![estimated_param("beta", 0)];
-        let diag = crate::profile_diagnostics::PerStartDiagnostics::default();
-        let body = render_mle_toml(
-            &if2, &[25.0], &["R0"], &[0.42],
-            -11.0, -9.5, &diag,
-        );
-        let focal_names = vec!["R0".to_string()];
-        let parsed = parse_mle_toml(&body, &if2, &focal_names)
-            .expect("synthetic mle.toml must parse");
-        assert!((parsed.final_loglik - (-11.0)).abs() < 1e-9);
-        assert!((parsed.final_log_posterior - (-9.5)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn parse_mle_toml_legacy_without_log_posterior_returns_nan() {
-        // Cached CAS dirs from before gh#109: mle.toml has no
-        // final_log_posterior field. Parser must accept and return
-        // NaN so the rollup degrades gracefully (NaN column in TSV).
-        let body = "final_loglik = -11.0\n\n\
-                    [focal]\nR0 = 25\n\n\
-                    [mle]\nbeta = 0.42\n";
-        let if2 = vec![estimated_param("beta", 0)];
-        let focal_names = vec!["R0".to_string()];
-        let parsed = parse_mle_toml(body, &if2, &focal_names)
-            .expect("legacy mle.toml must parse");
-        assert!((parsed.final_loglik - (-11.0)).abs() < 1e-9);
-        assert!(parsed.final_log_posterior.is_nan(),
-            "legacy mle.toml without final_log_posterior must parse as NaN; \
-             got {}", parsed.final_log_posterior);
-    }
 }
 

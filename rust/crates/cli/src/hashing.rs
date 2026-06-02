@@ -419,12 +419,9 @@ mod tests {
         assert_eq!(h, "3d19534d546efd26118d6983fcd8a58a559c9791477db4316d3edfc357dadc78");
     }
 
-    // The legacy `run_hash(sim, scen, seed)` content hash is gone:
-    // the typed-CAS migration replaced it with
-    // `cas::sim_inputs::SimulateInputs.content_hash()`, which composes
-    // via the unified `compose_with_replicate(inner, "seed", seed)`
-    // form (see `cas::typed`). Tests for the new content_hash live
-    // alongside the trait at `cas/typed.rs::tests`.
+    // The legacy `run_hash(sim, scen, seed)` content hash is gone: the
+    // CAS migration replaced it with the factored `runid` identity
+    // (`runid::run_id` over the per-level hashes; see `cas::sim_inputs`).
 
     // ── scen_hash ────────────────────────────────────────────────────────────
 

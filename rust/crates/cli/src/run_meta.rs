@@ -118,15 +118,6 @@ pub enum RunKind {
     /// each `start_{k}/` is itself a `FitStage` run. See
     /// docs/dev/proposals/2026-04-24-profile-cas-integration.md.
     Profile(ProfileMeta),
-    /// A *group* of single-realization runs that share an inner
-    /// content (everything except a varying replicate dimension)
-    /// and differ only on one input — typically `seed` for
-    /// stochastic-method sensitivity, `dataset_idx` for
-    /// synthetic-data fits. The directory contains an aggregate
-    /// `summary.tsv` and a `replicates/<key>/` subdir per child;
-    /// each child has its own `run.json` of the underlying kind.
-    /// See docs/dev/proposals/2026-04-28-cas-typed-runs-and-profile-stages.md.
-    ReplicateSet(crate::cas::typed::ReplicateSetMeta),
     /// A likelihood-landscape diagnostic: N Latin-hypercube points
     /// across declared parameter bounds, evaluated via PF or single
     /// simulation, written to `landscape.tsv`. NOT a fitting routine

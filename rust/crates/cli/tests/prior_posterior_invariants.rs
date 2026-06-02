@@ -182,31 +182,27 @@ cooling    = 0.5
 
     // Walk the seed_1 / points / start_0 / mle.toml tree and assert
     // the invariant on every cell.
+    // Collect the new-format ProfilePoint leaf dirs (each holds an
+    // `mle.toml`): profiles/<base>/<point>/<stage>/<seed>/<start>/.
+    fn collect_leaf_dirs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if dir.join("mle.toml").is_file() {
+            if let Ok(b) = std::fs::read_to_string(dir.join("run.json")) {
+                if b.contains("\"profile_point\"") { out.push(dir.to_path_buf()); }
+            }
+        }
+        if let Ok(es) = std::fs::read_dir(dir) {
+            for e in es.flatten() { if e.path().is_dir() { collect_leaf_dirs(&e.path(), out); } }
+        }
+    }
     let profiles_dir = out_root.join("profiles");
-    let umbrella = std::fs::read_dir(&profiles_dir)
-        .expect("profiles dir must exist")
-        .filter_map(|e| e.ok())
-        .next()
-        .expect("at least one umbrella")
-        .path();
-    let seed_dir = std::fs::read_dir(umbrella.join("replicates"))
-        .expect("replicates dir")
-        .filter_map(|e| e.ok())
-        .next()
-        .expect("at least one seed dir")
-        .path();
-    let points_dir = seed_dir.join("points");
-    let mut point_dirs: Vec<_> = std::fs::read_dir(&points_dir)
-        .expect("points dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
-    point_dirs.sort();
-    assert_eq!(point_dirs.len(), 2,
-        "expected 2 grid points, got {}", point_dirs.len());
+    let mut leaf_dirs = Vec::new();
+    collect_leaf_dirs(&profiles_dir, &mut leaf_dirs);
+    leaf_dirs.sort();
+    assert_eq!(leaf_dirs.len(), 2,
+        "expected 2 grid points, got {}", leaf_dirs.len());
 
-    for pd in &point_dirs {
-        let mle_toml = pd.join("start_0").join("mle.toml");
+    for leaf in &leaf_dirs {
+        let mle_toml = leaf.join("mle.toml");
         let body = std::fs::read_to_string(&mle_toml)
             .unwrap_or_else(|e| panic!("read {}: {}", mle_toml.display(), e));
 

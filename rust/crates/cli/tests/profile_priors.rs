@@ -187,29 +187,29 @@ cooling    = 0.5
     p
 }
 
-/// Find the umbrella profile directory under `<out_root>/profiles/`.
-/// Returns the single profile dir written by the run.
-fn find_umbrella(out_root: &Path) -> PathBuf {
+/// Find the profile-base segment under `<out_root>/profiles/`. Each run
+/// writes one factored tree `profiles/<base>/<point>/<stage>/<seed>/<start>/`
+/// with the provenance sidecar at the base; this returns that base dir.
+fn find_profile_base(out_root: &Path) -> PathBuf {
     let profiles = out_root.join("profiles");
     let entries: Vec<_> = std::fs::read_dir(&profiles)
         .unwrap_or_else(|e| panic!("read_dir {}: {}", profiles.display(), e))
         .filter_map(|e| e.ok())
         .map(|e| e.path())
+        .filter(|p| p.is_dir())
         .collect();
     assert_eq!(entries.len(), 1,
-        "expected exactly one umbrella dir under {}, found {:?}",
+        "expected exactly one profile-base dir under {}, found {:?}",
         profiles.display(), entries);
     entries.into_iter().next().unwrap()
 }
 
-/// Read the per-seed `run.json` payload (the kind = "profile" record)
-/// for the single-seed test runs.
-fn read_seed_run_json(umbrella: &Path) -> serde_json::Value {
-    let replicates = umbrella.join("replicates");
-    let seed_dirs: Vec<_> = std::fs::read_dir(&replicates).unwrap()
-        .filter_map(|e| e.ok()).map(|e| e.path()).collect();
-    assert_eq!(seed_dirs.len(), 1, "expected one seed dir");
-    let body = std::fs::read_to_string(seed_dirs[0].join("run.json")).unwrap();
+/// Read the profile-base `fit.meta.json` provenance sidecar — the single
+/// authoritative home for the fit-wide attributes (`--label`,
+/// `resolved_priors`, `fit_toml_hash`, `estimated`, `data_hashes`).
+fn read_sidecar(base: &Path) -> serde_json::Value {
+    let body = std::fs::read_to_string(base.join("fit.meta.json"))
+        .unwrap_or_else(|e| panic!("read {}/fit.meta.json: {}", base.display(), e));
     serde_json::from_str::<serde_json::Value>(&body).unwrap()
 }
 
@@ -281,11 +281,10 @@ fn profile_pmmh_with_neither_warns_and_uses_flat() {
     assert!(stderr.contains("model file"),
         "expected 'model file' remedy in warning, got:\n{}", stderr);
 
-    // run.json must record sources = "flat_fallback" for the
-    // estimated params.
-    let run = read_seed_run_json(&find_umbrella(&out_root));
-    let kind = run.get("kind").expect("kind");
-    let resolved = kind.get("resolved_priors").expect("resolved_priors");
+    // The profile-base sidecar must record sources = "flat_fallback"
+    // for the estimated params.
+    let side = read_sidecar(&find_profile_base(&out_root));
+    let resolved = side.get("resolved_priors").expect("resolved_priors");
     let arr = resolved.as_array().expect("resolved_priors array");
     assert!(!arr.is_empty(), "resolved_priors must have at least one entry");
     let gamma_entry = arr.iter().find(|e| {
@@ -296,10 +295,11 @@ fn profile_pmmh_with_neither_warns_and_uses_flat() {
         Some("flat_fallback"),
         "gamma should be flat_fallback when neither model-IR nor --fit \
          declares a prior. Got: {}", gamma_entry);
-    // fit_toml_hash should be absent (None → omitted by serde
-    // skip_serializing_if).
-    assert!(kind.get("fit_toml_hash").is_none(),
-        "fit_toml_hash should be absent without --fit. Got: {}", kind);
+    // No --fit → the sidecar's fit_toml_hash is empty (defaults to "",
+    // never a populated 64-hex digest).
+    let fth = side.get("fit_toml_hash").and_then(|h| h.as_str()).unwrap_or("");
+    assert!(fth.is_empty(),
+        "fit_toml_hash must be empty without --fit. Got: {:?}", fth);
 }
 
 #[test]
@@ -323,10 +323,9 @@ fn profile_pmmh_with_fit_toml_silences_flat_warning() {
         "warning must NOT fire when fit toml supplies priors. \
          Got stderr:\n{}", stderr);
 
-    // run.json: gamma resolved from fit_toml (beta is the swept focal).
-    let run = read_seed_run_json(&find_umbrella(&out_root));
-    let kind = run.get("kind").expect("kind");
-    let resolved = kind.get("resolved_priors").expect("resolved_priors");
+    // Sidecar: gamma resolved from fit_toml (beta is the swept focal).
+    let side = read_sidecar(&find_profile_base(&out_root));
+    let resolved = side.get("resolved_priors").expect("resolved_priors");
     let gamma_entry = resolved.as_array().unwrap().iter().find(|e| {
         e.get("param").and_then(|p| p.as_str()) == Some("gamma")
     }).expect("gamma in resolved_priors");
@@ -336,7 +335,8 @@ fn profile_pmmh_with_fit_toml_silences_flat_warning() {
         "gamma must be sourced from fit_toml. Got: {}", gamma_entry);
 
     // fit_toml_hash must be present and a 64-char hex string.
-    let hash = kind.get("fit_toml_hash").and_then(|h| h.as_str())
+    let hash = side.get("fit_toml_hash").and_then(|h| h.as_str())
+        .filter(|h| !h.is_empty())
         .expect("fit_toml_hash must be present when --fit is supplied");
     assert_eq!(hash.len(), 64, "fit_toml_hash must be SHA-256 hex (64 chars), got: {}", hash);
     assert!(hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -347,7 +347,7 @@ fn profile_pmmh_with_fit_toml_silences_flat_warning() {
 fn same_model_different_fit_toml_different_cas_dir() {
     // Hash provenance: two profile runs with the same model + data
     // but different fit tomls (different priors) must produce
-    // different umbrella CAS dirs.
+    // different CAS dirs.
     let Some(bin) = camdl_bin() else { return };
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("hash_two_fits");
@@ -367,12 +367,12 @@ fn same_model_different_fit_toml_different_cas_dir() {
     assert!(b.status.success(), "run B failed:\n{}",
         String::from_utf8_lossy(&b.stderr));
 
-    let umbrella_a = find_umbrella(&out_a);
-    let umbrella_b = find_umbrella(&out_b);
-    assert_ne!(umbrella_a.file_name().unwrap(),
-               umbrella_b.file_name().unwrap(),
+    let base_a = find_profile_base(&out_a);
+    let base_b = find_profile_base(&out_b);
+    assert_ne!(base_a.file_name().unwrap(),
+               base_b.file_name().unwrap(),
         "two distinct fit tomls must produce two distinct CAS dirs. \
-         A={}, B={}", umbrella_a.display(), umbrella_b.display());
+         A={}, B={}", base_a.display(), base_b.display());
 }
 
 #[test]
@@ -394,10 +394,10 @@ fn same_model_no_fit_vs_with_fit_different_cas_dir() {
     assert!(yes.status.success(),
         "with-fit run failed:\n{}", String::from_utf8_lossy(&yes.stderr));
 
-    let umbrella_no  = find_umbrella(&out_no);
-    let umbrella_yes = find_umbrella(&out_yes);
-    assert_ne!(umbrella_no.file_name().unwrap(),
-               umbrella_yes.file_name().unwrap(),
+    let base_no  = find_profile_base(&out_no);
+    let base_yes = find_profile_base(&out_yes);
+    assert_ne!(base_no.file_name().unwrap(),
+               base_yes.file_name().unwrap(),
         "no-fit and with-fit runs must produce distinct CAS dirs");
 }
 
@@ -420,4 +420,175 @@ fn focal_param_in_fixed_errors_clearly() {
     assert!(stderr.contains("--sweep") && stderr.contains("--fixed"),
         "error must name both --sweep and --fixed in the conflict \
          message. Got:\n{}", stderr);
+}
+
+/// Run a `camdl <subcmd>` reader command against the CAS root, returning its
+/// captured stdout (the reader display) as a String.
+fn camdl_read(bin: &Path, out_root: &Path, args: &[&str]) -> String {
+    let out = Command::new(bin)
+        .env("CAMDL_OUTPUT_DIR", out_root)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .args(args)
+        .output()
+        .expect("spawn camdl reader");
+    // `list` prints its table on stdout and section headers on stderr; show/cat
+    // print on stdout. Concatenate so a single helper covers all three.
+    format!("{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr))
+}
+
+/// The `run_id` (hex) of the first `ProfilePoint` leaf under a profile base.
+fn first_leaf_run_id(base: &Path) -> String {
+    fn walk(dir: &Path, out: &mut Option<String>) {
+        if out.is_some() { return; }
+        let rj = dir.join("run.json");
+        if rj.is_file() {
+            if let Ok(body) = std::fs::read_to_string(&rj) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if v.get("kind").and_then(|k| k.as_str()) == Some("profile_point") {
+                        if let Some(rid) = v.get("run_id").and_then(|r| r.as_str()) {
+                            *out = Some(rid.to_string());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() { walk(&p, out); }
+            }
+        }
+    }
+    let mut found = None;
+    walk(base, &mut found);
+    found.unwrap_or_else(|| panic!("no ProfilePoint leaf under {}", base.display()))
+}
+
+/// P1 provenance discipline (write → read → visible): the audit data the old
+/// per-run `ProfileMeta` carried must be *surfaced by the new reader*, not just
+/// present on disk. A profile run with no `--fit` (flat-prior fallback),
+/// `--suppress-warnings` (waiver trail), and `--init from_prior` (per-chain
+/// init provenance) populates all three provenance kinds; this asserts each is
+/// visible through `camdl show`/`list`/`cat`. The fit migration once dropped
+/// provenance silently — the round-trip is what catches that.
+#[test]
+fn provenance_round_trips_through_reader() {
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("prov_roundtrip");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    let output = run_profile(&bin, &out_root, &ir, &data, &[
+        "--fixed", "N0=1000",
+        "--suppress-warnings",
+        "--init", "from_prior",
+        "--label", "round-trip prov",
+    ]);
+    assert!(output.status.success(),
+        "profile run failed: stderr=\n{}", String::from_utf8_lossy(&output.stderr));
+
+    let base = find_profile_base(&out_root);
+
+    // Write side: the leaf record carries all three provenance kinds, and the
+    // base sidecar carries the label (its single authoritative home).
+    let rid = first_leaf_run_id(&base);
+    let leaf_dir = {
+        // Re-find the leaf dir holding `rid` for a disk-side sanity check.
+        fn walk(dir: &Path, rid: &str, out: &mut Option<PathBuf>) {
+            if out.is_some() { return; }
+            if let Ok(body) = std::fs::read_to_string(dir.join("run.json")) {
+                if body.contains(rid) { *out = Some(dir.to_path_buf()); return; }
+            }
+            if let Ok(es) = std::fs::read_dir(dir) {
+                for e in es.flatten() { if e.path().is_dir() { walk(&e.path(), rid, out); } }
+            }
+        }
+        let mut f = None; walk(&base, &rid, &mut f);
+        f.expect("leaf dir for run_id")
+    };
+    let leaf: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(leaf_dir.join("run.json")).unwrap()).unwrap();
+    let prov = leaf.get("inputs").and_then(|i| i.get("provenance"))
+        .expect("leaf inputs.provenance present");
+    assert!(prov.get("parameters_provenance").and_then(|p| p.as_object())
+        .is_some_and(|o| !o.is_empty()),
+        "parameters_provenance (gh#83/85) must be recorded per leaf");
+    assert!(prov.get("init_provenance").map(|v| !v.is_null()).unwrap_or(false),
+        "init_provenance must be non-null with --init from_prior. Got: {}", prov);
+    assert!(prov.get("suppressed_warnings").and_then(|s| s.as_array())
+        .is_some_and(|a| a.iter().any(|w| w.as_str() == Some("profile_flat_prior_fallback"))),
+        "suppressed-warnings waiver must be recorded per leaf");
+    assert_eq!(read_sidecar(&base).get("label").and_then(|l| l.as_str()),
+        Some("round-trip prov"),
+        "label must live on the base sidecar (its single authoritative home)");
+
+    // Read side: `camdl show <leaf>` must SURFACE each provenance kind.
+    let shown = camdl_read(&bin, &out_root, &["show", &rid[..12]]);
+    assert!(shown.contains("round-trip prov"),
+        "show must surface the --label (from sidecar). Got:\n{}", shown);
+    assert!(shown.contains("parameter provenance"),
+        "show must surface the gh#83/85 parameter-resolution provenance. Got:\n{}", shown);
+    assert!(shown.contains("init provenance"),
+        "show must surface the per-chain init provenance. Got:\n{}", shown);
+    assert!(shown.contains("profile_flat_prior_fallback"),
+        "show must surface the suppressed-warnings waiver. Got:\n{}", shown);
+
+    // `camdl list` surfaces the profile with its label.
+    let listed = camdl_read(&bin, &out_root, &["list"]);
+    assert!(listed.contains("round-trip prov"),
+        "list must surface the profile label. Got:\n{}", listed);
+
+    // `camdl cat <leaf>` returns the per-cell mle.toml.
+    let catted = camdl_read(&bin, &out_root, &["cat", &rid[..12]]);
+    assert!(catted.contains("final_loglik"),
+        "cat must return the leaf's mle.toml. Got:\n{}", catted);
+}
+
+/// `camdl label` on a profile must rewrite the profile-base sidecar (the
+/// label's single authoritative home, guardrail 5) — NOT a per-leaf copy.
+/// Relabeling touches one file regardless of how many cells the profile has.
+#[test]
+fn label_command_relabels_profile_sidecar() {
+    let Some(bin) = camdl_bin() else { return };
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("label_profile");
+    let (ir, data) = write_fixture(tmp.path());
+    let out_root = tmp.path().join("out");
+
+    // Profile with no `--label`.
+    let output = run_profile(&bin, &out_root, &ir, &data, &["--fixed", "N0=1000"]);
+    assert!(output.status.success(), "profile run failed:\n{}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let base = find_profile_base(&out_root);
+    assert!(read_sidecar(&base).get("label").and_then(|l| l.as_str()).is_none(),
+        "a fresh profile (no --label) must have no sidecar label");
+
+    // The profile-base hash prefix is the `hash8` suffix of the base dir name.
+    let dir_name = base.file_name().unwrap().to_string_lossy().into_owned();
+    let hash8 = dir_name.rsplit('-').next().unwrap().to_string();
+
+    let out = Command::new(&bin)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .args(["label", &hash8, "relabelled profile",
+               "--root", &out_root.to_string_lossy()])
+        .output().expect("spawn camdl label");
+    assert!(out.status.success(),
+        "label on profile must succeed: stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr));
+
+    // Read back from the sidecar — the one place the label lives.
+    assert_eq!(read_sidecar(&base).get("label").and_then(|l| l.as_str()),
+        Some("relabelled profile"),
+        "camdl label must write the profile-base sidecar (the label's home)");
+
+    // And `camdl show <leaf>` surfaces the relabelled value.
+    let rid = first_leaf_run_id(&base);
+    let shown = camdl_read(&bin, &out_root, &["show", &rid[..12]]);
+    assert!(shown.contains("relabelled profile"),
+        "show must surface the relabelled profile label. Got:\n{}", shown);
 }

@@ -999,153 +999,14 @@ fn show_renders_fit_stage_metadata() {
     assert!(s.contains("scout"));
 }
 
-/// Test (4b from review): `camdl show <profile-leaf-hash>` for the
-/// per-seed Profile leaf inside a ReplicateSet umbrella.
+
+/// Test (5 from review): `camdl label` works on a new-format sim leaf —
+/// the label persists on the leaf's `RunRecord.provenance.label`. The
+/// profile case (label → the profile-base sidecar, NOT per-leaf) is covered
+/// by `profile_priors::label_command_relabels_profile_sidecar`, where the
+/// profile-running harness lives.
 #[test]
-fn show_renders_profile_leaf_metadata() {
-    let Some(bin) = skip_if_missing_binary() else { return };
-    let tmp = tempfile::tempdir().unwrap();
-    let output = tmp.path().join("output");
-    let umbrella = output.join("profiles/foo-aaaa1111");
-    let leaf = umbrella.join("replicates/seed_42");
-    std::fs::create_dir_all(&leaf).unwrap();
-
-    // Umbrella: ReplicateSet
-    let umbrella_run = r#"{
-        "hash": "aaaa1111deadbeef0000000000000000000000000000000000000000aaaa1111",
-        "version": "0.1.0+test",
-        "created_at": "2026-04-30T12:00:00Z",
-        "argv": ["camdl","profile","--seeds","42"],
-        "status": {"completed": {"wall_time_seconds": 25.0}},
-        "kind": {
-            "kind": "replicate-set",
-            "dim_name": "seed",
-            "keys": ["seed_42"],
-            "child_kind": "profile",
-            "inner_content_hash": "ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000"
-        }
-    }"#;
-    std::fs::write(umbrella.join("run.json"), umbrella_run).unwrap();
-
-    // Leaf: Profile
-    let leaf_run = r#"{
-        "hash": "leaf1111deadbeef0000000000000000000000000000000000000000leaf1111",
-        "version": "0.1.0+test",
-        "created_at": "2026-04-30T12:00:00Z",
-        "argv": ["camdl","profile","--seeds","42"],
-        "status": {"completed": {"wall_time_seconds": 12.5}},
-        "kind": {
-            "kind": "profile",
-            "model": "sir.camdl",
-            "model_hash": "ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000",
-            "focal_params": ["beta", "gamma"],
-            "grid": [
-                {"param": "beta",  "values": [1.0, 2.0, 3.0]},
-                {"param": "gamma", "values": [0.1, 0.2]}
-            ],
-            "n_starts": 3,
-            "if2_config_hash": "1111111111111111111111111111111111111111111111111111111111111111",
-            "base_params_hash": "2222222222222222222222222222222222222222222222222222222222222222",
-            "seed_base": 42,
-            "total_jobs": 18
-        }
-    }"#;
-    std::fs::write(leaf.join("run.json"), leaf_run).unwrap();
-
-    let out = Command::new(&bin)
-        .args(["show", "leaf1111", "--root", &output.to_string_lossy()])
-        .output().expect("spawn");
-    assert!(out.status.success(), "show profile-leaf failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("profile"),    "kind label missing: {}", s);
-    assert!(s.contains("beta, gamma"),"focal params missing: {}", s);
-    assert!(s.contains("3 per grid point"), "n_starts missing: {}", s);
-    assert!(s.contains("18"),         "total_jobs missing: {}", s);
-    assert!(s.contains("12.5"),       "wall time missing: {}", s);
-}
-
-/// Test (3 from review): single-seed profile umbrella layout.
-/// Asserts the on-disk shape via handcrafted run.json files —
-/// `discover_profiles` must accept the umbrella, find the leaf,
-/// and `camdl list --kind profile` must surface it.
-#[test]
-fn single_seed_profile_layout_lists_via_discover_profiles() {
-    let Some(bin) = skip_if_missing_binary() else { return };
-    let tmp = tempfile::tempdir().unwrap();
-    let output = tmp.path().join("output");
-    let umbrella = output.join("profiles/sir-cccc3333");
-    let leaf = umbrella.join("replicates/seed_42");
-    std::fs::create_dir_all(&leaf).unwrap();
-
-    // Umbrella: ReplicateSet with one seed_42 child.
-    let umbrella_run = r#"{
-        "hash": "cccc3333deadbeef0000000000000000000000000000000000000000cccc3333",
-        "version": "0.1.0+test",
-        "created_at": "2026-04-30T12:00:00Z",
-        "argv": ["camdl","profile","--seed","42"],
-        "status": {"completed": {"wall_time_seconds": 5.0}},
-        "kind": {
-            "kind": "replicate-set",
-            "dim_name": "seed",
-            "keys": ["seed_42"],
-            "child_kind": "profile",
-            "inner_content_hash": "ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000"
-        }
-    }"#;
-    std::fs::write(umbrella.join("run.json"), umbrella_run).unwrap();
-
-    // Leaf: Profile.
-    let leaf_run = r#"{
-        "hash": "leaf3333deadbeef0000000000000000000000000000000000000000leaf3333",
-        "version": "0.1.0+test",
-        "created_at": "2026-04-30T12:00:00Z",
-        "argv": ["camdl","profile","--seed","42"],
-        "status": {"completed": {"wall_time_seconds": 5.0}},
-        "kind": {
-            "kind": "profile",
-            "model": "sir.camdl",
-            "model_hash": "ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000",
-            "focal_params": ["beta"],
-            "grid": [{"param": "beta", "values": [1.0, 2.0]}],
-            "n_starts": 1,
-            "if2_config_hash": "1111111111111111111111111111111111111111111111111111111111111111",
-            "base_params_hash": "2222222222222222222222222222222222222222222222222222222222222222",
-            "seed_base": 42,
-            "total_jobs": 2
-        }
-    }"#;
-    std::fs::write(leaf.join("run.json"), leaf_run).unwrap();
-
-    // `camdl list --kind profile` must surface the umbrella.
-    let out = Command::new(&bin)
-        .args(["list", &output.to_string_lossy(), "--kind", "profile"])
-        .output().expect("spawn");
-    assert!(out.status.success(), "list profile failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("sir-cccc3333"),
-        "list must show the profile dir: {}", s);
-    assert!(s.contains("beta"),
-        "list must show the focal param: {}", s);
-
-    // `camdl show <umbrella_hash>` must recognize the kind.
-    let out = Command::new(&bin)
-        .args(["show", "cccc3333", "--root", &output.to_string_lossy()])
-        .output().expect("spawn");
-    assert!(out.status.success(), "show on umbrella hash failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("replicate-set"),
-        "show must label kind: {}", s);
-    assert!(s.contains("seed_42"),
-        "show must list child key: {}", s);
-}
-
-/// Test (5 from review): `camdl label` should work uniformly across
-/// run kinds, not just fits. Pre-rename, this only worked on fits.
-#[test]
-fn label_works_on_sim_and_profile_runs() {
+fn label_works_on_sim_runs() {
     let Some(bin) = skip_if_missing_binary() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
@@ -1179,39 +1040,6 @@ fn label_works_on_sim_and_profile_runs() {
     assert_eq!(sim_meta2["provenance"]["label"].as_str(), Some("test sim label"),
         "sim label must persist on RunRecord.provenance.label. got: {:?}",
         sim_meta2);
-
-    // Now plant a profile umbrella + leaf and label the umbrella by hash.
-    let umbrella = output.join("profiles/p-bbbb2222");
-    let leaf = umbrella.join("replicates/seed_1");
-    std::fs::create_dir_all(&leaf).unwrap();
-    let umbrella_run = r#"{
-        "hash": "bbbb2222deadbeef0000000000000000000000000000000000000000bbbb2222",
-        "version": "0.1.0+test",
-        "created_at": "2026-04-30T12:00:00Z",
-        "argv": [],
-        "status": {"completed": {"wall_time_seconds": 1.0}},
-        "kind": {
-            "kind": "replicate-set",
-            "dim_name": "seed",
-            "keys": ["seed_1"],
-            "child_kind": "profile",
-            "inner_content_hash": "ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000"
-        }
-    }"#;
-    std::fs::write(umbrella.join("run.json"), umbrella_run).unwrap();
-
-    let status = Command::new(&bin)
-        .args(["label", "bbbb2222", "test profile label",
-               "--root", &output.to_string_lossy()])
-        .status().expect("spawn");
-    assert!(status.success(), "label on profile must succeed");
-
-    let umbrella_meta: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(umbrella.join("run.json")).unwrap()
-    ).unwrap();
-    assert_eq!(umbrella_meta["label"].as_str(), Some("test profile label"),
-        "profile-umbrella label must persist on Run.label. got: {:?}",
-        umbrella_meta);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

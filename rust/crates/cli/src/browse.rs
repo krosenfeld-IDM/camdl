@@ -205,90 +205,39 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
     }
 }
 
-/// Enumerate the grid-point × start children of one profile, identified
-/// by a hash prefix. Scans `<root>/profiles/*/points/*/start_*/run.json`
-/// and prints those whose `parent_profile_hash` starts with the given
-/// prefix. Minimal output — a richer "loglik + wall_time per point" view
-/// is a v2 follow-up per the profile-CAS proposal.
+/// Enumerate the (grid point × seed × start) leaves of one profile, identified
+/// by its profile-base hash prefix (the `profile` level). Walks the new-format
+/// `ProfilePoint` leaves under `<root>/profiles/` and prints those whose base
+/// hash matches, in (point, seed, start) order.
 fn list_profile_children(
     root: &str,
     parent_hash_prefix: &str,
     a: &crate::args::ListArgs,
 ) {
-    use crate::run_meta::{Run, RunKind};
-
-    let root_path = std::path::Path::new(root);
-    let profiles_root = root_path.join("profiles");
-    if !profiles_root.exists() {
-        eprintln!("no profiles under {}", profiles_root.display());
-        return;
-    }
-
-    // Pass 1: find any ReplicateSet umbrellas whose `parent_hash` (the
-    // umbrella's own Run.hash) or `inner_content_hash` (the seed-free
-    // hash shared across replicate children) matches the prefix.
-    // Multi-seed profile umbrellas store each per-seed child's profile
-    // content hash as a `parent_profile_hash` on the deeper FitStage
-    // leaves, so we need to expand the user-supplied umbrella prefix
-    // into the set of per-seed hashes before the leaf walk.
-    let mut expanded_prefixes: Vec<String> = vec![parent_hash_prefix.to_string()];
-    for dir in walkdir_all(&profiles_root) {
-        let rj = dir.join("run.json");
-        if !rj.exists() { continue; }
-        let Ok(text) = std::fs::read_to_string(&rj) else { continue; };
-        let Ok(run) = serde_json::from_str::<Run>(&text) else { continue; };
-        if let RunKind::ReplicateSet(ref m) = run.kind {
-            let umbrella_matches =
-                run.hash.starts_with(parent_hash_prefix)
-                || m.inner_content_hash.starts_with(parent_hash_prefix);
-            if !umbrella_matches { continue; }
-            // For each child, peek at its run.json to get the per-seed
-            // profile content hash and add it to the expanded set.
-            for key in &m.keys {
-                let child_dir = dir.join("replicates").join(key);
-                let crj = child_dir.join("run.json");
-                let Ok(ctext) = std::fs::read_to_string(&crj) else { continue; };
-                let Ok(crun) = serde_json::from_str::<Run>(&ctext) else { continue; };
-                if matches!(crun.kind, RunKind::Profile(_)) {
-                    expanded_prefixes.push(crun.hash);
-                }
-            }
-        }
-    }
-
-    let mut matches: Vec<(std::path::PathBuf, Run)> = Vec::new();
-    for dir in walkdir_all(&profiles_root) {
-        let rj = dir.join("run.json");
-        if !rj.exists() { continue; }
-        let Ok(text) = std::fs::read_to_string(&rj) else { continue; };
-        let Ok(run) = serde_json::from_str::<Run>(&text) else { continue; };
-        if let RunKind::FitStage(ref m) = run.kind {
-            let parent = m.parent_profile_hash.as_deref();
-            if parent.is_some_and(|h| {
-                expanded_prefixes.iter().any(|p| h.starts_with(p))
-            }) {
-                matches.push((dir, run));
-            }
-        }
-    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut matches: Vec<cas_read::Leaf> = cas_read::walk_profile_leaves(Path::new(root))
+        .into_iter()
+        .filter(|leaf| leaf.record.levels.first()
+            .map(|l| l.hash.to_hex().starts_with(parent_hash_prefix))
+            .unwrap_or(false))
+        .collect();
 
     if matches.is_empty() {
-        eprintln!("no grid-point runs found with parent hash prefix '{}'", parent_hash_prefix);
+        eprintln!("no profile-point runs found with profile-base hash prefix '{}'",
+            parent_hash_prefix);
         return;
     }
 
-    // Sort by (point_idx, start_idx) for natural grid-traversal order.
-    matches.sort_by_key(|(_, run)| match &run.kind {
-        RunKind::FitStage(m) => (m.profile_point_idx.unwrap_or(usize::MAX),
-                                  m.profile_start_idx.unwrap_or(usize::MAX)),
-        _ => (usize::MAX, usize::MAX),
+    // Natural grid-traversal order: by (point, seed, start) level label.
+    matches.sort_by(|x, y| {
+        (x.level_label("point"), x.level_label("seed"), x.level_label("start"))
+            .cmp(&(y.level_label("point"), y.level_label("seed"), y.level_label("start")))
     });
 
     let limit = if a.all { matches.len() } else { a.limit.min(matches.len()) };
 
     if a.format.as_deref() == Some("json") {
-        // Minimal JSON array for scripting. Full `Run` round-trip.
-        let slice: Vec<&Run> = matches.iter().take(limit).map(|(_, r)| r).collect();
+        let slice: Vec<&runid::RunRecord> = matches.iter().take(limit).map(|l| &l.record).collect();
         match serde_json::to_string_pretty(&slice) {
             Ok(s)  => println!("{}", s),
             Err(e) => eprintln!("json error: {}", e),
@@ -296,25 +245,19 @@ fn list_profile_children(
         return;
     }
 
-    eprintln!("{}", "profile grid-point starts".bold());
-    eprintln!("  {:<6} {:<6} {:>14} {:>10}  {}",
-        "point", "start", "best_loglik", "wall_s", "path");
-    for (dir, run) in matches.iter().take(limit) {
-        let RunKind::FitStage(ref m) = run.kind else { continue; };
-        let point = m.profile_point_idx.map(|n| n.to_string()).unwrap_or("?".into());
-        let start = m.profile_start_idx.map(|n| n.to_string()).unwrap_or("?".into());
-        let ll = m.best_loglik
+    eprintln!("{}", "profile-point leaves".bold());
+    eprintln!("  {:<16} {:<8} {:<8} {:>14}  {}",
+        "point", "seed", "start", "best_loglik", "path");
+    for leaf in matches.iter().take(limit) {
+        let ll = leaf.record.inputs.as_object()
+            .and_then(|o| o.get("best_loglik"))
+            .and_then(|v| v.as_f64())
             .map(|x| format!("{:.2}", x))
             .unwrap_or_else(|| "—".into());
-        let wall = match run.status.wall_time_seconds() {
-            Some(t) => format!("{:.1}", t),
-            None    => "running".to_string(),
-        };
-        let rel = dir.strip_prefix(root_path)
-            .unwrap_or(dir)
-            .display()
-            .to_string();
-        eprintln!("  {:<6} {:<6} {:>14} {:>10}  {}", point, start, ll, wall, rel.dimmed());
+        let rel = pathdiff_str(&leaf.dir, &cwd);
+        eprintln!("  {:<16} {:<8} {:<8} {:>14}  {}",
+            leaf.level_label("point"), leaf.level_label("seed"),
+            leaf.level_label("start"), ll, rel.dimmed());
     }
     if matches.len() > limit {
         eprintln!("  ... {} more (use --all to show)", matches.len() - limit);
@@ -328,6 +271,7 @@ pub fn cmd_show(a: &crate::args::ShowArgs) {
     match resolve_any(&root, &a.target) {
         Ok(Resolved::Sim { leaf, rel_path, created }) => show_sim_record(&leaf, &rel_path, created),
         Ok(Resolved::Fit { leaf, rel_path, created }) => show_fit_record(&leaf, &rel_path, created),
+        Ok(Resolved::Profile { leaf, rel_path, created }) => show_profile_record(&leaf, &rel_path, created),
         Ok(Resolved::Legacy(r)) => show(&r),
         Err(e) => {
             eprintln!("error: {}", e);
@@ -401,6 +345,83 @@ fn show_fit_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
     println!("{}", "engine".bright_black()); println!("  {}", rec.engine_version);
 }
 
+/// Render a new-format (`RunRecord`) profile-point leaf: the five factored
+/// levels (`profile`/`point`/`stage`/`seed`/`start`), the run_id address, the
+/// `--label` (read from the profile-base `fit.meta.json` sidecar — its single
+/// authoritative home, NOT copied per leaf), and the recorded `inputs`
+/// including the per-leaf provenance (gh#83/85 parameter resolution, per-chain
+/// init, suppressed-warnings waiver). Mirrors `show_fit_record`.
+fn show_profile_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
+    let rec = &leaf.record;
+    println!("{}", "path".bright_black()); println!("  {}", rel_path.cyan());
+    println!("{}", "kind".bright_black()); println!("  profile_point");
+    // The label lives once on the profile-base sidecar; walk up the leaf's
+    // ancestors to the first segment carrying a `fit.meta.json`.
+    if let Some(sc) = leaf.dir.ancestors().find_map(crate::run_meta::read_fit_sidecar) {
+        if let Some(ref l) = sc.label {
+            println!("{}", "label".bright_black()); println!("  {}", l);
+        }
+    }
+    for lvl_name in ["profile", "point", "stage", "seed", "start"] {
+        println!("{}", lvl_name.bright_black());
+        println!("  {}", leaf.level_label(lvl_name));
+    }
+    println!("{}", "run_id".bright_black()); println!("  {}", rec.run_id.to_hex().dimmed());
+    println!("{}", "levels".bright_black());
+    for lvl in &rec.levels {
+        println!("  {:<9} {}-{}", lvl.name, lvl.label, lvl.hash.short8().dimmed());
+    }
+    if !rec.deps.is_empty() {
+        println!("{}", "deps".bright_black());
+        for d in &rec.deps {
+            println!("  {} {} ({})", d.run_id.short8().dimmed(), d.artifact, d.digest.short8().dimmed());
+        }
+    }
+    if let Some(obj) = rec.inputs.as_object() {
+        for key in ["method", "grid_point", "start", "best_loglik", "wall_time_seconds"] {
+            if let Some(v) = obj.get(key) {
+                println!("{}", key.bright_black()); println!("  {}", v);
+            }
+        }
+        // Per-leaf provenance (display-only, never hashed). Surface the audit
+        // trail the old per-run ProfileMeta carried so write→read→visible holds.
+        if let Some(prov) = obj.get("provenance").and_then(|v| v.as_object()) {
+            if let Some(pp) = prov.get("parameters_provenance").and_then(|v| v.as_object()) {
+                if !pp.is_empty() {
+                    println!("{}", "parameter provenance".bright_black());
+                    let mut names: Vec<&String> = pp.keys().collect();
+                    names.sort();
+                    for n in names {
+                        let src = pp[n].get("source").and_then(|v| v.as_str()).unwrap_or("?");
+                        let role = pp[n].get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("  {:<16} {} ({})", n, src, role);
+                    }
+                }
+            }
+            if let Some(ip) = prov.get("init_provenance") {
+                if let Some(method) = ip.get("method").and_then(|v| v.as_str()) {
+                    let n_chains = ip.get("chains").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                    println!("{}", "init provenance".bright_black());
+                    println!("  method {} ({} chain{})", method, n_chains,
+                        if n_chains == 1 { "" } else { "s" });
+                }
+            }
+            if let Some(sw) = prov.get("suppressed_warnings").and_then(|v| v.as_array()) {
+                if !sw.is_empty() {
+                    let items: Vec<&str> = sw.iter().filter_map(|v| v.as_str()).collect();
+                    println!("{}", "suppressed warnings".bright_black());
+                    println!("  {}", items.join(", "));
+                }
+            }
+        }
+    }
+    println!("{}", "created".bright_black());
+    println!("  {}  ({})",
+        rec.provenance.created_at.as_deref().unwrap_or("?"),
+        fmt_relative_time(created, SystemTime::now()));
+    println!("{}", "engine".bright_black()); println!("  {}", rec.engine_version);
+}
+
 /// Kind-agnostic show entry point. One match on `run.kind`; per-kind
 /// renderers below. Adding a new `RunKind` variant gets a compiler
 /// error here until a renderer is wired in.
@@ -410,7 +431,6 @@ fn show(r: &ResolvedRun) {
         RunKind::Fit(_)          => show_fit(r),
         RunKind::FitStage(_)     => show_fit_stage(r),
         RunKind::Profile(_)      => show_profile_leaf(r),
-        RunKind::ReplicateSet(_) => show_replicate_set(r),
         RunKind::Survey(_)       => show_survey(r),
     }
 }
@@ -559,32 +579,6 @@ fn show_profile_leaf(r: &ResolvedRun) {
     show_footer(r);
 }
 
-fn show_replicate_set(r: &ResolvedRun) {
-    let RunKind::ReplicateSet(m) = &r.run.kind else { unreachable!() };
-    show_header(r);
-    println!("{}", "umbrella".bright_black());
-    println!("  {} of {}", m.child_kind, m.dim_name);
-    println!("{}", "children".bright_black());
-    for k in &m.keys {
-        let child_dir = r.abs_path.join("replicates").join(k);
-        let exists_marker = if child_dir.join("run.json").exists() { "✓" } else { "·" };
-        println!("  {} {}", exists_marker, k);
-    }
-    let summary = r.abs_path.join("summary.tsv");
-    if summary.exists() {
-        let bytes = std::fs::metadata(&summary).map(|m| m.len()).unwrap_or(0);
-        println!("{}", "summary".bright_black());
-        println!("  {} ({} bytes)", summary.display(), bytes);
-    } else {
-        println!("{}", "summary".bright_black());
-        println!("  {} (not yet written)", "summary.tsv".dimmed());
-    }
-    println!("{}", "hashes".bright_black());
-    println!("  parent {}", r.run.hash.dimmed());
-    println!("  inner  {}", m.inner_content_hash.dimmed());
-    show_footer(r);
-}
-
 fn show_survey(r: &ResolvedRun) {
     let RunKind::Survey(m) = &r.run.kind else { unreachable!() };
     show_header(r);
@@ -696,6 +690,18 @@ pub fn cmd_cat(a: &crate::args::CatArgs) {
             let _ = std::io::stdout().write_all(&bytes);
             return;
         }
+        // New-format profile point: default to the per-(point, seed, start)
+        // `mle.toml`; `--stream NAME` cats a named file from the leaf.
+        Resolved::Profile { leaf, rel_path, .. } => {
+            let name = a.stream.as_deref().unwrap_or("mle.toml");
+            let path = leaf.dir.join(name);
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                eprintln!("error reading {} in {}: {}", name, rel_path, e);
+                std::process::exit(1);
+            });
+            let _ = std::io::stdout().write_all(&bytes);
+            return;
+        }
         Resolved::Legacy(r) => r,
     };
 
@@ -716,20 +722,6 @@ pub fn cmd_cat(a: &crate::args::CatArgs) {
                     eprintln!("error reading traj.tsv: {}", e); std::process::exit(1);
                 })
             };
-            let _ = std::io::stdout().write_all(&bytes);
-        }
-        RunKind::ReplicateSet(_) => {
-            let summary = resolved.abs_path.join("summary.tsv");
-            if !summary.exists() {
-                eprintln!("error: 'camdl cat' on a replicate-set umbrella expects \
-                    summary.tsv, which has not been written yet for {}.",
-                    resolved.rel_path);
-                std::process::exit(1);
-            }
-            let bytes = std::fs::read(&summary).unwrap_or_else(|e| {
-                eprintln!("error reading {}: {}", summary.display(), e);
-                std::process::exit(1);
-            });
             let _ = std::io::stdout().write_all(&bytes);
         }
         RunKind::Profile(_) => {
@@ -809,84 +801,121 @@ struct FitEntry {
 
 // ── Profile listings ─────────────────────────────────────────────────────────
 
-/// A discovered profile run, single- or multi-seed. Profiles live at
-/// `<root>/profiles/<stem>-<hash[:8]>/` with a `run.json` of kind
-/// `Profile` (single-seed) or `ReplicateSet` (multi-seed umbrella).
-/// Both shapes carry the same display fields needed by `camdl list`.
+/// A discovered profile, summarized from its `ProfilePoint` leaves under
+/// `<root>/profiles/<base>/.../`. One entry per profile (grouped by the
+/// `profile`-level base hash); carries the display fields `camdl list` needs.
 #[derive(Debug, Clone)]
 struct ProfileEntry {
-    run: Run,
+    /// Profile-base hash (the `profile` level / `levels[0]`) — the
+    /// `camdl show <hash>`/`list --parent <hash>` address for this profile.
+    hash: String,
+    /// User `--label` from the profile-base `fit.meta.json` sidecar (its
+    /// single authoritative home; `None` when unset).
+    label: Option<String>,
+    /// The profile-base segment, cwd-relative.
     rel_path: String,
+    /// Latest leaf's creation time.
     created: SystemTime,
-    /// Display-only model path. From ProfileMeta for single-seed; from
-    /// the first child's run.json for replicate-set umbrellas.
+    /// Display-only model path (from the profile-base sidecar).
     model: String,
-    /// Comma-separated focal param names (e.g. "beta,gamma").
+    /// Comma-separated focal param names (e.g. "beta,gamma"), reconstructed
+    /// from the distinct `point`-level labels.
     focal: String,
-    /// Grid shape (e.g. "11×9 starts=4"). For replicate-set umbrellas
-    /// the grid is shared across children.
+    /// Grid shape (e.g. "11×9 starts=4"), reconstructed from the distinct
+    /// `point` labels (per-axis value counts) and distinct `start` levels.
     shape: String,
-    /// Number of seed replicates. 1 for single-seed; N for multi-seed.
+    /// Number of seed replicates (distinct `seed` levels).
     n_seeds: usize,
 }
 
-/// Walk `<root>/profiles/` one level deep. Each immediate child is a
-/// profile-umbrella directory (`<stem>-<hash[:8]>/`) with a `run.json`
-/// of kind `ReplicateSet { child_kind: "profile" }`. Single-seed
-/// profiles are the trivial N=1 case of the same shape — there is no
-/// longer a `RunKind::Profile`-at-top-level path. Display fields
-/// (model/focal/shape) are read from the first child's run.json.
+/// Discover profiles for `camdl list`: walk the new-format `ProfilePoint`
+/// leaves under `<root>/profiles/` and fold them into one `ProfileEntry` per
+/// profile, keyed by the `profile`-level base hash. The grid shape and focal
+/// names are reconstructed from the leaves' `point` labels; the `--label` and
+/// model come from the profile-base `fit.meta.json` sidecar.
 fn discover_profiles(root: &str) -> Result<Vec<ProfileEntry>, String> {
-    let profiles_root = Path::new(root).join("profiles");
-    if !profiles_root.exists() { return Ok(Vec::new()); }
+    use std::collections::{HashMap, HashSet};
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let entries = std::fs::read_dir(&profiles_root)
-        .map_err(|e| format!("cannot read {}: {}", profiles_root.display(), e))?;
+
+    // One `ProfileEntry` per profile: group new-format `ProfilePoint` leaves
+    // by their `profile`-level (base) hash. Each leaf is one (point × seed ×
+    // start) cell; the entry summarizes the cells.
+    let mut groups: HashMap<String, Vec<cas_read::Leaf>> = HashMap::new();
+    for leaf in cas_read::walk_profile_leaves(Path::new(root)) {
+        let base = leaf.record.levels.first().map(|l| l.hash.to_hex()).unwrap_or_default();
+        groups.entry(base).or_default().push(leaf);
+    }
+
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() { continue; }
-        let Some((run, created, rel_path)) = load_run_common(&dir, &cwd) else { continue; };
-        let RunKind::ReplicateSet(m) = &run.kind else { continue };
-        if m.child_kind != "profile" { continue }
-        let child_dir = dir.join("replicates")
-            .join(m.keys.first().cloned().unwrap_or_default());
-        let (model, focal, shape) = std::fs::read_to_string(child_dir.join("run.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<Run>(&s).ok())
-            .and_then(|child| match child.kind {
-                RunKind::Profile(cm) => Some((
-                    cm.model,
-                    cm.focal_params.join(","),
-                    format_grid_shape(&cm.grid, cm.n_starts),
-                )),
-                _ => None,
-            })
-            .unwrap_or_else(|| (
-                "?".to_string(),
-                "?".to_string(),
-                "?".to_string(),
-            ));
-        let n_seeds = m.keys.len();
+    for (base_hash, leaves) in groups {
+        let mut point_labels: Vec<String> = Vec::new();
+        let mut seed_hashes: HashSet<String> = HashSet::new();
+        let mut start_hashes: HashSet<String> = HashSet::new();
+        let mut created = SystemTime::UNIX_EPOCH;
+        let mut base_seg: Option<PathBuf> = None;
+        let level_hash = |leaf: &cas_read::Leaf, name: &str| -> Option<String> {
+            leaf.record.levels.iter().find(|l| l.name == name).map(|l| l.hash.to_hex())
+        };
+        for leaf in &leaves {
+            point_labels.push(leaf.level_label("point").to_string());
+            if let Some(h) = level_hash(leaf, "seed") { seed_hashes.insert(h); }
+            if let Some(h) = level_hash(leaf, "start") { start_hashes.insert(h); }
+            let c = leaf_created(leaf);
+            if c > created { created = c; }
+            // The profile-base segment is four levels up (start/seed/stage/
+            // point → base); used for the sidecar (label/model) and rel path.
+            if base_seg.is_none() {
+                base_seg = leaf.dir.ancestors().nth(4).map(|p| p.to_path_buf());
+            }
+        }
+        let sidecar = base_seg.as_deref().and_then(crate::run_meta::read_fit_sidecar);
+        let label = sidecar.as_ref().and_then(|s| s.label.clone());
+        let model = sidecar.as_ref()
+            .map(|s| s.model_path.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "?".to_string());
+        let (focal, shape) = summarize_grid(&point_labels, start_hashes.len());
+        let rel_path = base_seg.as_deref()
+            .map(|p| pathdiff_str(p, &cwd))
+            .unwrap_or_default();
         out.push(ProfileEntry {
-            model, focal, shape, n_seeds,
-            run, rel_path, created,
+            hash: base_hash, label, rel_path, created, model, focal, shape,
+            n_seeds: seed_hashes.len(),
         });
     }
+    out.sort_by(|a, b| b.created.cmp(&a.created));
     Ok(out)
 }
 
-/// Format a profile grid shape for the listing column. e.g.
-/// 11×9 grid with 4 starts → "11×9 starts=4".
-fn format_grid_shape(
-    grid: &[crate::run_meta::GridAxis],
-    n_starts: usize,
-) -> String {
-    if grid.is_empty() {
-        return format!("(empty) starts={}", n_starts);
+/// Reconstruct a profile's focal-param list + grid shape from the distinct
+/// `point`-level labels. Each label is `name=val[__name2=val2]` (written by
+/// `profile_cas::resolve_profile_point`); the per-axis distinct-value counts
+/// give the grid dims. E.g. an 11×9 grid with 4 starts → `("beta,gamma",
+/// "11×9 starts=4")`.
+fn summarize_grid(point_labels: &[String], n_starts: usize) -> (String, String) {
+    use std::collections::{HashMap, HashSet};
+    let mut names: Vec<String> = Vec::new();
+    let mut values: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut distinct_points: HashSet<&str> = HashSet::new();
+    for lbl in point_labels {
+        distinct_points.insert(lbl.as_str());
+        for pair in lbl.split("__") {
+            if let Some((name, val)) = pair.split_once('=') {
+                if !names.iter().any(|n| n == name) { names.push(name.to_string()); }
+                values.entry(name.to_string()).or_default().insert(val.to_string());
+            }
+        }
     }
-    let dims: Vec<String> = grid.iter().map(|g| g.values.len().to_string()).collect();
-    format!("{} starts={}", dims.join("×"), n_starts)
+    let focal = names.join(",");
+    let shape = if names.is_empty() {
+        format!("{} pts starts={}", distinct_points.len(), n_starts)
+    } else {
+        let dims: Vec<String> = names.iter()
+            .map(|n| values.get(n).map(|s| s.len()).unwrap_or(0).to_string())
+            .collect();
+        format!("{} starts={}", dims.join("×"), n_starts)
+    };
+    (focal, shape)
 }
 
 // ── Survey listings ──────────────────────────────────────────────────────────
@@ -1030,6 +1059,8 @@ enum Resolved {
     Sim { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     /// New-format (`RunRecord`) fit-stage leaf under `fits/` (M3.2).
     Fit { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
+    /// New-format (`RunRecord`) profile-point leaf under `profiles/` (M3.3).
+    Profile { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     Legacy(ResolvedRun),
 }
 
@@ -1054,6 +1085,7 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
                 let rel_path = pathdiff_str(as_path, &cwd);
                 return Ok(match kind {
                     runid::ArtifactKind::FitStage => Resolved::Fit { leaf, rel_path, created },
+                    runid::ArtifactKind::ProfilePoint => Resolved::Profile { leaf, rel_path, created },
                     _ => Resolved::Sim { leaf, rel_path, created },
                 });
             }
@@ -1092,10 +1124,20 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
         fit_matches.push((leaf, rel, created));
     }
 
-    // Legacy kinds: match Run.hash prefix under profiles/surveys. Fits are
-    // content-addressed now (matched above); profile/survey migrate in M3.3.
+    // New-format profile points (M3.3): match the run_id hex prefix under
+    // profiles/. A profile-base prefix is the umbrella view — use `list
+    // --parent <base>` for that; here a single leaf is addressed.
+    let mut profile_matches: Vec<(cas_read::Leaf, String, SystemTime)> = Vec::new();
+    for leaf in cas_read::resolve_profile_prefix(Path::new(root), hash_prefix) {
+        let created = leaf_created(&leaf);
+        let rel = pathdiff_str(&leaf.dir, &cwd);
+        profile_matches.push((leaf, rel, created));
+    }
+
+    // Legacy kinds: match Run.hash prefix under surveys. Sims/fits/profiles are
+    // content-addressed now (matched above); survey migrates later in M3.3.
     let mut legacy_matches: Vec<ResolvedRun> = Vec::new();
-    for top in ["profiles", "surveys"] {
+    for top in ["surveys"] {
         let subroot = Path::new(root).join(top);
         if !subroot.exists() { continue; }
         for dir in walkdir_all(&subroot) {
@@ -1106,13 +1148,15 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
         }
     }
 
-    match sim_matches.len() + fit_matches.len() + legacy_matches.len() {
+    match sim_matches.len() + fit_matches.len() + profile_matches.len() + legacy_matches.len() {
         0 => Err(format!("no run matches '{}' in {}", key, root)),
         1 => {
             if let Some((leaf, rel_path, created)) = sim_matches.into_iter().next() {
                 Ok(Resolved::Sim { leaf, rel_path, created })
             } else if let Some((leaf, rel_path, created)) = fit_matches.into_iter().next() {
                 Ok(Resolved::Fit { leaf, rel_path, created })
+            } else if let Some((leaf, rel_path, created)) = profile_matches.into_iter().next() {
+                Ok(Resolved::Profile { leaf, rel_path, created })
             } else {
                 Ok(Resolved::Legacy(legacy_matches.into_iter().next().unwrap()))
             }
@@ -1124,6 +1168,9 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
             }
             for (_, rel, _) in &fit_matches {
                 msg.push_str(&format!("  {:<14} {}\n", "fit_stage", rel));
+            }
+            for (_, rel, _) in &profile_matches {
+                msg.push_str(&format!("  {:<14} {}\n", "profile_point", rel));
             }
             for r in &legacy_matches {
                 msg.push_str(&format!("  {:<14} {}\n", kind_label(&r.run.kind), r.rel_path));
@@ -1157,7 +1204,6 @@ fn kind_label(kind: &RunKind) -> &'static str {
         RunKind::Fit(_)          => "fit",
         RunKind::FitStage(_)     => "fit-stage",
         RunKind::Profile(_)      => "profile",
-        RunKind::ReplicateSet(_) => "replicate-set",
         RunKind::Survey(_)       => "survey",
     }
 }
@@ -1355,8 +1401,16 @@ fn print_fits_table(fits: &[FitEntry], now: SystemTime) {
 
 fn print_profiles_json(profiles: &[ProfileEntry]) {
     for p in profiles {
-        let json = serde_json::to_string(&p.run).unwrap_or_default();
-        println!("{}", json);
+        let json = serde_json::json!({
+            "hash":    p.hash,
+            "label":   p.label,
+            "model":   p.model,
+            "focal":   p.focal,
+            "shape":   p.shape,
+            "n_seeds": p.n_seeds,
+            "path":    p.rel_path,
+        });
+        println!("{}", serde_json::to_string(&json).unwrap_or_default());
     }
 }
 
@@ -1388,8 +1442,8 @@ fn print_profiles_table(profiles: &[ProfileEntry], now: SystemTime) {
                 .fg(comfy_table::Color::Green)
                 .add_attribute(comfy_table::Attribute::Bold)
         };
-        let hash_short = short_hash_cell(&p.run.hash);
-        let label_cell = label_cell(&p.run.label);
+        let hash_short = short_hash_cell(&p.hash);
+        let label_cell = label_cell(&p.label);
         table.add_row(vec![
             Cell::new(rel_time).fg(comfy_table::Color::Yellow),
             hash_short,

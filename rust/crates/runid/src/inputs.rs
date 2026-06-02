@@ -334,6 +334,77 @@ pub struct SurveyInput {
     pub display: RunProvenance,
 }
 
+// ── profile leaves (M3.3) ──────────────────────────────────────────────────
+//
+// A profile pins a focal parameter at each value of a grid and sub-fits the
+// rest at that pin. The factored levels are
+// `[base, point, stage, seed, start]`:
+//
+//   profile-base  — the inference *problem* (model, data, the canonical base
+//                   config: base params + fixed + obs + priors + fit.toml),
+//                   the engine, and the base fit's `starts_from` lineage as a
+//                   dep. The focal *grid* and the method config are
+//                   deliberately EXCLUDED (so refining the grid reuses points,
+//                   and a point is reusable across profiles sharing the base).
+//                   A path segment only — no base-level record (mirrors the
+//                   fit level).
+//   point         — the single pinned focal value(s) for this grid point.
+//   stage         — the sub-fit method + hyperparams (algorithm, particles,
+//                   iterations, cooling, pmmh_*), shared across the grid.
+//   seed / start  — the resolved RNG seed and the multi-start index; the
+//                   (seed, start) pair pins the sub-fit's init deterministically.
+
+/// The shared `profile`-level digest: the inference problem being profiled,
+/// with the focal grid and method config excluded. `deps` carries the base
+/// fit's `starts_from` lineage (same deps-DAG mechanism as a fit stage).
+#[derive(Debug, Clone, PartialEq, Eq, RunInput)]
+pub struct ProfileBase {
+    pub model: ModelDigest,
+    pub data: Vec<DataDigest>,
+    /// Canonical digest of the base config (base params + fixed + obs + priors
+    /// + fit.toml) — grid and method config excluded.
+    pub base_config: ContentHash,
+    pub engine: EngineVersion,
+    pub deps: Deps,
+}
+
+/// The `point` level: the focal parameter(s) pinned at this grid value. Only
+/// the single value lives here — the grid spec is NOT in [`ProfileBase`].
+#[derive(Debug, Clone, PartialEq, RunInput)]
+pub struct ProfilePointConfig {
+    pub focal: Vec<(ParamId, FiniteF64)>,
+}
+
+/// The `stage` level: the sub-fit method + hyperparams applied at every point.
+/// Distinct from [`ProfileBase`] so a method change re-keys the points while
+/// the base stays shared.
+#[derive(Debug, Clone, PartialEq, Eq, RunInput)]
+pub struct ProfileStage {
+    pub config: ContentHash,
+}
+
+/// The `start` level: a multi-start index. Kept separate from `seed` so each
+/// start's deterministically-derived init is its own addressable leaf.
+#[derive(Debug, Clone, PartialEq, Eq, RunInput)]
+pub struct StartLevel {
+    pub index: u32,
+}
+
+/// `profile` point leaf (M3.3). Flat independent leaves — no inter-point deps:
+/// each point pins the focal param and sub-fits the rest, with no neighbour
+/// warm-start. Composes the five levels; the per-level hashes drive the path
+/// `profiles/<base>/<point>/<stage>/<seed>/<start>/`.
+#[derive(Debug, Clone, PartialEq, RunInput)]
+pub struct ProfilePointInput {
+    pub base: ProfileBase,
+    pub point: ProfilePointConfig,
+    pub stage: ProfileStage,
+    pub seed: Seed,
+    pub start: StartLevel,
+    #[run_input(provenance)]
+    pub display: RunProvenance,
+}
+
 /// `lineage realize/tree/cohort/sojourn` projection leaf (M3): a 1–2-hop
 /// chain off an upstream artifact. Each hop's upstream is one `ArtifactRef`;
 /// every output-determining flag is folded into `spec`.

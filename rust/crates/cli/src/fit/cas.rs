@@ -96,7 +96,7 @@ fn canonical(v: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn digest_value(v: &serde_json::Value) -> ContentHash {
+pub(crate) fn digest_value(v: &serde_json::Value) -> ContentHash {
     // The Value is built from a finiteness-gated source (see `ensure_finite`),
     // so it contains no non-finite floats and `to_vec` of a valid Value is
     // infallible. `.expect` (not `unwrap_or_default`) so a future caller that
@@ -239,13 +239,13 @@ impl serde::ser::SerializeStructVariant for FiniteCheck {
 
 /// Reject any non-finite float anywhere in `v` — call before hashing, since
 /// the JSON serializer would otherwise silently collapse it to `null`.
-fn ensure_finite<T: serde::Serialize>(v: &T) -> Result<(), String> {
+pub(crate) fn ensure_finite<T: serde::Serialize>(v: &T) -> Result<(), String> {
     v.serialize(FiniteCheck)
         .map_err(|e| format!("cannot hash fit input: {e}"))
 }
 
 /// Per-stream data digests, sorted by stream name for a stable order.
-fn build_data_digests(paths: &IndexMap<String, String>) -> Result<Vec<DataDigest>, String> {
+pub(crate) fn build_data_digests(paths: &IndexMap<String, String>) -> Result<Vec<DataDigest>, String> {
     let mut entries: Vec<(&String, &String)> = paths.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     let mut out = Vec::with_capacity(entries.len());

@@ -130,3 +130,23 @@ pub fn resolve_fit_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
         .filter(|s| s.run_id_hex().starts_with(prefix))
         .collect()
 }
+
+/// All `profiles/` leaves of kind `ProfilePoint` (new-format profile-point
+/// mini-fits, M3.3). Each is one `(grid point × seed × start)` cell under the
+/// factored `profile/point/stage/seed/start` tree.
+pub fn walk_profile_leaves(root: &Path) -> Vec<Leaf> {
+    walk_records(&root.join("profiles"))
+        .into_iter()
+        .filter(|(_, r)| r.kind == ArtifactKind::ProfilePoint)
+        .map(|(dir, record)| Leaf { dir, record })
+        .collect()
+}
+
+/// New-format profile points whose `run_id` hex matches `prefix` (for
+/// `show`/`cat` prefix resolution alongside `resolve_sim_prefix`).
+pub fn resolve_profile_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
+    walk_profile_leaves(root)
+        .into_iter()
+        .filter(|s| s.run_id_hex().starts_with(prefix))
+        .collect()
+}

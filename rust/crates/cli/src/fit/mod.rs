@@ -492,17 +492,11 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     // per-cell DataSpec is materialised from their on-disk paths. See
     // docs/dev/proposals/2026-04-17-synthetic-fit-replicates.md.
     //
-    // TODO(typed-cas): formalize fit_seeds as `cas::typed::ReplicateSet`.
-    // Today this loop produces a sibling-cells layout that's *semantically*
-    // a replicate set (one fit_content_hash umbrella, N seed-distinct
-    // cells) but isn't wrapped in the formal ReplicateSet machinery —
-    // no RunKind::ReplicateSet umbrella, no `replicates/seed_<S>/` path
-    // convention, no cross-cell aggregator. Pull when (a) someone wants
-    // a per-stage chain-Â diagnostic across fit_seeds, or (b) a uniform
-    // path layout matters more than the breaking change to existing fit
-    // trees. Same applies to dataset_idx as a nested replicate dimension.
-    // See docs/dev/proposals/2026-04-28-cas-typed-runs-and-profile-stages.md
-    // (Implementation checklist → "Fit run" deferred items).
+    // Multi-seed fits produce sibling CAS cells under one `fit`-level base
+    // (the seed is a factored `runid` level), with no cross-cell aggregator.
+    // A cross-seed roll-up view (per-stage chain-R̂ across fit_seeds) is a
+    // derived index, deferred to M4 (gh#154) — the same home as the profile
+    // and grid roll-ups. The same applies to `dataset_idx` for synthetic fits.
     let fit_seeds: Vec<u64> = match &config.fit_seeds {
         Some(list) => list.clone(),
         None       => vec![base_seed],
@@ -2183,16 +2177,18 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
         std::process::exit(1);
     }
 
-    // Match by hash prefix. Sims/profiles carry a per-leaf `run.json` matched
-    // on its hash. A CAS fit (gh#147 M3.2) has no fit-wide `run.json` — its
-    // fit-level hash is derived from its stage leaves and its label lives in
-    // the fit-level sidecar (`fit.meta.json`), so fits resolve by
-    // fit-level-hash prefix → segment and relabel the sidecar.
+    // Match by hash prefix. Sims carry a per-leaf `run.json` matched on its
+    // hash. CAS fits (gh#147 M3.2) and profiles (M3.3) have no fit-wide
+    // `run.json` — their fit-/profile-level hash is derived from the leaves
+    // and the label lives in the base sidecar (`fit.meta.json`), so they
+    // resolve by base-hash prefix → segment and relabel that sidecar (NOT
+    // per-leaf: the label is a fit-wide mutable attribute with one home).
     let mut matches: Vec<std::path::PathBuf> = Vec::new();
-    for top in ["sims", "profiles"] {
-        let subroot = root.join(top);
-        if !subroot.exists() { continue; }
-        find_runs_with_prefix(&subroot, &args.hash, &mut matches);
+    {
+        let subroot = root.join("sims");
+        if subroot.exists() {
+            find_runs_with_prefix(&subroot, &args.hash, &mut matches);
+        }
     }
     let mut fit_segments: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(root.join("fits")) {
@@ -2202,6 +2198,23 @@ pub fn cmd_label(args: &crate::args::LabelArgs) {
             if let Some(run) = crate::run_meta::read_fit_segment(&seg) {
                 if run.hash.starts_with(&args.hash) {
                     fit_segments.push(seg);
+                }
+            }
+        }
+    }
+    // Profiles (gh#147 M3.3): resolve by the profile-base hash (the `profile`
+    // level of any leaf) → base segment; relabel via the same sidecar-rewrite
+    // path as fits. Dedup so a multi-leaf profile yields one segment.
+    {
+        use std::collections::HashSet;
+        let mut seen: HashSet<std::path::PathBuf> = HashSet::new();
+        for leaf in crate::cas_read::walk_profile_leaves(&root) {
+            let base_hash = leaf.record.levels.first()
+                .map(|l| l.hash.to_hex()).unwrap_or_default();
+            if !base_hash.starts_with(&args.hash) { continue; }
+            if let Some(seg) = leaf.dir.ancestors().nth(4) {
+                if seen.insert(seg.to_path_buf()) {
+                    fit_segments.push(seg.to_path_buf());
                 }
             }
         }
