@@ -545,6 +545,22 @@ let test_table_read_malformed_header_e221 () =
   compile_expect_error_code ~code:"E221" ~contains:"row" src;
   Sys.remove tmp
 
+(* A `read(...)` table with no index dimensions is the scalar-via-table
+   mistake: tables hold indexed data (>=1 dimension), so an
+   externally-computed scalar belongs in a parameter (params.toml / --params),
+   not a table read. E222 must name that seam rather than letting the loader
+   trip a confusing column/file error. *)
+let test_scalar_read_table_e222 () =
+  compile_expect_error_code ~code:"E222" ~contains:"parameter" {|
+    time_unit = 'days
+    compartments { S, I }
+    parameters { beta : rate }
+    tables { mu = read("rates.tsv") }
+    transitions { recover : I --> S @ beta * I }
+    init { S = 1  I = 0 }
+    simulate { from = 0 'days  to = 1 'days }
+  |}
+
 let test_table_no_unit_annotation_leaves_values_alone () =
   (* No unit literal on the table = no scaling; dimcheck infers dim from use. *)
   let src = {|
@@ -5237,6 +5253,8 @@ let () =
         `Quick test_table_read_skips_leading_comment;
       Alcotest.test_case "malformed header (too few columns) is E221, not a crash"
         `Quick test_table_read_malformed_header_e221;
+      Alcotest.test_case "scalar read() (0-dim table) is E222 naming the parameter seam"
+        `Quick test_scalar_read_table_e222;
     ];
     "table_cell_type_annotation_gh32", [
       Alcotest.test_case ":rate annotation parses + stamps IR.cell_kind"

@@ -3002,6 +3002,26 @@ let expand_tables ctx =
     let table_unit = extract_table_unit ctx ~table_name:primary_name dim_entries in
     let cell_kind = Option.map param_kind_to_string td.tcell_kind in
     match td.tvalue with
+    | EFuncCall ("read", _) when dim_entries = [] ->
+      (* A `read(...)` with no index dimensions is the scalar-via-table
+         mistake: tables hold indexed data and require >=1 dimension. The
+         home for an externally-computed scalar is a parameter (params.toml /
+         --params, which a preprocessing pipeline can generate), not a table
+         read. Diagnose the seam here, before the loader trips a confusing
+         file/column error (E200/E206). *)
+      Diagnostics.error ctx.diags
+        ~code:"E222" ~loc:Diagnostics.no_loc
+        ~message:(Printf.sprintf
+          "table '%s' uses read(...) but declares no index dimensions; read() loads \
+           indexed tables (one column per dimension) and needs at least one dimension. \
+           For a single externally-computed scalar, declare '%s' as a parameter, not a table."
+          primary_name primary_name)
+        ~hint:(Printf.sprintf
+          "supply the value via params.toml or `--params %s=<value>` (a value a \
+           preprocessing pipeline can generate); read() loads indexed tables, not scalars"
+          primary_name)
+        ();
+      []
     | EFuncCall ("read", args) ->
       (* Multi-value loader: produces one Ir.table per name in td.tnames *)
       (match extract_path_arg ctx "read" args with
