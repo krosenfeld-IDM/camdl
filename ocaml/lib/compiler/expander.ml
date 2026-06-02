@@ -2010,6 +2010,22 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
           ~hint:"usage: mod(a, b)" ();
         Ir.Const 0.0
     end
+    else if fname = "min" || fname = "max" then begin
+      (* Binary min/max -> Ir.BinOp Min/Max. The IR, Rust eval
+         (propensity.rs), dimcheck (Add|Sub|Min|Max|Mod share the
+         same-dimension rule) and autodiff (subgradient: differentiate
+         the active branch) already support these; this only exposes the
+         DSL surface. *)
+      let op = if fname = "min" then Ir.Min else Ir.Max in
+      match args with
+      | [("", a); ("", b)] ->
+        Ir.BinOp { op; left = resolve_expr ctx env a; right = resolve_expr ctx env b }
+      | _ ->
+        Diagnostics.error ctx.diags ~code:"E101" ~loc:Diagnostics.no_loc
+          ~message:(Printf.sprintf "built-in function '%s' takes exactly two arguments" fname)
+          ~hint:(Printf.sprintf "usage: %s(a, b)" fname) ();
+        Ir.Const 0.0
+    end
     else if Hashtbl.mem ctx.func_tbl fname
     then begin
       let ok = match args with

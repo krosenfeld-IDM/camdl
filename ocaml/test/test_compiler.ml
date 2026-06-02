@@ -159,6 +159,40 @@ let test_infection_adult_indices () =
     "infection_adult C_age indices"
     [2.; 3.] (c_age_indices tr)
 
+(* min/max wire through the DSL surface to the already-supported Ir.BinOp
+   Min/Max (the IR, Rust eval, dimcheck, and autodiff already handle them). *)
+let test_min_max_wire_to_binop () =
+  let m = match Compiler.compile ~name:"minmax" {|
+    time_unit = 'days
+    compartments { S, I }
+    parameters {
+      beta  : rate
+      gamma : rate
+    }
+    transitions {
+      infect  : S --> I @ min(beta, gamma) * I
+      recover : I --> S @ max(beta, gamma) * I
+    }
+    init { S = 1  I = 0 }
+    simulate { from = 0 'days  to = 1 'days }
+  |} with
+    | Ok m    -> m
+    | Error e -> Alcotest.failf "min/max compile failed: %s" e
+  in
+  let has_op op (t : Ir.transition) =
+    let rec go = function
+      | Ir.BinOp b   -> b.op = op || go b.left || go b.right
+      | Ir.UnOp u    -> go u.arg
+      | Ir.Cond c    -> go c.pred || go c.then_ || go c.else_
+      | Ir.Reduce ts -> List.exists go ts
+      | _            -> false
+    in go (tr_rate t)
+  in
+  Alcotest.(check bool) "infect rate contains BinOp Min" true
+    (has_op Ir.Min (find_transition m "infect"));
+  Alcotest.(check bool) "recover rate contains BinOp Max" true
+    (has_op Ir.Max (find_transition m "recover"))
+
 (* ── BUG-3: Comparison operators ────────────────────────────────────────────
    Compile a model that uses a comparison in a rate: `if S > 0 then ... else 0`.
    The compiled rate should contain a Cond node wrapping a BinOp(Gt,...). ── *)
@@ -5223,6 +5257,9 @@ let () =
       Alcotest.test_case "single index per lookup" `Quick test_table_lookup_single_index;
       Alcotest.test_case "infection_child row 0"   `Quick test_infection_child_indices;
       Alcotest.test_case "infection_adult row 1"   `Quick test_infection_adult_indices;
+    ];
+    "min_max", [
+      Alcotest.test_case "min/max wire to BinOp Min/Max" `Quick test_min_max_wire_to_binop;
     ];
     "comparison_ops", [
       Alcotest.test_case "comparison in rate expr" `Quick test_comparison_in_rate;
