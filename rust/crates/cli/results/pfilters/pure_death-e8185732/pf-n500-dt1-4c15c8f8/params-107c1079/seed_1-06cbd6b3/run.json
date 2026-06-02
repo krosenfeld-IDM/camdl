@@ -1,0 +1,84 @@
+{
+  "format_version": 1,
+  "kind": "pfilter",
+  "run_id": "9422a26295fdf30dc20314e2dcf6f4f671b40f746280ec1e7a7614fcd20b3163",
+  "hash_version": 1,
+  "ir_version": "0.7",
+  "engine_version": "0.1.0+20fb225",
+  "levels": [
+    {
+      "name": "model",
+      "label": "pure_death",
+      "hash": "e8185732cc8692cbc1ff10de228f2203c5559ddfdee172db1f44f210b805bbb3",
+      "schema_version": 1
+    },
+    {
+      "name": "config",
+      "label": "pf-N500-dt1",
+      "hash": "4c15c8f84f2fa766326bf075df1960c083c20e7d68a9246b0e3b9ba85352c920",
+      "schema_version": 1
+    },
+    {
+      "name": "params",
+      "label": "params",
+      "hash": "107c10792f717f7df596b3ca04048906602591ba7dba06e0c4945ee44cf2f45a",
+      "schema_version": 1
+    },
+    {
+      "name": "seed",
+      "label": "seed_1",
+      "hash": "06cbd6b391c65864e16d272dffdea34108941368977b15e9bd6f0c462c63c5b4",
+      "schema_version": 1
+    }
+  ],
+  "status": "completed",
+  "artifacts": {
+    "loglik.toml": {
+      "bytes": 63,
+      "mtime": "1780367927.968424684",
+      "digest": "2dea553c68f0056caca0aea74b11c8543b022f7ec4c0fbc8d7d823f8cf9e27d9"
+    }
+  },
+  "inputs": {
+    "data_hashes": [
+      [
+        "population",
+        "05f0eaf246a308e0887fc09709992bc3e6295d640c90e62ffe83c50ce48c0427"
+      ]
+    ],
+    "loglik": -22.32532988554963,
+    "loglik_sd": null,
+    "n_particles": 500,
+    "n_replicates": 1,
+    "params": [
+      [
+        "mu",
+        0.05
+      ]
+    ]
+  },
+  "provenance": {
+    "argv": [
+      "/Users/vsb/projects/work/camdl/.claude/worktrees/cas-run-identity/rust/crates/cli/../../target/release/camdl",
+      "pfilter",
+      "/Users/vsb/projects/work/camdl/.claude/worktrees/cas-run-identity/rust/crates/cli/../../../ir/golden/pure_death.ir.json",
+      "--params",
+      "/tmp/claude-501/.tmp6qJqdb/params.toml",
+      "--data",
+      "/tmp/claude-501/.tmp6qJqdb/cases.tsv",
+      "--particles",
+      "500",
+      "--seed",
+      "1",
+      "--n-paths",
+      "10",
+      "--save-paths",
+      "/tmp/claude-501/.tmp6qJqdb/paths.tsv"
+    ],
+    "created_at": "2026-06-02T02:38:47Z",
+    "camdl_version": "0.1.0+20fb225",
+    "source_paths": [
+      "/Users/vsb/projects/work/camdl/.claude/worktrees/cas-run-identity/rust/crates/cli/../../../ir/golden/pure_death.ir.json"
+    ]
+  }
+}

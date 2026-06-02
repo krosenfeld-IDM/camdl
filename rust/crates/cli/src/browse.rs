@@ -50,6 +50,31 @@ fn discover_sim_rows(root: &str) -> Vec<SimRow> {
         .collect()
 }
 
+/// A new-format pfilter-eval leaf, prepared for the `list` display.
+struct PfilterRow {
+    leaf: cas_read::Leaf,
+    rel_path: String,
+    created: SystemTime,
+}
+
+/// Discover the new-format pfilter leaves under `root/pfilters/` for `list`.
+fn discover_pfilter_rows(root: &str) -> Vec<PfilterRow> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    cas_read::walk_pfilter_leaves(Path::new(root))
+        .into_iter()
+        .map(|leaf| {
+            let created = leaf.record.provenance.created_at.as_deref()
+                .and_then(parse_iso8601)
+                .unwrap_or_else(|| {
+                    std::fs::metadata(&leaf.dir).and_then(|m| m.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                });
+            let rel_path = pathdiff_str(&leaf.dir, &cwd);
+            PfilterRow { leaf, rel_path, created }
+        })
+        .collect()
+}
+
 /// Shared preamble for the **legacy** `run_meta::Run` kinds (fit/profile/
 /// survey): read `run.json` and derive the display time + cwd-relative path.
 /// Returns `None` when the directory isn't a (legacy) run.
@@ -75,12 +100,13 @@ fn load_run_common(dir: &Path, cwd: &Path) -> Option<(Run, SystemTime, String)> 
 /// `--kind` filter: which of sims / fits / profiles / surveys to
 /// surface. `All` is the default and includes all four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KindFilter { Sim, Fit, Profile, Survey, All }
+enum KindFilter { Sim, Fit, Profile, Pfilter, Survey, All }
 
 impl KindFilter {
     fn includes_sims(self)     -> bool { matches!(self, Self::Sim     | Self::All) }
     fn includes_fits(self)     -> bool { matches!(self, Self::Fit     | Self::All) }
     fn includes_profiles(self) -> bool { matches!(self, Self::Profile | Self::All) }
+    fn includes_pfilters(self) -> bool { matches!(self, Self::Pfilter | Self::All) }
     fn includes_surveys(self)  -> bool { matches!(self, Self::Survey  | Self::All) }
 }
 
@@ -100,6 +126,7 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         "sim" | "simulate"      => KindFilter::Sim,
         "fit"                   => KindFilter::Fit,
         "profile" | "profiles"  => KindFilter::Profile,
+        "pfilter" | "pfilters"  => KindFilter::Pfilter,
         "survey" | "surveys"    => KindFilter::Survey,
         _                       => KindFilter::All,
     };
@@ -124,6 +151,11 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         Vec::new()
     } else {
         discover_surveys(&root).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+    };
+    let pfilters = if !filter_kind.includes_pfilters() {
+        Vec::new()
+    } else {
+        discover_pfilter_rows(&root)
     };
 
     let now = SystemTime::now();
@@ -167,11 +199,22 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         .collect();
     filtered_surveys.sort_by(|x, y| y.created.cmp(&x.created));
 
+    let mut filtered_pfilters: Vec<PfilterRow> = pfilters.into_iter()
+        .filter(|p| a.model.as_deref().is_none_or(|m| p.leaf.level_label("model").contains(m)))
+        .filter(|_| a.scenario.is_none())
+        .filter(|p| match filter_since {
+            Some(dur) => now.duration_since(p.created).is_ok_and(|d| d <= dur),
+            None => true,
+        })
+        .collect();
+    filtered_pfilters.sort_by(|x, y| y.created.cmp(&x.created));
+
     if !a.all {
         filtered_runs.truncate(a.limit);
         filtered_fits.truncate(a.limit);
         filtered_profiles.truncate(a.limit);
         filtered_surveys.truncate(a.limit);
+        filtered_pfilters.truncate(a.limit);
     }
 
     if format_json {
@@ -179,10 +222,12 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         print_fits_json(&filtered_fits);
         print_profiles_json(&filtered_profiles);
         print_surveys_json(&filtered_surveys);
+        print_pfilter_json(&filtered_pfilters);
     } else {
         let any_other = !filtered_fits.is_empty()
             || !filtered_profiles.is_empty()
-            || !filtered_surveys.is_empty();
+            || !filtered_surveys.is_empty()
+            || !filtered_pfilters.is_empty();
         if !filtered_fits.is_empty() {
             eprintln!("{}", "fits".bold());
             print_fits_table(&filtered_fits, now);
@@ -196,6 +241,11 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         if !filtered_surveys.is_empty() {
             eprintln!("{}", "surveys".bold());
             print_surveys_table(&filtered_surveys, now);
+            eprintln!();
+        }
+        if !filtered_pfilters.is_empty() {
+            eprintln!("{}", "pfilters".bold());
+            print_pfilter_table(&filtered_pfilters, now);
             eprintln!();
         }
         if !filtered_runs.is_empty() || !any_other {
@@ -272,6 +322,7 @@ pub fn cmd_show(a: &crate::args::ShowArgs) {
         Ok(Resolved::Sim { leaf, rel_path, created }) => show_sim_record(&leaf, &rel_path, created),
         Ok(Resolved::Fit { leaf, rel_path, created }) => show_fit_record(&leaf, &rel_path, created),
         Ok(Resolved::Profile { leaf, rel_path, created }) => show_profile_record(&leaf, &rel_path, created),
+        Ok(Resolved::Pfilter { leaf, rel_path, created }) => show_pfilter_record(&leaf, &rel_path, created),
         Ok(Resolved::Legacy(r)) => show(&r),
         Err(e) => {
             eprintln!("error: {}", e);
@@ -411,6 +462,54 @@ fn show_profile_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTim
                     let items: Vec<&str> = sw.iter().filter_map(|v| v.as_str()).collect();
                     println!("{}", "suppressed warnings".bright_black());
                     println!("  {}", items.join(", "));
+                }
+            }
+        }
+    }
+    println!("{}", "created".bright_black());
+    println!("  {}  ({})",
+        rec.provenance.created_at.as_deref().unwrap_or("?"),
+        fmt_relative_time(created, SystemTime::now()));
+    println!("{}", "engine".bright_black()); println!("  {}", rec.engine_version);
+}
+
+/// Render a new-format (`RunRecord`) pfilter-eval leaf: the four factored
+/// levels (`model`/`config`/`params`/`seed`), the run_id address, and the
+/// recorded loglik result + scored point from `inputs`. A pfilter eval is a
+/// single leaf (no grid); the `--label`, if any, is on the leaf provenance.
+fn show_pfilter_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
+    let rec = &leaf.record;
+    println!("{}", "path".bright_black()); println!("  {}", rel_path.cyan());
+    println!("{}", "kind".bright_black()); println!("  pfilter");
+    if let Some(ref l) = rec.provenance.label {
+        println!("{}", "label".bright_black()); println!("  {}", l);
+    }
+    for lvl_name in ["model", "config", "params", "seed"] {
+        println!("{}", lvl_name.bright_black());
+        println!("  {}", leaf.level_label(lvl_name));
+    }
+    println!("{}", "run_id".bright_black()); println!("  {}", rec.run_id.to_hex().dimmed());
+    println!("{}", "levels".bright_black());
+    for lvl in &rec.levels {
+        println!("  {:<9} {}-{}", lvl.name, lvl.label, lvl.hash.short8().dimmed());
+    }
+    if let Some(obj) = rec.inputs.as_object() {
+        for key in ["loglik", "loglik_sd", "n_replicates", "n_particles"] {
+            if let Some(v) = obj.get(key) {
+                if v.is_null() { continue; }
+                println!("{}", key.bright_black()); println!("  {}", v);
+            }
+        }
+        if let Some(params) = obj.get("params").and_then(|v| v.as_array()) {
+            if !params.is_empty() {
+                println!("{}", "scored point".bright_black());
+                for pair in params {
+                    if let Some(p) = pair.as_array() {
+                        if p.len() == 2 {
+                            println!("  {:<16} {}",
+                                p[0].as_str().unwrap_or("?"), p[1]);
+                        }
+                    }
                 }
             }
         }
@@ -694,6 +793,18 @@ pub fn cmd_cat(a: &crate::args::CatArgs) {
         // `mle.toml`; `--stream NAME` cats a named file from the leaf.
         Resolved::Profile { leaf, rel_path, .. } => {
             let name = a.stream.as_deref().unwrap_or("mle.toml");
+            let path = leaf.dir.join(name);
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                eprintln!("error reading {} in {}: {}", name, rel_path, e);
+                std::process::exit(1);
+            });
+            let _ = std::io::stdout().write_all(&bytes);
+            return;
+        }
+        // New-format pfilter eval: default to the `loglik.toml` summary;
+        // `--stream NAME` cats a named saved artifact from the leaf.
+        Resolved::Pfilter { leaf, rel_path, .. } => {
+            let name = a.stream.as_deref().unwrap_or("loglik.toml");
             let path = leaf.dir.join(name);
             let bytes = std::fs::read(&path).unwrap_or_else(|e| {
                 eprintln!("error reading {} in {}: {}", name, rel_path, e);
@@ -1061,6 +1172,8 @@ enum Resolved {
     Fit { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     /// New-format (`RunRecord`) profile-point leaf under `profiles/` (M3.3).
     Profile { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
+    /// New-format (`RunRecord`) pfilter-eval leaf under `pfilters/` (M3.3).
+    Pfilter { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     Legacy(ResolvedRun),
 }
 
@@ -1086,6 +1199,7 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
                 return Ok(match kind {
                     runid::ArtifactKind::FitStage => Resolved::Fit { leaf, rel_path, created },
                     runid::ArtifactKind::ProfilePoint => Resolved::Profile { leaf, rel_path, created },
+                    runid::ArtifactKind::Pfilter => Resolved::Pfilter { leaf, rel_path, created },
                     _ => Resolved::Sim { leaf, rel_path, created },
                 });
             }
@@ -1134,8 +1248,18 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
         profile_matches.push((leaf, rel, created));
     }
 
-    // Legacy kinds: match Run.hash prefix under surveys. Sims/fits/profiles are
-    // content-addressed now (matched above); survey migrates later in M3.3.
+    // New-format pfilter evals (M3.3): match the run_id hex prefix under
+    // pfilters/.
+    let mut pfilter_matches: Vec<(cas_read::Leaf, String, SystemTime)> = Vec::new();
+    for leaf in cas_read::resolve_pfilter_prefix(Path::new(root), hash_prefix) {
+        let created = leaf_created(&leaf);
+        let rel = pathdiff_str(&leaf.dir, &cwd);
+        pfilter_matches.push((leaf, rel, created));
+    }
+
+    // Legacy kinds: match Run.hash prefix under surveys. Sims/fits/profiles/
+    // pfilters are content-addressed now (matched above); survey migrates
+    // later in M3.3.
     let mut legacy_matches: Vec<ResolvedRun> = Vec::new();
     for top in ["surveys"] {
         let subroot = Path::new(root).join(top);
@@ -1148,7 +1272,8 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
         }
     }
 
-    match sim_matches.len() + fit_matches.len() + profile_matches.len() + legacy_matches.len() {
+    match sim_matches.len() + fit_matches.len() + profile_matches.len()
+        + pfilter_matches.len() + legacy_matches.len() {
         0 => Err(format!("no run matches '{}' in {}", key, root)),
         1 => {
             if let Some((leaf, rel_path, created)) = sim_matches.into_iter().next() {
@@ -1157,6 +1282,8 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
                 Ok(Resolved::Fit { leaf, rel_path, created })
             } else if let Some((leaf, rel_path, created)) = profile_matches.into_iter().next() {
                 Ok(Resolved::Profile { leaf, rel_path, created })
+            } else if let Some((leaf, rel_path, created)) = pfilter_matches.into_iter().next() {
+                Ok(Resolved::Pfilter { leaf, rel_path, created })
             } else {
                 Ok(Resolved::Legacy(legacy_matches.into_iter().next().unwrap()))
             }
@@ -1171,6 +1298,9 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
             }
             for (_, rel, _) in &profile_matches {
                 msg.push_str(&format!("  {:<14} {}\n", "profile_point", rel));
+            }
+            for (_, rel, _) in &pfilter_matches {
+                msg.push_str(&format!("  {:<14} {}\n", "pfilter", rel));
             }
             for r in &legacy_matches {
                 msg.push_str(&format!("  {:<14} {}\n", kind_label(&r.run.kind), r.rel_path));
@@ -1347,6 +1477,50 @@ fn print_sim_json(rows: &[SimRow]) {
         let json = serde_json::to_string(&r.leaf.record).unwrap_or_default();
         println!("{}", json);
     }
+}
+
+fn print_pfilter_json(rows: &[PfilterRow]) {
+    for r in rows {
+        let json = serde_json::to_string(&r.leaf.record).unwrap_or_default();
+        println!("{}", json);
+    }
+}
+
+fn print_pfilter_table(rows: &[PfilterRow], now: SystemTime) {
+    use comfy_table::{Table, Cell, ContentArrangement, presets::NOTHING};
+    let mut table = Table::new();
+    table
+        .load_preset(NOTHING)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            Cell::new("CREATED").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("RUN_ID").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("LABEL").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("MODEL").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("CONFIG").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("SEED").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("LOGLIK").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("PATH").add_attribute(comfy_table::Attribute::Bold),
+        ]);
+    for r in rows {
+        let rel_time = fmt_relative_time(r.created, now);
+        let model    = model_display_name(r.leaf.level_label("model"));
+        let loglik   = r.leaf.record.inputs.get("loglik")
+            .and_then(|v| v.as_f64())
+            .map(|x| format!("{:.2}", x))
+            .unwrap_or_else(|| "—".into());
+        table.add_row(vec![
+            Cell::new(rel_time).fg(comfy_table::Color::Yellow),
+            short_hash_cell(&r.leaf.run_id_hex()),
+            label_cell(&r.leaf.record.provenance.label),
+            Cell::new(model),
+            Cell::new(r.leaf.level_label("config")).add_attribute(comfy_table::Attribute::Dim),
+            Cell::new(r.leaf.seed()),
+            Cell::new(loglik).fg(comfy_table::Color::Magenta),
+            Cell::new(&r.rel_path).fg(comfy_table::Color::Cyan),
+        ]);
+    }
+    println!("{table}");
 }
 
 fn print_fits_json(fits: &[FitEntry]) {

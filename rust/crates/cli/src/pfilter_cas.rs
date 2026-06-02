@@ -1,0 +1,243 @@
+//! gh#147 (M3.3). The pfilter-eval CAS identity: map a resolved standalone
+//! particle-filter evaluation into the `runid` factored levels
+//! (`model` / `config` / `params` / `seed`) and its leaf `run_id`.
+//!
+//! A `camdl pfilter` eval *scores* a model at fixed params against observed
+//! data — it does not estimate. It is a single leaf, no grid: the
+//! `--replicates` are averaged within the leaf (loglik mean ± sd), not an
+//! axis, so there is no cross-cell roll-up.
+//!
+//! Factoring: the observed `data` digests fold into the `config` level (the
+//! scoring setup — particles + dt + obs-block + flow selection + the data the
+//! loglik is computed against), keeping the `model` level the pure model IR.
+//! Mirrors [`crate::resolve`] (sim) and [`crate::profile_cas`].
+
+use runid::inputs::{DataDigest, EngineVersion, ModelDigest, Seed};
+use runid::{
+    run_id, ArtifactKind, ContentAddressed, ContentHash, LevelId, Provenance, RunRecord,
+    RunStatus, FORMAT_VERSION, HASH_VERSION,
+};
+
+use crate::fit::cas::{digest_value, ensure_finite};
+
+/// A fully-resolved pfilter-eval leaf: the four factored levels (in path
+/// order) and the leaf `run_id` composed from their hashes.
+pub struct ResolvedPfilter {
+    pub levels: Vec<LevelId>,
+    pub run_id: ContentHash,
+}
+
+/// Inputs to [`resolve_pfilter`], all resolved by the caller.
+pub struct PfilterCtx<'a> {
+    pub model: &'a ir::Model,
+    pub ir_version: &'a str,
+    pub engine_version: &'a str,
+    /// Provenance label for the `model` path segment (the model stem).
+    pub stem: &'a str,
+    /// `(stream name, sha256-hex)` — already-computed data digests (the same
+    /// function as [`ContentHash::digest_bytes`], so `from_hex` reproduces the
+    /// file-byte digest without a re-read).
+    pub data: &'a [(String, String)],
+    /// The resolved `(param, value)` point being scored.
+    pub params: &'a [(String, f64)],
+    pub particles: u32,
+    /// Number of independent PF replicates averaged into the stored loglik.
+    /// Identity-bearing: the replicate count changes the stored value, so it
+    /// folds into the `config` level (cf. the n_trajectories collision class).
+    pub replicates: u32,
+    pub dt: f64,
+    /// Resolved obs-block name (which observation series drives the likelihood).
+    pub obs_block: &'a str,
+    /// Resolved `--flow` transition indices (empty when scoring the obs block
+    /// directly rather than a flow sum).
+    pub flow_indices: &'a [u32],
+    /// The resolved pfilter seed (the `seed` level hashes this).
+    pub seed: u64,
+}
+
+fn level(name: &str, label: &str, hash: ContentHash) -> LevelId {
+    LevelId { name: name.into(), label: label.into(), hash, schema_version: 1 }
+}
+
+/// Per-stream data digests from the SHA-256 hex hashes, sorted by name.
+/// Validates that each is a well-formed 64-hex digest (the caller's hashes
+/// come from `ContentHash::digest_bytes`, so this never fails in practice;
+/// it is a loud guard against a malformed hand-supplied hash).
+fn data_digests(data: &[(String, String)]) -> Result<Vec<DataDigest>, String> {
+    let mut entries: Vec<&(String, String)> = data.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+        .iter()
+        .map(|(name, sha)| {
+            ContentHash::from_hex(sha)
+                .map(DataDigest)
+                .map_err(|e| format!("data hash for '{}' is not a 64-hex SHA-256: {:?}", name, e))
+        })
+        .collect()
+}
+
+/// Resolve a pfilter-eval leaf's identity: the four factored levels and the
+/// `run_id` derived from their hashes.
+pub fn resolve_pfilter(ctx: &PfilterCtx) -> Result<ResolvedPfilter, String> {
+    // The scored point. Sorted for order-independence; finiteness-gated
+    // before hashing (serde_json silently nulls non-finite floats, which
+    // would collide distinct points).
+    let mut params_sorted: Vec<(&str, f64)> =
+        ctx.params.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    params_sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let params_blob = serde_json::json!(params_sorted);
+    ensure_finite(&params_blob)?;
+
+    // The scoring setup, with the observed data folded in (guardrail: the
+    // model level stays the pure IR; the data the loglik is computed against
+    // lives here). Validate the data hashes are well-formed.
+    let _ = data_digests(ctx.data)?;
+    let mut data_sorted: Vec<(&str, &str)> =
+        ctx.data.iter().map(|(n, h)| (n.as_str(), h.as_str())).collect();
+    data_sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let config_blob = serde_json::json!({
+        "particles": ctx.particles,
+        "replicates": ctx.replicates,
+        "dt": ctx.dt,
+        "obs_block": ctx.obs_block,
+        "flow_indices": ctx.flow_indices,
+        "data": data_sorted,
+    });
+    ensure_finite(&config_blob)?;
+
+    let model_digest = ModelDigest::from_model(
+        ctx.model,
+        ctx.ir_version.to_string(),
+        EngineVersion(ctx.engine_version.to_string()),
+    );
+    let seed = Seed { process_seed: ctx.seed, base_seed: ctx.seed };
+
+    let config_label = format!("pf-N{}-r{}-dt{}", ctx.particles, ctx.replicates, fmt_dt(ctx.dt));
+
+    let levels = vec![
+        level("model", ctx.stem, model_digest.content_hash()),
+        level("config", &config_label, digest_value(&config_blob)),
+        level("params", "params", digest_value(&params_blob)),
+        level("seed", &format!("seed_{}", ctx.seed), seed.content_hash()),
+    ];
+    let level_hashes: Vec<ContentHash> = levels.iter().map(|l| l.hash).collect();
+    let rid = run_id(ArtifactKind::Pfilter, &level_hashes);
+    Ok(ResolvedPfilter { levels, run_id: rid })
+}
+
+/// Compact `dt` rendering for the `config` segment label (`1`, `0.5`, …).
+fn fmt_dt(dt: f64) -> String {
+    if (dt.round() - dt).abs() < 1e-9 {
+        format!("{}", dt.round() as i64)
+    } else {
+        format!("{}", dt)
+    }
+}
+
+/// Build the `RunRecord` for a pfilter-eval leaf. `inputs` carries the
+/// (recorded-not-hashed) display payload — the loglik result, n_particles,
+/// n_replicates, resolved params; identity is `levels`.
+pub fn build_pfilter_record(
+    resolved: &ResolvedPfilter,
+    ir_version: &str,
+    status: RunStatus,
+    inputs: serde_json::Value,
+    model_path: &str,
+) -> RunRecord {
+    RunRecord {
+        format_version: FORMAT_VERSION,
+        kind: ArtifactKind::Pfilter,
+        run_id: resolved.run_id,
+        hash_version: HASH_VERSION,
+        ir_version: ir_version.to_string(),
+        engine_version: crate::version::VERSION_SHORT.to_string(),
+        levels: resolved.levels.clone(),
+        deps: Vec::new(),
+        status,
+        artifacts: Default::default(),
+        children: Default::default(),
+        inputs,
+        provenance: Provenance {
+            argv: std::env::args().collect(),
+            created_at: Some(crate::cas::iso8601_utc(std::time::SystemTime::now())),
+            camdl_version: Some(crate::version::VERSION_SHORT.to_string()),
+            source_paths: vec![model_path.to_string()],
+            ..Default::default()
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn h(byte: u8) -> String {
+        ContentHash::digest_bytes(&[byte]).to_hex()
+    }
+
+    // The `params` and `config` levels are `digest_value` over the same JSON
+    // blobs `resolve_pfilter` builds. Unit-testing those level digests pins
+    // the collision-freeness of the identity components without a full
+    // `ir::Model` fixture (the `model` level is `ModelDigest::from_model`,
+    // covered by the integration round-trip; mirrors `profile_cas::tests`).
+
+    fn params_level(params: &[(&str, f64)]) -> ContentHash {
+        let mut s: Vec<(&str, f64)> = params.to_vec();
+        s.sort_by(|a, b| a.0.cmp(b.0));
+        digest_value(&serde_json::json!(s))
+    }
+
+    fn config_level(particles: u32, replicates: u32, dt: f64, obs: &str, data: &[(&str, &str)]) -> ContentHash {
+        let mut d: Vec<(&str, &str)> = data.to_vec();
+        d.sort_by(|a, b| a.0.cmp(b.0));
+        digest_value(&serde_json::json!({
+            "particles": particles, "replicates": replicates, "dt": dt,
+            "obs_block": obs, "flow_indices": Vec::<u32>::new(), "data": d,
+        }))
+    }
+
+    /// The scored point distinguishes leaves: two param vectors produce
+    /// distinct `params`-level hashes; an identical point is stable; and the
+    /// blob is order-independent.
+    #[test]
+    fn scored_point_distinguishes_and_is_stable() {
+        let a = params_level(&[("beta", 0.3)]);
+        let b = params_level(&[("beta", 0.5)]);
+        assert_ne!(a, b, "distinct scored points must produce distinct params hashes");
+        assert_eq!(a, params_level(&[("beta", 0.3)]), "the same point must be stable");
+        assert_eq!(
+            params_level(&[("beta", 0.3), ("gamma", 0.1)]),
+            params_level(&[("gamma", 0.1), ("beta", 0.3)]),
+            "param order must not change the hash"
+        );
+    }
+
+    /// Data, particle count, and replicate count all participate in identity
+    /// via the `config` level (data is folded in, not its own level). The
+    /// replicate count is the priority-zero case: `--replicates N` averages N
+    /// PF runs into the stored loglik, so it MUST be in the key (the
+    /// n_trajectories collision class).
+    #[test]
+    fn data_particles_replicates_participate_via_config() {
+        let h1 = h(1);
+        let h2 = h(2);
+        let base = config_level(100, 1, 1.0, "cases", &[("cases", &h1)]);
+        let diff_data = config_level(100, 1, 1.0, "cases", &[("cases", &h2)]);
+        let diff_particles = config_level(200, 1, 1.0, "cases", &[("cases", &h1)]);
+        let diff_replicates = config_level(100, 3, 1.0, "cases", &[("cases", &h1)]);
+        assert_ne!(base, diff_data, "different data must change the config hash");
+        assert_ne!(base, diff_particles, "different particle count must change the config hash");
+        assert_ne!(base, diff_replicates,
+            "different replicate count must change the config hash — the stored \
+             loglik depends on it (n_trajectories collision class)");
+        assert_eq!(base, config_level(100, 1, 1.0, "cases", &[("cases", &h1)]), "stable");
+    }
+
+    /// The `seed` level hashes the resolved seed.
+    #[test]
+    fn seed_level_distinguishes() {
+        let s7 = Seed { process_seed: 7, base_seed: 7 }.content_hash();
+        let s8 = Seed { process_seed: 8, base_seed: 8 }.content_hash();
+        assert_ne!(s7, s8, "distinct resolved seeds must hash distinctly");
+    }
+}

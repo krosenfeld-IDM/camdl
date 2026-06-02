@@ -150,3 +150,23 @@ pub fn resolve_profile_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
         .filter(|s| s.run_id_hex().starts_with(prefix))
         .collect()
 }
+
+/// All `pfilters/` leaves of kind `Pfilter` (new-format particle-filter evals,
+/// M3.3). Each is one `(model × config × params × seed)` standalone eval —
+/// a single leaf, no grid.
+pub fn walk_pfilter_leaves(root: &Path) -> Vec<Leaf> {
+    walk_records(&root.join("pfilters"))
+        .into_iter()
+        .filter(|(_, r)| r.kind == ArtifactKind::Pfilter)
+        .map(|(dir, record)| Leaf { dir, record })
+        .collect()
+}
+
+/// New-format pfilter evals whose `run_id` hex matches `prefix` (for
+/// `show`/`cat` prefix resolution alongside `resolve_sim_prefix`).
+pub fn resolve_pfilter_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
+    walk_pfilter_leaves(root)
+        .into_iter()
+        .filter(|s| s.run_id_hex().starts_with(prefix))
+        .collect()
+}

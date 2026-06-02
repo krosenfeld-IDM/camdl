@@ -320,6 +320,79 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
                    sample paths use --save-paths N PATH.");
     }
 
+    // ── Default-CAS: record this eval as a content-addressed `Pfilter` leaf
+    // (gh#147 M3.3). A pfilter eval is a single leaf — replicates are averaged
+    // in-leaf, not an axis. Written after the loglik is computed, from both
+    // the replicate and single-run paths; the stdout `loglik = …` line and the
+    // explicit `--save-*` paths are unchanged. Idempotent: same inputs → same
+    // run_id → same path.
+    let write_cas_leaf = |mean_ll: f64, sd_ll: f64, n_reps: usize| {
+        let data_hashes: Vec<(String, String)> = bound_streams.iter()
+            .filter_map(|(name, path)| std::fs::read(path).ok()
+                .map(|bytes| (name.clone(), runid::ContentHash::digest_bytes(&bytes).to_hex())))
+            .collect();
+        let scored: Vec<(String, f64)> = resolved.params.iter()
+            .map(|p| (p.name.clone(), p.value)).collect();
+        // `--flow` override transition indices (empty for the default
+        // per-stream projection); same selection logic as the projection.
+        let flow_indices: Vec<u32> = flow_name.as_ref().map(|name|
+            model.transitions.iter().enumerate()
+                .filter(|(_, tr)| tr.name == *name || tr.name.starts_with(&format!("{}_", name)))
+                .map(|(i, _)| i as u32).collect()
+        ).unwrap_or_default();
+        let stem = crate::hashing::path_stem_slug(&ir_path).unwrap_or_else(|| "model".to_string());
+        let ir_version_str = ir::IR_VERSION.trim().to_string();
+        let ctx = crate::pfilter_cas::PfilterCtx {
+            model: &model,
+            ir_version: &ir_version_str,
+            engine_version: crate::version::VERSION_SHORT,
+            stem: &stem,
+            data: &data_hashes,
+            params: &scored,
+            particles: n_particles as u32,
+            replicates: n_reps as u32,
+            dt,
+            obs_block: flow_name.as_deref().unwrap_or(""),
+            flow_indices: &flow_indices,
+            seed,
+        };
+        let resolved_id = match crate::pfilter_cas::resolve_pfilter(&ctx) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("warning: pfilter CAS identity: {}", e); return; }
+        };
+        let root = crate::run_paths::output_root(None, None);
+        let cas_path = runid::store_path(&root, runid::ArtifactKind::Pfilter, &resolved_id.levels);
+        let store = runid::FsCasStore::new(&root);
+        let sd_field = if n_reps > 1 { serde_json::json!(sd_ll) } else { serde_json::Value::Null };
+        let inputs_json = serde_json::json!({
+            "loglik": mean_ll,
+            "loglik_sd": sd_field,
+            "n_replicates": n_reps,
+            "n_particles": n_particles,
+            "params": scored.iter().map(|(n, v)| (n.as_str(), *v)).collect::<Vec<_>>(),
+            "data_hashes": data_hashes.iter().map(|(n, h)| (n.as_str(), h.as_str())).collect::<Vec<_>>(),
+        });
+        let running = crate::pfilter_cas::build_pfilter_record(
+            &resolved_id, &ir_version_str, runid::RunStatus::Running,
+            serde_json::Value::Null, &ir_path);
+        let claim = match store.claim_streaming(&cas_path, running) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("warning: claim pfilter leaf {}: {}", cas_path.display(), e); return; }
+        };
+        let mut body = format!("loglik = {}\nn_replicates = {}\nn_particles = {}\n",
+            mean_ll, n_reps, n_particles);
+        if n_reps > 1 { body.push_str(&format!("loglik_sd = {}\n", sd_ll)); }
+        let _ = std::fs::write(claim.dir().join("loglik.toml"), body);
+        let completed = crate::pfilter_cas::build_pfilter_record(
+            &resolved_id, &ir_version_str, runid::RunStatus::Completed,
+            inputs_json, &ir_path);
+        if let Err(e) = claim.finalize(completed) {
+            eprintln!("warning: finalize pfilter leaf {}: {}", cas_path.display(), e);
+        } else {
+            eprintln!("pfilter: leaf {} ({})", cas_path.display(), resolved_id.run_id.short8());
+        }
+    };
+
     // ── Replicates mode: run N independent pfilters, output loglik summary ──
     if n_replicates > 1 {
         // gh#audit-H13: --parallel / CAMDL_PARALLEL was previously declared
@@ -387,6 +460,7 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
                 }
             }
         }
+        write_cas_leaf(mean_ll, sd_ll, n_replicates);
         return;
     }
 
@@ -508,6 +582,9 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
             }
         }
     }
+
+    // Single run → one replicate, no spread.
+    write_cas_leaf(result.log_likelihood, 0.0, 1);
 }
 
 use crate::caltime_load::{check_substeps_and_grid, convert_time_column, TimeFormat, TimeOpts};

@@ -1,0 +1,124 @@
+{
+  "format_version": 1,
+  "kind": "pfilter",
+  "run_id": "301b3f06501ce43b47c591fa3e70b64440a4ba777ba19447c788adfc19909c73",
+  "hash_version": 1,
+  "ir_version": "0.7",
+  "engine_version": "0.1.0+20fb225",
+  "levels": [
+    {
+      "name": "model",
+      "label": "seed_timing_tstart_0",
+      "hash": "546370b79829735bbf9244fd8675c33dff83d394d0873091be8d935f5fee79e2",
+      "schema_version": 1
+    },
+    {
+      "name": "config",
+      "label": "pf-N1000-dt1",
+      "hash": "aa97560bdb8c83595869cef978b122d8e4eb293fcfc303851d680b745730f615",
+      "schema_version": 1
+    },
+    {
+      "name": "params",
+      "label": "params",
+      "hash": "90041e80fa1a2183784a3c426b564d879c3bb2b6d075602a7c734989669c911c",
+      "schema_version": 1
+    },
+    {
+      "name": "seed",
+      "label": "seed_7",
+      "hash": "d0aef62ae7e97c860c2367666000bd7da637eab3f3ce3385ed444473d1c534c4",
+      "schema_version": 1
+    }
+  ],
+  "status": "completed",
+  "artifacts": {
+    "loglik.toml": {
+      "bytes": 65,
+      "mtime": "1780367909.153807821",
+      "digest": "c598e42c7de85f49bbf50e413f27b7292ae786560e10d95c864ba451ee23ddc5"
+    }
+  },
+  "inputs": {
+    "data_hashes": [
+      [
+        "cases",
+        "8d3608964b628bcc5068db36f537eede47e6a384cf80a5dfadcf2c92355c6717"
+      ]
+    ],
+    "loglik": -103.96226785841523,
+    "loglik_sd": null,
+    "n_particles": 1000,
+    "n_replicates": 1,
+    "params": [
+      [
+        "beta",
+        0.6
+      ],
+      [
+        "gamma",
+        0.2
+      ],
+      [
+        "tau",
+        30.0
+      ],
+      [
+        "lambda",
+        2.0
+      ],
+      [
+        "w",
+        3.0
+      ],
+      [
+        "N0",
+        5000.0
+      ],
+      [
+        "rho",
+        0.5
+      ],
+      [
+        "k",
+        20.0
+      ]
+    ]
+  },
+  "provenance": {
+    "argv": [
+      "/Users/vsb/projects/work/camdl/.claude/worktrees/cas-run-identity/rust/crates/cli/../../target/release/camdl",
+      "pfilter",
+      "/tmp/claude-501/camdl_dated_shift_59054_1780367909093411000/seed_timing_tstart_0.ir.json",
+      "--particles",
+      "1000",
+      "--dt",
+      "1",
+      "--seed",
+      "7",
+      "--data",
+      "/tmp/claude-501/camdl_dated_shift_59054_1780367909093411000/shift_0.tsv",
+      "--param",
+      "beta=0.6",
+      "--param",
+      "gamma=0.2",
+      "--param",
+      "lambda=2.0",
+      "--param",
+      "w=3.0",
+      "--param",
+      "N0=5000",
+      "--param",
+      "rho=0.5",
+      "--param",
+      "k=20",
+      "--param",
+      "tau=30"
+    ],
+    "created_at": "2026-06-02T02:38:29Z",
+    "camdl_version": "0.1.0+20fb225",
+    "source_paths": [
+      "/tmp/claude-501/camdl_dated_shift_59054_1780367909093411000/seed_timing_tstart_0.ir.json"
+    ]
+  }
+}
