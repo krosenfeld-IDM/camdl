@@ -72,6 +72,28 @@ uninstall:
 	rm -f $(INSTALL_DIR)/camdlc-$(GIT_HASH)
 	@echo "Removed from $(INSTALL_DIR)"
 
+.PHONY: install-camdlc dev-camdlc
+
+# Sync ONLY camdlc to the current HEAD (rebuilds OCaml, not Rust; does not
+# install camdl). Use when the installed/`cargo run` camdl reports a camdlc
+# version mismatch after a commit — realigns the installed camdlc with HEAD.
+install-camdlc: build-ocaml
+	@mkdir -p $(INSTALL_DIR)
+	install -m 755 $(CAMDLC) $(INSTALL_DIR)/camdlc
+	install -m 755 $(CAMDLC) $(INSTALL_DIR)/camdlc-$(GIT_HASH)
+	@echo "Installed camdlc to $(INSTALL_DIR)  [camdlc-$(GIT_HASH)]"
+
+# Branch dev loop: drop a hash-matched camdlc beside the cargo-built camdl so
+# `cargo run -p cli -- ...` resolves it via the exact-match path (find_camdlc
+# rule 1a in util.rs: a `camdlc-<hash>` in the running binary's directory IS the
+# version check — no subprocess, no global install, no ~/.local/bin clobber).
+# Re-run after each commit (HEAD's hash changes, so camdl looks for a new name).
+dev-camdlc: build-ocaml
+	@mkdir -p rust/target/debug rust/target/release
+	install -m 755 $(CAMDLC) rust/target/debug/camdlc-$(GIT_HASH)
+	install -m 755 $(CAMDLC) rust/target/release/camdlc-$(GIT_HASH)
+	@echo "camdlc-$(GIT_HASH) placed beside the cargo binaries — \`cargo run -p cli\` exact-matches it (no install needed)."
+
 # ── Test ──────────────────────────────────────────────────────────────────────
 
 .PHONY: test test-ocaml test-rust test-integration

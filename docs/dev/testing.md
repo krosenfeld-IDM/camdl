@@ -165,9 +165,17 @@ surface.
 **Gotcha: camdlc version check.** The binary checks that `camdlc` on
 PATH matches its own git hash. When they diverge (you built `camdl`
 but not `camdlc`), tests fail with *"camdlc version mismatch"*.
-Options:
-1. `make install` to resync both.
-2. `CAMDL_SKIP_VERSION_CHECK=1 cargo test …` to bypass for this
+Options (lightest first):
+1. `make dev-camdlc` — builds camdlc and drops a hash-matched
+   `camdlc-<hash>` beside the cargo binaries (`target/{debug,release}`),
+   so `cargo run -p cli` and the integration tests resolve it via the
+   exact-match path — no `--camdl-version` subprocess, no global
+   install, no `~/.local/bin` clobber. Re-run after each commit. The
+   lightest loop for working on a branch.
+2. `make install-camdlc` — build + install only `camdlc` (no Rust
+   rebuild), to resync the global binary without a full `make install`.
+3. `make install` to resync both globally.
+4. `CAMDL_SKIP_VERSION_CHECK=1 cargo test …` to bypass for this
    invocation.
 
 **Note on the binary name.** The binary is `target/release/camdl`.
@@ -442,7 +450,9 @@ values from `[5.0, 10.0, …]` to `[1826.2, 3652.4, …]`):
   and checks for dirty working tree. If a schema change requires
   updates, update + commit in the same branch.
 - **camdlc version pin.** The `camdl` binary refuses to run against
-  a mismatched `camdlc`. Fix: `make install` after a pull, or
+  a mismatched `camdlc`. Fix: `make dev-camdlc` (drops a matched
+  `camdlc` beside the cargo binaries — lightest, no global install),
+  `make install` / `make install-camdlc` after a pull, or
   `CAMDL_SKIP_VERSION_CHECK=1` for throwaway runs.
 
 ## When tests disagree with each other
