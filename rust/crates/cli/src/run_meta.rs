@@ -118,12 +118,6 @@ pub enum RunKind {
     /// each `start_{k}/` is itself a `FitStage` run. See
     /// docs/dev/proposals/2026-04-24-profile-cas-integration.md.
     Profile(ProfileMeta),
-    /// A likelihood-landscape diagnostic: N Latin-hypercube points
-    /// across declared parameter bounds, evaluated via PF or single
-    /// simulation, written to `landscape.tsv`. NOT a fitting routine
-    /// — produces no MLE artifact. See
-    /// docs/dev/proposals/2026-05-03-survey-subcommand.md.
-    Survey(SurveyMeta),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -594,8 +588,8 @@ pub enum SurveyEvalMethod {
     /// Auto-detect from the compiled model: `Pfilter` when the model
     /// requires `Capabilities::OVERDISPERSION` (i.e. it has stochastic
     /// process noise via `overdispersed()` or similar), `Simulate`
-    /// otherwise. Resolved before any persistent state is written —
-    /// `SurveyMeta` stores the resolved method, never `Auto`.
+    /// otherwise. Resolved before any persistent state is written — the
+    /// survey `run.json` records the resolved method, never `Auto`.
     Auto,
 }
 
@@ -615,56 +609,6 @@ impl std::fmt::Display for SurveyEvalMethod {
     }
 }
 
-/// Metadata for a `RunKind::Survey` run. Mirrors `ProfileMeta`'s
-/// shape: model + content hashes + the canonical-hashed inputs that
-/// determine the LHS box (`bounds`), the evaluator config
-/// (`eval_method`/`eval_particles`/`eval_replicates`), the seed, and
-/// any fixed / scenario context used to populate the rest of the
-/// parameter vector at each LHS point.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SurveyMeta {
-    /// Model file path (display only — not a hash input).
-    pub model: String,
-    /// Full SHA-256 of the IR JSON.
-    pub model_hash: String,
-    /// Per-stream data file content hashes. Same shape as `FitMeta` —
-    /// content-only, so editing the TSV invalidates the cache (gh#39).
-    pub data_hashes: HashMap<String, String>,
-    /// LHS box: parameter name → (lo, hi). Resolved per the proposal's
-    /// "fit.toml > model" priority. Canonical-hashed by sorting names.
-    pub bounds: HashMap<String, (f64, f64)>,
-    /// Number of LHS points evaluated.
-    pub n_points: usize,
-    /// PF or single-simulate.
-    pub eval_method: SurveyEvalMethod,
-    /// PF particle count (per replicate). Diagnostic when
-    /// `eval_method = Simulate`.
-    pub eval_particles: usize,
-    /// PF replicates per LHS point (logmeanexp combiner). Diagnostic
-    /// when `eval_method = Simulate` (always 1 in that case).
-    pub eval_replicates: usize,
-    /// LHS / PF base seed.
-    pub seed: u64,
-    /// Resolved fixed parameters (name → value). Canonical-hashed.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub fixed: HashMap<String, f64>,
-    /// Named scenario applied before the survey. `None` for the
-    /// baseline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scenario: Option<String>,
-    /// Names of estimated parameters in declaration order — drives
-    /// the column order of `landscape.tsv`. Bounds key + this slice
-    /// together fix the LHS layout deterministically.
-    pub estimated: Vec<String>,
-    /// gh#83/gh#85 step 9: per-parameter resolver provenance — see
-    /// [`SimulateMeta::parameters_provenance`] for the shape. Survey
-    /// is a forward-sim subcommand (no `[estimate]` kick-out), so
-    /// most entries will be `role = "fixed"` (or "estimated" for the
-    /// LHS-swept names).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub parameters_provenance: HashMap<String, ParameterProvenance>,
-}
-
 /// Stable reference to a parent stage. Uses the stage *name* plus its
 /// content hash, not a filesystem path — so the reference survives any
 /// tree reorganisation. The path is a cache-lookup concern the caller
@@ -679,24 +623,6 @@ pub struct StartsFromRef {
     /// know its hash."
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_hash: Option<String>,
-}
-
-/// Unified cache status: result of comparing an expected content hash
-/// against the `run.json` in a directory. Applies to both simulate
-/// and fit-stage runs.
-#[derive(Debug, Clone)]
-pub enum CacheStatus {
-    /// Run directory exists and its stored hash matches the expected
-    /// hash; caller can read results from `run_dir`.
-    Hit,
-    /// Directory exists but the stored hash differs from the expected
-    /// one. Typically triggers a re-run with a warning. (The stored/current
-    /// hash detail was dropped in M3.2: the only production reader — the
-    /// legacy fit cache check — moved to `runid` lookup; `survey` treats
-    /// Stale as a plain re-run signal.)
-    Stale,
-    /// No `run.json` at the expected location; cache miss.
-    Miss,
 }
 
 impl Run {
@@ -818,18 +744,6 @@ impl Run {
         })
     }
 
-    /// Check whether `dir` has a `run.json` whose `hash` matches
-    /// `expected_hash`. Replaces the sim-side `has_cached_traj` +
-    /// `RunMeta.sim_hash` pair and the fit-side provenance.json check
-    /// with one uniform code path.
-    pub fn check_cache(dir: &std::path::Path, expected_hash: &str) -> CacheStatus {
-        match Self::read(dir) {
-            Ok(run) if run.hash == expected_hash =>
-                CacheStatus::Hit,
-            Ok(_) => CacheStatus::Stale,
-            Err(_) => CacheStatus::Miss,
-        }
-    }
 }
 
 /// The bare stage name from a `NN-stage` provenance label (`"01-scout"` →
@@ -1181,37 +1095,6 @@ mod tests {
     }
 
     #[test]
-    fn check_cache_hit_stale_miss() {
-        let tmp = std::env::temp_dir().join(format!(
-            "camdl_cache_status_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let r = sample_simulate_run();
-        let stored_hash = r.hash.clone();
-        r.write(&tmp).unwrap();
-
-        // Miss before write.
-        let empty = tmp.join("empty");
-        std::fs::create_dir_all(&empty).unwrap();
-        assert!(matches!(Run::check_cache(&empty, &stored_hash), CacheStatus::Miss));
-
-        // Hit with matching hash.
-        assert!(matches!(
-            Run::check_cache(&tmp, &stored_hash),
-            CacheStatus::Hit
-        ));
-
-        // Stale when hash differs.
-        assert!(
-            matches!(Run::check_cache(&tmp, "different_hash"), CacheStatus::Stale),
-            "expected Stale on a hash mismatch",
-        );
-
-        std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    #[test]
     fn fit_stage_back_pointer_matches_parent_fit() {
         // The FitStageMeta.fit_hash field is how a stage references
         // its parent fit. If the two ever drift, stages become un-
@@ -1288,12 +1171,9 @@ mod tests {
         // No run.json should exist.
         assert!(!tmp.join("run.json").exists(),
             "crashed write: run.json must not be visible");
-        // A reader's check_cache should report Miss, not a malformed
-        // run.
-        match Run::check_cache(&tmp, "any-hash") {
-            CacheStatus::Miss => {}
-            other => panic!("expected Miss (no run.json), got {:?}", other),
-        }
+        // A reader should see no run, not a malformed one.
+        assert!(Run::read(&tmp).is_err(),
+            "crashed write (only run.json.tmp) must not be readable as a run");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -1403,52 +1283,6 @@ mod tests {
                 assert_eq!(m.total_jobs, 18);
             }
             _ => panic!("expected Profile kind"),
-        }
-    }
-
-    #[test]
-    fn survey_run_roundtrip() {
-        let mut bounds = HashMap::new();
-        bounds.insert("beta".into(), (0.001_f64, 1.0_f64));
-        bounds.insert("gamma".into(), (0.01_f64, 0.5_f64));
-        let mut data_hashes = HashMap::new();
-        data_hashes.insert("cases".into(), "0123abcd".repeat(8));
-        let r = Run {
-            hash: "fa".repeat(32),
-            version: "v".into(),
-            created_at: "2026-05-03T00:00:00Z".into(),
-            argv: vec!["camdl".into(), "survey".into(), "sir.camdl".into()],
-            status: RunStatus::Completed { wall_time_seconds: 12.5 },
-            label: None,
-            kind: RunKind::Survey(SurveyMeta {
-                model: "sir.camdl".into(),
-                model_hash: "f00d".repeat(16),
-                data_hashes,
-                bounds,
-                n_points: 1000,
-                eval_method: SurveyEvalMethod::Pfilter,
-                eval_particles: 200,
-                eval_replicates: 3,
-                seed: 42,
-                fixed: HashMap::new(),
-                scenario: None,
-                estimated: vec!["beta".into(), "gamma".into()],
-                parameters_provenance: Default::default(),
-                        }),
-        };
-        let json = serde_json::to_string(&r).unwrap();
-        assert!(json.contains(r#""kind":"survey""#),
-            "kind discriminator missing from JSON: {}", json);
-        let parsed: Run = serde_json::from_str(&json).unwrap();
-        match parsed.kind {
-            RunKind::Survey(m) => {
-                assert_eq!(m.n_points, 1000);
-                assert_eq!(m.eval_method, SurveyEvalMethod::Pfilter);
-                assert_eq!(m.eval_particles, 200);
-                assert_eq!(m.eval_replicates, 3);
-                assert_eq!(m.estimated, vec!["beta", "gamma"]);
-            }
-            _ => panic!("expected Survey"),
         }
     }
 

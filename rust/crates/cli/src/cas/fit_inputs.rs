@@ -17,11 +17,8 @@
 //! `fit_stage_hash`) — those continue to be the load-bearing
 //! implementations; the trait gives a uniform consumer-facing API.
 
-use std::path::{Path, PathBuf};
-
 use crate::cas::typed::{CasInputs, ContentHash};
 use crate::run_meta::{FitMeta, RunKind};
-use crate::run_paths;
 
 /// Top-level fit run (the umbrella over a fit's stages).
 #[derive(Clone)]
@@ -30,8 +27,6 @@ pub struct FitInputs {
     /// Caller invokes `FitConfigV2::fit_content_hash` once and stashes
     /// the result here.
     pub fit_content_hash: String,
-    /// Slugified stem from the fit.toml path (or model basename).
-    pub stem: Option<String>,
     /// `FitMeta` payload for the umbrella's `run.json`.
     pub meta: FitMeta,
 }
@@ -39,9 +34,6 @@ pub struct FitInputs {
 impl CasInputs for FitInputs {
     fn content_hash(&self) -> ContentHash {
         ContentHash::from_hex(self.fit_content_hash.clone())
-    }
-    fn cas_path(&self, root: &Path) -> PathBuf {
-        run_paths::fit_run_dir(root, self.stem.as_deref(), &self.fit_content_hash)
     }
     fn run_kind(&self) -> RunKind {
         RunKind::Fit(self.meta.clone())

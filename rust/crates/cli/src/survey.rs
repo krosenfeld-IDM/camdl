@@ -26,7 +26,7 @@
 //! - PF eval via `sim::inference::particle_filter::bootstrap_filter`
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use indexmap::{IndexMap, IndexSet};
@@ -42,163 +42,8 @@ use sim::{
     },
 };
 
-use crate::cas::typed::{hash_canonical, CasInputs, ContentHash};
-use crate::run_meta::{Run, RunKind, RunStatus, SurveyEvalMethod, SurveyMeta};
+use crate::run_meta::SurveyEvalMethod;
 
-// ─── SurveyInputs (CAS) ──────────────────────────────────────────────────────
-
-/// Typed CAS inputs for a single survey run. Mirrors `ProfileInputs`'s
-/// pattern: every content-bearing input contributes to `content_hash`,
-/// presentation hints (model_path, stem) appear in the path but not
-/// the hash.
-#[derive(Clone, Debug)]
-pub struct SurveyInputs {
-    /// Display-only model path. Recorded in `SurveyMeta.model`.
-    pub model_path: String,
-    /// Slugified stem from the model path.
-    pub stem: Option<String>,
-    /// Full SHA-256 of the IR JSON.
-    pub model_hash: String,
-    /// Per-stream data file content hashes — keyed by observation
-    /// stream name. Content-only (gh#39): editing a TSV invalidates
-    /// the cache.
-    pub data_hashes: HashMap<String, String>,
-    /// LHS box: parameter name → (lo, hi).
-    pub bounds: HashMap<String, (f64, f64)>,
-    /// Order of estimated parameters — drives TSV column order.
-    pub estimated: Vec<String>,
-    /// Resolved fixed parameters (name → value).
-    pub fixed: HashMap<String, f64>,
-    /// Named scenario applied before survey (`None` = baseline).
-    pub scenario: Option<String>,
-    pub n_points: usize,
-    pub eval_method: SurveyEvalMethod,
-    pub eval_particles: usize,
-    pub eval_replicates: usize,
-    pub seed: u64,
-    /// gh#83/gh#85 step 9: per-parameter resolver provenance. NOT
-    /// part of the CAS hash — provenance is metadata about how a
-    /// run was specified, not what was computed.
-    pub parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance>,
-}
-
-impl SurveyInputs {
-    /// Canonical-form content hash. The fields included determine the
-    /// cache key:
-    ///
-    /// - `model` — IR bytes (model_hash)
-    /// - `data` — concatenated per-stream data hashes
-    /// - `bounds` — sorted name=lo:hi list
-    /// - `estimated` — param order (drives LHS dim assignment)
-    /// - `fixed` — sorted name=value list
-    /// - `scenario` — name (or empty)
-    /// - `n_points`, `eval_method`, `eval_particles`,
-    ///   `eval_replicates`, `seed`
-    ///
-    /// Bounds, fixed, and data_hashes are sorted by name before
-    /// hashing so HashMap iteration order doesn't perturb the hash.
-    pub fn canonical_hash(&self) -> ContentHash {
-        let bounds_canonical = canonical_bounds_string(&self.bounds);
-        let fixed_canonical = canonical_fixed_string(&self.fixed);
-        let data_canonical = canonical_data_string(&self.data_hashes);
-        let eval_canonical = format!(
-            "method={};particles={};replicates={}",
-            self.eval_method.as_str(),
-            self.eval_particles,
-            self.eval_replicates,
-        );
-        let n_points_str = self.n_points.to_string();
-        let seed_str = self.seed.to_string();
-        let scenario_ref = self.scenario.as_deref().unwrap_or("");
-        let estimated_canonical = self.estimated.join(",");
-        // Cache schema version. Bump when the survey computes a
-        // different statistical object than a prior release for the
-        // same inputs. Phase 1 of the ODE-inference proposal swaps
-        // `--eval simulate` from a 1-particle bootstrap PF
-        // (`p(y|θ)` under chain_binomial) to a true ODE deterministic
-        // eval (`p(y|θ, ODE_skeleton)`); the two agree to sub-nat at
-        // typhoid-class N but diverge in low-count regimes. Cached
-        // landscape.tsv files written before this bump are stale and
-        // must be re-run.
-        let schema_version = "v2-ode-eval-2026-05-04";
-        hash_canonical(&[
-            ("model",      &self.model_hash),
-            ("data",       &data_canonical),
-            ("bounds",     &bounds_canonical),
-            ("estimated",  &estimated_canonical),
-            ("fixed",      &fixed_canonical),
-            ("scenario",   scenario_ref),
-            ("n_points",   &n_points_str),
-            ("eval",       &eval_canonical),
-            ("seed",       &seed_str),
-            ("schema",     schema_version),
-        ])
-    }
-}
-
-/// Sort `bounds` by parameter name and serialize as
-/// `name1=lo1:hi1;name2=lo2:hi2;…`. Stable across HashMap iteration.
-fn canonical_bounds_string(bounds: &HashMap<String, (f64, f64)>) -> String {
-    let mut entries: Vec<(&String, &(f64, f64))> = bounds.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    entries.iter()
-        .map(|(k, (lo, hi))| format!("{}={}:{}", k, lo, hi))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-fn canonical_fixed_string(fixed: &HashMap<String, f64>) -> String {
-    let mut entries: Vec<(&String, &f64)> = fixed.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    entries.iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-fn canonical_data_string(data: &HashMap<String, String>) -> String {
-    let mut entries: Vec<(&String, &String)> = data.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    entries.iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-impl CasInputs for SurveyInputs {
-    fn content_hash(&self) -> ContentHash {
-        self.canonical_hash()
-    }
-
-    fn cas_path(&self, root: &Path) -> PathBuf {
-        let h = self.content_hash();
-        let dirname = match &self.stem {
-            Some(s) if !s.is_empty() => format!("{}-{}", s, h.short()),
-            _ => h.short().to_string(),
-        };
-        root.join("surveys").join(dirname)
-    }
-
-    fn run_kind(&self) -> RunKind {
-        RunKind::Survey(SurveyMeta {
-            model:           self.model_path.clone(),
-            model_hash:      self.model_hash.clone(),
-            data_hashes:     self.data_hashes.clone(),
-            bounds:          self.bounds.clone(),
-            n_points:        self.n_points,
-            eval_method:     self.eval_method,
-            eval_particles:  self.eval_particles,
-            eval_replicates: self.eval_replicates,
-            seed:            self.seed,
-            fixed:           self.fixed.clone(),
-            scenario:        self.scenario.clone(),
-            estimated:       self.estimated.clone(),
-            // gh#83/gh#85 step 9: provenance threaded post-CAS by the
-            // run-finalization layer.
-            parameters_provenance: self.parameters_provenance.clone(),
-        })
-    }
-}
 
 // ─── Resolved input payload ──────────────────────────────────────────────────
 //
@@ -209,10 +54,13 @@ impl CasInputs for SurveyInputs {
 // / fixed context. Everything past this point is mode-agnostic.
 
 struct ResolvedSurveyInputs {
-    /// IR JSON bytes — used to compute `model_hash`.
-    model_ir_json: String,
     /// Compiled model (Arc to share across rayon threads).
     compiled: Arc<CompiledModel>,
+    /// Canonical IR envelope JSON. Used to compute the structural
+    /// `model_hash` recorded in the survey's `run.json` `inputs` — the
+    /// `init = survey_top_k` consumer (gh#51) cross-checks it against the
+    /// fit's `hashing::model_hash` before seeding chains.
+    model_ir_json: String,
     /// Default parameter vector (post-fixed/scenario apply).
     base_params: Vec<f64>,
     /// EstimatedParam vector with resolved bounds — drives LHS.
@@ -234,11 +82,6 @@ struct ResolvedSurveyInputs {
     /// the start-rank diagnostic to flag when the user's seeded
     /// best-guess falls in a low-loglik region of the LHS landscape.
     estimate_starts: Option<HashMap<String, f64>>,
-    /// gh#83/gh#85 step 9: per-parameter resolver provenance. Built
-    /// from `resolve_parameters` output in both fit-aware and inline
-    /// modes; threaded into `SurveyMeta.parameters_provenance` so
-    /// `run.json` records the full value-source audit.
-    parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance>,
 }
 
 // ─── cmd_survey entry point ──────────────────────────────────────────────────
@@ -411,67 +254,93 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
     let estimated_names: Vec<String> = resolved.estimated.iter()
         .map(|ep| ep.name.clone()).collect();
     let stem = crate::hashing::path_stem_slug(&a.model.to_string_lossy());
-    let inputs = SurveyInputs {
-        model_path:      a.model.to_string_lossy().into_owned(),
-        stem:            stem.clone(),
-        model_hash:      crate::hashing::model_hash(&resolved.model_ir_json),
-        data_hashes:     resolved.data_hashes.clone(),
-        bounds:          bounds_map,
-        estimated:       estimated_names,
-        fixed:           resolved.fixed.clone(),
-        scenario:        resolved.scenario.clone(),
-        n_points:        n_points,
-        eval_method:     eval_method,
-        eval_particles:  a.eval_particles,
-        eval_replicates: a.eval_replicates,
+    let bounds_vec: Vec<(String, f64, f64)> = resolved.estimated.iter()
+        .map(|ep| (ep.name.clone(), ep.lower, ep.upper)).collect();
+    let fixed_vec: Vec<(String, f64)> = resolved.fixed.iter()
+        .map(|(n, v)| (n.clone(), *v)).collect();
+    let data_hashes_vec: Vec<(String, String)> = resolved.data_hashes.iter()
+        .map(|(n, h)| (n.clone(), h.clone())).collect();
+    let ir_version_str = ir::IR_VERSION.trim().to_string();
+    let model_path_str = a.model.to_string_lossy().into_owned();
+
+    // gh#147 (M3.3): resolve the content-addressed survey identity. The eval
+    // count knobs (method/particles/replicates) fold into the `config` level —
+    // they change the stored landscape, so they are in the key.
+    let survey_ctx = crate::survey_cas::SurveyCtx {
+        model:           &resolved.compiled.model,
+        ir_version:      &ir_version_str,
+        engine_version:  crate::version::VERSION_SHORT,
+        stem:            stem.as_deref().unwrap_or("model"),
+        data:            &data_hashes_vec,
+        eval_method:     eval_method.as_str(),
+        eval_particles:  a.eval_particles as u32,
+        eval_replicates: a.eval_replicates as u32,
+        bounds:          &bounds_vec,
+        fixed:           &fixed_vec,
+        scenario:        resolved.scenario.as_deref(),
+        n_points:        n_points as u32,
         seed:            a.seed,
-        parameters_provenance: resolved.parameters_provenance.clone(),
+    };
+    let resolved_id = match crate::survey_cas::resolve_survey(&survey_ctx) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("error: survey CAS identity: {}", e); std::process::exit(1); }
     };
 
     let output_root = crate::run_paths::output_root(
         a.output.as_ref().map(|p| p.to_string_lossy().into_owned()).as_deref(),
         None,
     );
-    let run_dir = inputs.cas_path(&output_root);
-    if let Err(e) = std::fs::create_dir_all(&run_dir) {
-        eprintln!("error: cannot create {}: {}", run_dir.display(), e);
-        std::process::exit(1);
-    }
+    let run_dir = runid::store_path(
+        &output_root, runid::ArtifactKind::Survey, &resolved_id.levels);
+    let run_id_hex = resolved_id.run_id.to_hex();
 
-    // Cache hit short-circuit (force=false, prior landscape.tsv exists,
-    // hash matches). The TSV is the authoritative artifact: if it exists
-    // and the run.json hash matches, the survey is done.
-    let landscape_path = run_dir.join("landscape.tsv");
-    let summary_path = run_dir.join("summary.json");
-    let html_path = run_dir.join("landscape.html");
-    let expected_hash = inputs.content_hash().full().to_string();
-    if !a.force {
-        match Run::check_cache(&run_dir, &expected_hash) {
-            crate::run_meta::CacheStatus::Hit if landscape_path.exists() => {
-                eprintln!("survey: cache hit at {}", run_dir.display());
-                if a.render && !html_path.exists() {
-                    eprintln!(
-                        "  rendering --render HTML from cached landscape.tsv …");
-                    if let Err(e) = render_landscape_html(
-                        &landscape_path, &html_path, &inputs)
-                    {
-                        eprintln!("warning: HTML render failed: {}", e);
-                    }
+    // The render-side projection (decoupled from the survey inputs).
+    let landscape_meta = crate::landscape_html::LandscapeMeta {
+        stem:        stem.clone(),
+        hash_short:  resolved_id.run_id.short8().to_string(),
+        estimated:   estimated_names.clone(),
+        bounds:      bounds_map.clone(),
+        n_points,
+        eval_method,
+    };
+
+    // Cache hit: a finalized landscape.tsv at the content-addressed path means
+    // the survey is done (same path ⟺ same inputs). Re-render HTML if asked.
+    {
+        let landscape_path = run_dir.join("landscape.tsv");
+        let html_path = run_dir.join("landscape.html");
+        if !a.force && landscape_path.exists() {
+            eprintln!("survey: cache hit at {}", run_dir.display());
+            if a.render && !html_path.exists() {
+                eprintln!("  rendering --render HTML from cached landscape.tsv …");
+                if let Err(e) = render_landscape_html(
+                    &landscape_path, &html_path, &landscape_meta)
+                {
+                    eprintln!("warning: HTML render failed: {}", e);
                 }
-                return;
             }
-            _ => {}
+            return;
         }
     }
 
-    let argv: Vec<String> = std::env::args().collect();
-    // Write a Running run.json so a crash mid-survey leaves a
-    // discoverable trace.
-    let mut run = inputs.to_run(crate::version::VERSION_SHORT.to_string(), argv);
-    run.label = label_arg;
-    if let Err(e) = run.write(&run_dir) {
-        eprintln!("warning: could not write initial run.json: {}", e);
-    }
+    // Claim a streaming leaf: artifacts go into the staging dir, finalized
+    // atomically at the end (a crash leaves no finalized landscape.tsv).
+    let store = runid::FsCasStore::new(&output_root);
+    let mut running = crate::survey_cas::build_survey_record(
+        &resolved_id, &ir_version_str, runid::RunStatus::Running,
+        serde_json::Value::Null, &model_path_str);
+    running.provenance.label = label_arg.clone();
+    let claim = match store.claim_streaming(&run_dir, running) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: claim survey leaf {}: {}", run_dir.display(), e);
+            std::process::exit(1);
+        }
+    };
+    let staging = claim.dir().to_path_buf();
+    let landscape_path = staging.join("landscape.tsv");
+    let summary_path = staging.join("summary.json");
+    let html_path = staging.join("landscape.html");
 
     eprintln!("survey: {} ({} points, eval={})",
         run_dir.display(), n_points, eval_method);
@@ -586,7 +455,7 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
     });
     if let Err(e) = write_landscape_tsv(
         &landscape_path, &sorted, &resolved.estimated, eval_method,
-        &expected_hash) {
+        &run_id_hex) {
         eprintln!("error writing landscape.tsv: {}", e);
         std::process::exit(1);
     }
@@ -629,18 +498,41 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
 
     // ── Render HTML if requested ────────────────────────────────────
     if a.render {
-        if let Err(e) = render_landscape_html(&landscape_path, &html_path, &inputs) {
+        if let Err(e) = render_landscape_html(&landscape_path, &html_path, &landscape_meta) {
             eprintln!("warning: HTML render failed: {}", e);
         } else {
             eprintln!("survey: wrote {}", html_path.display());
         }
     }
 
-    // ── Patch run.json with Completed status ────────────────────────
+    // ── Finalize the CAS leaf ───────────────────────────────────────
     let elapsed = t0.elapsed().as_secs_f64();
-    run.status = RunStatus::Completed { wall_time_seconds: elapsed };
-    if let Err(e) = run.write(&run_dir) {
-        eprintln!("warning: could not patch run.json: {}", e);
+    let best_loglik = sorted.iter().map(|r| r.loglik).find(|l| l.is_finite());
+    // Cross-check provenance for `init = survey_top_k` (gh#51): the
+    // structural model hash + per-stream data digests + the resolved
+    // `[fixed]` block. `build_chain_starts_from_survey` validates these
+    // against the fit before seeding chains. Recorded-not-hashed (the
+    // identity is the `levels`); these are the human/consumer-readable
+    // mirror the cross-check reads back.
+    let model_hash = crate::hashing::model_hash(&resolved.model_ir_json);
+    let inputs_json = serde_json::json!({
+        "eval_method":     eval_method.as_str(),
+        "eval_particles":  a.eval_particles,
+        "eval_replicates": a.eval_replicates,
+        "n_points":        n_points,
+        "estimated":       estimated_names,
+        "best_loglik":     best_loglik,
+        "wall_time_seconds": elapsed,
+        "model_hash":      model_hash,
+        "data_hashes":     resolved.data_hashes,
+        "fixed":           resolved.fixed,
+    });
+    let mut completed = crate::survey_cas::build_survey_record(
+        &resolved_id, &ir_version_str, runid::RunStatus::Completed,
+        inputs_json, &model_path_str);
+    completed.provenance.label = label_arg;
+    if let Err(e) = claim.finalize(completed) {
+        eprintln!("warning: finalize survey leaf {}: {}", run_dir.display(), e);
     }
 }
 
@@ -867,17 +759,9 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         let estimate_starts: HashMap<String, f64> = config.estimate.iter()
             .filter_map(|(name, spec)| spec.start.map(|v| (name.clone(), v)))
             .collect();
-        // gh#83/gh#85 step 9: per-parameter provenance from the
-        // resolver's `ResolvedParameter` output. Cheap to clone
-        // (a few dozen entries at most).
-        let parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance> =
-            resolved.params.iter()
-                .map(|rp| (rp.name.clone(),
-                     crate::run_meta::ParameterProvenance::from_resolved(rp)))
-                .collect();
         Ok(ResolvedSurveyInputs {
-            model_ir_json,
             compiled,
+            model_ir_json,
             base_params,
             estimated,
             obs_models,
@@ -890,7 +774,6 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             } else {
                 Some(estimate_starts)
             },
-            parameters_provenance,
         })
     } else {
         // Inline mode: --estimate flags + --data (already validated).
@@ -1005,16 +888,9 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             per_stream_obs.push(observations);
         }
 
-        // gh#83/gh#85 step 9: per-parameter provenance from the
-        // inline-mode resolver call.
-        let parameters_provenance: HashMap<String, crate::run_meta::ParameterProvenance> =
-            resolved.params.iter()
-                .map(|rp| (rp.name.clone(),
-                     crate::run_meta::ParameterProvenance::from_resolved(rp)))
-                .collect();
         Ok(ResolvedSurveyInputs {
-            model_ir_json,
             compiled,
+            model_ir_json,
             base_params,
             estimated,
             obs_models,
@@ -1024,7 +900,6 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             scenario: a.scenario.clone(),
             // Inline mode has no fit.toml [estimate].start values.
             estimate_starts: None,
-            parameters_provenance,
         })
     }
 }
@@ -1478,123 +1353,14 @@ fn quartiles(values: &[f64]) -> serde_json::Value {
 fn render_landscape_html(
     _landscape_path: &Path,
     html_path: &Path,
-    inputs: &SurveyInputs,
+    meta: &crate::landscape_html::LandscapeMeta,
 ) -> Result<(), String> {
-    crate::landscape_html::render(html_path, inputs)
+    crate::landscape_html::render(html_path, meta)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_inputs() -> SurveyInputs {
-        let mut bounds = HashMap::new();
-        bounds.insert("beta".into(),  (0.001_f64, 1.0_f64));
-        bounds.insert("gamma".into(), (0.01_f64,  0.5_f64));
-        let mut data_hashes = HashMap::new();
-        data_hashes.insert("cases".into(), "deadbeef".repeat(8));
-        SurveyInputs {
-            model_path:      "sir.camdl".into(),
-            stem:            Some("sir".into()),
-            model_hash:      "f00d".repeat(16),
-            data_hashes,
-            bounds,
-            estimated:       vec!["beta".into(), "gamma".into()],
-            fixed:           HashMap::new(),
-            scenario:        None,
-            n_points:        100,
-            eval_method:     SurveyEvalMethod::Pfilter,
-            eval_particles:  200,
-            eval_replicates: 3,
-            seed:            42,
-            parameters_provenance: HashMap::new(),
-        }
-    }
-
-    #[test]
-    fn canonical_hash_is_deterministic() {
-        let a = sample_inputs().canonical_hash();
-        let b = sample_inputs().canonical_hash();
-        assert_eq!(a, b, "same inputs must produce the same hash");
-        assert_eq!(a.full().len(), 64);
-    }
-
-    #[test]
-    fn canonical_hash_invariant_under_hashmap_order() {
-        let mut s1 = sample_inputs();
-        let mut s2 = sample_inputs();
-        s1.bounds.clear();
-        s1.bounds.insert("gamma".into(), (0.01, 0.5));
-        s1.bounds.insert("beta".into(),  (0.001, 1.0));
-        s2.bounds.clear();
-        s2.bounds.insert("beta".into(),  (0.001, 1.0));
-        s2.bounds.insert("gamma".into(), (0.01, 0.5));
-        assert_eq!(s1.canonical_hash(), s2.canonical_hash());
-    }
-
-    #[test]
-    fn different_bounds_change_the_hash() {
-        let s_a = sample_inputs();
-        let mut s_b = sample_inputs();
-        s_b.bounds.insert("beta".into(), (0.005, 1.0));
-        assert_ne!(s_a.canonical_hash(), s_b.canonical_hash(),
-            "bounds must contribute to the cache key");
-    }
-
-    #[test]
-    fn different_eval_config_changes_the_hash() {
-        let s_a = sample_inputs();
-        let mut s_b = sample_inputs();
-        s_b.eval_particles = 500;
-        assert_ne!(s_a.canonical_hash(), s_b.canonical_hash());
-        let mut s_c = sample_inputs();
-        s_c.eval_replicates = 5;
-        assert_ne!(s_a.canonical_hash(), s_c.canonical_hash());
-        let mut s_d = sample_inputs();
-        s_d.eval_method = SurveyEvalMethod::Simulate;
-        assert_ne!(s_a.canonical_hash(), s_d.canonical_hash());
-    }
-
-    #[test]
-    fn different_data_contents_change_the_hash() {
-        let s_a = sample_inputs();
-        let mut s_b = sample_inputs();
-        s_b.data_hashes.insert("cases".into(), "00000000".repeat(8));
-        assert_ne!(s_a.canonical_hash(), s_b.canonical_hash(),
-            "data file contents (digest) must contribute to the cache key");
-    }
-
-    #[test]
-    fn different_seed_changes_the_hash() {
-        let s_a = sample_inputs();
-        let mut s_b = sample_inputs();
-        s_b.seed = 7;
-        assert_ne!(s_a.canonical_hash(), s_b.canonical_hash());
-    }
-
-    #[test]
-    fn cas_path_uses_stem_plus_short_hash() {
-        let s = sample_inputs();
-        let p = s.cas_path(Path::new("/results"));
-        let h = s.content_hash();
-        assert_eq!(p, Path::new("/results/surveys").join(format!("sir-{}", h.short())));
-    }
-
-    #[test]
-    fn run_kind_round_trips_through_serde() {
-        let s = sample_inputs();
-        let kind = s.run_kind();
-        let json = serde_json::to_string(&kind).unwrap();
-        assert!(json.contains(r#""kind":"survey""#));
-        let parsed: RunKind = serde_json::from_str(&json).unwrap();
-        match parsed {
-            RunKind::Survey(m) => {
-                assert_eq!(m.estimated, vec!["beta", "gamma"]);
-                assert_eq!(m.n_points, 100);
-            }
-            _ => panic!("expected Survey kind"),
-        }
-    }
 
     #[test]
     fn landscape_tsv_header_includes_estimated_and_diagnostic_columns() {

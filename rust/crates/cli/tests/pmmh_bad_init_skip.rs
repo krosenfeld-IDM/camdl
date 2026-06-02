@@ -157,33 +157,36 @@ fn write_survey_artifact(
 
     let survey_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-    let run_json = serde_json::json!({
-        "hash": survey_hash,
-        "version": "test-fixture",
-        "created_at": "2026-05-26T00:00:00Z",
-        "argv": ["camdl", "survey", "<gh#110-test-fixture>"],
-        "status": { "completed": { "wall_time_seconds": 0.0 } },
-        "kind": {
-            "kind": "survey",
-            "model": "sir.camdl",
+    // New-format survey leaf (`runid::RunRecord`). The cross-check provenance
+    // (model_hash / data_hashes / fixed / estimated) lives in `inputs`;
+    // identity is `run_id`.
+    let record = runid::RunRecord {
+        format_version: runid::FORMAT_VERSION,
+        kind: runid::ArtifactKind::Survey,
+        run_id: runid::ContentHash::from_hex(survey_hash).unwrap(),
+        hash_version: runid::HASH_VERSION,
+        ir_version: "0.7".into(),
+        engine_version: "test-fixture".into(),
+        levels: Vec::new(),
+        deps: Vec::new(),
+        status: runid::RunStatus::Completed,
+        artifacts: Default::default(),
+        children: Default::default(),
+        inputs: serde_json::json!({
             "model_hash": model_hash,
             "data_hashes": { "cases": data_hash_cases },
-            "bounds": {
-                "beta":  [0.001, 5.0],
-                "gamma": [0.01, 1.0],
-            },
-            "n_points": 2,
+            "fixed": { "N0": 1000.0 },
+            "estimated": ["beta", "gamma"],
             "eval_method": "pfilter",
             "eval_particles": 100,
             "eval_replicates": 1,
-            "seed": 1,
-            "fixed": { "N0": 1000.0 },
-            "estimated": ["beta", "gamma"],
-        }
-    });
+            "n_points": 2,
+        }),
+        provenance: Default::default(),
+    };
     std::fs::write(
         survey_dir.join("run.json"),
-        serde_json::to_string_pretty(&run_json).unwrap(),
+        serde_json::to_string_pretty(&record).unwrap(),
     ).unwrap();
 
     // Row 1 (rank-1, BEST by loglik): pathological β=4.8, γ=0.05.

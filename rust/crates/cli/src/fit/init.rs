@@ -638,9 +638,9 @@ pub struct SurveyFitContext<'a> {
 
 /// SHA-256 every data file referenced by `effective_obs`, returning the
 /// stream-name → hex-hash map shape that `SurveyFitContext.data_hashes`
-/// (and `SurveyMeta.data_hashes`) use for the cross-check. Centralised
-/// here so the four-or-five fit-stage dispatch sites compute it
-/// identically.
+/// (and the survey `run.json` `inputs.data_hashes`) use for the
+/// cross-check. Centralised here so the four-or-five fit-stage dispatch
+/// sites compute it identically.
 pub fn compute_data_hashes(
     effective_obs: &indexmap::IndexMap<String, String>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
@@ -677,7 +677,10 @@ pub struct SurveyTopKResult {
 /// design rationale.
 ///
 /// Steps:
-/// 1. Load `<survey_path>/run.json`; refuse unless `RunKind::Survey`.
+/// 1. Load `<survey_path>/run.json` as a `runid::RunRecord`; refuse
+///    unless `kind == ArtifactKind::Survey`. The cross-check provenance
+///    (`model_hash` / `data_hashes` / `fixed` / `estimated`) is read from
+///    the record's `inputs` payload.
 /// 2. Cross-check `model_hash`, `data_hashes`, `[fixed]` superset,
 ///    estimate-set subset against `ctx`. Refuse on any mismatch with
 ///    a diagnostic naming the offending field.
@@ -706,7 +709,7 @@ pub fn build_chain_starts_from_survey(
     base: &[EstimatedParam],
     ctx: &SurveyFitContext,
 ) -> Result<SurveyTopKResult, String> {
-    use crate::run_meta::{Run, RunKind};
+    use runid::{ArtifactKind, RunRecord};
 
     let top_k = top_k_n.unwrap_or(n_chains);
     if top_k != n_chains {
@@ -718,27 +721,34 @@ pub fn build_chain_starts_from_survey(
             top_k, n_chains));
     }
 
-    // Step 1: load run.json.
-    let run = Run::read(survey_path).map_err(|e| format!(
-        "init = \"survey_top_k\": cannot read run.json from {:?}: {}",
-        survey_path, e))?;
-    let survey_meta = match &run.kind {
-        RunKind::Survey(m) => m,
-        other => return Err(format!(
+    // Step 1: load run.json as a runid RunRecord; refuse unless Survey.
+    let run_json = survey_path.join("run.json");
+    let bytes = std::fs::read(&run_json).map_err(|e| format!(
+        "init = \"survey_top_k\": cannot read {:?}: {}", run_json, e))?;
+    let record: RunRecord = serde_json::from_slice(&bytes).map_err(|e| format!(
+        "init = \"survey_top_k\": {:?} is not a parseable run.json: {}. \
+         survey_path must point at a `camdl survey` CAS directory.",
+        run_json, e))?;
+    if record.kind != ArtifactKind::Survey {
+        return Err(format!(
             "init = \"survey_top_k\": {:?} is a {:?} run, not a Survey run. \
              survey_path must point at a `camdl survey` CAS directory.",
-            survey_path, std::mem::discriminant(other))),
-    };
+            survey_path, record.kind));
+    }
+    let cross = SurveyCrossCheck::from_inputs(&record.inputs).map_err(|e| format!(
+        "init = \"survey_top_k\": survey run.json `inputs` is missing \
+         cross-check provenance ({}). The survey at {:?} predates the \
+         cross-check schema — re-run `camdl survey`.", e, survey_path))?;
 
     // Step 2: cross-check.
-    cross_check_survey(survey_meta, ctx)?;
+    cross_check_survey(&cross, ctx)?;
 
     // Step 3: read + parse landscape.tsv.
     let landscape_path = survey_path.join("landscape.tsv");
     let raw = std::fs::read_to_string(&landscape_path).map_err(|e| format!(
         "init = \"survey_top_k\": cannot read {:?}: {}",
         landscape_path, e))?;
-    let rows = parse_landscape_tsv(&raw, &survey_meta.estimated)
+    let rows = parse_landscape_tsv(&raw, &cross.estimated)
         .map_err(|e| format!("init = \"survey_top_k\": {}", e))?;
     let total_rows = rows.len();
 
@@ -805,8 +815,28 @@ pub fn build_chain_starts_from_survey(
 
     Ok(SurveyTopKResult {
         chains,
-        survey_hash: run.hash,
+        survey_hash: record.run_id.to_hex(),
     })
+}
+
+/// Cross-check provenance read back from a survey `run.json`'s `inputs`
+/// payload (gh#51). The survey writer records the structural `model_hash`,
+/// per-stream `data_hashes`, the resolved `[fixed]` block, and the
+/// `estimated`-param column names; this is the consumer's view of them.
+#[derive(serde::Deserialize)]
+struct SurveyCrossCheck {
+    model_hash: String,
+    #[serde(default)]
+    data_hashes: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    fixed: std::collections::HashMap<String, f64>,
+    estimated: Vec<String>,
+}
+
+impl SurveyCrossCheck {
+    fn from_inputs(inputs: &serde_json::Value) -> Result<Self, String> {
+        serde_json::from_value(inputs.clone()).map_err(|e| e.to_string())
+    }
 }
 
 /// One row of a survey landscape.tsv, parsed.
@@ -872,7 +902,7 @@ fn parse_landscape_tsv(
 }
 
 fn cross_check_survey(
-    meta: &crate::run_meta::SurveyMeta,
+    meta: &SurveyCrossCheck,
     ctx: &SurveyFitContext<'_>,
 ) -> Result<(), String> {
     if meta.model_hash != ctx.model_hash {
@@ -1442,23 +1472,53 @@ beta\tgamma\tn_replicates\tpoint_id\n\
         data_hashes: &[(&str, &str)],
         fixed: &[(&str, f64)],
         estimated: &[&str],
-    ) -> crate::run_meta::SurveyMeta {
-        crate::run_meta::SurveyMeta {
-            model: "model.camdl".into(),
+    ) -> SurveyCrossCheck {
+        SurveyCrossCheck {
             model_hash: model_hash.into(),
             data_hashes: data_hashes.iter()
                 .map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            bounds: std::collections::HashMap::new(),
-            n_points: 100,
-            eval_method: crate::run_meta::SurveyEvalMethod::Pfilter,
-            eval_particles: 200,
-            eval_replicates: 4,
-            seed: 1,
             fixed: fixed.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-            scenario: None,
             estimated: estimated.iter().map(|s| s.to_string()).collect(),
-            parameters_provenance: Default::default(),
         }
+    }
+
+    /// Write a new-format (`runid::RunRecord`) survey `run.json` to `dir`
+    /// carrying the cross-check provenance the consumer reads back.
+    fn write_survey_record(
+        dir: &std::path::Path,
+        run_id_hex: &str,
+        model_hash: &str,
+        data_hashes: &[(&str, &str)],
+        fixed: &[(&str, f64)],
+        estimated: &[&str],
+    ) {
+        let dh: std::collections::HashMap<String, String> = data_hashes.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let fx: std::collections::HashMap<String, f64> = fixed.iter()
+            .map(|(k, v)| (k.to_string(), *v)).collect();
+        let est: Vec<String> = estimated.iter().map(|s| s.to_string()).collect();
+        let record = runid::RunRecord {
+            format_version: runid::FORMAT_VERSION,
+            kind: runid::ArtifactKind::Survey,
+            run_id: runid::ContentHash::from_hex(run_id_hex).unwrap(),
+            hash_version: runid::HASH_VERSION,
+            ir_version: "0.7".into(),
+            engine_version: "test".into(),
+            levels: Vec::new(),
+            deps: Vec::new(),
+            status: runid::RunStatus::Completed,
+            artifacts: Default::default(),
+            children: Default::default(),
+            inputs: serde_json::json!({
+                "model_hash": model_hash,
+                "data_hashes": dh,
+                "fixed": fx,
+                "estimated": est,
+            }),
+            provenance: Default::default(),
+        };
+        std::fs::write(dir.join("run.json"),
+            serde_json::to_string_pretty(&record).unwrap()).unwrap();
     }
 
     #[test]
@@ -1599,7 +1659,6 @@ beta\tgamma\tn_replicates\tpoint_id\n\
     /// from the landscape TSV.
     #[test]
     fn build_chain_starts_from_survey_end_to_end_happy_path() {
-        use crate::run_meta::{Run, RunKind, RunStatus, SurveyMeta, SurveyEvalMethod};
         use std::collections::HashMap;
 
         let dir = std::env::temp_dir().join(format!(
@@ -1613,30 +1672,10 @@ beta\tgamma\tn_replicates\tpoint_id\n\
         let mut data_hashes = HashMap::new();
         data_hashes.insert("cases".to_string(), "data-hash-bbb".to_string());
 
-        let run = Run {
-            kind: RunKind::Survey(SurveyMeta {
-                model: "m.camdl".into(),
-                model_hash: model_hash.into(),
-                data_hashes: data_hashes.clone(),
-                bounds: HashMap::new(),
-                n_points: 5,
-                eval_method: SurveyEvalMethod::Pfilter,
-                eval_particles: 200,
-                eval_replicates: 4,
-                seed: 1,
-                fixed: HashMap::new(),
-                scenario: None,
-                estimated: vec!["beta".into(), "gamma".into()],
-                parameters_provenance: Default::default(),
-                        }),
-            hash: "survey-hash-cafef00dcafef00dcafef00dcafef00d".into(),
-            argv: vec!["camdl".into(), "survey".into()],
-            status: RunStatus::Completed { wall_time_seconds: 0.0 },
-            version: "test".into(),
-            created_at: "2026-05-07T00:00:00Z".into(),
-            label: None,
-        };
-        run.write(&dir).unwrap();
+        let run_id_hex = "cafef00d".repeat(8);   // 64-hex
+        write_survey_record(
+            &dir, &run_id_hex, model_hash,
+            &[("cases", "data-hash-bbb")], &[], &["beta", "gamma"]);
 
         // Landscape: 5 rows, loglik increasing from -100 to -90 in the
         // sorted-desc order rank-1 = -90 (best). Within bounds
@@ -1666,7 +1705,7 @@ beta\tgamma\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         let result = build_chain_starts_from_survey(&dir, Some(3), 3, &base, &ctx)
             .expect("happy path should succeed");
         assert_eq!(result.chains.len(), 3);
-        assert_eq!(result.survey_hash, "survey-hash-cafef00dcafef00dcafef00dcafef00d");
+        assert_eq!(result.survey_hash, run_id_hex);
 
         // rank-1 by loglik (best = -90) is row 2: beta=0.50, gamma=0.20.
         assert!((result.chains[0][0].initial - 0.50).abs() < 1e-9);
@@ -1686,7 +1725,6 @@ beta\tgamma\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
     /// filtered count drops below `n_chains`.
     #[test]
     fn build_chain_starts_from_survey_filter_then_rank_refuses() {
-        use crate::run_meta::{Run, RunKind, RunStatus, SurveyMeta, SurveyEvalMethod};
         use std::collections::HashMap;
 
         let dir = std::env::temp_dir().join(format!(
@@ -1696,28 +1734,8 @@ beta\tgamma\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let run = Run {
-            kind: RunKind::Survey(SurveyMeta {
-                model: "m.camdl".into(),
-                model_hash: "h".into(),
-                data_hashes: HashMap::new(),
-                bounds: HashMap::new(),
-                n_points: 5,
-                eval_method: SurveyEvalMethod::Pfilter,
-                eval_particles: 100,
-                eval_replicates: 1,
-                seed: 1, fixed: HashMap::new(), scenario: None,
-                estimated: vec!["beta".into()],
-                parameters_provenance: Default::default(),
-                        }),
-            hash: "survey-hash".into(),
-            argv: vec![],
-            status: RunStatus::Completed { wall_time_seconds: 0.0 },
-            version: "test".into(),
-            created_at: "2026-05-07T00:00:00Z".into(),
-            label: None,
-        };
-        run.write(&dir).unwrap();
+        write_survey_record(
+            &dir, &"aa".repeat(32), "h", &[], &[], &["beta"]);
 
         // Survey ranged over beta∈[0.0, 1.0]. Fit narrows to [0.6, 0.8].
         // Only one row (beta=0.7) falls within fit's bounds.
@@ -1757,7 +1775,6 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
     #[test]
     fn build_chain_starts_from_survey_v1_strict_k_equals_chains() {
         // top_k_n must equal n_chains in v1; K > chains is deferred.
-        use crate::run_meta::{Run, RunKind, RunStatus, SurveyMeta, SurveyEvalMethod};
         use std::collections::HashMap;
 
         let dir = std::env::temp_dir().join(format!(
@@ -1766,21 +1783,8 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
-        let run = Run {
-            kind: RunKind::Survey(SurveyMeta {
-                model: "m".into(), model_hash: "h".into(),
-                data_hashes: HashMap::new(), bounds: HashMap::new(),
-                n_points: 1, eval_method: SurveyEvalMethod::Pfilter,
-                eval_particles: 1, eval_replicates: 1, seed: 1,
-                fixed: HashMap::new(), scenario: None,
-                estimated: vec!["beta".into()],
-                parameters_provenance: Default::default(),
-                        }),
-            hash: "h".into(), argv: vec![],
-            status: RunStatus::Completed { wall_time_seconds: 0.0 },
-            version: "v".into(), created_at: "t".into(), label: None,
-        };
-        run.write(&dir).unwrap();
+        write_survey_record(
+            &dir, &"bb".repeat(32), "h", &[], &[], &["beta"]);
         std::fs::write(dir.join("landscape.tsv"),
             "beta\tloglik\tloglik_se\tn_replicates\tpoint_id\n\
              0.5\t-100.0\t1.0\t1\t0\n").unwrap();
@@ -1874,7 +1878,6 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         // Happy path: SurveyTopK with a valid survey dir →
         // returns (Some(chains), Some(result)). Same fixture shape
         // as the build_chain_starts_from_survey happy-path test.
-        use crate::run_meta::{Run, RunKind, RunStatus, SurveyMeta, SurveyEvalMethod};
         use std::collections::HashMap;
 
         let dir = std::env::temp_dir().join(format!(
@@ -1888,30 +1891,11 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         let mut data_hashes = HashMap::new();
         data_hashes.insert("cases".to_string(), "data-hash-bbb".to_string());
 
-        let run = Run {
-            kind: RunKind::Survey(SurveyMeta {
-                model: "m.camdl".into(),
-                model_hash: model_hash.into(),
-                data_hashes: data_hashes.clone(),
-                bounds: HashMap::new(),
-                n_points: 3,
-                eval_method: SurveyEvalMethod::Pfilter,
-                eval_particles: 100,
-                eval_replicates: 2,
-                seed: 1,
-                fixed: HashMap::new(),
-                scenario: None,
-                estimated: vec!["beta".into()],
-                parameters_provenance: Default::default(),
-                        }),
-            hash: "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234".into(),
-            argv: vec![],
-            status: RunStatus::Completed { wall_time_seconds: 0.0 },
-            version: "test".into(),
-            created_at: "2026-05-07T00:00:00Z".into(),
-            label: None,
-        };
-        run.write(&dir).unwrap();
+        let run_id_hex =
+            "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234";
+        write_survey_record(
+            &dir, run_id_hex, model_hash,
+            &[("cases", "data-hash-bbb")], &[], &["beta"]);
         std::fs::write(dir.join("landscape.tsv"),
             "beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
              0.3\t-100.0\t1.0\t0.8\t1\t0\n\
@@ -1934,8 +1918,7 @@ beta\tloglik\tloglik_se\tmean_ess\tn_replicates\tpoint_id\n\
         assert_eq!(chains.len(), 2);
         assert!((chains[0][0].initial - 0.5).abs() < 1e-9);
         assert!((chains[1][0].initial - 0.3).abs() < 1e-9);
-        assert_eq!(result.survey_hash,
-            "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234");
+        assert_eq!(result.survey_hash, run_id_hex);
 
         std::fs::remove_dir_all(&dir).ok();
     }

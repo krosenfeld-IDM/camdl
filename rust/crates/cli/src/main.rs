@@ -28,6 +28,7 @@ mod profile_diagnostics;
 mod progress;
 mod evidence;
 mod survey;
+mod survey_cas;     // gh#147 (M3.3): survey CAS identity (model/config/box/seed)
 mod landscape_html;
 mod lineage;        // three-layer lineage: --event-log record + realize + tree
 pub mod version;

@@ -134,35 +134,37 @@ fn write_survey_artifact(
 
     let survey_hash = "c0ffee0123456789c0ffee0123456789c0ffee0123456789c0ffee0123456789";
 
-    let run_json = serde_json::json!({
-        "hash": survey_hash,
-        "version": "test-fixture",
-        "created_at": "2026-05-24T00:00:00Z",
-        "argv": ["camdl", "survey", "<test-fixture>"],
-        "status": { "completed": { "wall_time_seconds": 0.0 } },
-        "kind": {
-            "kind": "survey",
-            "model": "si.camdl",
+    // New-format survey leaf (`runid::RunRecord`). The cross-check provenance
+    // the `survey_top_k` consumer reads (model_hash / data_hashes / fixed /
+    // estimated) lives in `inputs`; identity is `run_id`. The fit pins N0 at
+    // 1000, so the survey [fixed] must be a superset per the gh#51 cross-check.
+    let record = runid::RunRecord {
+        format_version: runid::FORMAT_VERSION,
+        kind: runid::ArtifactKind::Survey,
+        run_id: runid::ContentHash::from_hex(survey_hash).unwrap(),
+        hash_version: runid::HASH_VERSION,
+        ir_version: "0.7".into(),
+        engine_version: "test-fixture".into(),
+        levels: Vec::new(),
+        deps: Vec::new(),
+        status: runid::RunStatus::Completed,
+        artifacts: Default::default(),
+        children: Default::default(),
+        inputs: serde_json::json!({
             "model_hash": model_hash,
             "data_hashes": { "cases": data_hash_cases },
-            "bounds": {
-                "beta":  [0.01, 5.0],
-                "gamma": [0.01, 1.0],
-            },
-            "n_points": 4,
+            "fixed": { "N0": 1000.0 },
+            "estimated": ["beta", "gamma"],
             "eval_method": "pfilter",
             "eval_particles": 100,
             "eval_replicates": 1,
-            "seed": 1,
-            // The fit pins N0 at 1000; the survey [fixed] must be a
-            // superset of the fit's per the gh#51 cross-check.
-            "fixed": { "N0": 1000.0 },
-            "estimated": ["beta", "gamma"],
-        }
-    });
+            "n_points": 4,
+        }),
+        provenance: Default::default(),
+    };
     std::fs::write(
         survey_dir.join("run.json"),
-        serde_json::to_string_pretty(&run_json).unwrap(),
+        serde_json::to_string_pretty(&record).unwrap(),
     ).unwrap();
 
     // landscape.tsv — 4 rows ranked by loglik desc:

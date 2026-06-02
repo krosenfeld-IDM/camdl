@@ -21,8 +21,6 @@
 //!
 //! See `docs/dev/proposals/2026-04-28-cas-typed-runs-and-profile-stages.md`.
 
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -54,9 +52,6 @@ impl ContentHash {
 
     /// Full 64-char hex digest.
     pub fn full(&self) -> &str { &self.0 }
-
-    /// First 8 chars, used as the directory-name prefix.
-    pub fn short(&self) -> &str { &self.0[..8.min(self.0.len())] }
 }
 
 impl std::fmt::Display for ContentHash {
@@ -95,11 +90,6 @@ pub trait CasInputs {
     /// resistance, which we trust).
     fn content_hash(&self) -> ContentHash;
 
-    /// Filesystem path under the CAS root. Function of `content_hash`
-    /// plus presentation hints. Two distinct content hashes MUST
-    /// produce distinct paths.
-    fn cas_path(&self, root: &Path) -> PathBuf;
-
     /// `RunKind` payload for `run.json`. Includes the kind
     /// discriminant and human-readable provenance fields.
     fn run_kind(&self) -> RunKind;
@@ -126,25 +116,6 @@ pub trait CasInputs {
     }
 }
 
-// ─── Canonical hashing ───────────────────────────────────────────────────────
-
-/// Compose a content hash from a sorted list of `(field, value)`
-/// pairs. The hash is sha256 over `field=value\nfield=value\n…` after
-/// stable sorting by field name.
-///
-/// This is the cheapest canonicalization that gives stable hashes
-/// across argv reorderings, HashMap iteration order, and incidental
-/// formatting differences. Callers pass the *content-bearing* fields
-/// only — ephemeral inputs (parallel, progress) must not appear here.
-pub fn hash_canonical(fields: &[(&str, &str)]) -> ContentHash {
-    let mut sorted: Vec<(&str, &str)> = fields.to_vec();
-    sorted.sort_by_key(|(k, _)| *k);
-    let canonical: String = sorted.iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join("\n");
-    ContentHash::from_bytes(canonical.as_bytes())
-}
 
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -159,29 +130,6 @@ mod tests {
         let b = ContentHash::from_bytes(b"hello");
         assert_eq!(a, b);
         assert_eq!(a.full().len(), 64);
-    }
-
-    #[test]
-    fn content_hash_short_is_eight_chars() {
-        let h = ContentHash::from_bytes(b"x");
-        assert_eq!(h.short().len(), 8);
-        assert_eq!(h.short(), &h.full()[..8]);
-    }
-
-    #[test]
-    fn hash_canonical_sorts_fields() {
-        let h1 = hash_canonical(&[("b", "2"), ("a", "1")]);
-        let h2 = hash_canonical(&[("a", "1"), ("b", "2")]);
-        assert_eq!(h1, h2,
-            "argument order must not affect canonical hash");
-    }
-
-    #[test]
-    fn hash_canonical_distinguishes_field_names() {
-        // Same values, different field names — must hash differently.
-        let h1 = hash_canonical(&[("seed", "1")]);
-        let h2 = hash_canonical(&[("dataset", "1")]);
-        assert_ne!(h1, h2);
     }
 
 }

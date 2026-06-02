@@ -150,7 +150,7 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
     let surveys = if !filter_kind.includes_surveys() {
         Vec::new()
     } else {
-        discover_surveys(&root).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
+        discover_survey_rows(&root)
     };
     let pfilters = if !filter_kind.includes_pfilters() {
         Vec::new()
@@ -189,8 +189,8 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         .collect();
     filtered_profiles.sort_by(|x, y| y.created.cmp(&x.created));
 
-    let mut filtered_surveys: Vec<SurveyEntry> = surveys.into_iter()
-        .filter(|s| a.model.as_deref().is_none_or(|m| s.model.contains(m)))
+    let mut filtered_surveys: Vec<SurveyRow> = surveys.into_iter()
+        .filter(|s| a.model.as_deref().is_none_or(|m| s.leaf.level_label("model").contains(m)))
         .filter(|_| a.scenario.is_none())
         .filter(|s| match filter_since {
             Some(dur) => now.duration_since(s.created).is_ok_and(|d| d <= dur),
@@ -221,7 +221,7 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         print_sim_json(&filtered_runs);
         print_fits_json(&filtered_fits);
         print_profiles_json(&filtered_profiles);
-        print_surveys_json(&filtered_surveys);
+        print_survey_json(&filtered_surveys);
         print_pfilter_json(&filtered_pfilters);
     } else {
         let any_other = !filtered_fits.is_empty()
@@ -240,7 +240,7 @@ pub fn cmd_list(a: &crate::args::ListArgs) {
         }
         if !filtered_surveys.is_empty() {
             eprintln!("{}", "surveys".bold());
-            print_surveys_table(&filtered_surveys, now);
+            print_survey_table(&filtered_surveys, now);
             eprintln!();
         }
         if !filtered_pfilters.is_empty() {
@@ -323,6 +323,7 @@ pub fn cmd_show(a: &crate::args::ShowArgs) {
         Ok(Resolved::Fit { leaf, rel_path, created }) => show_fit_record(&leaf, &rel_path, created),
         Ok(Resolved::Profile { leaf, rel_path, created }) => show_profile_record(&leaf, &rel_path, created),
         Ok(Resolved::Pfilter { leaf, rel_path, created }) => show_pfilter_record(&leaf, &rel_path, created),
+        Ok(Resolved::Survey { leaf, rel_path, created }) => show_survey_record(&leaf, &rel_path, created),
         Ok(Resolved::Legacy(r)) => show(&r),
         Err(e) => {
             eprintln!("error: {}", e);
@@ -530,7 +531,6 @@ fn show(r: &ResolvedRun) {
         RunKind::Fit(_)          => show_fit(r),
         RunKind::FitStage(_)     => show_fit_stage(r),
         RunKind::Profile(_)      => show_profile_leaf(r),
-        RunKind::Survey(_)       => show_survey(r),
     }
 }
 
@@ -678,56 +678,49 @@ fn show_profile_leaf(r: &ResolvedRun) {
     show_footer(r);
 }
 
-fn show_survey(r: &ResolvedRun) {
-    let RunKind::Survey(m) = &r.run.kind else { unreachable!() };
-    show_header(r);
-    println!("{}", "model".bright_black()); println!("  {}", m.model);
-    println!("{}", "estimated".bright_black());
-    println!("  {}", m.estimated.join(", "));
-    println!("{}", "bounds".bright_black());
-    let mut bounds: Vec<(&String, &(f64, f64))> = m.bounds.iter().collect();
-    bounds.sort_by(|a, b| a.0.cmp(b.0));
-    for (name, (lo, hi)) in &bounds {
-        println!("  {}: [{}, {}]", name, lo, hi);
+/// Render a new-format (`RunRecord`) survey leaf: the four factored levels
+/// (`model`/`config`/`box`/`seed`), the run_id address, the recorded eval
+/// config + estimated set + best-loglik from `inputs`, and the landscape /
+/// summary / HTML artifact sizes. A survey is a single leaf (the N LHS points
+/// live within it, not as an axis). Mirrors `show_pfilter_record`.
+fn show_survey_record(leaf: &cas_read::Leaf, rel_path: &str, created: SystemTime) {
+    let rec = &leaf.record;
+    println!("{}", "path".bright_black()); println!("  {}", rel_path.cyan());
+    println!("{}", "kind".bright_black()); println!("  survey");
+    if let Some(ref l) = rec.provenance.label {
+        println!("{}", "label".bright_black()); println!("  {}", l);
     }
-    if !m.fixed.is_empty() {
-        let mut fx: Vec<(&String, &f64)> = m.fixed.iter().collect();
-        fx.sort_by(|a, b| a.0.cmp(b.0));
-        let items: Vec<String> = fx.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-        println!("{}", "fixed".bright_black()); println!("  {}", items.join(", "));
+    for lvl_name in ["model", "config", "box", "seed"] {
+        println!("{}", lvl_name.bright_black());
+        println!("  {}", leaf.level_label(lvl_name));
     }
-    if let Some(ref s) = m.scenario {
-        println!("{}", "scenario".bright_black()); println!("  {}", s);
+    println!("{}", "run_id".bright_black()); println!("  {}", rec.run_id.to_hex().dimmed());
+    println!("{}", "levels".bright_black());
+    for lvl in &rec.levels {
+        println!("  {:<9} {}-{}", lvl.name, lvl.label, lvl.hash.short8().dimmed());
     }
-    println!("{}", "n_points".bright_black()); println!("  {}", m.n_points);
-    println!("{}", "eval".bright_black());
-    match m.eval_method {
-        crate::run_meta::SurveyEvalMethod::Pfilter =>
-            println!("  pfilter ({} particles × {} replicates)",
-                m.eval_particles, m.eval_replicates),
-        crate::run_meta::SurveyEvalMethod::Simulate =>
-            println!("  simulate (single trajectory per point)"),
-        // SurveyMeta only stores resolved methods — `Auto` is
-        // resolved in `cmd_survey` before persistence.
-        crate::run_meta::SurveyEvalMethod::Auto =>
-            println!("  auto (unresolved — bug; SurveyMeta should never store Auto)"),
+    if let Some(obj) = rec.inputs.as_object() {
+        if let Some(est) = obj.get("estimated").and_then(|v| v.as_array()) {
+            let names: Vec<&str> = est.iter().filter_map(|v| v.as_str()).collect();
+            println!("{}", "estimated".bright_black()); println!("  {}", names.join(", "));
+        }
+        for key in ["eval_method", "eval_particles", "eval_replicates", "n_points", "best_loglik"] {
+            if let Some(v) = obj.get(key) {
+                if v.is_null() { continue; }
+                println!("{}", key.bright_black()); println!("  {}", v);
+            }
+        }
     }
-    println!("{}", "seed".bright_black()); println!("  {}", m.seed);
-    let landscape = r.abs_path.join("landscape.tsv");
+    let landscape = leaf.dir.join("landscape.tsv");
     if landscape.exists() {
         let bytes = std::fs::metadata(&landscape).map(|m| m.len()).unwrap_or(0);
         println!("{}", "landscape".bright_black());
         println!("  landscape.tsv ({} bytes)", bytes);
     }
-    let summary = r.abs_path.join("summary.json");
+    let summary = leaf.dir.join("summary.json");
     if summary.exists() {
-        // Inline the top-loglik / SE-quartile fields if available.
         if let Ok(s) = std::fs::read_to_string(&summary) {
             if let Ok(j) = serde_json::from_str::<serde_json::Value>(&s) {
-                if let Some(top) = j.get("top_loglik").and_then(|v| v.as_f64()) {
-                    println!("{}", "top loglik".bright_black());
-                    println!("  {:.2}", top);
-                }
                 if let Some(se_q) = j.get("loglik_se_quartiles") {
                     println!("{}", "loglik_se quartiles".bright_black());
                     println!("  {}", se_q);
@@ -735,16 +728,17 @@ fn show_survey(r: &ResolvedRun) {
             }
         }
     }
-    let html = r.abs_path.join("landscape.html");
+    let html = leaf.dir.join("landscape.html");
     if html.exists() {
         let bytes = std::fs::metadata(&html).map(|m| m.len()).unwrap_or(0);
         println!("{}", "rendered".bright_black());
         println!("  landscape.html ({} bytes)", bytes);
     }
-    println!("{}", "hashes".bright_black());
-    println!("  survey {}", r.run.hash.dimmed());
-    println!("  model  {}", m.model_hash.dimmed());
-    show_footer(r);
+    println!("{}", "created".bright_black());
+    println!("  {}  ({})",
+        rec.provenance.created_at.as_deref().unwrap_or("?"),
+        fmt_relative_time(created, SystemTime::now()));
+    println!("{}", "engine".bright_black()); println!("  {}", rec.engine_version);
 }
 
 // ── cmd_cat ──────────────────────────────────────────────────────────────────
@@ -813,6 +807,19 @@ pub fn cmd_cat(a: &crate::args::CatArgs) {
             let _ = std::io::stdout().write_all(&bytes);
             return;
         }
+        // New-format survey: default to `landscape.tsv`; `--stream NAME`
+        // cats a named file from the leaf (e.g. `summary.json`,
+        // `landscape.html`).
+        Resolved::Survey { leaf, rel_path, .. } => {
+            let name = a.stream.as_deref().unwrap_or("landscape.tsv");
+            let path = leaf.dir.join(name);
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                eprintln!("error reading {} in {}: {}", name, rel_path, e);
+                std::process::exit(1);
+            });
+            let _ = std::io::stdout().write_all(&bytes);
+            return;
+        }
         Resolved::Legacy(r) => r,
     };
 
@@ -863,20 +870,6 @@ pub fn cmd_cat(a: &crate::args::CatArgs) {
                        directly.",
                       resolved.rel_path);
             std::process::exit(1);
-        }
-        RunKind::Survey(_) => {
-            let landscape = resolved.abs_path.join("landscape.tsv");
-            if !landscape.exists() {
-                eprintln!("error: 'camdl cat' on a survey expects \
-                    landscape.tsv, which has not been written yet for {}.",
-                    resolved.rel_path);
-                std::process::exit(1);
-            }
-            let bytes = std::fs::read(&landscape).unwrap_or_else(|e| {
-                eprintln!("error reading {}: {}", landscape.display(), e);
-                std::process::exit(1);
-            });
-            let _ = std::io::stdout().write_all(&bytes);
         }
     }
 }
@@ -1033,76 +1026,55 @@ fn summarize_grid(point_labels: &[String], n_starts: usize) -> (String, String) 
 
 /// One discovered survey run. Surveys live at
 /// `<root>/surveys/<stem>-<hash[:8]>/` with a `run.json` of kind
-/// `Survey(SurveyMeta)`. Display-only fields surfaced in `camdl list`.
-#[derive(Debug, Clone)]
-struct SurveyEntry {
-    run: Run,
+/// A new-format (`runid::RunRecord`) survey leaf, prepared for the `list`
+/// display. The kind-Survey filter happens in [`cas_read::walk_survey_leaves`].
+struct SurveyRow {
+    leaf: cas_read::Leaf,
     rel_path: String,
     created: SystemTime,
-    /// Display model path (from `SurveyMeta.model`).
-    model: String,
-    /// Comma-separated estimated parameter names.
-    estimated: String,
-    /// "pfilter Px×Rk" or "simulate".
-    eval: String,
-    /// Number of LHS points.
-    n_points: usize,
-    /// Best loglik in `landscape.tsv`. `None` when the artifact is
-    /// missing (interrupted run).
-    top_loglik: Option<f64>,
 }
 
-/// Walk `<root>/surveys/` one level deep. Each child dir is a
-/// survey-run directory.
-fn discover_surveys(root: &str) -> Result<Vec<SurveyEntry>, String> {
-    let surveys_root = Path::new(root).join("surveys");
-    if !surveys_root.exists() { return Ok(Vec::new()); }
+/// Discover the new-format survey leaves under `root/surveys/` for `list`.
+fn discover_survey_rows(root: &str) -> Vec<SurveyRow> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let entries = std::fs::read_dir(&surveys_root)
-        .map_err(|e| format!("cannot read {}: {}", surveys_root.display(), e))?;
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() { continue; }
-        let Some((run, created, rel_path)) = load_run_common(&dir, &cwd) else { continue; };
-        let RunKind::Survey(m) = &run.kind else { continue };
-        let eval = match m.eval_method {
-            crate::run_meta::SurveyEvalMethod::Pfilter =>
-                format!("pfilter {}p×{}r", m.eval_particles, m.eval_replicates),
-            crate::run_meta::SurveyEvalMethod::Simulate => "simulate".to_string(),
-            crate::run_meta::SurveyEvalMethod::Auto => "auto".to_string(),
-        };
-        // Read top loglik from summary.json when present.
-        let top_loglik = std::fs::read_to_string(dir.join("summary.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|j| j.get("top_loglik").and_then(|v| v.as_f64()));
-        out.push(SurveyEntry {
-            model: m.model.clone(),
-            estimated: m.estimated.join(","),
-            eval,
-            n_points: m.n_points,
-            top_loglik,
-            run, rel_path, created,
-        });
-    }
-    Ok(out)
+    cas_read::walk_survey_leaves(Path::new(root))
+        .into_iter()
+        .map(|leaf| {
+            let created = leaf.record.provenance.created_at.as_deref()
+                .and_then(parse_iso8601)
+                .unwrap_or_else(|| {
+                    std::fs::metadata(&leaf.dir).and_then(|m| m.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                });
+            let rel_path = pathdiff_str(&leaf.dir, &cwd);
+            SurveyRow { leaf, rel_path, created }
+        })
+        .collect()
 }
 
-fn print_surveys_table(surveys: &[SurveyEntry], now: SystemTime) {
+fn print_survey_table(surveys: &[SurveyRow], now: SystemTime) {
     let mut t = comfy_table::Table::new();
     t.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
     t.set_header(vec!["model", "estimate", "n_points", "eval", "top_loglik", "age", "path"]);
     for s in surveys {
+        let obj = s.leaf.record.inputs.as_object();
+        let estimated = obj
+            .and_then(|o| o.get("estimated"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(","))
+            .unwrap_or_default();
+        let n_points = obj.and_then(|o| o.get("n_points")).and_then(|v| v.as_u64())
+            .map(|n| n.to_string()).unwrap_or_else(|| "—".into());
+        // The `config` level label is `{method}-P{particles}-r{replicates}`.
+        let eval = s.leaf.level_label("config").to_string();
+        let ll = obj.and_then(|o| o.get("best_loglik")).and_then(|v| v.as_f64())
+            .map(|x| format!("{:.2}", x)).unwrap_or_else(|| "—".into());
         let age = fmt_relative_time(s.created, now);
-        let ll = s.top_loglik
-            .map(|x| format!("{:.2}", x))
-            .unwrap_or_else(|| "—".into());
         t.add_row(vec![
-            s.model.clone(),
-            s.estimated.clone(),
-            s.n_points.to_string(),
-            s.eval.clone(),
+            s.leaf.level_label("model").to_string(),
+            estimated,
+            n_points,
+            eval,
             ll,
             age,
             s.rel_path.clone(),
@@ -1111,9 +1083,9 @@ fn print_surveys_table(surveys: &[SurveyEntry], now: SystemTime) {
     println!("{t}");
 }
 
-fn print_surveys_json(surveys: &[SurveyEntry]) {
-    let runs: Vec<&Run> = surveys.iter().map(|s| &s.run).collect();
-    match serde_json::to_string_pretty(&runs) {
+fn print_survey_json(surveys: &[SurveyRow]) {
+    let recs: Vec<&runid::RunRecord> = surveys.iter().map(|s| &s.leaf.record).collect();
+    match serde_json::to_string_pretty(&recs) {
         Ok(s) => println!("{}", s),
         Err(e) => eprintln!("json error: {}", e),
     }
@@ -1174,6 +1146,8 @@ enum Resolved {
     Profile { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     /// New-format (`RunRecord`) pfilter-eval leaf under `pfilters/` (M3.3).
     Pfilter { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
+    /// New-format (`RunRecord`) survey leaf under `surveys/` (M3.3).
+    Survey { leaf: cas_read::Leaf, rel_path: String, created: SystemTime },
     Legacy(ResolvedRun),
 }
 
@@ -1200,6 +1174,7 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
                     runid::ArtifactKind::FitStage => Resolved::Fit { leaf, rel_path, created },
                     runid::ArtifactKind::ProfilePoint => Resolved::Profile { leaf, rel_path, created },
                     runid::ArtifactKind::Pfilter => Resolved::Pfilter { leaf, rel_path, created },
+                    runid::ArtifactKind::Survey => Resolved::Survey { leaf, rel_path, created },
                     _ => Resolved::Sim { leaf, rel_path, created },
                 });
             }
@@ -1257,23 +1232,16 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
         pfilter_matches.push((leaf, rel, created));
     }
 
-    // Legacy kinds: match Run.hash prefix under surveys. Sims/fits/profiles/
-    // pfilters are content-addressed now (matched above); survey migrates
-    // later in M3.3.
-    let mut legacy_matches: Vec<ResolvedRun> = Vec::new();
-    for top in ["surveys"] {
-        let subroot = Path::new(root).join(top);
-        if !subroot.exists() { continue; }
-        for dir in walkdir_all(&subroot) {
-            if !dir.join("run.json").exists() { continue; }
-            let Some((run, created, rel_path)) = load_run_common(&dir, &cwd) else { continue; };
-            if !run.hash.starts_with(hash_prefix) { continue; }
-            legacy_matches.push(ResolvedRun { run, rel_path, created, abs_path: dir });
-        }
+    // New-format surveys (M3.3): match the run_id hex prefix under surveys/.
+    let mut survey_matches: Vec<(cas_read::Leaf, String, SystemTime)> = Vec::new();
+    for leaf in cas_read::resolve_survey_prefix(Path::new(root), hash_prefix) {
+        let created = leaf_created(&leaf);
+        let rel = pathdiff_str(&leaf.dir, &cwd);
+        survey_matches.push((leaf, rel, created));
     }
 
     match sim_matches.len() + fit_matches.len() + profile_matches.len()
-        + pfilter_matches.len() + legacy_matches.len() {
+        + pfilter_matches.len() + survey_matches.len() {
         0 => Err(format!("no run matches '{}' in {}", key, root)),
         1 => {
             if let Some((leaf, rel_path, created)) = sim_matches.into_iter().next() {
@@ -1285,7 +1253,8 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
             } else if let Some((leaf, rel_path, created)) = pfilter_matches.into_iter().next() {
                 Ok(Resolved::Pfilter { leaf, rel_path, created })
             } else {
-                Ok(Resolved::Legacy(legacy_matches.into_iter().next().unwrap()))
+                let (leaf, rel_path, created) = survey_matches.into_iter().next().unwrap();
+                Ok(Resolved::Survey { leaf, rel_path, created })
             }
         }
         n => {
@@ -1302,8 +1271,8 @@ fn resolve_any(root: &str, key: &str) -> Result<Resolved, String> {
             for (_, rel, _) in &pfilter_matches {
                 msg.push_str(&format!("  {:<14} {}\n", "pfilter", rel));
             }
-            for r in &legacy_matches {
-                msg.push_str(&format!("  {:<14} {}\n", kind_label(&r.run.kind), r.rel_path));
+            for (_, rel, _) in &survey_matches {
+                msg.push_str(&format!("  {:<14} {}\n", "survey", rel));
             }
             msg.push_str("refine by appending /<scenario> and/or /<seed_N>, \
                          or pass a longer hash prefix");
@@ -1334,7 +1303,6 @@ fn kind_label(kind: &RunKind) -> &'static str {
         RunKind::Fit(_)          => "fit",
         RunKind::FitStage(_)     => "fit-stage",
         RunKind::Profile(_)      => "profile",
-        RunKind::Survey(_)       => "survey",
     }
 }
 

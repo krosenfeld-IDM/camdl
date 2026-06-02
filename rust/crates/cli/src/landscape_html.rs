@@ -16,8 +16,23 @@
 //! `plotly.min.js`. Pinned at compile time.
 
 use std::path::Path;
+use std::collections::HashMap;
 
-use crate::survey::SurveyInputs;
+/// The render-side projection of a survey's display fields — the subset the
+/// pair-plot needs. Decouples `landscape_html` from the (now content-addressed)
+/// survey inputs (gh#147 M3.3); the caller fills it from the resolved survey.
+pub struct LandscapeMeta {
+    /// Page title (model stem); `None` → "camdl survey".
+    pub stem: Option<String>,
+    /// Short run hash for the subtitle.
+    pub hash_short: String,
+    /// Estimated param names (the LHS box axes).
+    pub estimated: Vec<String>,
+    /// Per-param user-declared bounds → axis ranges.
+    pub bounds: HashMap<String, (f64, f64)>,
+    pub n_points: usize,
+    pub eval_method: crate::run_meta::SurveyEvalMethod,
+}
 
 /// Vendored plotly.js bundle. Pinned to plotly.js v2.35.2 (released
 /// 2024-09-12). MIT-licensed; see vendored/plotly-2.35.2.min.js
@@ -51,7 +66,7 @@ const PLOTLY_BUNDLE: &str = include_str!("../vendored/plotly-2.35.2.min.js");
 ///   </body>
 /// </html>
 /// ```
-pub fn render(html_path: &Path, inputs: &SurveyInputs) -> Result<(), String> {
+pub fn render(html_path: &Path, meta: &LandscapeMeta) -> Result<(), String> {
     let landscape_tsv = html_path.with_file_name("landscape.tsv");
     let tsv_text = std::fs::read_to_string(&landscape_tsv)
         .map_err(|e| format!("cannot read {}: {}", landscape_tsv.display(), e))?;
@@ -60,11 +75,11 @@ pub fn render(html_path: &Path, inputs: &SurveyInputs) -> Result<(), String> {
     let json_payload = serde_json::to_string(&parsed)
         .map_err(|e| format!("json encode failure: {}", e))?;
 
-    let title = inputs.stem.clone()
+    let title = meta.stem.clone()
         .unwrap_or_else(|| "camdl survey".to_string());
-    let hash_short = inputs.canonical_hash().short().to_string();
+    let hash_short = meta.hash_short.clone();
 
-    let html = build_html(&title, &hash_short, &json_payload, inputs);
+    let html = build_html(&title, &hash_short, &json_payload, meta);
     let tmp = html_path.with_extension("html.tmp");
     std::fs::write(&tmp, html.as_bytes())
         .map_err(|e| format!("cannot write {}: {}", tmp.display(), e))?;
@@ -217,19 +232,19 @@ fn build_html(
     title: &str,
     hash_short: &str,
     landscape_json: &str,
-    inputs: &SurveyInputs,
+    meta: &LandscapeMeta,
 ) -> String {
-    // Override the parsed bounds with the SurveyInputs ones so the
-    // axis ranges reflect the user-declared LHS box.
-    let mut bounds_pairs: Vec<(String, (f64, f64))> = inputs.estimated.iter()
+    // Override the parsed bounds with the declared ones so the axis ranges
+    // reflect the user-declared LHS box.
+    let mut bounds_pairs: Vec<(String, (f64, f64))> = meta.estimated.iter()
         .map(|name| {
-            let b = inputs.bounds.get(name).copied().unwrap_or((0.0, 1.0));
+            let b = meta.bounds.get(name).copied().unwrap_or((0.0, 1.0));
             (name.clone(), b)
         }).collect();
     bounds_pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let bounds_json = serde_json::to_string(
-        &inputs.estimated.iter()
-            .map(|name| inputs.bounds.get(name).copied().unwrap_or((f64::NAN, f64::NAN)))
+        &meta.estimated.iter()
+            .map(|name| meta.bounds.get(name).copied().unwrap_or((f64::NAN, f64::NAN)))
             .collect::<Vec<_>>()
     ).unwrap_or_else(|_| "[]".into());
 
@@ -271,8 +286,8 @@ fn build_html(
         title = html_escape(title),
         css = PAIRPLOT_CSS,
         hash_short = html_escape(hash_short),
-        n_points = inputs.n_points,
-        eval = inputs.eval_method.as_str(),
+        n_points = meta.n_points,
+        eval = meta.eval_method.as_str(),
         plotly = PLOTLY_BUNDLE,
         data = landscape_json,
         bounds = bounds_json,
@@ -323,32 +338,39 @@ beta\tloglik\tloglik_se\tn_replicates\tpoint_id
         assert!(parsed.rows[0].mean_ess.is_none());
     }
 
-    #[test]
-    fn build_html_contains_data_block() {
-        let inputs = SurveyInputs {
-            model_path: "sir.camdl".into(),
+    fn sample() -> LandscapeMeta {
+        let mut bounds = HashMap::new();
+        bounds.insert("beta".into(), (0.001, 1.0));
+        LandscapeMeta {
             stem: Some("sir".into()),
-            model_hash: "f00d".repeat(16),
-            data_hashes: std::collections::HashMap::new(),
-            bounds: {
-                let mut m = std::collections::HashMap::new();
-                m.insert("beta".into(), (0.001, 1.0));
-                m
-            },
+            hash_short: "abc12345".into(),
             estimated: vec!["beta".into()],
-            fixed: std::collections::HashMap::new(),
-            scenario: None,
+            bounds,
             n_points: 10,
             eval_method: crate::run_meta::SurveyEvalMethod::Pfilter,
-            eval_particles: 100,
-            eval_replicates: 1,
-            seed: 42,
-            parameters_provenance: std::collections::HashMap::new(),
-        };
-        let html = build_html("sir", "abc12345", "[]", &inputs);
+        }
+    }
+
+    #[test]
+    fn build_html_contains_data_block() {
+        let html = build_html("sir", "abc12345", "[]", &sample());
         assert!(html.contains(r#"<script type="application/json" id="landscape-data">"#));
         assert!(html.contains(r#"<script type="application/json" id="landscape-bounds">"#));
         assert!(html.contains("plotly"));
         assert!(html.contains("camdl survey"));
+    }
+
+    /// Byte-identical golden: the rendered HTML for a fixed (title, hash, data,
+    /// inputs) is pinned by digest. This guards the `SurveyInputs` →
+    /// `LandscapeMeta` decouple (gh#147 M3.3) — the field-by-field copy must
+    /// reproduce the pair-plot byte-for-byte (title/hash params + the computed
+    /// bounds/estimated/n_points/eval the renderer reads), not just plausibly.
+    #[test]
+    fn render_output_is_byte_stable() {
+        let html = build_html("sir", "abc12345", "[]", &sample());
+        let digest = runid::ContentHash::digest_bytes(html.as_bytes()).to_hex();
+        assert_eq!(digest,
+            "834cccec86a127157095bc9ce1cbd80f5372b5d4b0925824d5eefe26595ebe13",
+            "rendered HTML digest changed — the decouple must be byte-identical");
     }
 }

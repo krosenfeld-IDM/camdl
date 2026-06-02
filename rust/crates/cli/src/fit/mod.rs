@@ -1775,7 +1775,6 @@ fn build_fit_run(
     };
     let inputs = crate::cas::fit_inputs::FitInputs {
         fit_content_hash: fit_hash,
-        stem: crate::hashing::path_stem_slug(fit_path),
         meta: crate::run_meta::FitMeta {
             model: config.model.camdl.clone(),
             model_hash,

@@ -170,3 +170,23 @@ pub fn resolve_pfilter_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
         .filter(|s| s.run_id_hex().starts_with(prefix))
         .collect()
 }
+
+/// All `surveys/` leaves of kind `Survey` (new-format likelihood-landscape
+/// surveys, M3.3). Each is one `(model × config × box × seed)` LHS landscape —
+/// a single leaf, the N points are within it (not an axis).
+pub fn walk_survey_leaves(root: &Path) -> Vec<Leaf> {
+    walk_records(&root.join("surveys"))
+        .into_iter()
+        .filter(|(_, r)| r.kind == ArtifactKind::Survey)
+        .map(|(dir, record)| Leaf { dir, record })
+        .collect()
+}
+
+/// New-format surveys whose `run_id` hex matches `prefix` (for `show`/`cat`
+/// prefix resolution alongside `resolve_sim_prefix`).
+pub fn resolve_survey_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
+    walk_survey_leaves(root)
+        .into_iter()
+        .filter(|s| s.run_id_hex().starts_with(prefix))
+        .collect()
+}
