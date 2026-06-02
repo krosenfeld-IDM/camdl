@@ -107,24 +107,31 @@ fn parse_tsv_meta_line(
     Ok(())
 }
 
-/// Write the event log as TSV.
+/// Write the event log as TSV to a path.
 pub fn write_tsv(log: &EventLog, path: &Path) -> Result<(), SimError> {
     let file = File::create(path).map_err(|e| {
         SimError::Validation(format!("cannot create event log {}: {}", path.display(), e))
     })?;
     let mut out = BufWriter::new(file);
-    let w = |out: &mut BufWriter<File>, s: &str| {
-        writeln!(out, "{}", s).map_err(|e| SimError::Validation(format!("event log write: {}", e)))
-    };
+    write_tsv_into(log, &mut out)?;
+    out.flush()
+        .map_err(|e| SimError::Validation(format!("event log flush: {}", e)))
+}
 
-    w(&mut out, TSV_MAGIC)?;
+/// Serialize the event log as TSV into any writer. The single source of the
+/// canonical TSV byte layout — shared by [`write_tsv`] (to a file) and
+/// [`to_tsv_bytes`] (to the in-leaf `event_log.tsv` CAS artifact), so the
+/// stored artifact and the `--event-log PATH` mirror are byte-identical.
+pub fn write_tsv_into<W: Write>(log: &EventLog, out: &mut W) -> Result<(), SimError> {
+    let werr = |e: std::io::Error| SimError::Validation(format!("event log write: {}", e));
+    writeln!(out, "{}", TSV_MAGIC).map_err(werr)?;
     let pools_json = serde_json::to_string(&log.initial_pools)
         .map_err(|e| SimError::Validation(format!("event log meta: {}", e)))?;
     let routes_json = serde_json::to_string(&log.transitions)
         .map_err(|e| SimError::Validation(format!("event log meta: {}", e)))?;
-    w(&mut out, &format!("# initial_pools\t{}", pools_json))?;
-    w(&mut out, &format!("# transitions\t{}", routes_json))?;
-    w(&mut out, &EVENT_COLUMNS.join("\t"))?;
+    writeln!(out, "# initial_pools\t{}", pools_json).map_err(werr)?;
+    writeln!(out, "# transitions\t{}", routes_json).map_err(werr)?;
+    writeln!(out, "{}", EVENT_COLUMNS.join("\t")).map_err(werr)?;
     for e in &log.events {
         writeln!(
             out,
@@ -136,10 +143,17 @@ pub fn write_tsv(log: &EventLog, path: &Path) -> Result<(), SimError> {
             e.step,
             weights_cell(&e.lineage_weights),
         )
-        .map_err(|er| SimError::Validation(format!("event log write: {}", er)))?;
+        .map_err(werr)?;
     }
-    out.flush()
-        .map_err(|e| SimError::Validation(format!("event log flush: {}", e)))
+    Ok(())
+}
+
+/// The canonical TSV bytes of an event log, for content-addressed storage as
+/// the `event_log.tsv` artifact alongside `traj.tsv` in a sim leaf.
+pub fn to_tsv_bytes(log: &EventLog) -> Result<Vec<u8>, SimError> {
+    let mut buf = Vec::new();
+    write_tsv_into(log, &mut buf)?;
+    Ok(buf)
 }
 
 /// Read a TSV event log back into an [`EventLog`].

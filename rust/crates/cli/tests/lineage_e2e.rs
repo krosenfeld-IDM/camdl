@@ -92,6 +92,8 @@ fn lineage_end_to_end_tsv_and_parquet() {
     }
 
     let model_arg = ir.to_str().unwrap();
+    let store = tmp.join("store");
+    let store_s = store.to_str().unwrap();
     let common = [
         "simulate",
         model_arg,
@@ -105,6 +107,8 @@ fn lineage_end_to_end_tsv_and_parquet() {
         "gamma=0.2",
         "--param",
         "N0=500",
+        "--output-dir",
+        store_s,
     ];
 
     // 2a. TSV event log (Layer 1) + emit the count trajectory.
@@ -125,8 +129,10 @@ fn lineage_end_to_end_tsv_and_parquet() {
     // 2b. Parquet event log.
     let ev_pq = tmp.join("event_log.parquet");
     let ev_pq_s = ev_pq.to_str().unwrap();
+    // No `-o`: the trajectory goes to the CAS leaf only (the event log is the
+    // artifact of interest here). The Parquet event log is mirrored to ev_pq.
     let mut args2: Vec<&str> = common.to_vec();
-    args2.extend(["--event-log", ev_pq_s, "--obs-only", "/dev/null"]);
+    args2.extend(["--event-log", ev_pq_s]);
     let out_pq = run(&camdl, &args2);
     assert!(
         out_pq.status.success(),
@@ -145,7 +151,7 @@ fn lineage_end_to_end_tsv_and_parquet() {
         &[
             "simulate", model_arg, "--backend", "gillespie", "--seed", "7",
             "--param", "beta=0.6", "--param", "gamma=0.2", "--param", "N0=500",
-            "--output", traj_base_s,
+            "--output-dir", store_s, "--output", traj_base_s,
         ],
     );
     assert!(base.status.success(), "baseline simulate failed");

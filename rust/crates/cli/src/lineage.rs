@@ -1,11 +1,11 @@
 //! CLI glue for the three-layer lineage architecture (Layers 1–2).
 //!
 //! Entry points:
-//!   - [`run_simulate_event_log`]: the `camdl simulate --event-log` path
-//!     (Layer 1). Runs the chosen backend with the identity-free event
-//!     *recorder* attached, writes the recorded [`sim::lineage::EventLog`] to
-//!     disk (TSV / Parquet), and emits the count trajectory (unless
-//!     suppressed). The simulation draws no identities.
+//!   - [`finish_event_log`]: the `camdl simulate --event-log` follow-up
+//!     (Layer 1). The recorder runs in the engine (`main::run_simulate`) and
+//!     `CasSink` stores the [`sim::lineage::EventLog`] as the `event_log.tsv`
+//!     artifact in the run leaf; this writes the optional `--event-log PATH`
+//!     mirror and prints the `lineage realize` hint. No identities are drawn.
 //!   - [`cmd_lineage_realize`]: the offline `camdl lineage realize` path
 //!     (Layer 2). Replays an event log at `--identity-seed`, sampling identity
 //!     attributions from the recorded weights, and writes a line list with the
@@ -20,13 +20,12 @@ use std::collections::HashMap;
 
 use sim::lineage::{
     tree::{select_samples, summarize, Flat, SamplingScheme, Stratified, TransmissionForest},
-    DemeId, LineListFormat, LineListWriter, TsvLineListWriter,
+    DemeId, EventLog, LineListFormat, LineListWriter, TsvLineListWriter,
 };
 
 use crate::args::{
     LineageCohortArgs, LineageRealizeArgs, LineageSojournArgs, LineageTreeArgs, SimulateArgs,
 };
-use crate::util::SimRun;
 
 /// Resolve the requested artifact format from `--format` / `--tsv`.
 /// Default is Parquet (production), per the proposal.
@@ -123,120 +122,61 @@ fn build_writer(
     }
 }
 
-/// `camdl simulate --event-log` — Layer 1: record the identity-free event log.
-pub fn run_simulate_event_log(a: &SimulateArgs, run: &SimRun) {
-    let explicit_out = a
-        .event_log
-        .clone()
-        .filter(|p| p.as_os_str() != "auto");
-    let format = resolve_format_with_path(a.tsv, &a.format, explicit_out.as_deref())
+/// `camdl simulate --event-log` follow-up (Layer 1 → Layer 2). The recorded
+/// event log is the system of record as the `event_log.tsv` artifact in the
+/// run leaf (written by `CasSink`, alongside `traj.tsv`); this only writes the
+/// optional `--event-log PATH` mirror and prints the `lineage realize` hint.
+///
+/// `exact` is true for Gillespie (each event is a single transition) and false
+/// for batched backends (sub-dt batching introduces a bias that
+/// `lineage realize` quantifies).
+pub fn finish_event_log(a: &SimulateArgs, event_log: &EventLog, exact: bool, leaf_event_log: Option<&str>) {
+    // A real `--event-log PATH` (anything but the bare `auto` sentinel) is
+    // mirrored to disk in the format implied by --tsv / --format / extension.
+    let mirror = a.event_log.clone().filter(|p| p.as_os_str() != "auto");
+    let format = resolve_format_with_path(a.tsv, &a.format, mirror.as_deref())
         .unwrap_or_else(|e| {
             eprintln!("error: {}", e);
             std::process::exit(1);
         });
-    let out_path = explicit_out.unwrap_or_else(|| default_out("event_log", format));
-
-    let (traj, model, event_log, exact) =
-        crate::util::run_simulation_event_log(run).unwrap_or_else(|e| {
-            eprintln!("error: {}", e);
-            std::process::exit(1);
-        });
-
-    sim::lineage::event_log_io::write(&event_log, &out_path, format).unwrap_or_else(|e| {
-        eprintln!("error: writing event log: {:?}", e);
-        std::process::exit(1);
-    });
-
-    let n_lineage = event_log
-        .events
-        .iter()
-        .filter(|e| e.lineage_weights.is_some())
-        .count();
-    eprintln!(
-        "event log: wrote {} events ({} lineage) to {} ({}); {}",
-        event_log.events.len(),
-        n_lineage,
-        out_path.display(),
-        match format {
-            LineListFormat::Tsv => "tsv",
-            LineListFormat::Parquet => "parquet",
-        },
-        if exact {
-            "exact (Gillespie)".to_string()
-        } else {
-            "batched — sub-dt bias is reported by `lineage realize`".to_string()
-        },
-    );
-    eprintln!(
-        "  next: camdl lineage realize {} --identity-seed <N> -o line_list.{}",
-        out_path.display(),
-        match format {
-            LineListFormat::Tsv => "tsv",
-            LineListFormat::Parquet => "parquet",
-        }
-    );
-
-    // Count-trajectory mirror: `-o PATH` only, never stdout (Item C — the
-    // trajectory is byte-identical to a run without --event-log at the same
-    // seed; the canonical bytes are the event log on disk). With no `-o` there
-    // is nothing to mirror, so emit nothing.
-    let output_path = a.output.as_ref().map(|p| p.to_string_lossy().into_owned());
-    let suppress_traj = a.obs_only.is_some();
-    if suppress_traj {
-        return;
-    }
-    let Some(out_path) = output_path else {
-        return;
+    let fmt_ext = match format {
+        LineListFormat::Tsv => "tsv",
+        LineListFormat::Parquet => "parquet",
+    };
+    let n_lineage = event_log.events.iter().filter(|e| e.lineage_weights.is_some()).count();
+    let exactness = if exact {
+        "exact (Gillespie)"
+    } else {
+        "batched — sub-dt bias is reported by `lineage realize`"
     };
 
-    let mut out: Box<dyn Write> = Box::new(std::io::BufWriter::new(
-        std::fs::File::create(&out_path).unwrap_or_else(|e| {
-            eprintln!("error: cannot create {}: {}", out_path, e);
+    if let Some(ref path) = mirror {
+        sim::lineage::event_log_io::write(event_log, path, format).unwrap_or_else(|e| {
+            eprintln!("error: writing event log mirror: {:?}", e);
             std::process::exit(1);
-        }),
-    ));
-
-    let int_names: Vec<&str> = model
-        .compartments
-        .iter()
-        .filter(|c| c.kind == ir::model::CompartmentKind::Integer)
-        .map(|c| c.name.as_str())
-        .collect();
-    let real_names: Vec<&str> = model
-        .compartments
-        .iter()
-        .filter(|c| c.kind == ir::model::CompartmentKind::Real)
-        .map(|c| c.name.as_str())
-        .collect();
-    let tr_names: Vec<&str> = model.transitions.iter().map(|t| t.name.as_str()).collect();
-
-    writeln!(out, "# {}", crate::version::VERSION).ok();
-    write!(out, "t").ok();
-    for n in &int_names {
-        write!(out, "\t{}", n).ok();
-    }
-    for n in &real_names {
-        write!(out, "\t{}", n).ok();
-    }
-    for n in &tr_names {
-        write!(out, "\tflow_{}", n).ok();
-    }
-    writeln!(out).ok();
-
-    for snap in &traj.snapshots {
-        write!(out, "{}", snap.t).ok();
-        for &c in &snap.int_state.counts {
-            write!(out, "\t{}", c).ok();
+        });
+        eprintln!(
+            "event log: {} events ({} lineage); stored as event_log.tsv in the run leaf, mirrored to {} ({}); {}",
+            event_log.events.len(), n_lineage, path.display(), fmt_ext, exactness,
+        );
+        eprintln!(
+            "  next: camdl lineage realize {} --identity-seed <N> -o line_list.{}",
+            path.display(), fmt_ext,
+        );
+    } else {
+        eprintln!(
+            "event log: {} events ({} lineage) stored as event_log.tsv in the run leaf; {}",
+            event_log.events.len(), n_lineage, exactness,
+        );
+        match leaf_event_log {
+            Some(path) => eprintln!(
+                "  next: camdl lineage realize {} --identity-seed <N> -o line_list.tsv", path
+            ),
+            None => eprintln!(
+                "  next: camdl lineage realize <event_log> --identity-seed <N> -o line_list.tsv"
+            ),
         }
-        for &v in &snap.real_state.values {
-            write!(out, "\t{:.4}", v).ok();
-        }
-        for &f in &snap.flows.counts {
-            write!(out, "\t{}", f).ok();
-        }
-        writeln!(out).ok();
     }
-    out.flush().ok();
 }
 
 /// `camdl lineage realize EVENT_LOG --identity-seed N -o LINE_LIST` — Layer 2:

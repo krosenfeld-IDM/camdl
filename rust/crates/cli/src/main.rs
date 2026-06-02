@@ -617,21 +617,6 @@ fn run_simulate(a: &args::SimulateArgs) {
         seed, // overridden per-replicate below
     };
 
-    // ── Lineage event-log path (three-layer architecture, Layer 1) ──────────
-    // `--event-log` is single-run only (conflicts with --seeds / --replicates /
-    // --draws, enforced by clap). Records the identity-free event log to disk
-    // and still emits the count trajectory if requested. The count trajectory
-    // is byte-identical to the run without --event-log (Tier 2a) — the recorder
-    // draws no randomness. Realize the log into a line list with
-    // `camdl lineage realize`.
-    if a.event_log.is_some() {
-        let mut run = base_sim_run;
-        run.scenario_name = scenario_list.first().cloned().flatten();
-        run.seed = seed;
-        lineage::run_simulate_event_log(a, &run);
-        return;
-    }
-
     // ── Pre-flight: validate obs model availability ─────────────────────────
     // We need the model to check observation blocks, but we don't want to
     // run simulation twice. Do a dry load to validate, then run in the loop.
@@ -933,11 +918,54 @@ fn run_simulate(a: &args::SimulateArgs) {
     };
 
     let mut sink = SimSink { cas: cas_sink, stream };
+    // The `--event-log` branch drives the sink's `RunSink` methods directly
+    // (one recorded cell), so the trait must be in scope here.
+    use engine::RunSink as _;
 
-    engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    });
+    // ── Lineage event-log path (three-layer architecture, Layer 1) ──────────
+    // `--event-log` records the identity-free event log. It is single-run only
+    // (conflicts with --seeds / --replicates / --draws, enforced by clap), so
+    // the grid is exactly one cell. The recorder is passive — it draws no
+    // randomness — so the trajectory (and thus the leaf's run_id and
+    // `traj.tsv` bytes) is byte-identical to a plain `simulate` at the same
+    // seed (Tier 2a). The recorded log rides on the `CellResult` and `CasSink`
+    // writes it into the SAME leaf as `event_log.tsv`, alongside `traj.tsv`.
+    // We reuse `plan_grid` (not a hand-rolled spec) so the cell — and its
+    // run_id — match the normal path exactly. `--event-log PATH` additionally
+    // mirrors the log to PATH (symmetric with `-o` for the trajectory).
+    let recorded: Option<(sim::lineage::EventLog, bool)> = if a.event_log.is_some() {
+        let (specs, grid) = engine::plan_grid(&job);
+        if specs.len() != 1 {
+            eprintln!("error: --event-log is single-run only (no --seeds / \
+                       --replicates / --draws / multiple --scenario)");
+            std::process::exit(1);
+        }
+        sink.on_start(&grid);
+        let spec = specs.into_iter().next().expect("len checked == 1");
+        let (traj, model, event_log, exact) =
+            util::run_simulation_event_log(&spec.sim_run).unwrap_or_else(|e| {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            });
+        let cell = engine::CellResult { spec, traj, model, event_log: Some(event_log) };
+        sink.merge_cell(&cell).unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+        sink.on_finish(&grid).unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+        // Recover the log for the optional mirror + realize hint (merge_cell
+        // only borrowed the cell, so we can move it back out here).
+        cell.event_log.map(|el| (el, exact))
+    } else {
+        engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+        None
+    };
 
     // The combined wide-format trajectory bytes (None ⟺ --obs-only). The CAS
     // leaves/ensemble are the system of record; this buffer is the mirror —
@@ -981,6 +1009,19 @@ fn run_simulate(a: &args::SimulateArgs) {
 
     // ── Write the combined observation mirror ───────────────────────────────
     sink.stream.write_obs_output();
+
+    // ── Event-log mirror + realize hint (Layer 1 → Layer 2) ─────────────────
+    // The canonical event log is the `event_log.tsv` artifact in the leaf;
+    // `--event-log PATH` additionally mirrors it to PATH. Either way, point
+    // the user at the next step (`lineage realize`).
+    if let Some((event_log, exact)) = recorded {
+        // The leaf's `event_log.tsv` is a real file path `lineage realize` can
+        // read directly (run_path is relative to the cas root, includes the
+        // `sims/` prefix).
+        let leaf_event_log = sink.cas.completed_runs.last()
+            .map(|e| format!("{}/{}/event_log.tsv", cas_root, e.run_path));
+        lineage::finish_event_log(a, &event_log, exact, leaf_event_log.as_deref());
+    }
 }
 
 /// `RunSink` for `camdl simulate`: writes the per-cell content-addressed

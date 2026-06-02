@@ -93,6 +93,11 @@ pub struct CellResult {
     pub spec: CellSpec,
     pub traj: sim::Trajectory,
     pub model: ir::Model,
+    /// The recorded identity-free event log, present only for the
+    /// `simulate --event-log` path (the recorder is passive — Tier 2a — so a
+    /// cell carrying `Some(..)` has the same `traj`/run_id as one carrying
+    /// `None`). A `CasSink` writes it into the leaf as `event_log.tsv`.
+    pub event_log: Option<sim::lineage::EventLog>,
 }
 
 /// The grid shape, computed once up front so a sink can size headers /
@@ -246,7 +251,7 @@ pub fn run_job(job: &SimulateJob, sink: &mut dyn RunSink) -> Result<(), String> 
 /// Run a single planned cell to a [`CellResult`].
 fn run_one_cell(spec: CellSpec) -> Result<CellResult, String> {
     let (traj, model) = util::run_simulation(&spec.sim_run)?;
-    Ok(CellResult { spec, traj, model })
+    Ok(CellResult { spec, traj, model, event_log: None })
 }
 
 /// Run a lone cell with a per-timestep `t/t_end` + ETA progress bar on stderr.
@@ -312,7 +317,7 @@ fn run_one_cell_with_progress(spec: CellSpec) -> Result<CellResult, String> {
     }
 
     let result = util::simulate_compiled(&compiled, &model, &spec.sim_run, Some(&pb))
-        .map(|traj| CellResult { spec, traj, model });
+        .map(|traj| CellResult { spec, traj, model, event_log: None });
 
     pb.finish_and_clear();
     result

@@ -1424,6 +1424,107 @@ fn simulate_writes_nothing_to_stdout_without_output_flag() {
 /// `.filter(|p| p.join("run.json").exists())`. Depth-agnostic so it handles
 /// the factored 5-level CAS path (model/config/params/scenario/seed), not
 /// just the legacy 3-level layout.
+/// The sole leaf (a dir with a `run.json`) under `sims`, panicking if not
+/// exactly one.
+fn sole_leaf(sims: &Path) -> PathBuf {
+    let dirs: Vec<_> = walkdir(sims).into_iter()
+        .filter(|p| p.join("run.json").exists()).collect();
+    assert_eq!(dirs.len(), 1, "expected exactly one leaf under {:?}, got {}", sims, dirs.len());
+    dirs.into_iter().next().unwrap()
+}
+
+/// A model with a `#[lineage]`-annotated transition (required by
+/// `--event-log`), compiled to IR. Returns `None` if camdlc is unavailable
+/// (the test then skips, matching `lineage_e2e`).
+fn compile_lineage_model(bin: &Path, tmp: &Path) -> Option<PathBuf> {
+    const SIR_LINEAGE: &str = r#"
+time_unit = 'days
+compartments { S, I, R }
+parameters {
+  beta  : rate  in [0.001, 5.0]
+  gamma : rate  in [0.01, 1.0]
+  N0    : count in [100, 10000]
+}
+let N = S + I + R
+transitions {
+  #[lineage]
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+init { S = 499  I = 1 }
+simulate { from = 0 'days  to = 60 'days }
+"#;
+    let model = tmp.join("sir_lineage.camdl");
+    std::fs::write(&model, SIR_LINEAGE).unwrap();
+    let ir = tmp.join("sir_lineage.ir.json");
+    let compiled = Command::new(bin)
+        .args(["compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()])
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .output().expect("spawn compile");
+    if !compiled.status.success() {
+        eprintln!("skipping: camdl compile failed (camdlc unavailable): {}",
+            String::from_utf8_lossy(&compiled.stderr));
+        return None;
+    }
+    Some(ir)
+}
+
+/// `simulate --event-log` records the event log as a content-addressed
+/// artifact that sits ALONGSIDE `traj.tsv` in the SAME `Sim` leaf — not as a
+/// loose file. The recorder is passive (Tier 2a), so the leaf's run_id and
+/// `traj.tsv` bytes are identical to a plain `simulate` at the same seed; the
+/// event log is just an additional declared artifact. `--event-log PATH` also
+/// writes PATH as a byte-identical mirror (symmetric with `-o` for the
+/// trajectory).
+#[test]
+fn event_log_lands_in_sim_leaf_alongside_traj() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(ir) = compile_lineage_model(&bin, tmp.path()) else { return; };
+    let ir_s = ir.to_string_lossy().into_owned();
+    let common = ["--backend", "gillespie", "--seed", "7",
+                  "--param", "beta=0.6", "--param", "gamma=0.2", "--param", "N0=500"];
+
+    // (1) plain simulate → leaf with traj.tsv only.
+    let out_plain = tmp.path().join("plain");
+    let st = Command::new(&bin)
+        .args(["simulate", &ir_s]).args(common)
+        .args(["--output-dir", &out_plain.to_string_lossy(),
+               "-o", &tmp.path().join("traj_plain.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "plain simulate should succeed");
+    let plain_leaf = sole_leaf(&out_plain.join("sims"));
+    let plain_run_id = read_meta(&plain_leaf)["run_id"].as_str().unwrap().to_string();
+    let plain_traj = std::fs::read(plain_leaf.join("traj.tsv")).unwrap();
+    assert!(!plain_leaf.join("event_log.tsv").exists(),
+        "plain simulate must NOT write event_log.tsv");
+
+    // (2) simulate --event-log PATH → leaf with traj.tsv + event_log.tsv, same
+    //     run_id and identical traj bytes; PATH is a byte-identical mirror.
+    let out_el = tmp.path().join("el");
+    let mirror = tmp.path().join("mirror.tsv");
+    let st = Command::new(&bin)
+        .args(["simulate", &ir_s]).args(common)
+        .args(["--output-dir", &out_el.to_string_lossy(),
+               "--event-log", &mirror.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success(), "simulate --event-log should succeed");
+    let el_leaf = sole_leaf(&out_el.join("sims"));
+    let el_meta = read_meta(&el_leaf);
+
+    assert_eq!(el_meta["run_id"].as_str().unwrap(), plain_run_id,
+        "--event-log must not change the sim run_id (passive recorder, Tier 2a)");
+    assert_eq!(std::fs::read(el_leaf.join("traj.tsv")).unwrap(), plain_traj,
+        "trajectory must be byte-identical with/without --event-log");
+    assert!(el_leaf.join("event_log.tsv").exists(),
+        "event_log.tsv should sit alongside traj.tsv in the leaf");
+    assert!(el_meta["artifacts"].as_object().unwrap().contains_key("event_log.tsv"),
+        "event_log.tsv must be declared in the run.json artifacts exact-set");
+    assert_eq!(std::fs::read(&mirror).unwrap(),
+               std::fs::read(el_leaf.join("event_log.tsv")).unwrap(),
+        "--event-log PATH mirror must be byte-identical to the leaf's event_log.tsv");
+}
+
 fn walkdir(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];

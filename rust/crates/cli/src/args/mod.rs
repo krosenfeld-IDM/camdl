@@ -548,15 +548,19 @@ pub struct SimulateArgs {
     #[arg(long, value_name = "TEXT")]
     pub label: Option<String>,
 
-    /// Record the Layer-1 lineage **event log** to disk (2026-05-20
-    /// three-layer architecture). Requires a model with `#[lineage]`
-    /// annotations and a backend that declares the LINEAGES capability
-    /// (Gillespie / tau-leap / chain-binomial). The event log is
-    /// identity-free; realize it into a line list with `camdl lineage
-    /// realize`. Pass a path, or `auto` for `event_log.<ext>` in the
-    /// current directory. Single-run only — conflicts with --seeds /
-    /// --replicates / --draws.
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["seeds", "replicates", "draws"])]
+    /// Record the Layer-1 lineage **event log** (2026-05-20 three-layer
+    /// architecture). Requires a model with `#[lineage]` annotations and a
+    /// backend that declares the LINEAGES capability (Gillespie / tau-leap /
+    /// chain-binomial). The event log is stored as the content-addressed
+    /// `event_log.tsv` artifact in the run's CAS leaf, alongside `traj.tsv`
+    /// (read it with `camdl cat <id> --stream event_log.tsv`); it is
+    /// identity-free — realize it into a line list with `camdl lineage
+    /// realize`. Pass a PATH to also mirror the log to that file (format from
+    /// --tsv/--format/extension); bare `--event-log` (or `auto`) records only
+    /// into the leaf. Single-run only — conflicts with --seeds / --replicates
+    /// / --draws.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "auto",
+          conflicts_with_all = ["seeds", "replicates", "draws"])]
     pub event_log: Option<PathBuf>,
 
     /// Event-log format: `parquet` (default, production) or `tsv`

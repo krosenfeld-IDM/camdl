@@ -975,6 +975,26 @@ impl crate::engine::RunSink for CasSink {
 
         let mut artifacts = runid::Artifacts::new();
         artifacts.insert("traj.tsv", traj_bytes);
+        // `simulate --event-log`: the recorded event log is a first-class
+        // artifact in THIS leaf, alongside `traj.tsv`, declared in the
+        // exact-set (so the on-disk `event_log.tsv` path is a valid input to
+        // `lineage realize`). The recorder is passive (Tier 2a) so the run_id
+        // is unchanged — a freshly-committed leaf a plain `simulate` would
+        // write simply gains one more artifact. (Re-recording into a leaf that
+        // already exists without it is an idempotent no-op — same as the obs
+        // child — so `--force` or a fresh identity is needed to add it after
+        // the fact.)
+        if let Some(ref el) = cell.event_log {
+            match sim::lineage::event_log_io::to_tsv_bytes(el) {
+                Ok(bytes) => { artifacts.insert("event_log.tsv", bytes); }
+                Err(e) => {
+                    self.counter += 1;
+                    self.errors.push(format!("scenario={} seed={}: event log serialize: {:?}",
+                        name, spec.process_seed, e));
+                    return Ok(());
+                }
+            }
+        }
         let store = runid::FsCasStore::new(self.root());
         let dest = match store.commit_atomic(&dir, record, artifacts) {
             Ok(d) => d,
