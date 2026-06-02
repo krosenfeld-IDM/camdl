@@ -2081,6 +2081,27 @@ pub struct CatArgs {
     pub stream: Option<String>,
 }
 
+#[derive(Args)]
+#[command(after_help = colored_help!("\
+Rebuilds the derived index (`<root>/index.json`) from a fresh walk of every
+`run.json` under the store. The index is only a cache that accelerates `list`,
+`show`, and `cat`; `run.json` is always the source of truth, so `reindex` is
+optional — it is useful after copying a `results/` tree, or to drop entries for
+leaves that were removed out of band.
+
+Examples:
+  # Rebuild the index for the default ./results store
+  camdl reindex
+
+  # Rebuild the index for a specific store root
+  camdl reindex /data/runs
+"))]
+pub struct ReindexArgs {
+    /// Root directory to scan (default: ./results)
+    #[arg(default_value = "./results", env = "CAMDL_OUTPUT_DIR")]
+    pub root: PathBuf,
+}
+
 // ─── compare ──────────────────────────────────────────────────────────────────
 
 /// `camdl compare` — multi-model prequential comparison table.

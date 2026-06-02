@@ -1009,6 +1009,140 @@ fn label_works_on_sim_runs() {
         sim_meta2);
 }
 
+/// `camdl reindex` rebuilds `<root>/index.json` from the live run.json files,
+/// and the index accelerates a subsequent `show` without changing its output.
+/// (gh#147 M4: the derived index.)
+#[test]
+fn reindex_builds_index_and_show_still_resolves() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("output");
+
+    // Cache two sims.
+    for seed in ["42", "99"] {
+        Command::new(&bin)
+            .args(["simulate", &golden_sir_basic().to_string_lossy(),
+                   "--scenario", "baseline", "--seed", seed, "--cas",
+                   "--output-dir", &output.to_string_lossy(),
+                   "-o", &tmp.path().join("t.tsv").to_string_lossy()])
+            .status().expect("spawn");
+    }
+
+    // No index yet (the writer does not emit one in M4 piece 1).
+    assert!(!output.join("index.json").exists(), "no index before reindex");
+
+    let out = Command::new(&bin)
+        .args(["reindex", &output.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(out.status.success(), "reindex should succeed: {}",
+        String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("reindexed 2 run"), "summary should count 2 runs: {}", stdout);
+    assert!(output.join("index.json").exists(), "index.json written");
+    assert!(!output.join("index.json.tmp").exists(),
+        "no index.json.tmp left after a successful atomic write");
+
+    // The index entries point at the live leaves: show by short hash resolves.
+    let dir = walkdir(&output.join("sims")).into_iter()
+        .find(|p| p.join("run.json").exists()).unwrap();
+    let short = &read_meta(&dir)["run_id"].as_str().unwrap()[..8].to_string();
+    let out = Command::new(&bin)
+        .args(["show", short, "--root", &output.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(out.status.success(), "show via index should resolve: {}",
+        String::from_utf8_lossy(&out.stderr));
+}
+
+/// Invariant 1 (miss → walk → repair): a leaf added out of band AFTER an index
+/// exists must still be found by `show` — never reported "no match" because the
+/// index lacks it.
+#[test]
+fn out_of_band_leaf_is_found_via_walk_fallback() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("output");
+
+    // Cache one sim and build an index that knows only about it.
+    Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "1", "--cas",
+               "--output-dir", &output.to_string_lossy(),
+               "-o", &tmp.path().join("t.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    let st = Command::new(&bin)
+        .args(["reindex", &output.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success());
+
+    // Add a SECOND sim out of band (seed 2). The index from the reindex above
+    // does NOT contain it.
+    Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "2", "--cas",
+               "--output-dir", &output.to_string_lossy(),
+               "-o", &tmp.path().join("t.tsv").to_string_lossy()])
+        .status().expect("spawn");
+
+    // Find the out-of-band leaf's run_id (seed_2 segment).
+    let oob_dir = walkdir(&output.join("sims")).into_iter()
+        .find(|p| p.join("run.json").exists()
+              && p.file_name().unwrap().to_string_lossy().starts_with("seed_2-"))
+        .expect("seed_2 leaf");
+    let oob_short = &read_meta(&oob_dir)["run_id"].as_str().unwrap()[..8].to_string();
+
+    // `show` of the out-of-band hash must succeed via the walk fallback, NOT
+    // report "no match" because the (stale) index lacks the entry.
+    let out = Command::new(&bin)
+        .args(["show", oob_short, "--root", &output.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(out.status.success(),
+        "out-of-band leaf must resolve via walk fallback: stderr={}",
+        String::from_utf8_lossy(&out.stderr));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("no run matches"),
+        "must not report 'no match' for an out-of-band leaf");
+}
+
+/// Invariant 2 (stale → drop): a leaf whose entry is in the index but whose
+/// directory was removed must NOT resolve to the dead path; `show` reports a
+/// clean "no match" instead of pointing at the missing leaf.
+#[test]
+fn removed_leaf_does_not_resolve_to_dead_path() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("output");
+
+    Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "1", "--cas",
+               "--output-dir", &output.to_string_lossy(),
+               "-o", &tmp.path().join("t.tsv").to_string_lossy()])
+        .status().expect("spawn");
+    let st = Command::new(&bin)
+        .args(["reindex", &output.to_string_lossy()])
+        .status().expect("spawn");
+    assert!(st.success());
+
+    let dir = walkdir(&output.join("sims")).into_iter()
+        .find(|p| p.join("run.json").exists()).unwrap();
+    let short = read_meta(&dir)["run_id"].as_str().unwrap()[..8].to_string();
+    // It resolves while present.
+    assert!(Command::new(&bin)
+        .args(["show", &short, "--root", &output.to_string_lossy()])
+        .status().expect("spawn").success(), "resolves while present");
+
+    // Remove the leaf out of band; the index entry is now stale.
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let out = Command::new(&bin)
+        .args(["show", &short, "--root", &output.to_string_lossy()])
+        .output().expect("spawn");
+    assert!(!out.status.success(),
+        "a removed leaf must not resolve (no dead path)");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no run matches"),
+        "expected clean 'no run matches', got: {}", stderr);
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Collect all directory paths under `root` (non-recursive children of

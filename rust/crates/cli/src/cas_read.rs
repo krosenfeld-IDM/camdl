@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use runid::{ArtifactKind, RunRecord};
 
+use crate::cas_index;
+
 // The fit-level provenance sidecar (`fit.meta.json`) lives in
 // `run_meta::FitSidecar` (it carries `run_meta` provenance types —
 // `ResolvedPriorEntry`, `ParameterProvenance`), with `write_fit_sidecar` /
@@ -87,6 +89,32 @@ impl Leaf {
     }
 }
 
+/// Resolve leaves of `kind` whose `run_id` hex starts with `prefix`, using the
+/// derived index as an accelerator with `run.json` as the source of truth.
+///
+/// The fast path consults [`cas_index::resolve_prefix`], every hit of which is
+/// verified against the live `run.json` (a stale/repointed entry is dropped —
+/// never resolved to a dead path). On an index miss (no index, no matching
+/// entry, or every candidate stale) it falls back to the full per-kind walk —
+/// which finds out-of-band-added leaves the index lacks — and then repairs the
+/// index from a fresh full-tree walk (best-effort; a cache, never a gate).
+fn resolve_prefix_indexed(
+    root: &Path,
+    kind: ArtifactKind,
+    prefix: &str,
+    walk: impl Fn(&Path) -> Vec<Leaf>,
+) -> Vec<Leaf> {
+    if let Some(hits) = cas_index::resolve_prefix(root, kind, prefix) {
+        return hits;
+    }
+    // Index miss → authoritative full walk (out-of-band leaves are found
+    // here), then repair the index so the next lookup is fast.
+    let hits: Vec<Leaf> =
+        walk(root).into_iter().filter(|s| s.run_id_hex().starts_with(prefix)).collect();
+    let _ = cas_index::rebuild(root);
+    hits
+}
+
 /// All `sims/` leaves of kind `Sim` (new-format trajectory runs).
 pub fn walk_sim_leaves(root: &Path) -> Vec<Leaf> {
     walk_records(&root.join("sims"))
@@ -100,10 +128,7 @@ pub fn walk_sim_leaves(root: &Path) -> Vec<Leaf> {
 /// prefix resolution; combined with the legacy `run.hash` matches in
 /// `browse::resolve_any` so a user can address any run during M2→M3).
 pub fn resolve_sim_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
-    walk_sim_leaves(root)
-        .into_iter()
-        .filter(|s| s.run_id_hex().starts_with(prefix))
-        .collect()
+    resolve_prefix_indexed(root, ArtifactKind::Sim, prefix, walk_sim_leaves)
 }
 
 /// All `fits/` leaves of kind `FitStage` (new-format fit-stage runs, M3.2).
@@ -118,10 +143,7 @@ pub fn walk_fit_leaves(root: &Path) -> Vec<Leaf> {
 /// New-format fit stages whose `run_id` hex matches `prefix` (for `show`/`cat`
 /// prefix resolution alongside `resolve_sim_prefix`).
 pub fn resolve_fit_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
-    walk_fit_leaves(root)
-        .into_iter()
-        .filter(|s| s.run_id_hex().starts_with(prefix))
-        .collect()
+    resolve_prefix_indexed(root, ArtifactKind::FitStage, prefix, walk_fit_leaves)
 }
 
 /// All `profiles/` leaves of kind `ProfilePoint` (new-format profile-point
@@ -138,10 +160,7 @@ pub fn walk_profile_leaves(root: &Path) -> Vec<Leaf> {
 /// New-format profile points whose `run_id` hex matches `prefix` (for
 /// `show`/`cat` prefix resolution alongside `resolve_sim_prefix`).
 pub fn resolve_profile_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
-    walk_profile_leaves(root)
-        .into_iter()
-        .filter(|s| s.run_id_hex().starts_with(prefix))
-        .collect()
+    resolve_prefix_indexed(root, ArtifactKind::ProfilePoint, prefix, walk_profile_leaves)
 }
 
 /// All `pfilters/` leaves of kind `Pfilter` (new-format particle-filter evals,
@@ -158,10 +177,7 @@ pub fn walk_pfilter_leaves(root: &Path) -> Vec<Leaf> {
 /// New-format pfilter evals whose `run_id` hex matches `prefix` (for
 /// `show`/`cat` prefix resolution alongside `resolve_sim_prefix`).
 pub fn resolve_pfilter_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
-    walk_pfilter_leaves(root)
-        .into_iter()
-        .filter(|s| s.run_id_hex().starts_with(prefix))
-        .collect()
+    resolve_prefix_indexed(root, ArtifactKind::Pfilter, prefix, walk_pfilter_leaves)
 }
 
 /// All `surveys/` leaves of kind `Survey` (new-format likelihood-landscape
@@ -178,8 +194,5 @@ pub fn walk_survey_leaves(root: &Path) -> Vec<Leaf> {
 /// New-format surveys whose `run_id` hex matches `prefix` (for `show`/`cat`
 /// prefix resolution alongside `resolve_sim_prefix`).
 pub fn resolve_survey_prefix(root: &Path, prefix: &str) -> Vec<Leaf> {
-    walk_survey_leaves(root)
-        .into_iter()
-        .filter(|s| s.run_id_hex().starts_with(prefix))
-        .collect()
+    resolve_prefix_indexed(root, ArtifactKind::Survey, prefix, walk_survey_leaves)
 }

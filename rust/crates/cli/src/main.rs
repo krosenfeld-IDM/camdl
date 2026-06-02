@@ -4,6 +4,7 @@ mod test_support;   // collision-free unique_temp_dir for unit tests (gh#153)
 mod util;
 mod params_resolver;  // unified parameter-value resolver (2026-05-25 CLI UX rev 2)
 mod cas_read;       // generic RunRecord reader (new-format sims); transitional alongside run_meta (gh#147)
+mod cas_index;      // derived run_id→leaf index + `camdl reindex` (gh#147 M4)
 mod hashing;
 mod resolve;        // Resolve bridge: CLI inputs → runid identity (CAS run-identity refactor, gh#147)
 mod run_meta;       // unified Run/RunKind ADT — see docs/dev/proposals/2026-04-19-unified-output-tree.md
@@ -144,6 +145,9 @@ pub(crate) enum Command {
 
     /// Emit trajectory or observation output from a cached run
     Cat(args::CatArgs),
+
+    /// Rebuild the derived run index (`<root>/index.json`)
+    Reindex(args::ReindexArgs),
 
     /// Compare fits by prequential scores (elpd, CRPS, PIT)
     Compare(args::CompareArgs),
@@ -382,6 +386,7 @@ fn main() {
         Command::List(a)                => browse::cmd_list(&a),
         Command::Show(a)                => browse::cmd_show(&a),
         Command::Cat(a)                 => browse::cmd_cat(&a),
+        Command::Reindex(a)             => cmd_reindex(&a),
         Command::Compare(a)             => compare::cmd_compare(&a),
         Command::Compile(a) => {
             let refs: Vec<&str> = a.args.iter().map(String::as_str).collect();
@@ -412,6 +417,19 @@ fn main() {
 // below are for the *other*, unrelated RNG streams owned by this module.
 const SEED_MIX_UNIFORM: u64 = 0xd4a5_b1ce;      // uniform draws RNG
 const SEED_MIX_PRIOR: u64  = 0x0014_b1ce;      // prior draws RNG
+
+/// `camdl reindex`: rebuild `<root>/index.json` from a fresh full walk of
+/// every `run.json` under the store. Drops entries for leaves no longer on
+/// disk and adds every leaf found.
+fn cmd_reindex(a: &args::ReindexArgs) {
+    match cas_index::rebuild(&a.root) {
+        Ok(n) => println!("reindexed {} run(s) under {}", n, a.root.display()),
+        Err(e) => {
+            eprintln!("error: failed to write index at {}: {}", a.root.display(), e);
+            std::process::exit(1);
+        }
+    }
+}
 
 fn run_simulate(a: &args::SimulateArgs) {
     let _eval_stats_guard = crate::util::EvalStatsReportGuard::start();
