@@ -213,18 +213,33 @@ let render_all t cache ppf =
     and calls [exit 1]. *)
 exception Compile_error of string
 
-(** Render diagnostics to stderr and raise [Compile_error].
-    Respects [json_errors_mode]. *)
-let report_and_exit t cache =
+(** Render every diagnostic in [t] to stderr, honouring
+    [json_errors_mode]: a single JSON array under [--json-errors],
+    otherwise the ANSI source-block boxes. Returns the JSON payload
+    (so [report_and_exit] can carry it in [Compile_error]); the return
+    value is ignored on the ANSI path.
+
+    This is the single rendering surface for BOTH the blocking-error
+    path ([report_and_exit] = [render] + raise) and the non-blocking
+    warning/lint path in [Compiler.compile]. Routing both through here
+    keeps JSON and ANSI behaviour identical and guarantees one emission
+    shape per call. *)
+let render t cache : string =
   if !json_errors_mode then (
     let msg = to_json_string t in
     Printf.eprintf "%s\n" msg;
-    raise (Compile_error msg)
+    msg
   ) else (
     Fmt.set_style_renderer Fmt.stderr `Ansi_tty;
     render_all t cache Fmt.stderr;
-    raise (Compile_error "compilation failed")
+    "compilation failed"
   )
+
+(** Render diagnostics to stderr and raise [Compile_error].
+    Respects [json_errors_mode] via [render]. *)
+let report_and_exit t cache =
+  let msg = render t cache in
+  raise (Compile_error msg)
 
 (* ── Shorthand constructors ──────────────────────────────────────────────── *)
 

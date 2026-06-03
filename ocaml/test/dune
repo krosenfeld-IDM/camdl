@@ -20,6 +20,16 @@
  (modules test_lint)
  (libraries ir alcotest))
 
+; --json-errors render path (gh#170). Drives Compiler.compile with
+; Diagnostics.json_errors_mode set and captures stderr, so it exercises
+; the real CLI render path (not collect_diagnostics). Asserts the
+; single-emission invariant: a warned-but-clean compile under
+; --json-errors emits exactly ONE JSON array.
+(test
+ (name test_json_errors)
+ (modules test_json_errors)
+ (libraries compiler ir alcotest yojson unix))
+
 ; Compiler-diagnostics harness (gh#168). Reads its `.camdl` fixtures from
 ; `test/lints/` and the model corpora (`ocaml/golden`, `tests/*`) by
 ; resolving the real repo root at runtime — the corpora outside the

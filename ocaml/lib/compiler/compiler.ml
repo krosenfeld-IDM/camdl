@@ -275,18 +275,23 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
     Passtime.time "lint" (fun () -> run_lint d);
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
-    (* Single render of any collected non-blocking diagnostics
-       (expansion warnings + dimcheck infos/warnings). M3 in the
-       2026-04-19 review: previously expansion warnings were rendered
-       once in compile_detail_result and again here after dimcheck,
-       duplicating output. *)
-    if Diagnostics.has_any d.ctx.diags then begin
-      Fmt.set_style_renderer Fmt.stderr `Ansi_tty;
-      Diagnostics.render_all d.ctx.diags d.source Fmt.stderr
-    end;
     let transitions = differentiate_transitions d in
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
+    (* Single render of any collected non-blocking diagnostics
+       (expansion warnings + dimcheck infos + L4xx lints). This is the
+       ONLY non-blocking emission, and it fires AFTER the final E600
+       [has_errors] check, so it runs only when the compile is
+       definitely succeeding — it can never co-fire with a
+       [report_and_exit] above. (Were it placed before the autodiff
+       check, an E600-with-warnings model would emit twice: once here,
+       once from [report_and_exit] re-rendering everything — a cosmetic
+       double-print in ANSI, two invalid JSON arrays under
+       --json-errors. Routing through [Diagnostics.render] gives JSON
+       under [--json-errors] and the ANSI box otherwise, matching the
+       error path's shape exactly.) *)
+    if Diagnostics.has_any d.ctx.diags then
+      ignore (Diagnostics.render d.ctx.diags d.source);
     let m = { d.model with Ir.transitions = transitions } in
     Ok (maybe_constant_fold m)
   | Error e -> Error e
