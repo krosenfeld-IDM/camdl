@@ -3205,28 +3205,6 @@ camdl pfilter MODEL --params P.toml --data train.tsv \
     --particles 5000 --save-final-state final_particles.tsv
 ```
 
-### 21.9 Value of Information
-
-> **Planned — not yet implemented.** No `camdl voi` subcommand exists in the
-> current CLI. The batch `[design.*]` machinery that feeds it is in place (it
-> emits `outputs.tsv` for a downstream VOI consumer), but the consumer is not
-> yet wired. Tracking: `docs/dev/proposals/2026-05-14-reactive-interventions-and-evsi.md`.
-
-```bash
-camdl voi run voi.toml
-```
-
-### 21.10 Web Server
-
-> **Planned — not yet implemented.** No `camdl serve` subcommand exists in the
-> current CLI.
-
-```bash
-camdl serve [--port 8080] [DIR]
-```
-
-Serves experiment output directories over HTTP for the web editor.
-
 ---
 
 ## 22. Worked Examples

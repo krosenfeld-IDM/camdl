@@ -359,22 +359,22 @@ algorithm config, tool version)`. Same inputs → same hash → cache hit (no
 re-run).
 
 ```bash
-camdl fit where fit.toml          # output dir for this fit
-camdl fit status fit.toml         # which stages have completed
-camdl list                        # all cached fits in the project
-camdl show <hash>                 # full metadata for one fit
-camdl cat <hash>                  # emit trajectory or observations
-camdl fit diff <hash1> <hash2>    # compare two fits
+camdl list                        # all cached runs (content-addressed leaves)
+camdl show <run>                  # full metadata for one run
+camdl cat  <run>                  # emit its trajectory or observations
+camdl fit summary <fit-dir>       # convergence, gate verdict, MLE table for a fit
+camdl fit table   results/fits/   # one row per fit across a results tree
+camdl fit diff <a.toml> <b.toml>  # diff two fit.toml *configs* (not run hashes)
 ```
 
 The iterative model-building loop:
 
 ```bash
-prev_hash=$(camdl fit where fit.toml)
+cp fit.toml fit_prev.toml               # snapshot the config you're about to change
 # edit fit.toml — say, widen a prior
-camdl fit run fit.toml
-new_hash=$(camdl fit where fit.toml)
-camdl fit diff $prev_hash $new_hash
+camdl fit diff fit_prev.toml fit.toml   # what changed in the config
+camdl fit run fit.toml                  # output lands in a new content-addressed leaf
+camdl list                              # the new run appears alongside the previous one
 ```
 
 Cite a fit hash in writeups — paste it into a methods section and any reader
