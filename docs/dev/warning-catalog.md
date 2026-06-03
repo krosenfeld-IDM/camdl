@@ -78,6 +78,7 @@ mean this?", not "this is suspicious internally").
 | Code | Severity | Category | Summary |
 |---|---|---|---|
 | L401 | Warning | discretization | discretization-correction pattern uses fixed time literal — likely meant `dt` (gh#54) |
+| L402 | Warning | dead-code | compartment declared but referenced nowhere — likely a leftover (gh#168) |
 
 ### L401 — fixed-time-literal in Euler-correction pattern
 
@@ -110,6 +111,45 @@ discretization is the calibrated form, not a bug), v2's per-site
 suppression syntax (gh#55) will let users silence the lint
 explicitly. Until then, the lint fires; users can suppress at the
 CLI level via gh#56's `--allow=L401` flag.
+
+### L402 — dead compartment
+
+**Fires when:** a compartment is declared in the `compartments` block
+but its name is referenced *nowhere* in the rest of the model — not in
+any transition (stoichiometry, `source`/`dest`, or rate expression),
+ODE equation, intervention action, observation projection or
+likelihood, model-level `let` binding, initial condition, the balance
+constraint, the identity-tracked (lineage) set, or a time-function
+definition.
+
+**Why:** A compartment touched by none of these contributes nothing to
+the dynamics, the observation model, or the initial state. It is almost
+always a leftover from editing (a removed transition, a renamed state)
+rather than an intentional inert pool. The model still compiles and
+runs, so this is a lint (Warning), not an error.
+
+**Fix:** remove the compartment, or wire it into a transition / init /
+observation as intended.
+
+**False positives (explicitly NOT flagged):** the reference scan is
+comprehensive precisely to keep the false-positive rate at zero. A
+compartment is live if it appears in *any* position above. In
+particular:
+- a compartment used only inside a `let` binding body
+  (`let N = S + I + R`, with `R` nowhere else) is live;
+- a compartment used only in an observation (`CurrentPop`,
+  `CurrentPopSum`, or inside a `DerivedExpr` / likelihood expression)
+  is live;
+- a compartment used only as an initial-condition target is live.
+
+`CumulativeFlow`'s string argument names a *flow / transition*, not a
+compartment, and is deliberately excluded from the reference set — it
+never keeps a compartment alive.
+
+The lint lives in `ocaml/lib/ir/lint.ml` (`Lint.check_model`), mirroring
+the Dimcheck pass, and is routed to a non-blocking `Diagnostics.warning`
+by `compiler.ml`'s `run_lint` (run by both `camdlc compile` and
+`camdlc check`).
 
 ## Future work
 

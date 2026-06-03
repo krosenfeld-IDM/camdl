@@ -199,6 +199,22 @@ let run_dimcheck (d : compile_detail) : unit =
     ) dc_result.diagnostics
   end
 
+(** Run the model linter on a compiled model and route its results into
+    the diagnostic context as non-blocking warnings. Lints (L4xx) flag
+    semantically valid but discouraged patterns (e.g. L402 dead
+    compartment); they render with hint text but never set [has_errors],
+    so the build does not fail on a lint. Called right after
+    [run_dimcheck] so both `camdlc compile` and `camdlc check` run it. *)
+let run_lint (d : compile_detail) : unit =
+  let lint_result = Lint.check_model d.model in
+  List.iter (fun (l : Lint.diagnostic) ->
+    match l.severity with
+    | Lint.Warning ->
+      Diagnostics.warning d.ctx.diags
+        ~code:l.code ~loc:Diagnostics.no_loc
+        ~message:l.message ?detail:l.detail ?hint:l.hint ()
+  ) lint_result.diagnostics
+
 let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model, string) result =
   match compile_detail_result ~name ~filename src with
   | Ok d ->
@@ -207,6 +223,7 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
     if Passtime.time "validate" (fun () -> run_validate d) then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     Passtime.time "dimcheck" (fun () -> run_dimcheck d);
+    Passtime.time "lint" (fun () -> run_lint d);
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     (* Single render of any collected non-blocking diagnostics

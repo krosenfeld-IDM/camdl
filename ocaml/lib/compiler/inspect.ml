@@ -1099,6 +1099,7 @@ let run_check path =
        (GH #9: previously check silently skipped dimcheck and reported
        "no errors" on models that simulate would reject with E301). *)
     Compiler.run_dimcheck d;
+    Compiler.run_lint d;
     let ctx = d.Compiler.ctx in
     let source = d.Compiler.source in
     let model = d.Compiler.model in

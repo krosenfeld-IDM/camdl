@@ -14,3 +14,8 @@
  (modules test_dimcheck)
  (libraries compiler ir alcotest qcheck-core qcheck-alcotest)
  (deps (source_tree ../golden)))
+
+(test
+ (name test_lint)
+ (modules test_lint)
+ (libraries ir alcotest))
