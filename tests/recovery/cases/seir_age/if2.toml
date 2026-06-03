@@ -1,0 +1,27 @@
+# Paths are relative to this file; output_dir is relative to the working dir
+# (the Makefile runs from this case dir, so both resolve here).
+output_dir = "results"
+
+[model]
+camdl = "model.camdl"
+
+[data.observations]
+cases_child = "data/cases_child.tsv"
+cases_adult = "data/cases_adult.tsv"
+
+[estimate]
+beta  = { bounds = [0.001, 0.5], start = 0.04 }
+sigma = { bounds = [0.01, 1.0],  start = 0.25 }
+gamma = { bounds = [0.01, 1.0],  start = 0.12 }
+
+[fixed]
+rho = 0.6
+k   = 10.0
+
+[stages.scout]
+algorithm  = "if2"
+backend    = "chain_binomial"
+chains     = 4
+particles  = 2000
+iterations = 150
+cooling    = 0.7

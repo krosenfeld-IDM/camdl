@@ -1,0 +1,10 @@
+# Planted ground-truth parameters for the seir_age recovery case. `make synth`
+# simulates model.camdl at these values (seed 1, chain_binomial) to produce the
+# per-age weekly observation streams the IF2 / PGAS / PMMH fits then try to
+# recover. `beta`, `sigma`, `gamma` are estimated; `rho`, `k` are held fixed in
+# the fit configs at the values below.
+beta  = 0.05
+sigma = 0.2
+gamma = 0.1
+rho   = 0.6
+k     = 10.0

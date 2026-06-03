@@ -1,0 +1,60 @@
+# Age-structured SEIR — first case in the synthetic-data parameter-recovery
+# harness. Two age groups mixing through a contact matrix; priors live inline so
+# the model is self-describing for IF2 / PGAS / PMMH. Plant θ (see truth.toml),
+# simulate the per-age weekly case streams, then fit and check that the
+# estimators recover the planted values.
+
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+dimensions {
+  age = [child, adult]
+}
+
+stratify(by = age)
+
+let N[a in age] = S[a] + E[a] + I[a] + R[a]
+
+parameters {
+  beta  : rate        in [0.001, 0.5]  ~ log_normal(mu = -3.0, sigma = 0.5)
+  sigma : rate        in [0.01,  1.0]  ~ log_normal(mu = -1.6, sigma = 0.3)
+  gamma : rate        in [0.01,  1.0]  ~ log_normal(mu = -2.3, sigma = 0.3)
+  rho   : probability in [0.0,   1.0]  ~ beta(alpha = 2.0, beta = 2.0)
+  k     : positive    in [1.0,   100.0] ~ gamma(shape = 2.0, rate = 0.2)
+}
+
+tables {
+  C_age : age × age = [[12.0, 4.0], [4.0, 8.0]]
+}
+
+transitions {
+  infection[a in age] : S[a] --> E[a]
+    @ beta * S[a] * sum(b in age, C_age[a, b] * I[b] / N[b])
+  progression[a in age] : E[a] --> I[a]  @ sigma * E[a]
+  recovery[a in age]    : I[a] --> R[a]  @ gamma * I[a]
+}
+
+observations {
+  cases_child : {
+    projected  = incidence(recovery_child)
+    every      = 7 'days
+    likelihood = neg_binomial(mean = rho * projected, r = k)
+  }
+  cases_adult : {
+    projected  = incidence(recovery_adult)
+    every      = 7 'days
+    likelihood = neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+init {
+  S[child] = 4990
+  S[adult] = 5000
+  I[child] = 10
+}
+
+simulate {
+  from = 0 'days
+  to   = 140 'days
+}
