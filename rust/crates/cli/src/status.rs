@@ -56,15 +56,28 @@ pub fn concise_path(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// Human-readable byte size: `1.0 MB`, `12.3 KB`, `512 B`. For the compile
-/// banner's IR size and similar.
+/// Human-readable byte size, no space: `1.0MB`, `12.3KB`, `512B`. The
+/// space-less form (à la `ls -lh` / `du -h` / `docker`) is non-SI but reads
+/// compactly in a CLI; used for the compile banner's IR size and similar.
 pub fn human_bytes(n: u64) -> String {
     const KB: f64 = 1024.0;
     let b = n as f64;
-    if b < KB { format!("{n} B") }
-    else if b < KB * KB { format!("{:.1} KB", b / KB) }
-    else if b < KB * KB * KB { format!("{:.1} MB", b / (KB * KB)) }
-    else { format!("{:.1} GB", b / (KB * KB * KB)) }
+    if b < KB { format!("{n}B") }
+    else if b < KB * KB { format!("{:.1}KB", b / KB) }
+    else if b < KB * KB * KB { format!("{:.1}MB", b / (KB * KB)) }
+    else { format!("{:.1}GB", b / (KB * KB * KB)) }
+}
+
+/// The IR-to-source size ratio for the compile banner, e.g. ` (3.2× source)`
+/// or ` (2545× source)` — how much bigger the compiled IR is than the `.camdl`
+/// (dominated by stratification expansion for big models; mostly JSON
+/// verbosity for tiny ones). Leading space so it appends cleanly; empty when
+/// the source size is unknown.
+pub fn expansion(ir_bytes: u64, src_bytes: u64) -> String {
+    if src_bytes == 0 { return String::new(); }
+    let r = ir_bytes as f64 / src_bytes as f64;
+    if r >= 10.0 { format!(" ({:.0}\u{d7} source)", r) }
+    else { format!(" ({:.1}\u{d7} source)", r) }
 }
 
 #[cfg(test)]
@@ -72,11 +85,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn human_bytes_scales() {
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(1536), "1.5 KB");
-        assert_eq!(human_bytes(1_048_576), "1.0 MB");
-        assert_eq!(human_bytes(5 * 1_048_576), "5.0 MB");
+    fn human_bytes_scales_no_space() {
+        assert_eq!(human_bytes(512), "512B");
+        assert_eq!(human_bytes(1536), "1.5KB");
+        assert_eq!(human_bytes(1_048_576), "1.0MB");
+        assert_eq!(human_bytes(5 * 1_048_576), "5.0MB");
+    }
+
+    #[test]
+    fn expansion_ratio_formats_and_handles_unknown() {
+        assert_eq!(expansion(0, 0), "");          // unknown source → omitted
+        assert_eq!(expansion(100, 0), "");
+        assert_eq!(expansion(3200, 1000), " (3.2\u{d7} source)");   // <10 → 1 dp
+        assert_eq!(expansion(5_600_000, 2200), " (2545\u{d7} source)"); // ≥10 → 0 dp
     }
 
     #[test]

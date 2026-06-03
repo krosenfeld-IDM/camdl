@@ -466,11 +466,17 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
     let started = std::time::Instant::now();
     let json = run_camdlc(path)?;
     let elapsed = started.elapsed();
+    // `compiled  model.camdl   5.6MB IR in 8.1s (2545× source)`. The ratio is
+    // IR bytes / source bytes — how much the compile blew the model up (big
+    // for stratified models; ~JSON-verbosity for tiny ones). Source size via
+    // metadata (cheap, no read).
+    let src_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     crate::status::step("compiled", format!(
-        "{}   {} IR in {:.1}s",
+        "{}   {} IR in {:.1}s{}",
         crate::status::concise_path(path),
         crate::status::human_bytes(json.len() as u64),
         elapsed.as_secs_f64(),
+        crate::status::expansion(json.len() as u64, src_bytes),
     ));
 
     // Persist to the cache (atomic tmp+rename, race-safe) when enabled+writable;
