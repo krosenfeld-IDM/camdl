@@ -403,12 +403,16 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
         .join(format!("camdl_{}.ir.json", std::process::id()));
     std::fs::write(&tmp, &json)
         .map_err(|e| format!("error writing temp IR: {}", e))?;
-    // `compiled  model.camdl → /tmp/…ir.json   3.3s (1.0 MB)`. The IR size is
-    // the JSON byte length (a useful proxy for model/expansion scale).
+    // `compiled  aggfit/model.camdl   3.4 MB IR in 8.1s`. The temp IR path is
+    // internal (a discarded /tmp file the user never touches), so it's
+    // dropped; the size (JSON bytes — a useful proxy for model/expansion
+    // scale) and wall time are what matter. Source shown concisely
+    // (project-root-relative when possible).
     crate::status::step("compiled", format!(
-        "{} \u{2192} {}   {:.1}s ({})",
-        path, tmp.to_string_lossy(), elapsed.as_secs_f64(),
+        "{}   {} IR in {:.1}s",
+        crate::status::concise_path(path),
         crate::status::human_bytes(json.len() as u64),
+        elapsed.as_secs_f64(),
     ));
     Ok((tmp.to_string_lossy().into_owned(), Some(tmp)))
 }

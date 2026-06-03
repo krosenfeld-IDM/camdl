@@ -39,6 +39,23 @@ pub fn hint(detail: impl std::fmt::Display) {
     eprintln!("{:>VERB_W$} {}", "", detail.to_string().dimmed());
 }
 
+/// A concise display path: relative to the current directory when the path is
+/// under it (≈ relative to the project root, since `results/` lives there), so
+/// `~/proj/nga/aggfit/model.camdl` shown from the project root reads
+/// `aggfit/model.camdl`; otherwise just the file name. Keeps milestone lines
+/// short when the user passed a long absolute path.
+pub fn concise_path(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(rel) = p.strip_prefix(&cwd) {
+            return rel.display().to_string();
+        }
+    }
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Human-readable byte size: `1.0 MB`, `12.3 KB`, `512 B`. For the compile
 /// banner's IR size and similar.
 pub fn human_bytes(n: u64) -> String {
@@ -60,5 +77,14 @@ mod tests {
         assert_eq!(human_bytes(1536), "1.5 KB");
         assert_eq!(human_bytes(1_048_576), "1.0 MB");
         assert_eq!(human_bytes(5 * 1_048_576), "5.0 MB");
+    }
+
+    #[test]
+    fn concise_path_falls_back_to_basename_off_cwd() {
+        // An absolute path that cannot be under the test's cwd → just the
+        // file name. (The under-cwd → relative branch is env-dependent, so
+        // only the deterministic fallback is asserted.)
+        assert_eq!(concise_path("/nonexistent/deep/dir/model_C_lga44.camdl"),
+            "model_C_lga44.camdl");
     }
 }
