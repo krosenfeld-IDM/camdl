@@ -20,6 +20,7 @@ mod pfilter;        // used internally by fit runner for data loading
 mod pfilter_cas;    // gh#147 (M3.3): pfilter-eval CAS identity (model/config/params/seed)
 mod caltime_load;   // dated-data loader: column detection + date→internal-time (2026-05-22)
 mod data;
+mod docs;           // `camdl docs <topic>` — embedded, version-locked usage docs
 mod fit;
 mod compare;
 mod if2;
@@ -231,6 +232,9 @@ Examples:
   camdl inspect sir.camdl --transitions
 "))]
     Inspect(Passthrough),
+
+    /// Show embedded usage guides (offline, version-matched to this binary)
+    Docs(args::DocsArgs),
 }
 
 #[derive(Subcommand)]
@@ -418,6 +422,7 @@ fn main() {
                 eprintln!("error: {}", e); std::process::exit(1);
             });
         }
+        Command::Docs(a)                => docs::cmd_docs(&a),
     }
 }
 

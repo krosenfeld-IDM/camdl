@@ -1838,6 +1838,38 @@ pub struct DataSplitArgs {
     pub holdout: Option<PathBuf>,
 }
 
+// ─── docs ─────────────────────────────────────────────────────────────────────
+
+/// `camdl docs [TOPIC]` — print embedded, version-locked usage guides.
+#[derive(Args)]
+#[command(after_help = colored_help!("\
+Examples:
+  camdl docs                    # list available topics
+  camdl docs inference          # print the inference guide
+  camdl docs fit                # aliases resolve (fit -> inference)
+  camdl docs --search rhat      # find where a term is discussed
+  camdl docs --all              # print every guide (the full corpus)
+  camdl docs --json             # machine-readable topic index
+
+Docs are embedded in the binary: they match this version of camdl and
+work offline, no checkout required."))]
+pub struct DocsArgs {
+    /// Topic to print (omit to list available topics)
+    pub topic: Option<String>,
+
+    /// Search all topics for a term (case-insensitive; all words must match)
+    #[arg(long, short = 's', value_name = "QUERY")]
+    pub search: Option<String>,
+
+    /// Print every topic concatenated (the full corpus)
+    #[arg(long)]
+    pub all: bool,
+
+    /// Print the topic index as JSON (for tools/agents)
+    #[arg(long)]
+    pub json: bool,
+}
+
 // ─── lineage ────────────────────────────────────────────────────────────────────
 
 /// `camdl lineage realize EVENT_LOG --identity-seed N -o LINE_LIST` — Layer 2:
