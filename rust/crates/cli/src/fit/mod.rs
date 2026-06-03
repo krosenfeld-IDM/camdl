@@ -46,6 +46,17 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
 
     let _eval_stats_guard = crate::util::EvalStatsReportGuard::start();  // gh#audit-H5
     sim::eval_stats::set_allow_degenerate_rates(a.allow_degenerate_rates);  // gh#audit-C6
+    // gh#162: a fit nests Rayon parallelism (chains × particle filter) on the
+    // global pool, which otherwise defaults to ALL logical cores regardless of
+    // `chains`. Cap it from `--parallel` / CAMDL_PARALLEL (0 = all cores) so the
+    // thread budget is explicit and matches pfilter/profile/survey/batch.
+    // `build_global` is one-shot per process; ignore the already-initialised
+    // Err so re-entry (tests) stays safe. Mirrors pfilter.rs.
+    if a.parallel > 0 {
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(a.parallel)
+            .build_global();
+    }
     // M-1 break per docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md
     // §"Migration": fail loudly on removed flags before any work.
     if let Some(raw) = a._removed_starts_from.as_deref() {

@@ -103,6 +103,18 @@ fn run_fit(bin: &Path, fit_toml: &Path, threads: usize) -> std::process::Output 
         .expect("camdl fit run must spawn")
 }
 
+/// Like `run_fit` but caps the pool via the `--parallel` FLAG (gh#162) rather
+/// than the RAYON_NUM_THREADS env — exercises the flag's wiring end to end.
+fn run_fit_parallel(bin: &Path, fit_toml: &Path, parallel: usize) -> std::process::Output {
+    Command::new(bin)
+        .arg("fit").arg("run").arg(fit_toml)
+        .arg("--allow-nonconverged-scout")
+        .arg("--parallel").arg(parallel.to_string())
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .output()
+        .expect("camdl fit run must spawn")
+}
+
 /// Every CAS fit-stage leaf under `out/fits/`: (stage label, run_id), read
 /// from each `run.json` (kind = `fit_stage`).
 fn stage_leaves(out: &Path) -> Vec<(String, String)> {
@@ -139,6 +151,32 @@ fn stage_run_id(leaves: &[(String, String)], stage_substr: &str) -> String {
         .unwrap_or_else(|| panic!("no stage leaf matching '{stage_substr}' in {leaves:?}"))
         .1
         .clone()
+}
+
+/// Read the scout stage's θ̂ from its `mle_params.toml`, stripping the
+/// `[provenance]` block (a wall-clock timestamp + a fit_hash of the
+/// path-differing fit.toml, both of which legitimately differ between runs).
+/// Used to assert parallel-invariance of the estimate.
+fn read_scout_mle(out: &Path) -> String {
+    let leaves = stage_leaves(out);
+    let scout_dir = {
+        let mut stack = vec![out.join("fits")];
+        let mut hit = None;
+        while let Some(d) = stack.pop() {
+            if d.join("mle_params.toml").exists()
+                && d.to_string_lossy().contains("scout")
+            {
+                hit = Some(d);
+                break;
+            }
+            if let Ok(es) = std::fs::read_dir(&d) {
+                for e in es.flatten() { if e.path().is_dir() { stack.push(e.path()); } }
+            }
+        }
+        hit.unwrap_or_else(|| panic!("no scout mle_params.toml in {leaves:?}"))
+    };
+    let full = std::fs::read_to_string(scout_dir.join("mle_params.toml")).unwrap();
+    full.split("[provenance]").next().unwrap_or(&full).trim().to_string()
 }
 
 /// Property 1: edit the posterior stage's config → the scout leaf is a cache
@@ -207,31 +245,7 @@ fn fit_theta_hat_identical_across_parallelism() {
     let tmp = tempfile::tempdir().unwrap();
     let data = write_data(tmp.path());
 
-    let read_mle = |out: &Path| -> String {
-        let leaves = stage_leaves(out);
-        // The fit segment dir holds the scout leaf; read its mle_params.toml.
-        let scout_dir = {
-            let mut stack = vec![out.join("fits")];
-            let mut hit = None;
-            while let Some(d) = stack.pop() {
-                if d.join("mle_params.toml").exists()
-                    && d.to_string_lossy().contains("scout")
-                {
-                    hit = Some(d);
-                    break;
-                }
-                if let Ok(es) = std::fs::read_dir(&d) {
-                    for e in es.flatten() { if e.path().is_dir() { stack.push(e.path()); } }
-                }
-            }
-            hit.unwrap_or_else(|| panic!("no scout mle_params.toml in {leaves:?}"))
-        };
-        // The θ̂ is the parameter section; the `[provenance]` block carries a
-        // wall-clock timestamp and a fit_hash of the (path-differing) fit.toml
-        // — both legitimately differ between the two runs.
-        let full = std::fs::read_to_string(scout_dir.join("mle_params.toml")).unwrap();
-        full.split("[provenance]").next().unwrap_or(&full).trim().to_string()
-    };
+    let read_mle = read_scout_mle;
 
     let out1 = tmp.path().join("out1");
     let out8 = tmp.path().join("out8");
@@ -252,6 +266,37 @@ fn fit_theta_hat_identical_across_parallelism() {
     assert_eq!(read_mle(&out1), read_mle(&out8),
         "θ̂ (scout mle_params.toml) must be bit-identical at --parallel 1 vs 8 \
          (CAS fits are watchdog-None and the engine is parallel-invariant)");
+}
+
+/// gh#162: the `--parallel` FLAG itself caps the pool (not just the
+/// RAYON_NUM_THREADS env), and θ̂ is bit-identical at `--parallel 1` vs
+/// `--parallel 4` — confirming the flag is a thread budget, never a numerical
+/// knob. (Property 2 covers the env path; this covers the flag path.)
+#[test]
+fn fit_theta_hat_identical_across_parallel_flag() {
+    let Some(bin) = bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let data = write_data(tmp.path());
+
+    let out1 = tmp.path().join("p1");
+    let out4 = tmp.path().join("p4");
+    let toml1 = write_fit_toml(tmp.path(), &out1, &data, 4);
+    let toml4 = {
+        // Same config, different output dir (so both runs compute independently).
+        let p = tmp.path().join("fit_p4.toml");
+        let body = std::fs::read_to_string(&toml1).unwrap()
+            .replace(&out1.display().to_string(), &out4.display().to_string());
+        std::fs::write(&p, body).unwrap();
+        p
+    };
+    let r1 = run_fit_parallel(&bin, &toml1, 1);
+    assert!(r1.status.success(), "fit --parallel 1 failed: {}", String::from_utf8_lossy(&r1.stderr));
+    let r4 = run_fit_parallel(&bin, &toml4, 4);
+    assert!(r4.status.success(), "fit --parallel 4 failed: {}", String::from_utf8_lossy(&r4.stderr));
+
+    assert_eq!(read_scout_mle(&out1), read_scout_mle(&out4),
+        "θ̂ must be bit-identical at --parallel 1 vs --parallel 4 (the flag is a \
+         thread budget, not a numerical knob)");
 }
 
 /// Property 3 (Q2): `fit run` must announce the directory its stage leaves

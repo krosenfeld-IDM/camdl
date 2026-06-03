@@ -712,6 +712,14 @@ pub struct FitRunArgs {
     #[arg(long)]
     pub stage: Option<String>,
 
+    /// Max worker threads for the Rayon pool that runs the chains and, within
+    /// each chain, the particle filter. `0` (the default) uses all logical
+    /// cores. Results are bit-identical regardless of this value — it caps the
+    /// thread budget / CPU footprint, not the numerics. Mirrors `--parallel`
+    /// on pfilter/profile/survey/batch; also honored via `CAMDL_PARALLEL`.
+    #[arg(long, default_value_t = 0, env = "CAMDL_PARALLEL")]
+    pub parallel: usize,
+
     /// RNG seed (default: 1)
     #[arg(long)]
     pub seed: Option<u64>,
