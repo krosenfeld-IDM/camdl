@@ -7,88 +7,141 @@ type compile_detail = {
   source  : Source_cache.t;
 }
 
-let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : string)
-    : (compile_detail, string) result =
+(* ── Front-end core ───────────────────────────────────────────────────────
+
+   The single, non-aborting lex/parse/expand front end. It runs the
+   pipeline once, accumulating EVERY front-end diagnostic — the E001 on a
+   lex/parse/expand failure, the W100 lex warnings, and the parser-action
+   errors — into the returned [Diagnostics.t], and never renders or
+   aborts. Both consumers build on it:
+
+   - [compile_detail_result] (the production path) wraps it: on a
+     front-end error it renders the diagnostics and returns [Error]; on
+     a clean expand it returns [Ok].
+   - [collect_diagnostics] (test/tooling) uses it directly and continues
+     the downstream pipeline.
+
+   Return shape: [(detail, diags, source)]. [detail] is [None] when
+   lex/parse/expand structurally failed (then [diags] holds the E001);
+   [Some d] when expansion produced a model (then [diags] is [d.ctx.diags],
+   which may itself carry expansion-phase errors/warnings and the drained
+   W100 / parser-action diagnostics — the caller decides whether to
+   continue). [source] is the [Source_cache] for the input, returned even
+   on the [None] path so a renderer can show the offending line. *)
+let front_end_collect ?(name = "model") ?(filename = "<input>") (src : string)
+    : compile_detail option * Diagnostics.t * Source_cache.t =
   let source = Source_cache.of_string ~filename src in
   (* Drain any stale lex-phase warnings from a previous compilation in the
-     same process.  pending_warnings is a mutable global ref; clearing it
+     same process. pending_warnings is a mutable global ref; clearing it
      here ensures we never replay warnings from a prior run. *)
   Lexer.pending_warnings := [];
   Parser_errors.pending_errors := [];
-  try
-    let lexbuf = Lexing.from_string src in
-    Lexing.set_filename lexbuf filename;
-    let t_parse = Sys.time () in
-    let decls =
-      try Parser.file Lexer.token lexbuf
-      with
-      | Lexer.LexError msg ->
-        let pos = lexbuf.Lexing.lex_curr_p in
-        let diags = Diagnostics.create () in
-        Diagnostics.error diags
-          ~code:"E001"
-          ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
-          ~message:(Printf.sprintf "lex error: %s" msg)
-          ();
-        Diagnostics.report_and_exit diags source
-      | Parser.Error ->
-        let pos = lexbuf.Lexing.lex_curr_p in
-        let diags = Diagnostics.create () in
-        Diagnostics.error diags
-          ~code:"E001"
-          ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
-          ~message:"syntax error"
-          ();
-        Diagnostics.report_and_exit diags source
-    in
-    Passtime.record "parse" (Sys.time () -. t_parse);
-    let source_dir =
-      if filename = "<input>" then ""
-      else Filename.dirname filename
-    in
-    let (model, ctx, summary) =
-      Passtime.time "expand"
-        (fun () -> Expander.expand_detail ~source_dir ~filename name decls)
-    in
-    (* Drain any lex-phase warnings (e.g. inconsistent digit grouping) collected
-       before the expander's ctx.diags was available. *)
-    List.iter (fun (sp, ep, msg) ->
-      Diagnostics.warning ctx.diags
-        ~code:"W100"
-        ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
-        ~message:msg
-        ()
-    ) (List.rev !Lexer.pending_warnings);
-    Lexer.pending_warnings := [];
-    (* Drain parser-action errors collected from semantic actions that
-       used to `failwith` (n3 in the 2026-04-19 compiler review). *)
-    List.iter (fun (sp, ep, code, msg, hint) ->
-      Diagnostics.error ctx.diags
-        ~code
-        ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
-        ~message:msg
-        ?hint
-        ()
-    ) (List.rev !Parser_errors.pending_errors);
-    Parser_errors.pending_errors := [];
-    (* Errors: render all diagnostics and exit.
-       Warnings are NOT rendered here — callers render once at the end
-       of their pipeline so expansion-phase warnings don't get printed
-       twice when downstream passes (dimcheck) also emit diagnostics
-       (M3 in the 2026-04-19 compiler review). *)
-    if Diagnostics.has_errors ctx.diags then
-      Diagnostics.report_and_exit ctx.diags source;
-    Ok { model; ctx; summary; source }
+  let parse_diags = Diagnostics.create () in
+  match
+    (try
+       let lexbuf = Lexing.from_string src in
+       Lexing.set_filename lexbuf filename;
+       let t_parse = Sys.time () in
+       let decls =
+         (try Ok (Parser.file Lexer.token lexbuf)
+          with
+          | Lexer.LexError msg ->
+            let pos = lexbuf.Lexing.lex_curr_p in
+            Diagnostics.error parse_diags ~code:"E001"
+              ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
+              ~message:(Printf.sprintf "lex error: %s" msg) ();
+            Error ()
+          | Parser.Error ->
+            let pos = lexbuf.Lexing.lex_curr_p in
+            Diagnostics.error parse_diags ~code:"E001"
+              ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
+              ~message:"syntax error" ();
+            Error ())
+       in
+       Passtime.record "parse" (Sys.time () -. t_parse);
+       decls
+     with
+     | Failure msg ->
+       Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+         ~message:msg ();
+       Error ()
+     | exn ->
+       Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+         ~message:(Printexc.to_string exn) ();
+       Error ())
   with
-  | Diagnostics.Compile_error msg ->
-    (* m5 in 2026-04-19 review. Diagnostics were already rendered by
-       report_and_exit. Return the payload so tests can inspect it
-       (in JSON mode this is the serialized diagnostic array); CLI
-       entry points recognize the payload shape and exit without
-       re-printing a redundant Error line. *)
-    Error msg
-  | Failure msg -> Error msg
-  | exn -> Error (Printexc.to_string exn)
+  | Error () -> (None, parse_diags, source)
+  | Ok decls ->
+    let source_dir =
+      if filename = "<input>" then "" else Filename.dirname filename
+    in
+    (match
+       (try Ok (Passtime.time "expand"
+                  (fun () -> Expander.expand_detail ~source_dir ~filename name decls))
+        with
+        | Failure msg ->
+          Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+            ~message:msg ();
+          Error ()
+        | exn ->
+          Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+            ~message:(Printexc.to_string exn) ();
+          Error ())
+     with
+     | Error () -> (None, parse_diags, source)
+     | Ok (model, ctx, summary) ->
+       (* Drain lex-phase warnings (e.g. inconsistent digit grouping)
+          collected before the expander's ctx.diags was available. *)
+       List.iter (fun (sp, ep, msg) ->
+         Diagnostics.warning ctx.diags ~code:"W100"
+           ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
+           ~message:msg ()
+       ) (List.rev !Lexer.pending_warnings);
+       Lexer.pending_warnings := [];
+       (* Drain parser-action errors collected from semantic actions that
+          used to `failwith` (n3 in the 2026-04-19 compiler review). *)
+       List.iter (fun (sp, ep, code, msg, hint) ->
+         Diagnostics.error ctx.diags ~code
+           ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
+           ~message:msg ?hint ()
+       ) (List.rev !Parser_errors.pending_errors);
+       Parser_errors.pending_errors := [];
+       (Some { model; ctx; summary; source }, ctx.diags, source))
+
+(** Production front end: run [front_end_collect], and on any front-end
+    error (lex/parse/expand failure, or a parser-action error drained
+    into [ctx.diags]) render the diagnostics and return [Error]; on a
+    clean expand return [Ok]. The [Error] payload is the rendered string
+    from [Diagnostics.render] — the serialized JSON array under
+    [--json-errors], else ["compilation failed"]. CLI entry points
+    recognize the payload shape and exit without re-printing a redundant
+    Error line (m5 in the 2026-04-19 compiler review). Warnings are NOT
+    rendered here: callers render once at the end of their pipeline so
+    expansion-phase warnings don't print twice when downstream passes
+    (dimcheck) also emit diagnostics (M3). *)
+let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : string)
+    : (compile_detail, string) result =
+  let (detail, diags, source) = front_end_collect ~name ~filename src in
+  match detail with
+  | None ->
+    (* Front-end failure (lex/parse/expand): [front_end_collect] has
+       captured it as an E001 in [diags]. Render and return the payload,
+       exactly as the old [report_and_exit]-then-catch path did. Note a
+       deliberate consolidation: a [Failure] raised inside the expander
+       (e.g. a malformed date literal) now surfaces as a rendered E001
+       here, the same way it already did via [collect_diagnostics] — the
+       old inlined [compile_detail_result] returned its bare message
+       un-rendered through an outer handler. Routing both consumers
+       through one core makes the diagnostic surface identical. *)
+    Error (Diagnostics.render diags source)
+  | Some d ->
+    (* Expansion produced a model; [d.ctx.diags] may carry a drained
+       parser-action error. Mirror the old [has_errors → report_and_exit]
+       gate: render and return [Error] on any error, else [Ok]. *)
+    if Diagnostics.has_errors d.ctx.diags then
+      Error (Diagnostics.render d.ctx.diags d.source)
+    else
+      Ok d
 
 let no_dim_check = ref false
 
@@ -313,85 +366,9 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
    user sees from `camdlc`, so a fixture-driven test over [collect_diagnostics]
    exercises the same diagnostic surface as the CLI. *)
 
-(* Non-aborting twin of [compile_detail_result]: lex/parse/expand,
-   accumulating all front-end diagnostics into the returned [Diagnostics.t]
-   instead of calling [report_and_exit]. On a parse/lex error the model is
-   [None] and the fresh context holds the E001; on a successful expand the
-   model is [Some _] and the context is the expander's [ctx.diags] (which
-   may itself already carry expansion-phase errors/warnings — the caller
-   decides whether to continue). *)
-let front_end_collect ?(name = "model") ?(filename = "<input>") (src : string)
-    : compile_detail option * Diagnostics.t =
-  let source = Source_cache.of_string ~filename src in
-  Lexer.pending_warnings := [];
-  Parser_errors.pending_errors := [];
-  let parse_diags = Diagnostics.create () in
-  match
-    (try
-       let lexbuf = Lexing.from_string src in
-       Lexing.set_filename lexbuf filename;
-       (try Ok (Parser.file Lexer.token lexbuf)
-        with
-        | Lexer.LexError msg ->
-          let pos = lexbuf.Lexing.lex_curr_p in
-          Diagnostics.error parse_diags ~code:"E001"
-            ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
-            ~message:(Printf.sprintf "lex error: %s" msg) ();
-          Error ()
-        | Parser.Error ->
-          let pos = lexbuf.Lexing.lex_curr_p in
-          Diagnostics.error parse_diags ~code:"E001"
-            ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
-            ~message:"syntax error" ();
-          Error ())
-     with
-     | Failure msg ->
-       Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
-         ~message:msg ();
-       Error ()
-     | exn ->
-       Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
-         ~message:(Printexc.to_string exn) ();
-       Error ())
-  with
-  | Error () -> (None, parse_diags)
-  | Ok decls ->
-    let source_dir =
-      if filename = "<input>" then "" else Filename.dirname filename
-    in
-    (match
-       (try Ok (Expander.expand_detail ~source_dir ~filename name decls)
-        with
-        | Failure msg ->
-          Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
-            ~message:msg ();
-          Error ()
-        | exn ->
-          Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
-            ~message:(Printexc.to_string exn) ();
-          Error ())
-     with
-     | Error () -> (None, parse_diags)
-     | Ok (model, ctx, summary) ->
-       (* Drain lex-phase warnings and parser-action errors into ctx.diags,
-          mirroring compile_detail_result so the same codes surface here. *)
-       List.iter (fun (sp, ep, msg) ->
-         Diagnostics.warning ctx.diags ~code:"W100"
-           ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
-           ~message:msg ()
-       ) (List.rev !Lexer.pending_warnings);
-       Lexer.pending_warnings := [];
-       List.iter (fun (sp, ep, code, msg, hint) ->
-         Diagnostics.error ctx.diags ~code
-           ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
-           ~message:msg ?hint ()
-       ) (List.rev !Parser_errors.pending_errors);
-       Parser_errors.pending_errors := [];
-       (Some { model; ctx; summary; source }, ctx.diags))
-
 let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
     : Diagnostics.diagnostic list =
-  let (detail, diags) = front_end_collect ~name ~filename src in
+  let (detail, diags, _source) = front_end_collect ~name ~filename src in
   (match detail with
    | None -> ()                     (* lex/parse/expand failed; diags has the E001 *)
    | Some d ->
