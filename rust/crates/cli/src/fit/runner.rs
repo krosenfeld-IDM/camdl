@@ -1202,7 +1202,7 @@ pub fn run_chains_with_per_chain_params(
     let bars: Vec<crate::progress::Task> = (0..config.n_chains)
         .map(|chain_id| reporter.task(
             config.if2_config.n_iterations as u64,
-            format!("chain {}", chain_id + 1)))
+            format!("chain {}", chain_id + 1), "it"))
         .collect();
 
     // Preflight transform report

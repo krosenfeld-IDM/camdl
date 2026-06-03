@@ -1300,9 +1300,10 @@ fn write_sim_ensemble(
     match store.commit_atomic(&dir, record, artifacts) {
         Ok(dest) => {
             use owo_colors::OwoColorize;
-            let rel = dest.strip_prefix(root).unwrap_or(&dest);
+            // Full rooted path (e.g. `./results/ensembles/…`), matching the
+            // `✓ stored` banner — not the bare store-relative `ensembles/…`.
             eprintln!("{} {}", "ensemble:".bright_green().bold(),
-                rel.to_string_lossy().cyan());
+                dest.to_string_lossy().cyan());
         }
         Err(e) => eprintln!("warning: ensemble commit failed: {}", e),
     }

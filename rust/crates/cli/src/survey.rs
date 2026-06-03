@@ -413,7 +413,7 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
     // Progress: one overall bar over the LHS points, ticked from the parallel
     // sweep (`Task` is `Send + Sync`), with the best loglik found so far as the
     // researcher metric. Honors `--progress none/plain`.
-    let bar = crate::progress::Reporter::new().task(n_points as u64, "survey");
+    let bar = crate::progress::Reporter::new().task(n_points as u64, "survey", "pts");
     let best = std::sync::Mutex::new(f64::NEG_INFINITY);
     let rows: Vec<LandscapeRow> = lhs_starts.par_iter().enumerate()
         .map(|(point_id, draw)| {

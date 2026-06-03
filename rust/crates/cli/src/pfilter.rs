@@ -422,7 +422,7 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         // the parallel loop (`Task` is `Send + Sync`); honors `--progress
         // none/plain`. Finer per-obs-window progress would need a callback
         // into `sim::bootstrap_filter` — deferred (an inference-crate change).
-        let bar = crate::progress::Reporter::new().task(n_replicates as u64, "pfilter");
+        let bar = crate::progress::Reporter::new().task(n_replicates as u64, "pfilter", "reps");
         let acc = std::sync::Mutex::new((0.0_f64, 0usize)); // (Σ loglik, count)
         let logliks: Vec<f64> = (0..n_replicates).into_par_iter().map(|rep| {
             let rep_seed = seed.wrapping_add((rep as u64).wrapping_mul(SEED_STRIDE));

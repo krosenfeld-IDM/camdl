@@ -461,7 +461,7 @@ pub fn run_stage(
     // log-likelihood the sampler already reports each sweep — no new compute.
     let reporter = crate::progress::Reporter::new();
     let bars: Vec<crate::progress::Task> = (0..n_chains)
-        .map(|chain_id| reporter.task(n_sweeps as u64, format!("chain {}", chain_id + 1)))
+        .map(|chain_id| reporter.task(n_sweeps as u64, format!("chain {}", chain_id + 1), "sweeps"))
         .collect();
 
     // Run chains in parallel (each chain is independent: own seed, own

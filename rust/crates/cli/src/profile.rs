@@ -1002,7 +1002,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // No per-tick metric: a best profile-loglik isn't tracked here (each cell
     // computes its own `final_loglik`; surfacing a global best would mean a
     // shared accumulator that the bar deliberately avoids).
-    let bar = crate::progress::Reporter::new().task(total_jobs as u64, "profile");
+    let bar = crate::progress::Reporter::new().task(total_jobs as u64, "profile", "jobs");
 
     // ── gh#147 (M3.3): pre-resolve every job's CAS identity ──────────
     // Job tuple (seed_idx, grid_idx, start_idx). The grid lives in the

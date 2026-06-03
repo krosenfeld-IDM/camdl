@@ -134,15 +134,38 @@ impl Throttle {
 // `Arc`-backed, so the `Reporter` may be dropped while bars keep rendering).
 // See docs/dev/proposals/2026-06-03-progress-system.md.
 
-/// The shared count-bar style: `<prefix> <bar> pos/len  rate  ETA  <metric>`.
-/// One definition so every subcommand's bars are visually identical. `it/s`
-/// and `ETA` come free from indicatif; `{msg}` carries the optional metric.
-fn count_style() -> ProgressStyle {
+/// The shared count-bar style: `<prefix> <bar> pos/len  <rate>  ETA  <metric>`.
+/// One definition so every subcommand's bars are visually identical. The rate
+/// is a custom `{rate}` key that labels the per-second figure with the work
+/// `unit` (`6.0 cells/s`, `0.40 it/s`) — indicatif's built-in `{per_sec}` is
+/// the unitless `0.4/s` that the user found uninformative. Precision adapts to
+/// the magnitude. `ETA` comes free; `{msg}` carries the optional metric.
+fn count_style(unit: &str) -> ProgressStyle {
+    let unit = unit.to_string();
     ProgressStyle::with_template(
-        "  {prefix:<26} {bar:24.cyan/dim} {pos:>4}/{len:<4} {per_sec:>8} ETA {eta:<5} {msg}",
+        "  {prefix:<22} {bar:24.cyan/dim} {pos}/{len} {rate:>13} ETA {eta:<5} {msg}",
     )
     .unwrap_or_else(|_| ProgressStyle::default_bar())
+    .with_key("rate", move |s: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
+        let _ = write!(w, "{}", fmt_rate(s.per_sec(), &unit));
+    })
     .progress_chars("\u{2501}\u{2578}\u{2500}")
+}
+
+/// Format a per-second rate with its `unit`, precision adapting to magnitude:
+/// `44 cells/s`, `4.4 it/s`, `0.40 pts/s`, and `-- reps/s` for a not-yet-known
+/// rate (zero / non-finite). Pulled out of the `{rate}` key closure so the
+/// format is unit-testable without a live terminal.
+fn fmt_rate(per_sec: f64, unit: &str) -> String {
+    if !per_sec.is_finite() || per_sec == 0.0 {
+        format!("-- {unit}/s")
+    } else if per_sec >= 10.0 {
+        format!("{per_sec:.0} {unit}/s")
+    } else if per_sec >= 1.0 {
+        format!("{per_sec:.1} {unit}/s")
+    } else {
+        format!("{per_sec:.2} {unit}/s")
+    }
 }
 
 /// A group of progress bars for one subcommand invocation. Honors the
@@ -159,13 +182,14 @@ impl Reporter {
     }
 
     /// A count bar (`pos/len`) for `len` units of work labelled `label`
-    /// (rendered as the bar prefix). Multiple `task()` calls on one `Reporter`
-    /// share its `MultiProgress`, so they render as a coordinated stack
-    /// (e.g. one bar per fit chain).
-    pub fn task(&self, len: u64, label: impl Into<String>) -> Task {
+    /// (rendered as the bar prefix), with `unit` naming the work item so the
+    /// rate reads `6.0 cells/s` / `0.40 it/s` (not the unitless `0.4/s`).
+    /// Multiple `task()` calls on one `Reporter` share its `MultiProgress`, so
+    /// they render as a coordinated stack (e.g. one bar per fit chain).
+    pub fn task(&self, len: u64, label: impl Into<String>, unit: &str) -> Task {
         let label = label.into();
         let pb = self.mp.add(ProgressBar::new(len));
-        pb.set_style(count_style());
+        pb.set_style(count_style(unit));
         pb.set_prefix(label.clone());
         // Steady tick so the bar paints and the ETA advances between `inc`
         // calls. A no-op against a hidden draw target (Plain / None).
@@ -288,5 +312,14 @@ mod tests {
         assert_eq!(mcmc(-12.34, 0.24), "ll=-12.3  acc=24%");
         assert_eq!(mcmc(f64::NEG_INFINITY, 0.0), "ll=-inf  acc=0%");
         assert_eq!(mcmc(-1.0, 1.0), "ll=-1.0  acc=100%");
+    }
+
+    #[test]
+    fn fmt_rate_labels_units_with_adaptive_precision() {
+        assert_eq!(fmt_rate(44.0, "cells"), "44 cells/s");   // ≥10 → 0 dp
+        assert_eq!(fmt_rate(4.4, "it"), "4.4 it/s");          // ≥1  → 1 dp
+        assert_eq!(fmt_rate(0.4, "cells"), "0.40 cells/s");   // <1  → 2 dp (the user's case, now labelled)
+        assert_eq!(fmt_rate(0.0, "reps"), "-- reps/s");       // not yet known
+        assert_eq!(fmt_rate(f64::INFINITY, "pts"), "-- pts/s");
     }
 }

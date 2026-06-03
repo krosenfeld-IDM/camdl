@@ -444,7 +444,7 @@ pub fn run_stage(
     // no longer branches on mode.
     let reporter = crate::progress::Reporter::new();
     let bars: Vec<crate::progress::Task> = (0..n_chains)
-        .map(|chain_id| reporter.task(n_steps as u64, format!("chain {}", chain_id + 1)))
+        .map(|chain_id| reporter.task(n_steps as u64, format!("chain {}", chain_id + 1), "it"))
         .collect();
 
     // Pre-create chain directories

@@ -783,7 +783,7 @@ pub(crate) struct CasSink {
 /// (the engine's per-timestep bar covers that) or when no bar applies. The
 /// `Task` itself honours `--progress none`/`plain` internally.
 pub(crate) fn cells_progress(total: usize, label: impl Into<String>) -> Option<crate::progress::Task> {
-    (total > 1).then(|| crate::progress::Reporter::new().task(total as u64, label))
+    (total > 1).then(|| crate::progress::Reporter::new().task(total as u64, label, "cells"))
 }
 
 impl CasSink {
