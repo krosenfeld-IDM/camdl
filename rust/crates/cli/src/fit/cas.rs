@@ -450,6 +450,30 @@ pub fn cas_dep_from_dir(dir: &Path) -> Option<ArtifactRef> {
     })
 }
 
+/// Build the `deps` entry for a survey consumed by `init = "survey_top_k"`.
+/// The survey is a content-addressed `Survey` leaf; folding its `run_id`
+/// (content identity) + `landscape.tsv` digest into the fit stage's deps means
+/// a regenerated survey — even one written back to the same path — re-keys the
+/// fit. Returns `None` if the survey dir is unreadable (the fit will fail in
+/// init anyway, producing no stored output to mis-key). The `landscape.tsv`
+/// digest is the bytes the top-K rows are actually read from; `run_id` falls
+/// back to it if `run.json` is missing.
+pub fn cas_survey_dep(dir: &Path) -> Option<ArtifactRef> {
+    let landscape = std::fs::read(dir.join("landscape.tsv")).ok()?;
+    let digest = ContentHash::digest_bytes(&landscape);
+    let run_id = std::fs::read(dir.join("run.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<RunRecord>(&b).ok())
+        .map(|r| r.run_id)
+        .unwrap_or(digest);
+    Some(ArtifactRef {
+        run_id,
+        kind: ArtifactKind::Survey,
+        artifact: "landscape.tsv".to_string(),
+        digest,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,5 +517,29 @@ mod tests {
         let a = stage_config_hash(&pgas_stage(50)).unwrap();
         let b = stage_config_hash(&pgas_stage(50)).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// A survey consumed by `init = "survey_top_k"` is folded into the fit
+    /// stage's `deps` by its CONTENT, so two surveys with different landscapes
+    /// (even written to the same path, one after the other) produce different
+    /// deps → the fit re-keys. Missing landscape → `None` (the fit fails in
+    /// init, producing no stored output to mis-key).
+    #[test]
+    fn cas_survey_dep_is_content_sensitive() {
+        let d1 = tempfile::tempdir().unwrap();
+        let d2 = tempfile::tempdir().unwrap();
+        std::fs::write(d1.path().join("landscape.tsv"), b"theta\tll\n0.10\t-5.0\n").unwrap();
+        std::fs::write(d2.path().join("landscape.tsv"), b"theta\tll\n0.10\t-9.9\n").unwrap();
+        let r1 = cas_survey_dep(d1.path()).expect("dep from a readable survey dir");
+        let r2 = cas_survey_dep(d2.path()).expect("dep from a readable survey dir");
+        assert_ne!(r1.digest, r2.digest,
+            "different survey landscape content must yield a different dep digest \
+             (regenerating a survey at the same path re-keys the fit)");
+        assert_eq!(r1.kind, runid::ArtifactKind::Survey);
+        assert_eq!(r1.artifact, "landscape.tsv");
+
+        // No landscape.tsv → no dep (unreadable survey; fit will fail in init).
+        let d3 = tempfile::tempdir().unwrap();
+        assert!(cas_survey_dep(d3.path()).is_none());
     }
 }

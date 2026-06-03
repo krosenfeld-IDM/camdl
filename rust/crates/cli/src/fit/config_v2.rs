@@ -1142,14 +1142,22 @@ impl Stage {
     pub fn identity_payload(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
-            // PGAS: omit `sweeps` (extension dimension) and
+            // PGAS: omit ONLY `sweeps` (extension dimension) and
             // `n_trajectories` (output-only knob; saving more or fewer
-            // posterior trajectories doesn't change chain dynamics).
-            // All other PGAS fields are identity-defining.
+            // posterior trajectories doesn't change chain dynamics). Every
+            // other field is identity-defining and MUST be hashed —
+            // crucially `init_method` / `survey_path` / `survey_top_k_n`,
+            // which choose the per-chain starting points and therefore the
+            // stored chains/posterior. Dropping them silently served the
+            // first run's posterior as a differently-initialised second
+            // run's (gh#147 count-in-the-key; survey CONTENT, not just the
+            // path, is additionally folded via `ctx.deps` in
+            // `resolve_fit_stage`).
             Stage::PGAS {
                 backend, chains, particles, starts_from, burn_in, thin,
                 tempering, max_tree_depth, trajectory_warmup,
                 csmc_sweeps_per_nuts, dense_mass, use_nuts,
+                init_method, survey_path, survey_top_k_n,
                 ..
             } => json!({
                 "algorithm": "pgas",
@@ -1157,6 +1165,9 @@ impl Stage {
                 "chains": chains,
                 "particles": particles,
                 "starts_from": starts_from,
+                "init_method": init_method,
+                "survey_path": survey_path,
+                "survey_top_k_n": survey_top_k_n,
                 "burn_in": burn_in,
                 "thin": thin,
                 "tempering": tempering,
@@ -1166,12 +1177,14 @@ impl Stage {
                 "dense_mass": dense_mass,
                 "use_nuts": use_nuts,
             }),
-            // PMMH: omit `iterations` (extension dimension). All other
-            // fields, including adapt / adapt_start / rho, are
-            // identity-defining (different sampler, not extension).
+            // PMMH: omit ONLY `iterations` (extension dimension). All other
+            // fields — adapt / adapt_start / rho AND the init selectors
+            // (init_method / survey_path / survey_top_k_n) — are
+            // identity-defining, for the same reason as PGAS.
             Stage::PMMH {
                 backend, chains, particles, starts_from, burn_in, thin,
                 adapt, adapt_start, rho,
+                init_method, survey_path, survey_top_k_n,
                 ..
             } => json!({
                 "algorithm": "pmmh",
@@ -1179,6 +1192,9 @@ impl Stage {
                 "chains": chains,
                 "particles": particles,
                 "starts_from": starts_from,
+                "init_method": init_method,
+                "survey_path": survey_path,
+                "survey_top_k_n": survey_top_k_n,
                 "burn_in": burn_in,
                 "thin": thin,
                 "adapt": adapt,
@@ -1194,6 +1210,26 @@ impl Stage {
             | Stage::NlSbplx(_)
             | Stage::NlBobyqa(_) =>
                 serde_json::to_value(self).unwrap_or(json!({})),
+        }
+    }
+
+    /// The survey directory feeding `init = "survey_top_k"`, if this stage
+    /// uses it. `None` for any other init method — the survey only seeds
+    /// chains (and so affects the stored output + identity) under
+    /// survey_top_k. The caller folds the survey's CONTENT (its run_id +
+    /// landscape digest) into the stage's `deps` so regenerating the survey
+    /// re-keys the fit, even at the same path (the path string in
+    /// `identity_payload` only catches a *different* directory).
+    pub fn survey_init_path(&self) -> Option<&std::path::Path> {
+        let (init, path) = match self {
+            Stage::IF2 { init_method, survey_path, .. }
+            | Stage::PGAS { init_method, survey_path, .. }
+            | Stage::PMMH { init_method, survey_path, .. } => (init_method, survey_path),
+            _ => return None,
+        };
+        match init {
+            super::init::InitMethod::SurveyTopK => path.as_deref(),
+            _ => None,
         }
     }
 }
@@ -4242,6 +4278,102 @@ decibans_thresh = 100.0
     }
 
     #[test]
+    fn pgas_identity_payload_includes_init_and_survey() {
+        // `init_method` chooses the per-chain starting points (lhs / single /
+        // survey_top_k / from_*), which determine the stored chains/posterior.
+        // Two PGAS fits differing ONLY in init must NOT collide — otherwise the
+        // first run's posterior is silently served as the second's (a wrong
+        // scientific result on a multimodal problem). gh#147 count-in-the-key.
+        use crate::fit::init::InitMethod;
+        let base = make_pgas_stage(1000); // init_method = lhs (default)
+
+        let mut s_single = make_pgas_stage(1000);
+        if let Stage::PGAS { ref mut init_method, .. } = s_single {
+            *init_method = InitMethod::Single;
+        }
+        assert_ne!(base.identity_payload(), s_single.identity_payload(),
+            "init_method lhs vs single must change the identity");
+
+        let mut s_survey = make_pgas_stage(1000);
+        if let Stage::PGAS { ref mut init_method, .. } = s_survey {
+            *init_method = InitMethod::SurveyTopK;
+        }
+        assert_ne!(base.identity_payload(), s_survey.identity_payload(),
+            "init_method lhs vs survey_top_k must change the identity");
+
+        // survey_top_k_n: how many top-K rows seed the chains → distinct starts.
+        let mut s_k = make_pgas_stage(1000);
+        if let Stage::PGAS { ref mut init_method, ref mut survey_top_k_n, .. } = s_k {
+            *init_method = InitMethod::SurveyTopK;
+            *survey_top_k_n = Some(8);
+        }
+        assert_ne!(s_survey.identity_payload(), s_k.identity_payload(),
+            "survey_top_k_n must change the identity");
+
+        // A different --survey directory feeds different starting points.
+        let mut s_a = make_pgas_stage(1000);
+        let mut s_b = make_pgas_stage(1000);
+        if let Stage::PGAS { ref mut init_method, ref mut survey_path, .. } = s_a {
+            *init_method = InitMethod::SurveyTopK;
+            *survey_path = Some("/tmp/survey_a".into());
+        }
+        if let Stage::PGAS { ref mut init_method, ref mut survey_path, .. } = s_b {
+            *init_method = InitMethod::SurveyTopK;
+            *survey_path = Some("/tmp/survey_b".into());
+        }
+        assert_ne!(s_a.identity_payload(), s_b.identity_payload(),
+            "different --survey dir must change the identity");
+    }
+
+    #[test]
+    fn survey_init_path_only_under_survey_top_k() {
+        use crate::fit::init::InitMethod;
+        // Default init (lhs) → no survey dep, even if a stray survey_path is set.
+        let s = make_pgas_stage(1000);
+        assert!(s.survey_init_path().is_none(), "lhs init → no survey dep");
+
+        // survey_top_k + survey_path → that path is surfaced for the dep fold.
+        let mut s = make_pgas_stage(1000);
+        if let Stage::PGAS { ref mut init_method, ref mut survey_path, .. } = s {
+            *init_method = InitMethod::SurveyTopK;
+            *survey_path = Some("/tmp/survey_x".into());
+        }
+        assert_eq!(s.survey_init_path(), Some(std::path::Path::new("/tmp/survey_x")));
+
+        // survey_top_k but no survey_path → None (init will error; nothing to fold).
+        let mut s = make_pgas_stage(1000);
+        if let Stage::PGAS { ref mut init_method, .. } = s {
+            *init_method = InitMethod::SurveyTopK;
+        }
+        assert!(s.survey_init_path().is_none(), "survey_top_k w/o path → None");
+    }
+
+    #[test]
+    fn pmmh_identity_payload_includes_init_and_survey() {
+        use crate::fit::init::InitMethod;
+        let base = make_pmmh_stage(1000);
+
+        let mut s_single = make_pmmh_stage(1000);
+        if let Stage::PMMH { ref mut init_method, .. } = s_single {
+            *init_method = InitMethod::Single;
+        }
+        assert_ne!(base.identity_payload(), s_single.identity_payload(),
+            "PMMH init_method lhs vs single must change the identity");
+
+        let mut s_survey = make_pmmh_stage(1000);
+        if let Stage::PMMH { ref mut init_method, .. } = s_survey {
+            *init_method = InitMethod::SurveyTopK;
+        }
+        let mut s_k = make_pmmh_stage(1000);
+        if let Stage::PMMH { ref mut init_method, ref mut survey_top_k_n, .. } = s_k {
+            *init_method = InitMethod::SurveyTopK;
+            *survey_top_k_n = Some(8);
+        }
+        assert_ne!(s_survey.identity_payload(), s_k.identity_payload(),
+            "PMMH survey_top_k_n must change the identity");
+    }
+
+    #[test]
     fn pmmh_identity_payload_omits_iterations() {
         let s_short = make_pmmh_stage(1000);
         let s_long = make_pmmh_stage(8000);
@@ -4264,7 +4396,7 @@ decibans_thresh = 100.0
         let stage = make_pgas_stage(1000);
         let payload_bytes = serde_json::to_vec(&stage.identity_payload()).unwrap();
         let payload_str = String::from_utf8(payload_bytes).unwrap();
-        let expected = r#"{"algorithm":"pgas","backend":"chain_binomial","burn_in":200,"chains":4,"csmc_sweeps_per_nuts":1,"dense_mass":true,"max_tree_depth":10,"particles":100,"starts_from":"random","tempering":[1.0],"thin":2,"trajectory_warmup":0,"use_nuts":true}"#;
+        let expected = r#"{"algorithm":"pgas","backend":"chain_binomial","burn_in":200,"chains":4,"csmc_sweeps_per_nuts":1,"dense_mass":true,"init_method":"lhs","max_tree_depth":10,"particles":100,"starts_from":"random","survey_path":null,"survey_top_k_n":null,"tempering":[1.0],"thin":2,"trajectory_warmup":0,"use_nuts":true}"#;
         assert_eq!(payload_str, expected,
             "identity_payload byte format drifted — every existing \
              resume_state.bin would be invalidated. If this change is \
@@ -4277,7 +4409,7 @@ decibans_thresh = 100.0
     fn pmmh_identity_payload_byte_stable() {
         let stage = make_pmmh_stage(1000);
         let payload_str = serde_json::to_string(&stage.identity_payload()).unwrap();
-        let expected = r#"{"adapt":true,"adapt_start":300,"algorithm":"pmmh","backend":"chain_binomial","burn_in":200,"chains":4,"particles":100,"rho":null,"starts_from":"random","thin":2}"#;
+        let expected = r#"{"adapt":true,"adapt_start":300,"algorithm":"pmmh","backend":"chain_binomial","burn_in":200,"chains":4,"init_method":"lhs","particles":100,"rho":null,"starts_from":"random","survey_path":null,"survey_top_k_n":null,"thin":2}"#;
         assert_eq!(payload_str, expected,
             "PMMH identity_payload byte format drifted — see \
              pgas_identity_payload_byte_stable for context.");

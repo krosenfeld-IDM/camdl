@@ -669,6 +669,18 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
             base
         });
 
+        // gh#147: when this stage seeds chains from a survey
+        // (`init = "survey_top_k"`), fold the survey's CONTENT (run_id +
+        // landscape.tsv digest) into `deps` so a regenerated survey re-keys
+        // the fit — the path string in `identity_payload` only distinguishes a
+        // *different* directory, not the same path rewritten. Folded for every
+        // stage kind via the `survey_init_path` accessor.
+        if let Some(survey_dir) = stage.survey_init_path() {
+            if let Some(dep) = cas::cas_survey_dep(survey_dir) {
+                deps.push(dep);
+            }
+        }
+
         // ── CAS identity + claim ──
         let ordinal = config.stages.get_index_of(*stage_name).map(|i| i + 1).unwrap_or(0);
         let ctx = cas::FitStageCtx {
