@@ -49,6 +49,24 @@ const TOPICS: &[Topic] = &[
         body: include_str!("../../../../docs/inference.md"),
     },
     Topic {
+        slug: "workflow",
+        aliases: &["calibrate", "pipeline"],
+        summary: "The canonical fit workflow: check → simulate → survey → fit → diagnose → refine → validate",
+        body: include_str!("../../../../docs/workflow.md"),
+    },
+    Topic {
+        slug: "fit-toml",
+        aliases: &["fittoml", "fit-config"],
+        summary: "fit.toml reference: model/data/estimate/fixed/stages, priors, stage algorithms",
+        body: include_str!("../../../../docs/fit-toml.md"),
+    },
+    Topic {
+        slug: "concepts",
+        aliases: &["why", "identifiability"],
+        summary: "The reasoning: identifiability, what priors are for, why a failing gate is information",
+        body: include_str!("../../../../docs/concepts.md"),
+    },
+    Topic {
         slug: "features",
         aliases: &["catalogue", "catalog"],
         summary: "Feature catalogue, with the pomp comparison",
