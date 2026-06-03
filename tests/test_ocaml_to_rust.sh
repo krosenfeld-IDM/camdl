@@ -105,11 +105,16 @@ run_batch_test() {
         echo "FAIL [batch run] $name"; FAIL=$((FAIL+1)); return
     fi
 
-    # check manifest completed count
+    # check completed run count. manifest.json was retired with the CAS
+    # store (gh#147); count the per-cell sim leaves the batch wrote via the
+    # browse surface instead. `list --format json` emits one JSON object per
+    # run as NDJSON (plus a trailing `[]`), so count the object lines; `--all`
+    # lifts the default 50-row limit (some fixtures run 60).
     local completed
-    completed=$(python3 -c "import json; m=json.load(open('$outdir/sims/manifest.json')); print(m['completed'])")
+    completed=$("$CAMDL" list --root "$outdir" --kind sim --all --format json 2>/dev/null \
+        | python3 -c "import sys, json; print(sum(1 for l in sys.stdin if l.strip() and isinstance(json.loads(l), dict)))")
     if [ "$completed" -ne "$expected_runs" ]; then
-        echo "FAIL [manifest] $name: expected $expected_runs runs, got $completed"
+        echo "FAIL [run count] $name: expected $expected_runs runs, got $completed"
         FAIL=$((FAIL+1)); return
     fi
 
