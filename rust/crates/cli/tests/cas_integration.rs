@@ -1652,6 +1652,28 @@ fn stdout_streams_trajectory_and_skips_the_store() {
         "--stdout must not print the store banner:\n{stderr}");
 }
 
+/// Progress rendering is passive: a multi-cell `simulate` produces a
+/// byte-identical trajectory whether progress is `none` or `pretty`. The bars
+/// must never perturb the RNG / draw order (the engine's determinism contract).
+#[test]
+fn progress_mode_does_not_change_trajectories() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let run = |mode: &str, tag: &str| -> Vec<u8> {
+        let o = tmp.path().join(format!("traj_{tag}.tsv"));
+        let st = Command::new(&bin)
+            .args(["simulate", &golden_sir_basic().to_string_lossy(),
+                   "--scenario", "baseline", "--seed", "7", "--replicates", "3",
+                   "--output-dir", &tmp.path().join(tag).to_string_lossy(),
+                   "-o", &o.to_string_lossy(), "--progress", mode])
+            .status().expect("spawn");
+        assert!(st.success(), "simulate --progress {mode} should succeed");
+        std::fs::read(&o).unwrap()
+    };
+    assert_eq!(run("none", "n"), run("pretty", "p"),
+        "progress mode must not change the trajectory (bars must be RNG-passive)");
+}
+
 fn walkdir(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];

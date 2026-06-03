@@ -91,12 +91,17 @@ pub(crate) struct Cli {
           help_heading = "Global options")]
     verbosity: Option<log::LevelFilter>,
 
-    /// Progress output mode for long-running subcommands. `auto` uses
-    /// indicatif bars on a TTY, plain log lines otherwise; `plain` forces
-    /// plain lines (use under `tee`, `ssh`, or CI).
+    /// Progress output mode for long-running subcommands. `auto` (default)
+    /// uses indicatif bars on a TTY, plain log lines otherwise; `plain` forces
+    /// plain lines (use under `tee`, `ssh`, or CI); `none` silences progress.
     #[arg(long, global = true, default_value_t = args::types::ProgressMode::Auto,
           value_name = "MODE", help_heading = "Global options")]
     progress: args::types::ProgressMode,
+
+    /// Silence all progress output (shorthand for `--progress none`; wins over
+    /// `--progress` if both are given).
+    #[arg(long, global = true, help_heading = "Global options")]
+    no_progress: bool,
 }
 
 #[derive(Subcommand)]
@@ -355,7 +360,9 @@ fn main() {
 
     // Progress output policy (GH #14). Must run after env_logger so that
     // plain-mode log lines from callbacks reach the configured filter.
-    progress::init(cli.progress);
+    // `--no-progress` is the discoverable shorthand for `--progress none` and
+    // wins when both are given.
+    progress::init(if cli.no_progress { args::types::ProgressMode::None } else { cli.progress });
 
     match cli.command {
         Command::Simulate(a)            => run_simulate(&a),
@@ -1184,12 +1191,12 @@ fn build_simulate_cas_sink(
         label,
         fit_dep,
         // Progress: a LONE run (total_runs <= 1) goes through the engine's
-        // per-timestep bar (`run_one_cell_with_progress`), so the sink stays
-        // quiet to avoid a redundant `[1/1]` line. A multi-cell ensemble hits
-        // `run_one_cell` (no inner bar), so the sink emits the `[i/N]` per-cell
-        // progress line — otherwise the ensemble runs silently. Honours
-        // `--progress none` because the line is gated on `progress::is_none()`.
-        quiet: total_runs <= 1,
+        // per-timestep bar (`run_one_cell_with_progress`), so the sink adds no
+        // overall bar (a redundant `1/1`). A multi-cell ensemble hits
+        // `run_one_cell` (no inner bar), so the sink owns the overall cells
+        // bar — otherwise the ensemble runs silently. The `Task` honours
+        // `--progress none`/`plain` internally.
+        progress: crate::batch::cells_progress(total_runs, "simulate"),
     })
 }
 

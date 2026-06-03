@@ -697,7 +697,7 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         errors: Vec::new(),
         label: None,
         fit_dep: Vec::new(),
-        quiet: false,
+        progress: cells_progress(total, "batch run"),
     };
 
     crate::engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
@@ -770,16 +770,40 @@ pub(crate) struct CasSink {
     /// a sim's identity is its factored levels (resolve_trajectory), never
     /// `deps`, so this does not change the sim's run_id or store path.
     pub(crate) fit_dep: Vec<runid::inputs::ArtifactRef>,
-    /// Suppress the `[i/total] scenario=… seed=…` per-cell stderr line.
-    /// A LONE `simulate` run gets the engine's per-timestep bar instead, so it
-    /// sets this `true` (`total_runs <= 1`) to avoid a redundant `[1/1]` line;
-    /// a multi-cell `simulate` ensemble and `batch run` leave it `false` so the
-    /// per-cell line is the ensemble's progress. The line is additionally
-    /// suppressed under `--progress none` at the print site.
-    pub(crate) quiet: bool,
+    /// The overall cells progress bar (advanced once per committed or
+    /// cache-hit cell, finished on the last). `Some` only for a multi-cell run
+    /// (`total > 1`) — a LONE `simulate` gets the engine's per-timestep bar
+    /// instead, so its overall bar would be a redundant `1/1`. `None` is the
+    /// inert case (single cell, or `--progress none`/tests). Honours the
+    /// `--progress` mode via [`crate::progress::Task`].
+    pub(crate) progress: Option<crate::progress::Task>,
+}
+
+/// The overall cells bar for a multi-cell run, or `None` for a single cell
+/// (the engine's per-timestep bar covers that) or when no bar applies. The
+/// `Task` itself honours `--progress none`/`plain` internally.
+pub(crate) fn cells_progress(total: usize, label: impl Into<String>) -> Option<crate::progress::Task> {
+    (total > 1).then(|| crate::progress::Reporter::new().task(total as u64, label))
 }
 
 impl CasSink {
+    /// Advance the overall cells bar by one cell (committed or cache-hit) and
+    /// finish it once the last cell lands. The bar replaces the old
+    /// `[i/total] scenario=… seed=…` per-cell stderr lines; the per-cell
+    /// detail is intentionally dropped in favour of a clean `pos/len` bar
+    /// (drill into individuals with `camdl list --kind sim`). No-op when
+    /// `progress` is `None` (single cell / `--progress none` / tests).
+    fn advance_progress(&mut self) {
+        if let Some(t) = self.progress.as_mut() {
+            t.inc(1);
+        }
+        if self.counter >= self.total {
+            if let Some(t) = self.progress.take() {
+                t.finish();
+            }
+        }
+    }
+
     /// The store root (`<output>`, the parent of `<output>/sims`).
     fn root(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.runs_dir)
@@ -907,10 +931,7 @@ impl crate::engine::RunSink for CasSink {
         };
         let name = spec.scenario.name().to_string();
         self.counter += 1;
-        if !self.quiet && !crate::progress::is_none() {
-            eprintln!("[{}/{}] scenario={} seed={} (skipped — cache hit)",
-                self.counter, self.total, name, spec.process_seed);
-        }
+        self.advance_progress();
         self.completed_runs.push(RunEntry {
             run_path: rel,
             run_id,
@@ -1035,9 +1056,7 @@ impl crate::engine::RunSink for CasSink {
         }
 
         self.counter += 1;
-        if !self.quiet && !crate::progress::is_none() {
-            eprintln!("[{}/{}] scenario={} seed={}", self.counter, self.total, name, spec.process_seed);
-        }
+        self.advance_progress();
         self.completed_runs.push(RunEntry {
             run_path: rel,
             run_id: Some(rt.run_id),
@@ -1937,7 +1956,7 @@ mod tests {
             errors: Vec::new(),
             label: None,
             fit_dep: Vec::new(),
-            quiet: true,
+            progress: None,
         }
     }
 
