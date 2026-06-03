@@ -27,6 +27,7 @@ mod profile;
 mod profile_cas;     // gh#147 M3.3: profile-point CAS identity (resolve_profile_point)
 mod profile_diagnostics;
 mod progress;
+mod status;        // tidy colored one-shot milestone lines (compiled/storing/stored)
 mod evidence;
 mod survey;
 mod survey_cas;     // gh#147 (M3.3): survey CAS identity (model/config/box/seed)
@@ -1022,6 +1023,12 @@ fn run_simulate(a: &args::SimulateArgs) {
     // one leaf is the whole thing).
     if total_runs > 1 && !suppress_trajectory {
         if let Some(ref bytes) = combined_traj {
+            // The post-bar pause the user sees is this: writing + fsyncing the
+            // combined wide-format TSV as the ensemble leaf. Announce it so a
+            // multi-MB ensemble doesn't look like a hang.
+            crate::status::step("storing",
+                format!("ensemble \u{b7} {} cells ({})",
+                    total_runs, crate::status::human_bytes(bytes.len() as u64)));
             write_sim_ensemble(&sink.cas, bytes, &cas_root, label_arg.clone());
         }
     }
@@ -1299,11 +1306,9 @@ fn write_sim_ensemble(
     let store = runid::FsCasStore::new(root);
     match store.commit_atomic(&dir, record, artifacts) {
         Ok(dest) => {
-            use owo_colors::OwoColorize;
             // Full rooted path (e.g. `./results/ensembles/…`), matching the
-            // `✓ stored` banner — not the bare store-relative `ensembles/…`.
-            eprintln!("{} {}", "ensemble:".bright_green().bold(),
-                dest.to_string_lossy().cyan());
+            // `stored` banner — not the bare store-relative `ensembles/…`.
+            crate::status::step("ensemble", dest.to_string_lossy());
         }
         Err(e) => eprintln!("warning: ensemble commit failed: {}", e),
     }
@@ -1318,22 +1323,19 @@ fn write_sim_ensemble(
 /// cache hit is not distinguished here — `commit_atomic` is idempotent and
 /// does not report which; that is a follow-up.)
 fn report_cas_leaves(runs: &[crate::batch::RunEntry], cas_root: &str) {
-    use owo_colors::OwoColorize;
     let root = cas_root.trim_end_matches('/');
     match runs.len() {
         0 => {}
         1 => {
             let r = &runs[0];
-            eprintln!("{} {}", "\u{2713} stored".bright_green().bold(),
-                format!("{}/{}", root, r.run_path).cyan());
+            crate::status::done("stored", format!("{}/{}", root, r.run_path));
             if let Some(id) = r.run_id {
-                eprintln!("  {} camdl cat {}", "read:".bright_black(), id.to_hex());
+                crate::status::hint(format!("camdl cat {}", id.to_hex()));
             }
         }
         n => {
-            eprintln!("{} {} leaves under {}", "\u{2713} stored".bright_green().bold(),
-                n, format!("{}/sims/", root).cyan());
-            eprintln!("  {} camdl list", "browse:".bright_black());
+            crate::status::done("stored", format!("{} leaves \u{b7} {}/sims/", n, root));
+            crate::status::hint("camdl list");
         }
     }
 }

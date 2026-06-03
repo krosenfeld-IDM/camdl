@@ -392,11 +392,24 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
     if !path.ends_with(".camdl") {
         return Ok((path.to_string(), None));
     }
+    // NOTE: the compiled IR is NOT cached — every `.camdl` run recompiles into
+    // a fresh per-pid temp file (discarded on exit). For a large model the
+    // camdlc compile dominates startup; a content-addressed IR cache is a
+    // tracked follow-up. The banner below makes the per-run cost visible.
+    let started = std::time::Instant::now();
     let json = run_camdlc(path)?;
+    let elapsed = started.elapsed();
     let tmp = std::env::temp_dir()
         .join(format!("camdl_{}.ir.json", std::process::id()));
     std::fs::write(&tmp, &json)
         .map_err(|e| format!("error writing temp IR: {}", e))?;
+    // `compiled  model.camdl → /tmp/…ir.json   3.3s (1.0 MB)`. The IR size is
+    // the JSON byte length (a useful proxy for model/expansion scale).
+    crate::status::step("compiled", format!(
+        "{} \u{2192} {}   {:.1}s ({})",
+        path, tmp.to_string_lossy(), elapsed.as_secs_f64(),
+        crate::status::human_bytes(json.len() as u64),
+    ));
     Ok((tmp.to_string_lossy().into_owned(), Some(tmp)))
 }
 
