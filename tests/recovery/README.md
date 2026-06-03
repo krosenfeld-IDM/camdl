@@ -2,8 +2,9 @@
 
 Self-contained recovery cases: **plant θ, simulate, fit, recover.** A case
 declares ground-truth parameters, simulates observation streams at those
-values, then fits with IF2 / PGAS / PMMH and checks that the estimators recover
-what was planted.
+values, then fits with IF2 / PGAS / PMMH so you can compare θ̂ against the
+planted truth. The comparison is manual today (see Status below) — the harness
+runs the fits and stores the results; it does not yet assert recovery.
 
 Sibling to [`tests/external/`](../external/README.md). The external harness
 compares camdl against *external* references (pomp, Stan, NumPyro, analytical);
