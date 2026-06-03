@@ -388,7 +388,8 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         if let Err(e) = claim.finalize(completed) {
             eprintln!("warning: finalize pfilter leaf {}: {}", cas_path.display(), e);
         } else {
-            eprintln!("pfilter: leaf {} ({})", cas_path.display(), resolved_id.run_id.short8());
+            crate::status::done("stored", cas_path.display());
+            crate::status::hint(format!("camdl cat {}", resolved_id.run_id.to_hex()));
         }
     };
 

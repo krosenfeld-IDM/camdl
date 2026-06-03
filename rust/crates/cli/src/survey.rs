@@ -310,7 +310,7 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
         let landscape_path = run_dir.join("landscape.tsv");
         let html_path = run_dir.join("landscape.html");
         if !a.force && landscape_path.exists() {
-            eprintln!("survey: cache hit at {}", run_dir.display());
+            crate::status::step("cached", run_dir.display());
             if a.render && !html_path.exists() {
                 eprintln!("  rendering --render HTML from cached landscape.tsv …");
                 if let Err(e) = render_landscape_html(
@@ -342,8 +342,9 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
     let summary_path = staging.join("summary.json");
     let html_path = staging.join("landscape.html");
 
-    eprintln!("survey: {} ({} points, eval={})",
-        run_dir.display(), n_points, eval_method);
+    crate::status::done("stored",
+        format!("{} \u{b7} {} points (eval={})", run_dir.display(), n_points, eval_method));
+    crate::status::hint("camdl list --kind survey");
     if eval_method == SurveyEvalMethod::Simulate {
         eprintln!(
             "  --eval simulate now computes p(y|θ, ODE_skeleton) via the ODE \

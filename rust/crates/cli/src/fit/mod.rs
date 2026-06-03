@@ -1169,8 +1169,10 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 stage_best_loglik = Some(chain_results.best_loglik);
                 stage_best_chain = Some(chain_results.best_chain);
 
-                eprintln!("\n{} complete in {:.1}s: {}/", stage_name, elapsed.as_secs_f64(), stage_dir.display());
-                eprintln!("  best loglik: {:.1} (chain {})", chain_results.best_loglik, chain_results.best_chain + 1);
+                eprintln!();
+                crate::status::done("stored", format!("{} \u{b7} {}/", stage_name, stage_dir.display()));
+                crate::status::hint(format!("best ll={:.1} (chain {}) in {:.1}s",
+                    chain_results.best_loglik, chain_results.best_chain + 1, elapsed.as_secs_f64()));
             }
             Stage::PGAS { .. } => {
                 let mut pgas_opts = pgas::PgasStageOpts::from_stage(stage)
@@ -1489,8 +1491,8 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 std::process::exit(1);
             }
         };
-        eprintln!("  {} complete in {:.1}s → {}", stage_name, stage_elapsed.as_secs_f64(),
-            dest.strip_prefix(&cas_root).unwrap_or(&dest).display());
+        crate::status::done("stored",
+            format!("{} \u{b7} {} \u{b7} {:.1}s", stage_name, dest.display(), stage_elapsed.as_secs_f64()));
         stage_identities.insert(stage_name.to_string(), (resolved.run_id, dest));
 
     } // end stages
