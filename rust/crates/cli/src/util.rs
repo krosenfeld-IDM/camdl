@@ -404,13 +404,23 @@ fn ir_cache_disabled() -> bool {
 /// model edit, a camdlc upgrade, or an IR-format change each produces a
 /// distinct key (no stale IR can be served). `.camdl` is single-file (no
 /// includes), so the model bytes are the whole compile input.
-pub(crate) fn ir_cache_key(content: &[u8], camdlc_ver: &str, ir_ver: &str) -> String {
-    let mut buf = Vec::with_capacity(content.len() + camdlc_ver.len() + ir_ver.len() + 2);
+///
+/// The key must fold in EVERY input that changes the emitted IR bytes: the
+/// model source, the camdlc git-hash, the IR schema version, and the compiler
+/// switches that alter output. Today that switch set is just
+/// `CAMDL_NO_CONSTANT_FOLD` (presence flips the fold pass off → unfolded/dense
+/// IR; `compiler.ml`). Any future IR-affecting compiler env var or flag MUST be
+/// added here, or flipping it on an already-cached model would silently serve
+/// the stale variant.
+pub(crate) fn ir_cache_key(content: &[u8], camdlc_ver: &str, ir_ver: &str, fold_disabled: bool) -> String {
+    let mut buf = Vec::with_capacity(content.len() + camdlc_ver.len() + ir_ver.len() + 3);
     buf.extend_from_slice(content);
     buf.push(0);
     buf.extend_from_slice(camdlc_ver.as_bytes());
     buf.push(0);
     buf.extend_from_slice(ir_ver.as_bytes());
+    buf.push(0);
+    buf.push(fold_disabled as u8);
     crate::hashing::sha256_hex(&buf)
 }
 
@@ -446,7 +456,10 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
     } else {
         match (std::fs::read(path), ir_cache_dir()) {
             (Ok(content), Some(dir)) => {
-                let key = ir_cache_key(&content, crate::version::GIT_HASH, ir::IR_VERSION.trim());
+                // `CAMDL_NO_CONSTANT_FOLD` presence changes the IR camdlc emits,
+                // so it belongs in the key — else flipping it serves stale IR.
+                let fold_disabled = std::env::var_os("CAMDL_NO_CONSTANT_FOLD").is_some();
+                let key = ir_cache_key(&content, crate::version::GIT_HASH, ir::IR_VERSION.trim(), fold_disabled);
                 Some((dir.join(format!("{}.ir.json", key)), key))
             }
             _ => None,
@@ -843,15 +856,18 @@ mod ir_cache_key_tests {
 
     #[test]
     fn key_is_stable_and_distinguishes_content_compiler_and_schema() {
-        let a = ir_cache_key(b"model A", "git1", "0.7");
+        let a = ir_cache_key(b"model A", "git1", "0.7", false);
         // Same inputs → same key (cache hit).
-        assert_eq!(a, ir_cache_key(b"model A", "git1", "0.7"));
+        assert_eq!(a, ir_cache_key(b"model A", "git1", "0.7", false));
         // Different model content → different key (an edit recompiles).
-        assert_ne!(a, ir_cache_key(b"model B", "git1", "0.7"));
+        assert_ne!(a, ir_cache_key(b"model B", "git1", "0.7", false));
         // Different compiler version → different key (a camdlc upgrade recompiles).
-        assert_ne!(a, ir_cache_key(b"model A", "git2", "0.7"));
+        assert_ne!(a, ir_cache_key(b"model A", "git2", "0.7", false));
         // Different IR schema version → different key (a format change recompiles).
-        assert_ne!(a, ir_cache_key(b"model A", "git1", "0.8"));
+        assert_ne!(a, ir_cache_key(b"model A", "git1", "0.8", false));
+        // Flipping CAMDL_NO_CONSTANT_FOLD changes the emitted IR → different key
+        // (must not serve the folded IR when the user asked for unfolded).
+        assert_ne!(a, ir_cache_key(b"model A", "git1", "0.7", true));
         // 64-hex sha256.
         assert_eq!(a.len(), 64);
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));

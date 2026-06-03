@@ -122,6 +122,53 @@ fn editing_the_model_invalidates_the_cache() {
     assert_eq!(compiles(&counter), 2, "an edited model must recompile (content is in the key)");
 }
 
+/// Like `run_simulate` but with `CAMDL_NO_CONSTANT_FOLD` set, so camdlc emits
+/// the unfolded IR — a different compile output for the same model.
+fn run_simulate_fold_off(bin: &Path, shim_dir: &Path, model: &Path, cache_dir: &Path, out: &Path) {
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let st = Command::new(bin)
+        .args([
+            "simulate", model.to_str().unwrap(),
+            "--backend", "chain_binomial", "--seed", "1",
+            "--param", "beta=0.3", "--param", "gamma=0.1", "--param", "N0=1000",
+            "--output-dir", out.to_str().unwrap(), "--progress", "none",
+        ])
+        .env("PATH", format!("{}:{}", shim_dir.display(), old_path))
+        .env("CAMDL_IR_CACHE_DIR", cache_dir)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .env("CAMDL_NO_CONSTANT_FOLD", "1")
+        .status().expect("spawn");
+    assert!(st.success(), "simulate (fold off) should succeed");
+}
+
+#[test]
+fn toggling_constant_fold_invalidates_the_cache() {
+    let Some((bin, real)) = skip_if_unbuilt() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let model = tmp.path().join("sir.camdl");
+    std::fs::write(&model, SIR).unwrap();
+    let counter = tmp.path().join("compiles.log");
+    let shim = counting_shim(tmp.path(), &real, &counter);
+    let cache = tmp.path().join("ircache");
+
+    // Fold ON (the default): compile + cache.
+    run_simulate(&bin, &shim, &model, &cache, &tmp.path().join("o1"), false);
+    assert_eq!(compiles(&counter), 1, "fold-on: first run compiles once");
+
+    // Same model, but CAMDL_NO_CONSTANT_FOLD now set → camdlc emits a DIFFERENT
+    // (unfolded) IR. The flag is in the cache key, so this must recompile, not
+    // serve the folded variant.
+    run_simulate_fold_off(&bin, &shim, &model, &cache, &tmp.path().join("o2"));
+    assert_eq!(compiles(&counter), 2, "toggling CAMDL_NO_CONSTANT_FOLD recompiles (flag in key)");
+
+    // The two variants are SEPARATE entries, not an overwrite: fold-off reuses
+    // its own entry, and fold-on still hits its original one.
+    run_simulate_fold_off(&bin, &shim, &model, &cache, &tmp.path().join("o3"));
+    assert_eq!(compiles(&counter), 2, "fold-off reuses its own cache entry");
+    run_simulate(&bin, &shim, &model, &cache, &tmp.path().join("o4"), false);
+    assert_eq!(compiles(&counter), 2, "fold-on still hits its original entry");
+}
+
 #[test]
 fn no_ir_cache_flag_bypasses_the_cache() {
     let Some((bin, real)) = skip_if_unbuilt() else { return; };
