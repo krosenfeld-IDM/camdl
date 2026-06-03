@@ -73,6 +73,8 @@ use std::collections::HashMap;
     max_term_width = 100,
     styles = HELP_STYLES,
     after_help = colored_help!("\
+New here? Run `camdl docs` for guides — modeling, the DSL, inference, the fit workflow.
+
 Common workflows:
   Simulate a model:        camdl simulate model.camdl --params p.toml
   Fit to data:             camdl fit run fit.toml
