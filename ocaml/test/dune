@@ -19,3 +19,15 @@
  (name test_lint)
  (modules test_lint)
  (libraries ir alcotest))
+
+; Compiler-diagnostics harness (gh#168). Reads its `.camdl` fixtures from
+; `test/lints/` and the model corpora (`ocaml/golden`, `tests/*`) by
+; resolving the real repo root at runtime — the corpora outside the
+; `ocaml/` dune root cannot be pulled in as `(deps ...)`. `(source_tree
+; lints)` makes the in-tree fixtures available; the runtime resolver reads
+; the originals.
+(test
+ (name test_diagnostics)
+ (modules test_diagnostics)
+ (libraries compiler ir alcotest)
+ (deps (source_tree lints) (source_tree ../golden)))

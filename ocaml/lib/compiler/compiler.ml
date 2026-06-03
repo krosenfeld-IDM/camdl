@@ -215,6 +215,55 @@ let run_lint (d : compile_detail) : unit =
         ~message:l.message ?detail:l.detail ?hint:l.hint ()
   ) lint_result.diagnostics
 
+(** Autodiff pass: differentiate every transition rate w.r.t. all
+    parameters, returning the transition list with [rate_grad] filled in.
+    If a rate contains `mod` over a parameter, differentiation raises
+    [Failure] — caught per-transition, emitting E600 (with source
+    location) into [d.ctx.diags] and leaving that transition's
+    [rate_grad] empty. Side effect is confined to the diagnostic context;
+    this never renders or aborts, so it is shared verbatim by [compile]
+    (which short-circuits on the resulting errors) and
+    [collect_diagnostics] (which does not). *)
+let differentiate_transitions (d : compile_detail) : Ir.transition list =
+  let param_names = List.map (fun (p : Ir.parameter) -> p.name) d.model.Ir.parameters in
+  let tr_loc name =
+    (* Find the original (pre-expansion) transition declaration by prefix
+       match: expanded name "infection_child" → base "infection". *)
+    match List.find_opt (fun (td : Ast.transition_decl) ->
+      let b = td.trname and bl = String.length td.trname in
+      let el = String.length name in
+      name = b || (el > bl && String.sub name 0 bl = b && name.[bl] = '_')
+    ) d.ctx.orig_transitions with
+    | Some td -> Expander.diag_loc_of_ast_ctx d.ctx td.trloc
+    | None -> Diagnostics.no_loc
+  in
+  Passtime.time "autodiff" (fun () ->
+    List.map (fun (t : Ir.transition) ->
+      match (try Ok (Autodiff.differentiate_rate t.rate param_names)
+             with Failure msg -> Error msg) with
+      | Ok rate_grad -> { t with Ir.rate_grad }
+      | Error msg ->
+        Diagnostics.error d.ctx.diags
+          ~code:"E600"
+          ~loc:(tr_loc t.name)
+          ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
+          ~hint:"mod is not differentiable; replace with a conditional guard"
+          ();
+        { t with Ir.rate_grad = [] }
+    ) d.model.Ir.transitions)
+
+(** Sparse-coupling constant-fold (on by default): resolves
+    constant-indexed inline-table lookups and drops zero-W terms from FOI
+    Reduce sums, collapsing the dense P-term spatial sum to its k nonzero
+    terms. Proven byte-identical by the A/B gate (rust
+    .../gate_constant_fold_ab). Set CAMDL_NO_CONSTANT_FOLD to emit the
+    unfolded (dense) IR — an escape hatch for debugging the pass or
+    inspecting the pre-fold shape. *)
+let maybe_constant_fold (m : Ir.model) : Ir.model =
+  let fold_on = !constant_fold && Sys.getenv_opt "CAMDL_NO_CONSTANT_FOLD" = None in
+  if fold_on then Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
+  else m
+
 let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model, string) result =
   match compile_detail_result ~name ~filename src with
   | Ok d ->
@@ -235,49 +284,121 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
       Fmt.set_style_renderer Fmt.stderr `Ansi_tty;
       Diagnostics.render_all d.ctx.diags d.source Fmt.stderr
     end;
-    (* Autodiff pass: differentiate transition rates w.r.t. all parameters.
-       If a rate contains `mod` over a parameter, differentiation raises
-       Failure — catch per-transition and emit E600 with source location. *)
-    let param_names = List.map (fun (p : Ir.parameter) -> p.name) d.model.Ir.parameters in
-    let tr_loc name =
-      (* Find the original (pre-expansion) transition declaration by prefix
-         match: expanded name "infection_child" → base "infection". *)
-      match List.find_opt (fun (td : Ast.transition_decl) ->
-        let b = td.trname and bl = String.length td.trname in
-        let el = String.length name in
-        name = b || (el > bl && String.sub name 0 bl = b && name.[bl] = '_')
-      ) d.ctx.orig_transitions with
-      | Some td -> Expander.diag_loc_of_ast_ctx d.ctx td.trloc
-      | None -> Diagnostics.no_loc
-    in
-    let transitions = Passtime.time "autodiff" (fun () ->
-      List.map (fun (t : Ir.transition) ->
-        match (try Ok (Autodiff.differentiate_rate t.rate param_names)
-               with Failure msg -> Error msg) with
-        | Ok rate_grad -> { t with Ir.rate_grad }
-        | Error msg ->
-          Diagnostics.error d.ctx.diags
-            ~code:"E600"
-            ~loc:(tr_loc t.name)
-            ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
-            ~hint:"mod is not differentiable; replace with a conditional guard"
-            ();
-          { t with Ir.rate_grad = [] }
-      ) d.model.Ir.transitions)
-    in
+    let transitions = differentiate_transitions d in
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     let m = { d.model with Ir.transitions = transitions } in
-    (* Sparse-coupling constant-fold (on by default): resolves constant-indexed
-       inline-table lookups and drops zero-W terms from FOI Reduce sums,
-       collapsing the dense P-term spatial sum to its k nonzero terms. Proven
-       byte-identical by the A/B gate (rust .../gate_constant_fold_ab). Set
-       CAMDL_NO_CONSTANT_FOLD to emit the unfolded (dense) IR — an escape hatch
-       for debugging the pass or inspecting the pre-fold shape. *)
-    let fold_on = !constant_fold && Sys.getenv_opt "CAMDL_NO_CONSTANT_FOLD" = None in
-    let m =
-      if fold_on then Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
-      else m
-    in
-    Ok m
+    Ok (maybe_constant_fold m)
   | Error e -> Error e
+
+(* ── Severity-agnostic diagnostic collection ─────────────────────────────────
+
+   [collect_diagnostics] runs the real compile pipeline (lex → parse →
+   expand → validate → dimcheck → lint → autodiff) over a source and
+   returns EVERY diagnostic it produced — errors, warnings, and infos
+   alike — without rendering to stderr and without aborting via
+   [report_and_exit]. It is the test/tooling counterpart to [compile],
+   which can only surface diagnostics on the failing (Error) path.
+
+   The pipeline short-circuits exactly as [compile] does: a structural
+   [Validate] error stops before dimcheck (Validate runs first precisely
+   because dimcheck ICEs on unknown params). On the no-error path, all of
+   dimcheck, lint, and autodiff run, so non-blocking warnings/lints (e.g.
+   L402 on a clean-compiling model) are captured. This matches what a
+   user sees from `camdlc`, so a fixture-driven test over [collect_diagnostics]
+   exercises the same diagnostic surface as the CLI. *)
+
+(* Non-aborting twin of [compile_detail_result]: lex/parse/expand,
+   accumulating all front-end diagnostics into the returned [Diagnostics.t]
+   instead of calling [report_and_exit]. On a parse/lex error the model is
+   [None] and the fresh context holds the E001; on a successful expand the
+   model is [Some _] and the context is the expander's [ctx.diags] (which
+   may itself already carry expansion-phase errors/warnings — the caller
+   decides whether to continue). *)
+let front_end_collect ?(name = "model") ?(filename = "<input>") (src : string)
+    : compile_detail option * Diagnostics.t =
+  let source = Source_cache.of_string ~filename src in
+  Lexer.pending_warnings := [];
+  Parser_errors.pending_errors := [];
+  let parse_diags = Diagnostics.create () in
+  match
+    (try
+       let lexbuf = Lexing.from_string src in
+       Lexing.set_filename lexbuf filename;
+       (try Ok (Parser.file Lexer.token lexbuf)
+        with
+        | Lexer.LexError msg ->
+          let pos = lexbuf.Lexing.lex_curr_p in
+          Diagnostics.error parse_diags ~code:"E001"
+            ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
+            ~message:(Printf.sprintf "lex error: %s" msg) ();
+          Error ()
+        | Parser.Error ->
+          let pos = lexbuf.Lexing.lex_curr_p in
+          Diagnostics.error parse_diags ~code:"E001"
+            ~loc:(Diagnostics.loc_of_positions ~file:filename pos pos)
+            ~message:"syntax error" ();
+          Error ())
+     with
+     | Failure msg ->
+       Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+         ~message:msg ();
+       Error ()
+     | exn ->
+       Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+         ~message:(Printexc.to_string exn) ();
+       Error ())
+  with
+  | Error () -> (None, parse_diags)
+  | Ok decls ->
+    let source_dir =
+      if filename = "<input>" then "" else Filename.dirname filename
+    in
+    (match
+       (try Ok (Expander.expand_detail ~source_dir ~filename name decls)
+        with
+        | Failure msg ->
+          Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+            ~message:msg ();
+          Error ()
+        | exn ->
+          Diagnostics.error parse_diags ~code:"E001" ~loc:Diagnostics.no_loc
+            ~message:(Printexc.to_string exn) ();
+          Error ())
+     with
+     | Error () -> (None, parse_diags)
+     | Ok (model, ctx, summary) ->
+       (* Drain lex-phase warnings and parser-action errors into ctx.diags,
+          mirroring compile_detail_result so the same codes surface here. *)
+       List.iter (fun (sp, ep, msg) ->
+         Diagnostics.warning ctx.diags ~code:"W100"
+           ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
+           ~message:msg ()
+       ) (List.rev !Lexer.pending_warnings);
+       Lexer.pending_warnings := [];
+       List.iter (fun (sp, ep, code, msg, hint) ->
+         Diagnostics.error ctx.diags ~code
+           ~loc:(Diagnostics.loc_of_positions ~file:filename sp ep)
+           ~message:msg ?hint ()
+       ) (List.rev !Parser_errors.pending_errors);
+       Parser_errors.pending_errors := [];
+       (Some { model; ctx; summary; source }, ctx.diags))
+
+let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
+    : Diagnostics.diagnostic list =
+  let (detail, diags) = front_end_collect ~name ~filename src in
+  (match detail with
+   | None -> ()                     (* lex/parse/expand failed; diags has the E001 *)
+   | Some d ->
+     (* Same staged pipeline as [compile], minus rendering/abort: Validate
+        first (it gates dimcheck, which ICEs on unknown params), then
+        dimcheck + lint, then autodiff. Short-circuit after Validate matches
+        [compile]; downstream passes run only on a structurally-valid model. *)
+     if not (Passtime.time "validate" (fun () -> run_validate d)) then begin
+       Passtime.time "dimcheck" (fun () -> run_dimcheck d);
+       Passtime.time "lint" (fun () -> run_lint d);
+       if not (Diagnostics.has_errors d.ctx.diags) then
+         ignore (differentiate_transitions d)
+     end);
+  (* diags accumulates newest-first via [emit]; reverse to source order. *)
+  List.rev diags.Diagnostics.diags

@@ -40,31 +40,71 @@ specifics are documented at each emit site in `ocaml/lib/compiler/`.)
 | E107 | parse | ambiguous unit literal after `/` |
 | E108 | parse | malformed initial-condition expression |
 | E109 | parse | unknown forcing function shape |
+| E110 | parse | unknown transition attribute `#[...]` (only `#[lineage]` is supported) |
 | E200–E221 | semantic | scoping / declaration / resolution errors (multiple variants); E221 = read() data-file header has too few columns for the table's index dimensions |
+| E222 | semantic | table uses `read(...)` but declares no index dimensions |
 | E230–E276 | semantic | observation, balance, simulation-block validation |
 | E300 | dimensional | transition rate has wrong dimension (e.g. per-capita where total propensity expected) |
+| E301 | dimensional | exponent has non-dimensionless dimension |
+| E302 | dimensional | dimension mismatch (e.g. adding a count and a rate) |
+| E303 | dimensional | parameter used with conflicting dimensions across transitions |
+| E304 | dimensional | `sqrt` requires even dimension exponents / distribution parameter has wrong dimension (e.g. binomial `p` is a count) |
+| E305 | dimensional | balance expression has wrong dimension |
+| E306 | dimensional | ODE derivative has wrong dimension |
+| E307 | dimensional | observation dispersion parameter must be dimensionless |
+| E308 | dimensional | overdispersion `sigma^2` must be dimensionless |
 | E310 | dimensional | misc dimensional mismatch |
+| E320 | calendar | integer `time_unit` cannot be combined with `origin = date("...")` |
+| E321 | calendar | calendar duration cannot translate an instant in the model's time unit |
+| E322 | calendar | calendar duration used in a recurring schedule field |
+| E323 | calendar | periodic forcing has bare-numeric entries in `on=[...]` under a calendar origin |
+| E327 | calendar | `date_range` with `start = origin` requires an anchored model |
+| E328 | calendar | `date_range` missing required `start` argument |
+| E329 | calendar | `date_range` `count`/`every` out of range (must be ≥ 1 / positive) |
 | E401 | schedule | recurring block missing required field |
 | E402–E408 | schedule | recurring/periodic block validation (period, on-list, alignment) |
+| E500 | validate | duplicate compartment after expansion |
+| E501 | validate | duplicate transition after expansion |
+| E502 | validate | duplicate parameter |
+| E503 | validate | unknown compartment referenced |
+| E504 | validate | unknown parameter referenced |
+| E505 | validate | unknown table referenced |
+| E506 | validate | unknown time_function referenced |
+| E507 | validate | unknown transition referenced in observation |
+| E508 | validate | real-valued compartment in transition stoichiometry |
+| E509 | validate | real-valued compartment has no ODE equation |
+| E510 | validate | ODE equation for a non-real compartment |
+| E511 | validate | transition has zero delta for a compartment |
 | E600 | runtime config | rejected before backend dispatch |
+| E601 | semantic | lineage tracking requires linear dependence on parent compartments |
 
 ## Warnings
 
 | Code | Severity | Category | Summary |
 |---|---|---|---|
-| W100 | Warning | model-file | (compiler.ml:52) — questionable model-file construct |
-| W103 | Warning | model-file | (expander.ml:3073) — questionable model-file construct |
-| W200 | Warning | IR | (expander.ml:1595) — suspicious IR shape |
-| W201 | Warning | IR | (expander.ml:268) — suspicious IR shape |
-| W203 | Warning | IR | (expander.ml:2746) — suspicious IR shape |
+| W100 | Warning | model-file | inconsistent digit grouping in a numeric literal (drained from the lexer) |
+| W103 | Warning | model-file | questionable model-file construct |
+| W200 | Warning | IR | suspicious IR shape |
+| W201 | Warning | IR | suspicious IR shape |
 | W301 | Warning | covariate | periodic range not aligned to step size |
-| W310 | Warning | covariate | (expander.ml:3153) — covariate / interpolation issue |
-| W311 | Warning | covariate | (expander.ml:534) — covariate / interpolation issue |
+| W310 | Warning | covariate | covariate / interpolation issue |
+| W311 | Warning | covariate | covariate / interpolation issue |
+| W324 | Warning | calendar | bare number in `simulate.from`/`.to` with a calendar origin declared |
+| W325 | Warning | calendar | bare number in a recurring/at time position with a calendar origin declared |
+| W327 | Warning | calendar | calendar `add_*`/`subtract_*` round-trip is not in general the identity (month-end clamping) |
+| W328 | Warning | calendar | `date_range` `end` does not land on a cadence boundary |
 
-(The above table is a starting skeleton. Each row should be
-expanded with a one-paragraph rationale documenting the failure
-mode the warning catches. Future emit-site additions must update
-this table in the same commit.)
+(Each row should eventually be expanded with a one-paragraph
+rationale documenting the failure mode the warning catches. Future
+emit-site additions must update this table in the same commit — the
+catalog-consistency meta-test in `ocaml/test/test_diagnostics.ml`
+fails the build if an emit-site code is missing here.)
+
+## Info
+
+| Code | Severity | Category | Summary |
+|---|---|---|---|
+| I300 | Info | dimensional | parameter dimension could not be determined (annotate with a more specific kind) |
 
 ## Lints
 
