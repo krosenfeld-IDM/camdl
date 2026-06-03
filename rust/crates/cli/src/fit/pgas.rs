@@ -454,6 +454,16 @@ pub fn run_stage(
     let chain_nuts: std::sync::Mutex<Vec<ChainNutsDiag>> =
         std::sync::Mutex::new(vec![ChainNutsDiag::default(); n_chains]);
 
+    // Per-chain progress bars (mirrors IF2 / PMMH). One `Reporter` hands out a
+    // `Task` per chain, rendered as a coordinated stack; the Reporter honors
+    // --progress (Pretty=bars, Plain=throttled `chain N pos/len ll=…` log
+    // lines, None=silent). The metric is the cold-chain complete-data
+    // log-likelihood the sampler already reports each sweep — no new compute.
+    let reporter = crate::progress::Reporter::new();
+    let bars: Vec<crate::progress::Task> = (0..n_chains)
+        .map(|chain_id| reporter.task(n_sweeps as u64, format!("chain {}", chain_id + 1)))
+        .collect();
+
     // Run chains in parallel (each chain is independent: own seed, own
     // trajectory, own RNG). Same pattern as PMMH.
     use rayon::prelude::*;
@@ -462,6 +472,7 @@ pub fn run_stage(
         .map(|chain_id| {
             let chain_seed = crate::util::derive_chain_seed(seed, chain_id);
             let chain_dir = stage_dir.join(format!("chain_{}", chain_id + 1));
+            let task = &bars[chain_id];
 
             let pgas_config = PGASConfig {
                 n_particles,
@@ -562,17 +573,14 @@ pub fn run_stage(
                     }
                 }
 
-                // Progress (non-TTY only for parallel — TTY would interleave)
-                if sweep.is_multiple_of(500) || sweep == n_sweeps - 1 {
-                    let elapsed = chain_start.elapsed().as_secs();
-                    let n_acc: usize = result.accepted.iter().filter(|&&a| a).count();
-                    eprintln!("[pgas] chain {}: {}/{} ({:.0}%) ll={:.1} acc={}/{} renewal={:.0}% elapsed={}s",
-                        chain_id + 1, sweep + 1, n_sweeps,
-                        (sweep + 1) as f64 / n_sweeps as f64 * 100.0,
-                        result.log_complete_data_ll,
-                        n_acc, result.accepted.len(),
-                        result.csmc_diag.trajectory_renewal * 100.0, elapsed);
-                }
+                // Passive bar tick. The callback fires once per sweep in order,
+                // so `inc(1)` tracks position = sweep+1 exactly. The metric is
+                // the cold-chain complete-data loglik the sampler already
+                // reports. `Task` handles Pretty (redraw) / Plain (throttled
+                // `chain N pos/len ll=…` line) / None (no-op) — no mode
+                // branching here.
+                task.set(crate::progress::ll(result.log_complete_data_ll));
+                task.inc(1);
             };
 
             let result = run_pgas(
@@ -619,6 +627,12 @@ pub fn run_stage(
             Ok((chain_id, result.sweeps, result.acceptance_rates))
         })
         .collect();
+
+    // Clear all chain bars now that the parallel phase is done (`Task::finish`
+    // consumes, so it can't run on the per-chain borrow inside the loop). Done
+    // before the `?` unwrap so a chain error still clears the bars. The
+    // `acceptance rates:` report below carries the per-chain summary.
+    for t in bars { t.finish(); }
 
     // Unwrap results (propagate first error)
     let all_results: Vec<(usize, Vec<PGASSweep>, Vec<f64>)> = all_results

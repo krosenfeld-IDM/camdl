@@ -28,7 +28,6 @@
 //! cross-seed summary are cross-leaf aggregates with no single home in
 //! the factored tree — they are rebuilt from the derived index.
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use sim::{
     compiled_model::CompiledModel,
@@ -40,7 +39,7 @@ use sim::{
     },
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::cas::typed::ContentHash;
 use crate::run_paths::output_root;
@@ -997,19 +996,13 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     }
 
     // ── Progress + cache scan ─────────────────────────────────────────
-    let mp = MultiProgress::with_draw_target(crate::progress::draw_target());
-    let overall_style = ProgressStyle::with_template(
-        "  {prefix:>12} {bar:40.cyan/dim} {pos:>3}/{len:3} {msg}"
-    ).unwrap().progress_chars("━╸─");
-    let overall_pb = mp.add(ProgressBar::new(total_jobs as u64));
-    overall_pb.set_style(overall_style);
-    overall_pb.set_prefix("profile");
-    let plain = crate::progress::is_plain();
-    let progress_throttle = Mutex::new(crate::progress::Throttle::default());
-    if plain {
-        log::info!("profile: {} grid points × {} starts × {} seeds = {} jobs",
-            grid_points.len(), n_starts, seeds.len(), total_jobs);
-    }
+    // One overall bar over all (point × seed × start) jobs, ticked from the
+    // parallel loop (`Task` is `Send + Sync`). The Reporter honors --progress
+    // (Pretty=bar, Plain=throttled `profile pos/len` log lines, None=silent).
+    // No per-tick metric: a best profile-loglik isn't tracked here (each cell
+    // computes its own `final_loglik`; surfacing a global best would mean a
+    // shared accumulator that the bar deliberately avoids).
+    let bar = crate::progress::Reporter::new().task(total_jobs as u64, "profile");
 
     // ── gh#147 (M3.3): pre-resolve every job's CAS identity ──────────
     // Job tuple (seed_idx, grid_idx, start_idx). The grid lives in the
@@ -1108,7 +1101,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     if !cached.is_empty() {
         eprintln!("profile: {} of {} starts already cached — resuming",
             cached.len(), total_jobs);
-        overall_pb.inc(cached.len() as u64);
+        bar.inc(cached.len() as u64);
     }
 
     if parallel > 0 {
@@ -1565,20 +1558,13 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             eprintln!("warning: finalize profile point {}: {}", cas_path.display(), e);
         }
 
-        // Progress tick.
-        overall_pb.inc(1);
-        if plain {
-            let done = overall_pb.position();
-            let ready = progress_throttle.lock()
-                .map(|mut t| t.ready()).unwrap_or(true);
-            if ready || done == total_jobs as u64 {
-                log::info!("profile: {}/{} jobs complete", done, total_jobs);
-            }
-        }
+        // Passive progress tick. `Task` handles Pretty (redraw) / Plain
+        // (throttled `profile pos/len` log line) / None (no-op) internally.
+        bar.inc(1);
 
     });
 
-    overall_pb.finish_with_message("done");
+    bar.finish();
 
     // gh#147 (M3.3): the per-seed profile.tsv curve + the cross-seed
     // summary.tsv are cross-point / cross-seed aggregates with no home in the

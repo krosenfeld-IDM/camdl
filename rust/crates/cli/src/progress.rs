@@ -170,7 +170,14 @@ impl Reporter {
         // Steady tick so the bar paints and the ETA advances between `inc`
         // calls. A no-op against a hidden draw target (Plain / None).
         pb.enable_steady_tick(Duration::from_millis(120));
-        Task { pb, _mp: self.mp.clone(), mode: self.mode, throttle: Throttle::default(), label }
+        Task {
+            pb,
+            _mp: self.mp.clone(),
+            mode: self.mode,
+            throttle: std::sync::Mutex::new(Throttle::default()),
+            metric: std::sync::Mutex::new(String::new()),
+            label,
+        }
     }
 }
 
@@ -178,10 +185,15 @@ impl Default for Reporter {
     fn default() -> Self { Self::new() }
 }
 
-/// One bar within a [`Reporter`]. Advance with [`Task::inc`]; close with
-/// [`Task::finish`]. `Pretty` redraws; `Plain` emits a throttled
-/// `label pos/len` log line; `None` is silent. (A researcher metric setter
-/// arrives with the first consumer that needs it.)
+/// One bar within a [`Reporter`]. Advance with [`Task::inc`], attach a
+/// researcher metric with [`Task::set`], close with [`Task::finish`].
+/// `Pretty` redraws; `Plain` emits a throttled `label pos/len <metric>` log
+/// line; `None` is silent.
+///
+/// `inc`/`set` take `&self` (interior-mutable throttle + metric) so one bar
+/// can be shared across rayon workers — `survey` ticks a single overall bar
+/// from a parallel point sweep, `CasSink` ticks it from the sequential merge
+/// loop, and fit gives each chain its own bar. `Task` is `Send + Sync`.
 pub struct Task {
     pb: ProgressBar,
     /// A clone of the owning `MultiProgress`, held only to keep it alive for
@@ -189,25 +201,44 @@ pub struct Task {
     /// not stop the bar rendering).
     _mp: MultiProgress,
     mode: Resolved,
-    throttle: Throttle,
+    throttle: std::sync::Mutex<Throttle>,
+    /// Last metric string, kept so Plain-mode lines carry it too.
+    metric: std::sync::Mutex<String>,
     label: String,
 }
 
 impl Task {
-    /// Advance by `n`. `Pretty`: redraw. `Plain`: a throttled `label pos/len`
-    /// log line (the bar's position is tracked even against a hidden target).
-    /// `None`: no-op.
-    pub fn inc(&mut self, n: u64) {
+    /// Advance by `n`. `Pretty`: redraw. `Plain`: a throttled
+    /// `label pos/len <metric>` log line (position is tracked even against a
+    /// hidden target). `None`: no-op.
+    pub fn inc(&self, n: u64) {
         match self.mode {
             Resolved::Pretty => self.pb.inc(n),
             Resolved::Plain => {
                 self.pb.inc(n);
-                if self.throttle.ready() {
-                    log::info!("{} {}/{}", self.label, self.pb.position(),
-                        self.pb.length().unwrap_or(0));
+                let ready = self.throttle.lock().map(|mut t| t.ready()).unwrap_or(false);
+                if ready {
+                    let m = self.metric.lock().map(|s| s.clone()).unwrap_or_default();
+                    let sep = if m.is_empty() { "" } else { "  " };
+                    log::info!("{} {}/{}{}{}", self.label, self.pb.position(),
+                        self.pb.length().unwrap_or(0), sep, m);
                 }
             }
             Resolved::None => {}
+        }
+    }
+
+    /// Attach a researcher-facing metric (e.g. [`best_ll`]). `Pretty` shows it
+    /// on the bar as `{msg}`; `Plain` folds it into the next throttled line;
+    /// `None` is a no-op. Callers format the string (standard forms documented
+    /// in the progress-system proposal).
+    pub fn set(&self, metric: impl Into<String>) {
+        let m = metric.into();
+        if self.mode == Resolved::Pretty {
+            self.pb.set_message(m.clone());
+        }
+        if let Ok(mut g) = self.metric.lock() {
+            *g = m;
         }
     }
 
@@ -216,5 +247,46 @@ impl Task {
     /// clear.
     pub fn finish(self) {
         self.pb.finish_and_clear();
+    }
+}
+
+/// Standard "best log-likelihood so far" metric string for search-style work
+/// (`survey`, `profile`). Kept here so the live bar reads identically across
+/// subcommands.
+pub fn best_ll(x: f64) -> String {
+    if x.is_finite() { format!("best ll={:.1}", x) } else { "best ll=-inf".to_string() }
+}
+
+/// Standard "current log-likelihood" metric string for iterative fitters
+/// (`fit` IF2 / PGAS, `pfilter`). Mirrors [`best_ll`]'s finite/-inf handling.
+pub fn ll(x: f64) -> String {
+    if x.is_finite() { format!("ll={:.1}", x) } else { "ll=-inf".to_string() }
+}
+
+/// Standard MCMC metric string carrying the current log-likelihood and the
+/// acceptance fraction (PMMH / PGAS-MCMC), e.g. `"ll=-12.3  acc=24%"`. The
+/// `accept` argument is a fraction in `[0, 1]`. Reuses [`ll`] for the
+/// log-likelihood term and its -inf handling.
+pub fn mcmc(loglik: f64, accept: f64) -> String {
+    format!("{}  acc={:.0}%", ll(loglik), accept * 100.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ll_finite_and_neg_inf() {
+        assert_eq!(ll(-12.34), "ll=-12.3");
+        assert_eq!(ll(f64::NEG_INFINITY), "ll=-inf");
+        // NaN / +inf are not finite → the -inf label (matches best_ll).
+        assert_eq!(ll(f64::NAN), "ll=-inf");
+    }
+
+    #[test]
+    fn mcmc_reuses_ll_and_formats_accept() {
+        assert_eq!(mcmc(-12.34, 0.24), "ll=-12.3  acc=24%");
+        assert_eq!(mcmc(f64::NEG_INFINITY, 0.0), "ll=-inf  acc=0%");
+        assert_eq!(mcmc(-1.0, 1.0), "ll=-1.0  acc=100%");
     }
 }

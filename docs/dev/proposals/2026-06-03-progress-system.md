@@ -42,20 +42,21 @@ impl Reporter {
 
 /// One bar. Pretty: redraws. Plain: throttled `label pos/len <metric>` log
 /// line. None: no-op. it/s + ETA come free from the shared template.
-pub struct Task { /* pb, mode, throttle, label */ }
+/// `inc`/`set` take `&self` (interior-mutable throttle + metric) so one bar
+/// can be ticked from a parallel sweep; `Task` is `Send + Sync`.
+pub struct Task { /* pb, mode, throttle, metric, label */ }
 impl Task {
-    pub fn inc(&mut self, n: u64);
-    pub fn set(&mut self, m: Metric);                      // researcher line → {msg}
-    pub fn finish(self, summary: impl Into<String>);       // end-of-run line
+    pub fn inc(&self, n: u64);
+    pub fn set(&self, metric: impl Into<String>);          // researcher line → {msg}
+    pub fn finish(self);                                   // clears the bar
 }
 
-/// Standardized, deliberately small metric line.
-pub enum Metric {
-    Sim,                                 // forward sim: nothing beyond rate/ETA
-    Loglik(f64),                         // "ll=-12.3"        (IF2 / PGAS / pfilter)
-    Search { best: f64 },                // "best ll=-12.3"   (survey / profile)
-    Mcmc { loglik: f64, accept: f64 },   // "ll=-12.3 acc=24%"(PMMH / PGAS-MCMC)
-}
+// The metric is a caller-formatted string (not an enum — keeps each phase's
+// commit dead-code-free, since the format helper lands with its first user).
+// Standardized format helpers, so the live bar reads identically everywhere:
+pub fn best_ll(x: f64) -> String;          // "best ll=-12.3"  (survey / profile-search)
+pub fn ll(x: f64) -> String;               // "ll=-12.3"       (IF2 / PGAS / pfilter)
+pub fn mcmc(loglik: f64, accept: f64) -> String; // "ll=-12.3  acc=24%" (PMMH / PGAS-MCMC)
 ```
 
 Shared style (one place): `{prefix} {bar:.cyan/dim} {pos}/{len} {per_sec}
@@ -86,8 +87,8 @@ forces `None` and wins over `--progress`:
 | `fit` PGAS | chains × sweeps | N chain bars | `Mcmc`/`Loglik` |
 | `fit` PMMH | chains × iters | N chain bars | `Mcmc{ll,acc}` |
 | `fit` NLopt | evals | 1 overall | `Loglik(best)` |
-| `pfilter` | obs windows | 1 | `Loglik(running)` |
-| `profile` | jobs | 1 overall | `Search{best}` |
+| `pfilter` | replicates | 1 | running-mean `ll` |
+| `profile` | jobs | 1 overall | (none — see note) |
 | `survey` | grid points | 1 overall | `Search{best}` |
 | `data` (download) | bytes | 1 `bytes()` | — |
 | `compile`/`check`/`inspect` | subprocess | keep spinner | — |
@@ -95,8 +96,9 @@ forces `None` and wins over `--progress`:
 | `eval`/`list`/`show`/`cat`/`compare`/`label`/`lineage tree,sojourn,cohort` | instant | none | — |
 
 Out of the *live* bar (too noisy / end-of-run): R̂, ESS, divergences,
-per-parameter values. Those go in the `finish(summary)` line, e.g.
-`✓ fit: ll=-1183.2  R̂=1.01  24/24 chains converged`.
+per-parameter values. Those stay in each subcommand's existing end-of-run
+report (`best chain: …`, `acceptance rates: …`, `loglik = … ± …`) — `finish()`
+just clears the bar, it does not print a summary.
 
 ## Determinism invariant
 
@@ -109,12 +111,24 @@ with `--progress none` vs `pretty`.
 
 ## Phasing (each its own gated commit)
 
-0. `Reporter`/`Task`/`Metric` + `--no-progress`. No behavior change.
-1. `simulate`/`batch` multi-cell → overall bar; delete the CasSink `[i/N]`
-   eprintln. Engine owns it (shared by both).
-2. Gaps: PGAS, pfilter, survey.
-3. Migrate IF2 / PMMH / profile onto `Reporter` (dedupe).
-4. (optional) `reindex` spinner, `data` download bar.
+0+1. **Done (5c935cf).** `Reporter`/`Task` + `--no-progress` + `simulate`/
+   `batch` multi-cell overall bar (CasSink); deleted the `[i/N]` eprintln.
+2+3. **Done.** Gaps filled: `survey` (best-ll bar), `pfilter` (per-replicate
+   bar + running-mean ll), PGAS (per-chain bars via the runner-level
+   `on_sweep` seam in `crates/cli/src/fit/pgas.rs` — the `sim` inference math
+   is untouched). Migrated IF2/PMMH/profile onto `Reporter` (the metric setter
+   `Task::set` + `progress::ll`/`mcmc` arrived here).
+4. (optional, not done) `reindex` spinner, `data` download bar.
+
+Two scope decisions made during implementation:
+- **pfilter is per-replicate, not per-obs-window.** `sim::bootstrap_filter`
+  has no progress callback, and it lives in an inference-math file; adding one
+  is a separate `sim`-crate change. The per-replicate bar (only for
+  `--replicates > 1`) with a running-mean `ll` is the honest CLI-level
+  granularity until that lands.
+- **profile carries no per-tick metric.** Each cell computes its own
+  `final_loglik`; surfacing a global best would need a shared accumulator the
+  bar deliberately avoids. It's an `inc`-only overall bar.
 
 Inference files (`pgas.rs`, `pmmh.rs`, `if2.rs`) are high-risk: only a passive
 bar callback is added, no change to draw order or numerics, full function read

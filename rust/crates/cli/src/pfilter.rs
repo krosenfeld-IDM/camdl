@@ -20,7 +20,6 @@ use sim::{
     },
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
     let _eval_stats_guard = crate::util::EvalStatsReportGuard::start();  // gh#audit-H5
@@ -417,9 +416,14 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         // ChaCha8 initial states across replicates. Use the
         // golden-ratio multiplier to decorrelate low bits.
         const SEED_STRIDE: u64 = 0x9e3779b97f4a7c15;
-        // Atomic progress counter — par_iter has no natural ordering, so
-        // print at every-10-completed boundary.
-        let done = AtomicUsize::new(0);
+        // Per-replicate progress bar; the metric is the running-mean loglik
+        // (replicates are noisy estimates of ONE loglik at fixed params, so
+        // the mean is the live estimate — not a search "best"). Ticked from
+        // the parallel loop (`Task` is `Send + Sync`); honors `--progress
+        // none/plain`. Finer per-obs-window progress would need a callback
+        // into `sim::bootstrap_filter` — deferred (an inference-crate change).
+        let bar = crate::progress::Reporter::new().task(n_replicates as u64, "pfilter");
+        let acc = std::sync::Mutex::new((0.0_f64, 0usize)); // (Σ loglik, count)
         let logliks: Vec<f64> = (0..n_replicates).into_par_iter().map(|rep| {
             let rep_seed = seed.wrapping_add((rep as u64).wrapping_mul(SEED_STRIDE));
             let result = bootstrap_filter(
@@ -428,13 +432,17 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
                 eprintln!("pfilter replicate {} error: {:?}", rep + 1, e);
                 std::process::exit(1);
             });
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 10 == 0 || n == n_replicates {
-                eprint!("\r  {}/{} replicates", n, n_replicates);
+            bar.inc(1);
+            if result.log_likelihood.is_finite() {
+                if let Ok(mut g) = acc.lock() {
+                    g.0 += result.log_likelihood;
+                    g.1 += 1;
+                    bar.set(format!("ll={:.1}", g.0 / g.1 as f64));
+                }
             }
             result.log_likelihood
         }).collect();
-        eprintln!();
+        bar.finish();
 
         let mean_ll = logliks.iter().sum::<f64>() / n_replicates as f64;
         let var_ll = logliks.iter().map(|&l| (l - mean_ll).powi(2)).sum::<f64>() / (n_replicates - 1) as f64;

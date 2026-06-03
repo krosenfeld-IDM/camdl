@@ -6,7 +6,6 @@
 
 use crate::fit::loglik_eval;
 use crate::fit::state::FitState;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use sim::{
     compiled_model::CompiledModel,
@@ -1079,7 +1078,7 @@ fn run_one_chain(
     chain_id: usize,
     config: &FitRunConfig,
     per_chain_params: Option<&[EstimatedParam]>,
-    pb: Option<&ProgressBar>,
+    task: Option<&crate::progress::Task>,
     stage_dir: Option<&str>,
 ) -> Result<IF2Result, sim::error::SimError> {
     let chain_seed = crate::util::derive_chain_seed(config.seed, chain_id);
@@ -1089,11 +1088,6 @@ fn run_one_chain(
     let obs_model = config.build_obs_model();
 
     let n_iter = config.if2_config.n_iterations;
-    let plain = crate::progress::is_plain();
-    // RefCell so the progress closure can be `Fn` (run_if2_with_progress
-    // takes `&dyn Fn`). The callback is single-threaded per chain.
-    // Cadence from progress::DEFAULT_THROTTLE.
-    let throttle = std::cell::RefCell::new(crate::progress::Throttle::default());
 
     // Streaming trace writer (opt-in via stage_dir). Each chain writes
     // its own `chain_N/parameter_traces.tsv` from inside the IF2
@@ -1125,22 +1119,13 @@ fn run_one_chain(
         });
 
     let progress_cb = |iter: usize, loglik: f64, param_means: &[f64]| {
-        if let Some(bar) = pb {
-            bar.set_position((iter + 1) as u64);
-            if loglik.is_finite() {
-                bar.set_message(format!("ll={:.1}", loglik));
-            } else {
-                bar.set_message("ll=-inf".to_string());
-            }
-        }
-        if plain && throttle.borrow_mut().ready() {
-            if loglik.is_finite() {
-                log::info!("fit chain {} iter {}/{} ll={:.1}",
-                    chain_id + 1, iter + 1, n_iter, loglik);
-            } else {
-                log::info!("fit chain {} iter {}/{} ll=-inf",
-                    chain_id + 1, iter + 1, n_iter);
-            }
+        // Passive bar tick. The callback fires once per iteration in order,
+        // so `inc(1)` tracks position = iter+1 exactly. `Task` handles
+        // Pretty (redraw) / Plain (throttled log line) / None (no-op) — no
+        // mode branching here.
+        if let Some(t) = task {
+            t.set(crate::progress::ll(loglik));
+            t.inc(1);
         }
         // Stream one row per iteration. `loglik` column is `NA` until
         // the post-hoc clean-PF re-eval; `if2_perturbed_loglik` is the
@@ -1188,12 +1173,11 @@ fn run_one_chain(
         if let Ok(mut w) = cell.try_borrow_mut() { let _ = w.flush(); }
     }
 
-    if let Some(bar) = pb {
-        bar.finish_with_message(format!("ll={:.1}", result.final_loglik));
-    }
-    if plain {
-        log::info!("fit chain {} done iter {}/{} final_ll={:.1}",
-            chain_id + 1, n_iter, n_iter, result.final_loglik);
+    // Final metric on the bar; the driver clears it after the par_iter
+    // (`Task::finish` consumes, so it can't be called on the borrowed Task
+    // here). The post-loop `eprintln!("best chain: …")` carries the summary.
+    if let Some(t) = task {
+        t.set(crate::progress::ll(result.final_loglik));
     }
 
     Ok(result)
@@ -1210,21 +1194,16 @@ pub fn run_chains_with_per_chain_params(
         config.n_chains, config.if2_config.n_particles, config.if2_config.n_iterations,
         config.if2_config.cooling_fraction, config.if2_config.dt);
 
-    // GH #14: draw target reflects --progress mode. In plain/none modes the
-    // bars are hidden; per-chain log::info! lines from the progress callback
-    // carry the state for tee/ssh/CI consumers.
-    let mp = MultiProgress::with_draw_target(crate::progress::draw_target());
-    let bar_style = ProgressStyle::default_bar()
-        .template("  chain {prefix} [{bar:25.cyan/dim}] {pos}/{len} {msg}")
-        .unwrap()
-        .progress_chars("━╸─");
-
-    let bars: Vec<ProgressBar> = (0..config.n_chains).map(|chain_id| {
-        let pb = mp.add(ProgressBar::new(config.if2_config.n_iterations as u64));
-        pb.set_style(bar_style.clone());
-        pb.set_prefix(format!("{}", chain_id + 1));
-        pb
-    }).collect();
+    // GH #14: one `Reporter` hands out a per-chain `Task` rendered as a
+    // coordinated stack. The Reporter honors --progress (Pretty=bars,
+    // Plain=throttled `chain N pos/len ll=…` log lines, None=silent), so the
+    // callback no longer branches on mode.
+    let reporter = crate::progress::Reporter::new();
+    let bars: Vec<crate::progress::Task> = (0..config.n_chains)
+        .map(|chain_id| reporter.task(
+            config.if2_config.n_iterations as u64,
+            format!("chain {}", chain_id + 1)))
+        .collect();
 
     // Preflight transform report
     print_preflight(config, collector);
@@ -1270,9 +1249,8 @@ pub fn run_chains_with_per_chain_params(
                     });
                     eprintln!("  chain {}: \x1b[31m✗ skipped\x1b[0m — {} ({})",
                         chain_id + 1, label, reason);
-                    if let Some(bar) = bars.get(chain_id) {
-                        bar.finish_with_message(format!("skipped ({label})"));
-                    }
+                    // The bar is cleared in the post-loop finish; the skip
+                    // is already loud on stderr above.
                     None
                 }
                 // Any non-degeneracy error is structural (config bug,
@@ -1285,6 +1263,11 @@ pub fn run_chains_with_per_chain_params(
             }
         })
         .collect();
+
+    // Clear all chain bars now that the parallel phase is done (`Task::finish`
+    // consumes, so it can't run on the per-chain borrow inside the loop). The
+    // per-chain summary is the `best chain: …` report below.
+    for t in bars { t.finish(); }
 
     // gh#110 (IF2 follow-up): if EVERY chain degenerated there is no
     // inference to report. Fail with an actionable message rather than

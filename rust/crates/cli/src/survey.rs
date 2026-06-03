@@ -410,9 +410,11 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
             }))
     };
 
-    let progress = std::sync::atomic::AtomicUsize::new(0);
-    let total = n_points;
-    let progress_step = (total / 20).max(1);
+    // Progress: one overall bar over the LHS points, ticked from the parallel
+    // sweep (`Task` is `Send + Sync`), with the best loglik found so far as the
+    // researcher metric. Honors `--progress none/plain`.
+    let bar = crate::progress::Reporter::new().task(n_points as u64, "survey");
+    let best = std::sync::Mutex::new(f64::NEG_INFINITY);
     let rows: Vec<LandscapeRow> = lhs_starts.par_iter().enumerate()
         .map(|(point_id, draw)| {
             // Build the full parameter vector: base_params overwritten
@@ -437,13 +439,19 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
                     smc_dt, point_id,
                 ),
             };
-            let done = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if done % progress_step == 0 || done == total {
-                eprintln!("  survey progress: {} / {} points", done, total);
+            bar.inc(1);
+            if row.loglik.is_finite() {
+                if let Ok(mut b) = best.lock() {
+                    if row.loglik > *b {
+                        *b = row.loglik;
+                        bar.set(crate::progress::best_ll(*b));
+                    }
+                }
             }
             row
         })
         .collect();
+    bar.finish();
 
     // ── TSV writer (sorted by loglik desc) ──────────────────────────
     let mut sorted = rows;

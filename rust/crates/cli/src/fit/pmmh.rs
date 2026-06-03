@@ -438,18 +438,14 @@ pub fn run_stage(
             .map(|(p, &sd)| format!("{}={:.4}", p.name, sd))
             .collect::<Vec<_>>().join(", "));
 
-    let mp = indicatif::MultiProgress::with_draw_target(crate::progress::draw_target());
-    let bar_style = indicatif::ProgressStyle::default_bar()
-        .template("  chain {prefix} [{bar:25.cyan/dim}] {pos}/{len} {msg}")
-        .unwrap()
-        .progress_chars("━╸─");
-
-    let bars: Vec<indicatif::ProgressBar> = (0..n_chains).map(|chain_id| {
-        let pb = mp.add(indicatif::ProgressBar::new(n_steps as u64));
-        pb.set_style(bar_style.clone());
-        pb.set_prefix(format!("{}", chain_id + 1));
-        pb
-    }).collect();
+    // One `Reporter` hands out a per-chain `Task` rendered as a coordinated
+    // stack. The Reporter honors --progress (Pretty=bars, Plain=throttled
+    // `chain N pos/len ll=… acc=…%` log lines, None=silent), so the callback
+    // no longer branches on mode.
+    let reporter = crate::progress::Reporter::new();
+    let bars: Vec<crate::progress::Task> = (0..n_chains)
+        .map(|chain_id| reporter.task(n_steps as u64, format!("chain {}", chain_id + 1)))
+        .collect();
 
     // Pre-create chain directories
     for chain_id in 0..n_chains {
@@ -518,9 +514,8 @@ pub fn run_stage(
                         });
                         eprintln!("  chain {}: \x1b[31m✗ BadInit\x1b[0m — {}",
                             chain_id + 1, reason);
-                        if let Some(bar) = bars.get(chain_id) {
-                            bar.finish_with_message("skipped (bad init)".to_string());
-                        }
+                        // The bar is cleared in the post-loop finish; the skip
+                        // is already loud on stderr above.
                         return None;
                     }
                     Err(other) => {
@@ -580,16 +575,8 @@ pub fn run_stage(
             let eval_corr_ref: Option<&dyn Fn(&[f64], &sim::inference::correlated_pf::PFRandomState) -> f64> =
                 eval_correlated.as_deref();
 
-            let bar = &bars[chain_id];
+            let task = &bars[chain_id];
             let accepted_count = AtomicUsize::new(0);
-            let chain_start = std::time::Instant::now();
-            // Plain-mode progress emission (GH #14). Pretty and plain
-            // modes are mutually exclusive at a point in time: under
-            // pretty, the bar is live and the log line would be noise;
-            // under plain, the bar is hidden and the log line is the
-            // only signal the user gets.
-            let plain = crate::progress::is_plain();
-            let no_progress = crate::progress::is_none();
 
             // Streaming trace: use TraceWriter with append mode when resuming
             let chain_dir = stage_dir.join(format!("chain_{}", chain_id + 1));
@@ -631,34 +618,12 @@ pub fn run_stage(
                     );
                 }
 
-                // Progress display (always, regardless of burn-in/thin)
-                if step.is_multiple_of(100) || step == n_steps - 1 {
-                    if no_progress {
-                        // --progress none: suppress entirely.
-                    } else if plain {
-                        let elapsed = chain_start.elapsed().as_secs();
-                        if loglik.is_finite() {
-                            log::info!(
-                                "pmmh chain {}: step {}/{} ({:.0}%) acc={:.0}% ll={:.1} elapsed={}s",
-                                chain_id + 1, step, n_steps,
-                                step as f64 / n_steps as f64 * 100.0,
-                                acc * 100.0, loglik, elapsed);
-                        } else {
-                            log::info!(
-                                "pmmh chain {}: step {}/{} ({:.0}%) acc={:.0}% ll=-inf elapsed={}s",
-                                chain_id + 1, step, n_steps,
-                                step as f64 / n_steps as f64 * 100.0,
-                                acc * 100.0, elapsed);
-                        }
-                    } else {
-                        bar.set_position(step as u64 + 1);
-                        if loglik.is_finite() {
-                            bar.set_message(format!("ll={:.1} acc={:.0}%", loglik, acc * 100.0));
-                        } else {
-                            bar.set_message(format!("ll=-inf acc={:.0}%", acc * 100.0));
-                        }
-                    }
-                }
+                // Passive bar tick. The callback fires once per step in order,
+                // so `inc(1)` tracks position = step+1 exactly. `Task` handles
+                // Pretty (redraw) / Plain (throttled `chain N pos/len ll=… acc=…%`
+                // line) / None (no-op) — no mode branching here.
+                task.set(crate::progress::mcmc(loglik, acc));
+                task.inc(1);
             };
 
             let result = run_pmmh(
@@ -668,13 +633,11 @@ pub fn run_stage(
                 Some(&progress_cb), resume_states[chain_id].clone(), config_hash.clone(),
             );
 
-            bar.finish_with_message(format!(
-                "ll={:.1} acc={:.0}%", result.map_loglik, result.acceptance_rate * 100.0
-            ));
-            if plain {
-                log::info!("pmmh chain {} done: MAP ll={:.1} acc={:.0}%",
-                    chain_id + 1, result.map_loglik, result.acceptance_rate * 100.0);
-            }
+            // Final metric (MAP ll + acceptance) on the bar; the driver clears
+            // it after the par_iter (`Task::finish` consumes, so it can't run
+            // on the borrowed Task here). The `acceptance rates:` report below
+            // carries the per-chain summary.
+            task.set(crate::progress::mcmc(result.map_loglik, result.acceptance_rate));
 
             // Save resume state for future --resume
             let resume_path = chain_dir.join("resume_state.bin");
@@ -685,6 +648,11 @@ pub fn run_stage(
             Some((chain_id, result))
         })
         .collect();
+
+    // Clear all chain bars now that the parallel phase is done (`Task::finish`
+    // consumes, so it can't run on the per-chain borrow inside the loop). The
+    // `acceptance rates:` report below carries the per-chain summary.
+    for t in bars { t.finish(); }
 
     // gh#110. Skip + continue: surface "ran K of N chains" so the
     // user knows downstream R̂/ESS exclude skipped chains. This
