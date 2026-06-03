@@ -144,6 +144,12 @@ fn run_and_count_compiles(bin: &Path, real: &Path, replicates: usize) -> (usize,
         // built camdlc whose git hash need not match the test binary's, and
         // the probe would otherwise spawn camdlc an extra (uncounted) time.
         .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        // Disable the compiled-IR cache: this test measures the WITHIN-process
+        // compile-once hoist, so each resolve_ir_path call must actually
+        // compile. With the cache on, a regressed (per-cell) hoist would hit
+        // the cache after the first compile and still count 1 — masking the
+        // regression. The cache has its own test (ir_cache.rs).
+        .env("CAMDL_NO_IR_CACHE", "1")
         .env("PATH", &new_path)
         .output()
         .expect("camdl simulate must spawn");

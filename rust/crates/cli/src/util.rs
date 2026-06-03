@@ -386,34 +386,111 @@ pub fn resolve_relative_to_toml(toml_path: &std::path::Path, path: &str) -> Stri
     anchor.join(p).to_string_lossy().into_owned()
 }
 
-/// If path ends with `.camdl`, compile it via camdlc and write to a temp file.
-/// Returns (resolved_path, Some(tmpfile)) or (path, None) for plain .ir.json.
+/// Process-wide IR-cache disable (set by `--no-ir-cache`).
+static IR_CACHE_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Disable the compiled-IR cache for this process (the `--no-ir-cache` flag).
+pub fn set_ir_cache_disabled(disabled: bool) {
+    IR_CACHE_DISABLED.store(disabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn ir_cache_disabled() -> bool {
+    IR_CACHE_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var_os("CAMDL_NO_IR_CACHE").is_some()
+}
+
+/// The content-addressed cache key for a compiled `.camdl`. Folds the model
+/// bytes together with the compiler git hash and the IR schema version, so a
+/// model edit, a camdlc upgrade, or an IR-format change each produces a
+/// distinct key (no stale IR can be served). `.camdl` is single-file (no
+/// includes), so the model bytes are the whole compile input.
+pub(crate) fn ir_cache_key(content: &[u8], camdlc_ver: &str, ir_ver: &str) -> String {
+    let mut buf = Vec::with_capacity(content.len() + camdlc_ver.len() + ir_ver.len() + 2);
+    buf.extend_from_slice(content);
+    buf.push(0);
+    buf.extend_from_slice(camdlc_ver.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(ir_ver.as_bytes());
+    crate::hashing::sha256_hex(&buf)
+}
+
+/// The compiled-IR cache directory: `$CAMDL_IR_CACHE_DIR` if set (tests /
+/// overrides), else `$XDG_CACHE_HOME/camdl/ir` or `$HOME/.cache/camdl/ir`. A
+/// GLOBAL cache (not under `--output-dir`): the IR is hardware-independent and
+/// deterministic from (model, compiler, schema), so sharing across projects
+/// and output dirs is safe and maximizes reuse. `None` if unresolvable (then
+/// the cache is silently skipped — caching is best-effort, never fatal).
+fn ir_cache_dir() -> Option<std::path::PathBuf> {
+    if let Some(d) = std::env::var_os("CAMDL_IR_CACHE_DIR") {
+        if !d.is_empty() { return Some(std::path::PathBuf::from(d)); }
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
+    Some(base.join("camdl").join("ir"))
+}
+
+/// If path ends with `.camdl`, compile it via camdlc, reusing a cached IR when
+/// one exists for the (model, compiler, schema) key. Returns
+/// (resolved_path, None) for a `.camdl` served from / written to the cache (the
+/// cache file is persistent, so there is nothing to clean up), (tmp, Some(tmp))
+/// for the un-cacheable fallback, or (path, None) for a plain `.ir.json`.
 pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>), String> {
     if !path.ends_with(".camdl") {
         return Ok((path.to_string(), None));
     }
-    // NOTE: the compiled IR is NOT cached — every `.camdl` run recompiles into
-    // a fresh per-pid temp file (discarded on exit). For a large model the
-    // camdlc compile dominates startup; a content-addressed IR cache is a
-    // tracked follow-up. The banner below makes the per-run cost visible.
+
+    // Resolve the cache target (cache_path, key) iff caching is enabled and a
+    // cache dir resolves. Reads the model bytes for the key.
+    let cache_target: Option<(std::path::PathBuf, String)> = if ir_cache_disabled() {
+        None
+    } else {
+        match (std::fs::read(path), ir_cache_dir()) {
+            (Ok(content), Some(dir)) => {
+                let key = ir_cache_key(&content, crate::version::GIT_HASH, ir::IR_VERSION.trim());
+                Some((dir.join(format!("{}.ir.json", key)), key))
+            }
+            _ => None,
+        }
+    };
+
+    // Cache HIT: reuse the compiled IR, skip camdlc entirely.
+    if let Some((cache_path, key)) = &cache_target {
+        if cache_path.exists() {
+            crate::status::step("cached",
+                format!("IR for {} ({})", crate::status::concise_path(path), &key[..8.min(key.len())]));
+            return Ok((cache_path.to_string_lossy().into_owned(), None));
+        }
+    }
+
+    // MISS (or caching off): compile once, banner once.
     let started = std::time::Instant::now();
     let json = run_camdlc(path)?;
     let elapsed = started.elapsed();
-    let tmp = std::env::temp_dir()
-        .join(format!("camdl_{}.ir.json", std::process::id()));
-    std::fs::write(&tmp, &json)
-        .map_err(|e| format!("error writing temp IR: {}", e))?;
-    // `compiled  aggfit/model.camdl   3.4 MB IR in 8.1s`. The temp IR path is
-    // internal (a discarded /tmp file the user never touches), so it's
-    // dropped; the size (JSON bytes — a useful proxy for model/expansion
-    // scale) and wall time are what matter. Source shown concisely
-    // (project-root-relative when possible).
     crate::status::step("compiled", format!(
         "{}   {} IR in {:.1}s",
         crate::status::concise_path(path),
         crate::status::human_bytes(json.len() as u64),
         elapsed.as_secs_f64(),
     ));
+
+    // Persist to the cache (atomic tmp+rename, race-safe) when enabled+writable;
+    // a failure there is non-fatal — fall through to a per-pid temp.
+    if let Some((cache_path, _)) = &cache_target {
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let staging = cache_path.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&staging, &json).and_then(|_| std::fs::rename(&staging, cache_path)).is_ok() {
+            return Ok((cache_path.to_string_lossy().into_owned(), None));
+        }
+        let _ = std::fs::remove_file(&staging);
+    }
+
+    // Un-cacheable fallback: a per-pid temp file, cleaned up by the caller.
+    let tmp = std::env::temp_dir()
+        .join(format!("camdl_{}.ir.json", std::process::id()));
+    std::fs::write(&tmp, &json)
+        .map_err(|e| format!("error writing temp IR: {}", e))?;
     Ok((tmp.to_string_lossy().into_owned(), Some(tmp)))
 }
 
@@ -752,6 +829,27 @@ pub fn format_unbound_streams_warning(
          --fit FOO.toml with a [data.observations] section).\n",
         cmd, all_obs_names.len(), all_names, bound_phrase, unbound_phrase,
     ))
+}
+
+#[cfg(test)]
+mod ir_cache_key_tests {
+    use super::ir_cache_key;
+
+    #[test]
+    fn key_is_stable_and_distinguishes_content_compiler_and_schema() {
+        let a = ir_cache_key(b"model A", "git1", "0.7");
+        // Same inputs → same key (cache hit).
+        assert_eq!(a, ir_cache_key(b"model A", "git1", "0.7"));
+        // Different model content → different key (an edit recompiles).
+        assert_ne!(a, ir_cache_key(b"model B", "git1", "0.7"));
+        // Different compiler version → different key (a camdlc upgrade recompiles).
+        assert_ne!(a, ir_cache_key(b"model A", "git2", "0.7"));
+        // Different IR schema version → different key (a format change recompiles).
+        assert_ne!(a, ir_cache_key(b"model A", "git1", "0.8"));
+        // 64-hex sha256.
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+    }
 }
 
 #[cfg(test)]

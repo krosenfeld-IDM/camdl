@@ -103,6 +103,12 @@ pub(crate) struct Cli {
     /// `--progress` if both are given).
     #[arg(long, global = true, help_heading = "Global options")]
     no_progress: bool,
+
+    /// Bypass the compiled-IR cache: recompile the `.camdl` every run instead
+    /// of reusing a cached IR keyed on (model, compiler, schema). The cache is
+    /// on by default (`~/.cache/camdl/ir`, or `$CAMDL_IR_CACHE_DIR`).
+    #[arg(long, global = true, help_heading = "Global options")]
+    no_ir_cache: bool,
 }
 
 #[derive(Subcommand)]
@@ -364,6 +370,7 @@ fn main() {
     // `--no-progress` is the discoverable shorthand for `--progress none` and
     // wins when both are given.
     progress::init(if cli.no_progress { args::types::ProgressMode::None } else { cli.progress });
+    util::set_ir_cache_disabled(cli.no_ir_cache);
 
     match cli.command {
         Command::Simulate(a)            => run_simulate(&a),
