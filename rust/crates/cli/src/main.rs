@@ -917,7 +917,7 @@ fn run_simulate(a: &args::SimulateArgs) {
         n_draws: 1,
     };
 
-    let mut sink = SimSink { cas: cas_sink, stream };
+    let mut sink = SimSink { cas: cas_sink, stream, skip_cas: a.stdout };
     // The `--event-log` branch drives the sink's `RunSink` methods directly
     // (one recorded cell), so the trait must be in scope here.
     use engine::RunSink as _;
@@ -969,8 +969,23 @@ fn run_simulate(a: &args::SimulateArgs) {
 
     // The combined wide-format trajectory bytes (None ⟺ --obs-only). The CAS
     // leaves/ensemble are the system of record; this buffer is the mirror —
-    // written to `-o PATH` only, NEVER stdout (Item C).
+    // written to `-o PATH`, or to stdout under `--stdout` (the store opt-out).
     let combined_traj: Option<Vec<u8>> = sink.stream.traj_out.take();
+
+    // `--stdout`: stream the trajectory to stdout and stop. No leaf was
+    // committed (skip_cas), so there is no store, no ensemble, and no banner —
+    // just the TSV, ready to pipe.
+    if a.stdout {
+        if let Some(ref bytes) = combined_traj {
+            use std::io::Write;
+            if let Err(e) = std::io::stdout().write_all(bytes) {
+                eprintln!("error writing trajectory to stdout: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     if let (Some(ref path), Some(ref bytes)) = (&output_path, &combined_traj) {
         if !suppress_trajectory {
             std::fs::write(path, bytes).unwrap_or_else(|e| {
@@ -1034,6 +1049,10 @@ fn run_simulate(a: &args::SimulateArgs) {
 struct SimSink {
     cas: crate::batch::CasSink,
     stream: StreamSink,
+    /// `--stdout`: the user opted out of the store, so skip the leaf commit
+    /// entirely — only the `stream` mirror runs, and the caller writes its
+    /// buffer to stdout. The store is otherwise the system of record.
+    skip_cas: bool,
 }
 
 impl engine::RunSink for SimSink {
@@ -1044,8 +1063,10 @@ impl engine::RunSink for SimSink {
     fn merge_cell(&mut self, cell: &engine::CellResult) -> Result<(), String> {
         // Leaf first (system of record), then the mirror. A commit error is
         // accumulated on `cas.errors` and surfaced after the loop, never
-        // silently dropped.
-        self.cas.merge_cell(cell)?;
+        // silently dropped. Under `--stdout` the leaf is suppressed.
+        if !self.skip_cas {
+            self.cas.merge_cell(cell)?;
+        }
         self.stream.merge_cell(cell)
     }
 }
@@ -1280,20 +1301,32 @@ fn write_sim_ensemble(
     }
 }
 
-/// Print the store paths of the committed leaves. A lone leaf gets the
-/// familiar `cached: <path>` line; a multi-run prints a one-line summary. The
-/// path is rooted at `cas_root` (the `--output-dir`) — e.g.
+/// Report where the run(s) landed in the store and how to read them back.
+/// A lone run prints its rooted leaf path plus the `camdl cat <run_id>` that
+/// reads it; a multi-run prints a one-line summary plus `camdl list`. The path
+/// is rooted at `cas_root` (the `--output-dir`) — e.g.
 /// `./results/sims/model-…/…/seed_…` — so it is copy-paste ready, not just the
-/// store-relative `sims/…` tail.
+/// store-relative `sims/…` tail. (Whether a leaf was freshly written or a
+/// cache hit is not distinguished here — `commit_atomic` is idempotent and
+/// does not report which; that is a follow-up.)
 fn report_cas_leaves(runs: &[crate::batch::RunEntry], cas_root: &str) {
     use owo_colors::OwoColorize;
     let root = cas_root.trim_end_matches('/');
     match runs.len() {
         0 => {}
-        1 => eprintln!("{} {}", "cached:".bright_green().bold(),
-            format!("{}/{}", root, runs[0].run_path).cyan()),
-        n => eprintln!("{} {} leaves under {}",
-            "cached:".bright_green().bold(), n, format!("{}/sims/", root).cyan()),
+        1 => {
+            let r = &runs[0];
+            eprintln!("{} {}", "\u{2713} stored".bright_green().bold(),
+                format!("{}/{}", root, r.run_path).cyan());
+            if let Some(id) = r.run_id {
+                eprintln!("  {} camdl cat {}", "read:".bright_black(), id.to_hex());
+            }
+        }
+        n => {
+            eprintln!("{} {} leaves under {}", "\u{2713} stored".bright_green().bold(),
+                n, format!("{}/sims/", root).cyan());
+            eprintln!("  {} camdl list", "browse:".bright_black());
+        }
     }
 }
 

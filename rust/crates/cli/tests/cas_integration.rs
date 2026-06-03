@@ -121,7 +121,7 @@ fn cas_second_identical_run_does_not_rewrite_leaf() {
     let first = run_once();
     assert!(first.status.success());
     let stderr1 = String::from_utf8_lossy(&first.stderr);
-    assert!(stderr1.contains("cached:"), "first run stderr should say 'cached:': {}", stderr1);
+    assert!(stderr1.contains("stored"), "first run stderr should report the run was stored: {}", stderr1);
 
     // Wait long enough that the filesystem mtime would differ if rewritten.
     let cache_path = walkdir(&output.join("sims")).into_iter()
@@ -1604,10 +1604,11 @@ fn list_collapses_ensemble_members_and_accepts_root_flag() {
         "`list --kind sim` must surface all 3 replicate leaves");
 }
 
-/// The `cached:` line printed after a `simulate` includes the `--output-dir`
-/// prefix (a copy-paste-ready path), not just the store-relative `sims/…` tail.
+/// The store banner printed after a `simulate` includes the `--output-dir`
+/// prefix (a copy-paste-ready path), not just the store-relative `sims/…` tail,
+/// plus the `camdl cat <run_id>` that reads the run back.
 #[test]
-fn cached_line_includes_output_dir_prefix() {
+fn stored_banner_includes_output_dir_prefix_and_cat_hint() {
     let Some(bin) = skip_if_missing_binary() else { return; };
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store");
@@ -1619,7 +1620,36 @@ fn cached_line_includes_output_dir_prefix() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let prefix = format!("{}/sims", store.to_string_lossy());
     assert!(stderr.contains(&prefix),
-        "the `cached:` line must include the --output-dir prefix '{prefix}':\n{stderr}");
+        "the store banner must include the --output-dir prefix '{prefix}':\n{stderr}");
+    assert!(stderr.contains("camdl cat "),
+        "the banner must tell the user how to read the run back:\n{stderr}");
+}
+
+/// `--stdout` streams the trajectory TSV to stdout and writes NO store leaf
+/// and NO banner — the escape hatch for piping.
+#[test]
+fn stdout_streams_trajectory_and_skips_the_store() {
+    let Some(bin) = skip_if_missing_binary() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let out = Command::new(&bin)
+        .args(["simulate", &golden_sir_basic().to_string_lossy(),
+               "--scenario", "baseline", "--seed", "7",
+               "--output-dir", &store.to_string_lossy(), "--stdout"])
+        .output().expect("spawn");
+    assert!(out.status.success(), "simulate --stdout should succeed");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // A wide-format trajectory TSV on stdout: a `# camdl <version>` comment,
+    // then the `t\tS\t…` column header, then rows.
+    assert!(stdout.lines().any(|l| l.starts_with("t\t")),
+        "stdout should carry the trajectory TSV header (t<TAB>…), got:\n{stdout}");
+    assert!(stdout.lines().count() > 3, "stdout should carry trajectory rows");
+    // No store leaf was written, and no banner pointed at one.
+    assert!(!store.join("sims").exists(),
+        "--stdout must NOT write a store leaf");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("stored"),
+        "--stdout must not print the store banner:\n{stderr}");
 }
 
 fn walkdir(root: &Path) -> Vec<PathBuf> {

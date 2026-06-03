@@ -410,18 +410,23 @@ pub struct FlowProjection {
 #[derive(Args)]
 #[command(after_help = colored_help!("\
 Examples:
-  # Basic simulation, output to stdout
+  # Basic simulation. The run is written to the content-addressed store
+  # under ./results (reruns with identical inputs are instant); read it
+  # back with `camdl cat <id>` / browse with `camdl list`.
   camdl simulate sir.camdl --params p.toml --seed 42
+  camdl list        # browse cached runs
+
+  # Also write a plain TSV mirror to a file
+  camdl simulate sir.camdl --params p.toml --seed 42 -o traj.tsv
+
+  # Stream the trajectory to stdout (no store write) for piping
+  camdl simulate sir.camdl --params p.toml --seed 42 --stdout | head
 
   # Named scenario
   camdl simulate sir.camdl --params p.toml --scenario with_sia --seed 42
 
   # Generate synthetic observations alongside the trajectory
   camdl simulate sir.camdl --params p.toml --obs cases.tsv --seed 42
-
-  # Cache output under ./results (reruns with same inputs are instant)
-  camdl simulate sir.camdl --params p.toml --seed 42 --cas
-  camdl list        # browse cached runs
 
   # Multi-seed ensemble
   camdl simulate sir.camdl --params p.toml --seeds 1:100
@@ -487,9 +492,23 @@ pub struct SimulateArgs {
     #[arg(short = 'n', long)]
     pub n_draws: Option<usize>,
 
-    /// Trajectory output file (default: stdout)
+    /// Write a plain-TSV trajectory mirror to this file, IN ADDITION to the
+    /// content-addressed store leaf (the default system of record). Without
+    /// `-o` the trajectory is not written to a loose file — read it back with
+    /// `camdl cat <id>`. Use `--stdout` to stream instead of storing.
     #[arg(short, long, env = "CAMDL_OUTPUT")]
     pub output: Option<PathBuf>,
+
+    /// Stream the trajectory TSV to stdout and DO NOT write the store leaf or
+    /// the `cached:` banner — the escape hatch for piping into another tool
+    /// (`camdl simulate … --stdout | …`). Single-cell only: it conflicts with
+    /// the store-backed ensemble knobs (--seeds / --replicates / --draws) and
+    /// with `-o`/`--obs*`, which mirror the store this flag opts out of.
+    #[arg(long, conflicts_with_all = [
+        "output", "obs", "obs_dir", "obs_only", "obs_only_dir",
+        "seeds", "replicates", "draws",
+    ])]
+    pub stdout: bool,
 
     /// Write synthetic observations to a single TSV (all streams)
     #[arg(long, conflicts_with_all = ["obs_dir", "obs_only"])]
