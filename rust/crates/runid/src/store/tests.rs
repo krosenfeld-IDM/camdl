@@ -360,6 +360,95 @@ fn mode_b_reclaims_stale_running_when_unlocked() {
     cleanup(&root);
 }
 
+#[test]
+fn mode_b_reclaim_is_exclusive_under_concurrency() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let root = tmp_root("reclaim_race");
+    let store = Arc::new(FsCasStore::new(&root));
+    let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
+
+    // A definitely-dead PID (a child we spawn and reap) for the planted lock.
+    let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+    let dead_pid = child.id();
+    child.wait().expect("reap");
+
+    // (Re)plant a crashed run: a `Running` leaf + orphan whose `.lock` holder
+    // PID is dead — the state a fit killed before `finalize` leaves behind.
+    let plant = || {
+        fs::remove_dir_all(&leaf).ok();
+        let c = store.claim_streaming(&leaf, record(id(0xaa))).unwrap();
+        c.write("orphan_chain.tsv", b"partial").unwrap();
+        drop(c); // no finalize → `.lock` + Running linger; overwrite with a dead PID
+        fs::write(leaf.join(".lock"), dead_pid.to_string()).unwrap();
+    };
+
+    // N processes re-launch the SAME killed fit at once (e.g. a cluster
+    // re-submit). The dead lock must be reclaimed by EXACTLY ONE — never two
+    // both removing it and both writing the shared chain files. Several rounds
+    // raise the odds a racy reclaim is caught; the serialized reclaim makes
+    // `max_cs <= 1` invariant, so a correct build is green every round.
+    const ROUNDS: usize = 8;
+    const N: usize = 12;
+    for round in 0..ROUNDS {
+        plant();
+        let in_cs = Arc::new(AtomicUsize::new(0));
+        let max_cs = Arc::new(AtomicUsize::new(0));
+        let successes = Arc::new(AtomicUsize::new(0));
+        let resolved = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..N {
+            let store = Arc::clone(&store);
+            let leaf = leaf.clone();
+            let (in_cs, max_cs) = (Arc::clone(&in_cs), Arc::clone(&max_cs));
+            let (successes, resolved) = (Arc::clone(&successes), Arc::clone(&resolved));
+            handles.push(std::thread::spawn(move || {
+                match store.claim_streaming(&leaf, record(id(0xaa))) {
+                    Ok(claim) => {
+                        let now = in_cs.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_cs.fetch_max(now, Ordering::SeqCst);
+                        // Widen the critical section so any intruder is observed.
+                        claim.write("chain_1/trace.tsv", b"sweep\tll\n1\t-1.0\n").unwrap();
+                        std::thread::sleep(std::time::Duration::from_millis(8));
+                        in_cs.fetch_sub(1, Ordering::SeqCst);
+                        claim.finalize(record(id(0xaa))).unwrap();
+                        successes.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(CasError::FitInProgress { .. }) | Err(CasError::AlreadyCompleted { .. }) => {}
+                    Err(e) => panic!("unexpected claim error: {e:?}"),
+                }
+                resolved.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            max_cs.load(Ordering::SeqCst),
+            1,
+            "round {round}: two claimants entered the critical section (double-write)"
+        );
+        assert_eq!(
+            successes.load(Ordering::SeqCst),
+            1,
+            "round {round}: exactly one re-launch must win the reclaim"
+        );
+        assert_eq!(resolved.load(Ordering::SeqCst), N, "round {round}: every claimant resolved");
+        assert!(
+            !leaf.join("orphan_chain.tsv").exists(),
+            "round {round}: the crashed orphan was cleared by the winner"
+        );
+        assert!(matches!(
+            store.lookup(&leaf, &LeafIdentity::new(id(0xaa))),
+            Lookup::Hit(_)
+        ));
+    }
+    cleanup(&root);
+}
+
 // ── Mode B: recursive (nested) exact-set manifest — fit stages nest chains ───
 
 /// Build a record carrying declared child namespaces (e.g. `trajectories`).

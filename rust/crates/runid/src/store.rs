@@ -24,17 +24,30 @@
 //! occupies a short-hash-colliding path, and it is disambiguated
 //! (`{seg}` → `{seg}~{hash16}` → `{seg}~{full64}`), never deleted.
 //!
-//! ## M1 scope note
+//! ## Stale-lock reclaim
 //!
-//! Mode B reclaims a stale `.lock` whose holder PID is **dead** (a fit killed
-//! by Ctrl-C / SIGPIPE / OOM / crash never runs `finalize`, so its `.lock` +
-//! `Running` `run.json` linger): the claim liveness-checks the recorded PID
-//! (`kill(pid, 0)` on unix) and, if it is gone, removes the stale lock and
-//! re-claims, clearing the dead run's orphan contents under a fresh exclusive
-//! lock. A lock held by a **live** PID is a genuine concurrent claim and still
-//! returns `FitInProgress`. (A stale `Running` leaf with **no** `.lock` is
-//! likewise reclaimed.) On non-unix the PID can't be checked, so a held lock
-//! is conservatively treated as live (`FitInProgress`).
+//! A fit killed mid-run (Ctrl-C / SIGPIPE / OOM / crash) never runs
+//! `finalize`, so its `.lock` + `Running` `run.json` linger. A re-run reclaims
+//! such a leaf: the claim liveness-checks the lock's recorded PID
+//! (`kill(pid, 0)` on unix). A **dead** holder is a stale lock — removed and
+//! re-claimed, clearing the dead run's orphan contents. A **live** holder is a
+//! genuine concurrent claim and still returns `FitInProgress`. An
+//! unreadable/zero PID we can't verify is treated conservatively as live. On
+//! non-unix the PID can't be checked, so a held lock is always `FitInProgress`
+//! (no auto-reclaim). A stale `Running` leaf with **no** `.lock` is likewise
+//! reclaimed (the `O_EXCL` create simply succeeds).
+//!
+//! Reclaim is **serialized through a second `.reclaim` lock** so it stays
+//! exclusive under concurrent re-launch (e.g. a cluster re-submit of a killed
+//! fit). Only the `.reclaim` holder may remove `.lock`, and it re-confirms the
+//! holder is dead while holding `.reclaim`; a bare `create_new(.lock)` never
+//! removes anything. While the dead `.lock` exists, every other claimant's
+//! `create_new(.lock)` fails and funnels into the reclaim path, where
+//! `.reclaim` blocks it — so two processes can never both delete `.lock` and
+//! both enter the critical section. (A `.reclaim` left behind by a process
+//! killed within the few-syscall reclaim window makes the leaf refuse until it
+//! is removed by hand or self-healed on the next no-lock acquire — safe, never
+//! corrupting; the window holds no fit work.)
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -104,8 +117,10 @@ pub enum CasError {
     OrphanFiles { path: String },
     #[error("schema drift at {path}")]
     SchemaDrift { path: String },
-    /// The Mode B `O_EXCL` claim is held (a concurrent fit, or — until M3's
-    /// liveness check — a crashed one).
+    /// The Mode B `.lock` is held by a live process (a genuine concurrent
+    /// fit), or by a PID we can't verify, or a reclaim is already in flight. A
+    /// lock held by a dead PID is reclaimed instead (see the stale-lock reclaim
+    /// note on this module).
     #[error("fit in progress at {path} (pid {pid})")]
     FitInProgress { path: String, pid: u32 },
     /// A `claim_streaming` found a `Completed` same-identity leaf — the caller
@@ -349,36 +364,21 @@ impl FsCasStore {
         };
         fs::create_dir_all(&dir)?;
 
-        // The O_EXCL claim is the authoritative race guard. A pre-existing
-        // `.lock` whose holder PID is dead (a fit killed before finalize) is a
-        // stale claim: remove it and retry. A bounded loop covers the (rare)
-        // race where a live process re-grabs the lock between our staleness
-        // check and our re-create.
+        // The O_EXCL `.lock` is the authoritative race guard: whoever creates
+        // it holds the leaf. If it already exists, `reclaim_or_refuse` decides
+        // whether the holder is a dead crash (reclaim, serialized through
+        // `.reclaim`) or a live concurrent claim (refuse). A bare claimant
+        // never removes a lock, so concurrent reclaimers can't double-enter.
         let lock = dir.join(".lock");
-        let mut attempt = 0;
-        loop {
-            match OpenOptions::new().write(true).create_new(true).open(&lock) {
-                Ok(mut f) => {
-                    write!(f, "{}", std::process::id())?;
-                    f.sync_all()?;
-                    break;
-                }
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                    let pid = fs::read_to_string(&lock)
-                        .ok()
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(0);
-                    // A live holder, an unreadable/zero PID we can't verify, or
-                    // a re-grab race that won't settle → a genuine in-progress
-                    // claim; refuse. A dead PID → stale lock; remove + retry.
-                    if pid == 0 || pid_is_alive(pid) || attempt >= 2 {
-                        return Err(CasError::FitInProgress { path: dir.display().to_string(), pid });
-                    }
-                    fs::remove_file(&lock)?;
-                    attempt += 1;
-                }
-                Err(e) => return Err(e.into()),
+        match OpenOptions::new().write(true).create_new(true).open(&lock) {
+            Ok(mut f) => {
+                write!(f, "{}", std::process::id())?;
+                f.sync_all()?;
             }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                reclaim_or_refuse(&dir, &lock)?;
+            }
+            Err(e) => return Err(e.into()),
         }
 
         // We now hold the exclusive lock. Clear any stale orphan contents
@@ -532,9 +532,9 @@ enum ExactSet {
 }
 
 /// Files the exact-set check and manifest builder ignore: the record itself,
-/// its tmp, and the Mode B lock.
+/// its tmp, and the Mode B locks (`.lock` and the `.reclaim` serializer).
 fn is_reserved(name: &str) -> bool {
-    matches!(name, "run.json" | "run.json.tmp" | ".lock")
+    matches!(name, "run.json" | "run.json.tmp" | ".lock" | ".reclaim")
 }
 
 fn read_record(dir: &Path) -> ReadResult {
@@ -741,6 +741,54 @@ fn pid_is_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 fn pid_is_alive(_pid: u32) -> bool {
     true
+}
+
+/// The PID recorded in a `.lock`, if present and parseable.
+fn read_lock_pid(lock: &Path) -> Option<u32> {
+    fs::read_to_string(lock).ok().and_then(|s| s.trim().parse().ok())
+}
+
+/// A `.lock` already exists at claim time. Reclaim it iff its holder PID is
+/// **provably dead**, serializing the reclaim through a `.reclaim` lock so
+/// concurrent reclaimers can never both remove `.lock` and both enter the
+/// critical section. A live/unverifiable holder — or a reclaim already in
+/// flight — refuses with `FitInProgress`. On success a freshly created `.lock`
+/// records our PID and the caller proceeds to clear orphans + write `Running`.
+fn reclaim_or_refuse(dir: &Path, lock: &Path) -> Result<(), CasError> {
+    let fail = |pid: u32| CasError::FitInProgress { path: dir.display().to_string(), pid };
+    let holder = read_lock_pid(lock);
+    // Only reclaim what we can PROVE is stale. An unreadable/zero PID we can't
+    // verify, or a live one, is a genuine concurrent claim.
+    if !matches!(holder, Some(p) if p != 0 && !pid_is_alive(p)) {
+        return Err(fail(holder.unwrap_or(0)));
+    }
+    // Serialize the reclaim: only the `.reclaim` holder may remove `.lock`.
+    // Contention here means another process is already reclaiming/claiming.
+    let reclaim = dir.join(".reclaim");
+    match OpenOptions::new().write(true).create_new(true).open(&reclaim) {
+        Ok(mut rf) => {
+            let _ = write!(rf, "{}", std::process::id());
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => return Err(fail(holder.unwrap_or(0))),
+        Err(e) => return Err(e.into()),
+    }
+    // The dead `.lock` is stable while we hold `.reclaim` — every other
+    // `create_new(.lock)` fails on it and funnels into this same gate — so
+    // removing it removes exactly the dead lock. A fresh claimant can only slip
+    // in *after* we free it, and the atomic `create_new` below hands the leaf
+    // to whoever wins that gap (we refuse if we lose). Release `.reclaim` on
+    // every path.
+    let _ = fs::remove_file(lock);
+    let outcome = match OpenOptions::new().write(true).create_new(true).open(lock) {
+        Ok(mut f) => match write!(f, "{}", std::process::id()).and_then(|_| f.sync_all()) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(CasError::from(e)),
+        },
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(fail(read_lock_pid(lock).unwrap_or(0))),
+        Err(e) => Err(CasError::from(e)),
+    };
+    let _ = fs::remove_file(&reclaim);
+    outcome
 }
 
 fn clear_except_lock(dir: &Path) -> Result<(), CasError> {
