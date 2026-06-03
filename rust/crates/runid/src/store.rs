@@ -26,14 +26,15 @@
 //!
 //! ## M1 scope note
 //!
-//! The dead-PID reclaim of a Mode B claim ("a `Running` `run.json` whose
-//! lock-holder PID is dead is a reclaimable stale claim") needs a process
-//! liveness check. M1 keeps runid's dependency surface to `ir` only and
-//! defers liveness to M3 (which owns the fit/resume rewrite and its
-//! concurrent-fit gate). Until then Mode B is *conservative*: a held `.lock`
-//! is always `FitInProgress` (never auto-reclaimed), and a stale `Running`
-//! leaf with **no** `.lock` is reclaimed by clearing its orphan contents
-//! under a fresh exclusive lock.
+//! Mode B reclaims a stale `.lock` whose holder PID is **dead** (a fit killed
+//! by Ctrl-C / SIGPIPE / OOM / crash never runs `finalize`, so its `.lock` +
+//! `Running` `run.json` linger): the claim liveness-checks the recorded PID
+//! (`kill(pid, 0)` on unix) and, if it is gone, removes the stale lock and
+//! re-claims, clearing the dead run's orphan contents under a fresh exclusive
+//! lock. A lock held by a **live** PID is a genuine concurrent claim and still
+//! returns `FitInProgress`. (A stale `Running` leaf with **no** `.lock` is
+//! likewise reclaimed.) On non-unix the PID can't be checked, so a held lock
+//! is conservatively treated as live (`FitInProgress`).
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -348,21 +349,36 @@ impl FsCasStore {
         };
         fs::create_dir_all(&dir)?;
 
-        // The O_EXCL claim is the authoritative race guard.
+        // The O_EXCL claim is the authoritative race guard. A pre-existing
+        // `.lock` whose holder PID is dead (a fit killed before finalize) is a
+        // stale claim: remove it and retry. A bounded loop covers the (rare)
+        // race where a live process re-grabs the lock between our staleness
+        // check and our re-create.
         let lock = dir.join(".lock");
-        match OpenOptions::new().write(true).create_new(true).open(&lock) {
-            Ok(mut f) => {
-                write!(f, "{}", std::process::id())?;
-                f.sync_all()?;
+        let mut attempt = 0;
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(mut f) => {
+                    write!(f, "{}", std::process::id())?;
+                    f.sync_all()?;
+                    break;
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    let pid = fs::read_to_string(&lock)
+                        .ok()
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(0);
+                    // A live holder, an unreadable/zero PID we can't verify, or
+                    // a re-grab race that won't settle → a genuine in-progress
+                    // claim; refuse. A dead PID → stale lock; remove + retry.
+                    if pid == 0 || pid_is_alive(pid) || attempt >= 2 {
+                        return Err(CasError::FitInProgress { path: dir.display().to_string(), pid });
+                    }
+                    fs::remove_file(&lock)?;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e.into()),
             }
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                let pid = fs::read_to_string(&lock)
-                    .ok()
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
-                return Err(CasError::FitInProgress { path: dir.display().to_string(), pid });
-            }
-            Err(e) => return Err(e.into()),
         }
 
         // We now hold the exclusive lock. Clear any stale orphan contents
@@ -708,6 +724,25 @@ fn disambiguation_candidates(path: &Path, run_id: &ContentHash) -> Vec<PathBuf> 
 }
 
 /// Remove every entry in `dir` except the `.lock` (Mode B reclaim).
+/// Whether process `pid` is currently alive. Unix: `kill(pid, 0)` succeeds
+/// (exists, ours) or fails with `EPERM` (exists, not ours) → alive; only
+/// `ESRCH` (no such process) → dead. Non-unix: conservatively `true` — we
+/// can't check, so we never reclaim a lock we can't prove is stale.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 delivers nothing; it only probes existence/permission.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    true
+}
+
 fn clear_except_lock(dir: &Path) -> Result<(), CasError> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;

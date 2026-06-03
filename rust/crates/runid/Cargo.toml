@@ -11,3 +11,8 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
 hex = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+# Process-liveness check (kill(pid, 0)) for reclaiming a Mode B `.lock` whose
+# holder PID is dead (a fit killed before finalize).
+libc = "0.2"

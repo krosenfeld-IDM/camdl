@@ -319,6 +319,31 @@ fn mode_b_second_claim_fails_fast() {
 }
 
 #[test]
+fn mode_b_reclaims_stale_lock_held_by_dead_pid() {
+    let root = tmp_root("deadpid");
+    let store = FsCasStore::new(&root);
+    let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
+    let claim = store.claim_streaming(&leaf, record(id(0xaa))).unwrap();
+    claim.write("orphan_chain.tsv", b"partial").unwrap();
+    // A fit killed mid-run (Ctrl-C / SIGPIPE / OOM / crash) never finalizes, so
+    // its `.lock` + Running run.json linger — but the holder PID is dead. Plant
+    // a definitely-dead PID (a child we spawn and immediately reap).
+    let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+    let dead_pid = child.id();
+    child.wait().expect("reap");
+    fs::write(leaf.join(".lock"), dead_pid.to_string()).unwrap();
+
+    // The dead-PID lock is stale → reclaim (clear orphans + re-claim), NOT
+    // FitInProgress. A live holder still blocks (mode_b_second_claim_fails_fast).
+    let claim2 = store.claim_streaming(&leaf, record(id(0xaa)))
+        .expect("a lock held by a dead PID must be reclaimed, not FitInProgress");
+    assert!(!leaf.join("orphan_chain.tsv").exists(), "stale orphan cleared on dead-PID reclaim");
+    let dest = claim2.finalize(record(id(0xaa))).unwrap();
+    assert!(matches!(store.lookup(&dest, &LeafIdentity::new(id(0xaa))), Lookup::Hit(_)));
+    cleanup(&root);
+}
+
+#[test]
 fn mode_b_reclaims_stale_running_when_unlocked() {
     let root = tmp_root("reclaim");
     let store = FsCasStore::new(&root);
