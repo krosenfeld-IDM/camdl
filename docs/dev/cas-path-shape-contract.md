@@ -12,16 +12,24 @@ Every leaf directory contains a `run.json` (`runid::RunRecord`) with the
 authoritative fields:
 
 - `run_id` — the 64-hex canonical address of the run.
-- `kind` — `"sim" | "fit_stage" | "pfilter" | "survey" | "profile_point"`.
+- `kind` — `"sim" | "fit_stage" | "pfilter" | "survey" | "profile_point" |
+  "sim_ensemble"` (plus `"obs"` and `"projection"`, which are reserved — their
+  store partitions and run-id tags are pinned but no leaf is emitted yet).
 - `levels` — the factored identity, in order: each `{ name, label, hash,
   schema_version }`.
+- `deps` — lineage: the consumed upstream artifacts, each `{ run_id, kind,
+  artifact, digest }` (a `sim_ensemble` deps on its per-cell `sim` leaves; a
+  `sim` run records the fit it was launched from). Empty when there are none.
+- `children` — declared sub-artifacts: namespace → child `run_id`s (e.g.
+  `obs`). See "Sub-artifacts" below.
 - `status`, `provenance.created_at`, `provenance.label`, `inputs`, `artifacts`.
 
 Path segments mirror `levels` for human navigation, but the **label** in a
 segment is provenance only: renaming it produces a new directory (a harmless
 cache miss), never a wrong answer. Identity lives in the `hash8` suffix and,
 authoritatively, in `run.json`. Do not infer kind, parameters, seed, or
-lineage from the path — read them from `run.json`.
+lineage from the path — read `kind` / `levels` / `deps` / `children` from
+`run.json`.
 
 ## Path shape
 
@@ -29,13 +37,15 @@ lineage from the path — read them from `run.json`.
 results/<kind_dir>/<seg>/<seg>/…/run.json
 ```
 
-- `<kind_dir>`: `sims` | `fits` | `pfilters` | `surveys` | `profiles`.
+- `<kind_dir>`: `sims` | `fits` | `pfilters` | `surveys` | `profiles` |
+  `ensembles` (reserved, not emitted yet: `obs`, `projections`).
 - `<seg>` = `<label>-<hash8>`, one segment per level in `levels` order.
 - **Collision suffix:** if two leaves would share a directory name, the
-  later one's final segment gets a `~<disambiguator>` suffix
-  (`<label>-<hash8>~<hash16>`). Enumerate sibling directories and read each
-  `run.json` rather than reconstructing an expected name — a `~`-suffixed
-  sibling is a normal leaf. Both colliding runs have distinct full `run_id`s.
+  later one's final segment gets a `~<disambiguator>` suffix, escalating
+  `<label>-<hash8>` → `~<hash16>` → `~<full64>` until unique. Enumerate
+  sibling directories and read each `run.json` rather than reconstructing an
+  expected name — a `~`-suffixed sibling is a normal leaf. Both colliding runs
+  have distinct full `run_id`s.
 
 ### Levels per kind (the `levels` array; path segments mirror it)
 
@@ -46,12 +56,21 @@ results/<kind_dir>/<seg>/<seg>/…/run.json
 | `pfilter`       | `pfilters`  | model · config · params · seed             |
 | `survey`        | `surveys`   | model · config · box · seed                |
 | `profile_point` | `profiles`  | profile · point · stage · seed · start     |
+| `sim_ensemble`  | `ensembles` | model · config · params · grid             |
 
 A **fit** is the `fits/<stem>-<hash8>/` segment: it has no `run.json` of its
 own — it carries a `fit.meta.json` sidecar (fit-wide provenance: label,
 model/data hashes, estimated/fixed, resolved priors) and one `fit_stage`
 leaf per (cell × stage) underneath. Read the fit-level view by combining the
 sidecar with its stage-leaf `run.json`s.
+
+A **multi-cell `simulate`** (`--replicates` / `--seeds` / multiple
+`--scenario` / `--draws`) writes N per-cell `sim` leaves under `sims/` **plus**
+one `sim_ensemble` leaf under `ensembles/` holding the combined wide-format
+trajectory TSV across all cells. The `sim_ensemble`'s `grid` level digests the
+sorted cell set and the cell count (count-in-the-key), and it `deps` on the N
+`sim` leaves; `cat <sim_ensemble run_id>` yields that combined TSV. A
+single-cell `simulate` writes only the one `sim` leaf (no ensemble).
 
 **Sub-artifacts (no `run.json`).** A trajectory leaf may declare an observation
 ensemble as a child. It is **not** a `RunRecord`: it lives at
