@@ -229,6 +229,42 @@ cd rust && cargo test --test expr_eval
 bash tests/test_ocaml_to_rust.sh
 ```
 
+### camdlc↔camdl version guard ("camdlc version mismatch")
+
+`camdl` (the Rust runtime) refuses to run a `camdlc` (the OCaml compiler)
+whose git hash differs from its own — an end-user safeguard against a
+drifted runtime/compiler pair emitting/reading incompatible IR (the check
+is in `rust/crates/cli/src/util.rs`: `find_camdlc` /
+`check_camdlc_version_once`).
+
+**If you see `error: camdlc version mismatch` during a test run, it is
+almost always environmental, NOT your change.** The `camdlc` on PATH
+(usually the shared `~/.local/bin/camdlc`) goes stale whenever a parallel
+checkout runs `make install` at a different commit. The message prints both
+hashes — check them before suspecting your diff.
+
+What to do:
+- **Gate with `make test`.** It handles the guard itself — `test-rust`
+  prepends the freshly-built `camdlc` to PATH and skips the handshake, so
+  `camdl` uses the compiler under test regardless of `~/.local/bin`. A
+  plain `make test` is the gate; you do **not** need to install or sync
+  camdlc first.
+- **Ad-hoc `camdl <model>.camdl` runs:** set `CAMDL_SKIP_VERSION_CHECK=1`,
+  or `CAMDLC=ocaml/_build/default/bin/camdlc.exe`.
+
+Do **not**, to "fix" a mismatch red:
+- `make install` / `make install-camdlc` — clobbers the shared
+  `~/.local/bin/camdlc` that parallel checkouts rely on, causing false
+  reds in *other* worktrees.
+- Pin via the `CAMDLC` env var in the test harness — it overrides the
+  PATH-injected camdlc shims that `compile_once`/`ir_cache` install
+  (`find_camdlc` priority 2 > 3) and breaks those tests; the harness uses
+  PATH-prepend (priority 3) so a test's own shim still wins.
+
+Full runbook: `docs/dev/testing.md` ("Gotcha: camdlc version check"). The
+deeper fix (key the guard on IR schema version, not git hash, so no skip is
+needed) is in `docs/dev/proposals/2026-06-04-camdlc-version-guard.md`.
+
 ## Golden File Management
 
 Golden files in `ir/golden/` are the integration test surface — committed IR

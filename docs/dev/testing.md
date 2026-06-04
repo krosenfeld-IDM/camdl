@@ -162,21 +162,37 @@ surface.
 
 **Gotcha: the binary must be built first.** These tests `skip_if_missing_binary()` when `target/release/camdl` doesn't exist. They silently skip, not fail. Always run `cargo build --release -p cli` before a full integration pass, or use `make test-integration` which builds first.
 
-**Gotcha: camdlc version check.** The binary checks that `camdlc` on
-PATH matches its own git hash. When they diverge (you built `camdl`
-but not `camdlc`), tests fail with *"camdlc version mismatch"*.
-Options (lightest first):
-1. `make dev-camdlc` — builds camdlc and drops a hash-matched
-   `camdlc-<hash>` beside the cargo binaries (`target/{debug,release}`),
-   so `cargo run -p cli` and the integration tests resolve it via the
-   exact-match path — no `--camdl-version` subprocess, no global
-   install, no `~/.local/bin` clobber. Re-run after each commit. The
-   lightest loop for working on a branch.
-2. `make install-camdlc` — build + install only `camdlc` (no Rust
-   rebuild), to resync the global binary without a full `make install`.
-3. `make install` to resync both globally.
-4. `CAMDL_SKIP_VERSION_CHECK=1 cargo test …` to bypass for this
-   invocation.
+**Gotcha: camdlc version check.** `camdl` (runtime) refuses to run a
+`camdlc` (compiler) whose git hash differs from its own — an end-user
+safeguard against a drifted runtime/compiler pair. In development it
+false-reds: the `camdlc` on PATH (usually the shared `~/.local/bin/camdlc`)
+goes stale the moment a parallel checkout runs `make install` at another
+commit, and the cargo acceptance tests (`compile_once`,
+`acceptance_batch_*`) then abort with *"camdlc version mismatch"*.
+
+**`make test` handles this for you.** `test-rust` prepends the
+freshly-built `camdlc` to PATH and skips the handshake, so `camdl` resolves
+the compiler under test regardless of `~/.local/bin` state — a plain
+`make test` is the gate; you do not need to install or sync `camdlc` first.
+A "camdlc version mismatch" from a bare `cargo test` (run directly, not via
+`make`) is almost always this environmental issue, **not** your change —
+re-run under `make test`, or point `CAMDLC` at the fresh camdlc, before
+suspecting your diff.
+
+For ad-hoc work outside `make test`:
+- Running `camdl <model>.camdl` directly: set `CAMDL_SKIP_VERSION_CHECK=1`,
+  or `CAMDLC=ocaml/_build/default/bin/camdlc.exe` to use the fresh one.
+- `make dev-camdlc` / `make install-camdlc` resync a matched `camdlc` for
+  interactive use. Do **not** run them merely to green a `make test`: it is
+  unnecessary now; `make install*` clobbers the shared `~/.local/bin` that
+  parallel checkouts depend on; and a binary-adjacent `camdlc-<hash>` from
+  `dev-camdlc` can shadow the PATH shims `compile_once`/`ir_cache` inject.
+
+Mechanism note: the harness pins the compiler via **PATH-prepend**, not the
+`CAMDLC` env var. `compile_once`/`ir_cache` inject their own counting
+`camdlc` shim through PATH; a `CAMDLC` env (`find_camdlc` priority 2) would
+override those shims and break them, whereas a PATH-prepended fresh camdlc
+(priority 3) coexists — a test that prepends its own shim still wins.
 
 **Note on the binary name.** The binary is `target/release/camdl`.
 It was called `camdl-sim` before the 2026-04-20 clap 4 migration;
@@ -450,10 +466,10 @@ values from `[5.0, 10.0, …]` to `[1826.2, 3652.4, …]`):
   and checks for dirty working tree. If a schema change requires
   updates, update + commit in the same branch.
 - **camdlc version pin.** The `camdl` binary refuses to run against
-  a mismatched `camdlc`. Fix: `make dev-camdlc` (drops a matched
-  `camdlc` beside the cargo binaries — lightest, no global install),
-  `make install` / `make install-camdlc` after a pull, or
-  `CAMDL_SKIP_VERSION_CHECK=1` for throwaway runs.
+  a mismatched `camdlc`. `make test` handles this itself (PATH-prepends
+  the fresh camdlc in `test-rust`) — see "Gotcha: camdlc version check"
+  above. For ad-hoc `camdl` runs, `CAMDL_SKIP_VERSION_CHECK=1` or
+  `CAMDLC=ocaml/_build/default/bin/camdlc.exe`.
 
 ## When tests disagree with each other
 
