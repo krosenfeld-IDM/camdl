@@ -42,15 +42,30 @@ the guard is muted in the harness rather than passing on its merits.
 
 ## Proposed fix
 
-Compare **IR schema version**, not git hash:
+Gate on **IR schema compatibility**, not git hash. The load-bearing design
+choice is *what* represents the schema:
 
-- Embed the schema version (`ir/VERSION`, already the OCaml↔Rust contract
-  marker) in both binaries. `camdlc --camdl-version` reports its schema
-  version; `camdl` compares against its own.
-- Compatible iff schema versions match. A matched-schema pair then passes
-  *on its own merits* — no skip in dev or prod, no PATH-prepend needed —
-  and a real schema change (a `VERSION` bump) still trips the guard, which
-  is exactly the danger worth refusing.
+- **Not the hand-maintained `ir/VERSION` integer alone.** `ir/VERSION` is
+  bumped by hand (CLAUDE.md "Changing the IR schema"). An OCaml-only change
+  to the emitted IR *shape* in `ocaml/lib/ir/serde.ml` (a new field, a
+  renamed tag, a reordered variant) that forgets the bump would leave
+  `ir/VERSION` matching while the emitted shape diverges from what `camdl`'s
+  deserializer expects — a real incompatibility a VERSION-keyed gate would
+  wave through, defeating the guard's purpose. (This is also why the
+  "staleness ⟹ schema-compatible" argument below is *not* airtight for the
+  permanent gate — only for the same-tree harness workaround, where both
+  sides share one `serde.ml` regardless of `ir/VERSION`.)
+- **A content hash of the schema surface.** Derive the gate value from a
+  hash of `ir/schema.json` (or the serde surface itself), embedded in both
+  binaries; `camdlc --camdl-version` reports it and `camdl` compares against
+  its own. An emit-shape change then moves the hash even if `ir/VERSION` is
+  forgotten, so the gate trips. (Alternatively/additionally, a CI check that
+  fails any commit touching `serde.ml`/`schema.json` without an `ir/VERSION`
+  bump — belt and braces.)
+
+With a schema-content gate, a matched-schema pair passes *on its own merits*
+— no skip in dev or prod, no PATH-prepend needed — and a genuine schema
+change still trips it.
 
 ## Tradeoff to settle
 
@@ -80,8 +95,9 @@ the soft hash warning is harmless noise (or suppressed under
 ## Recommendation
 
 Implement the two-signal guard (hard schema gate + soft hash warning) in
-`util.rs::eval_version_output`, embed `ir/VERSION` in both binaries, and
-once it lands, simplify `test-rust` back to a bare `cargo test --workspace`
+`util.rs::eval_version_output`, embed a **content hash of the schema
+surface** (not the `ir/VERSION` integer) in both binaries, and once it
+lands, simplify `test-rust` back to a bare `cargo test --workspace`
 (removing the PATH-prepend + skip workaround). Add a unit test for
 `eval_version_output` covering: schema match + hash match (pass, no warn),
 schema match + hash drift (pass + warn), schema mismatch (hard fail).
