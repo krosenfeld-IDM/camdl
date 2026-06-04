@@ -232,15 +232,8 @@ type output_traj_decl = {
   otformat    : string;
 }
 
-type output_summary_decl = {
-  osquantities: (string * expr) list;
-  osformat    : string;
-}
-
 type output_decl = {
   out_trajectories: output_traj_decl option;
-  out_flows       : output_traj_decl option;
-  out_summary     : output_summary_decl option;
 }
 
 type simulate_decl = { sim_from: expr; sim_to: expr }

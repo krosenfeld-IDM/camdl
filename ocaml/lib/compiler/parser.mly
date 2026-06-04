@@ -638,14 +638,10 @@ ode_decl:
 output_body:
   | kvs = list(output_kv)
       { let traj = ref None in
-        let flows = ref None in
-        let summ  = ref None in
         List.iter (function
           | `Traj t  -> traj  := Some t
-          | `Flows f -> flows := Some f
-          | `Summ s  -> summ  := Some s
         ) kvs;
-        { out_trajectories = !traj; out_flows = !flows; out_summary = !summ } }
+        { out_trajectories = !traj } }
 
 output_kv:
   | IDENT LBRACE kvs = list(func_arg) RBRACE
@@ -657,24 +653,11 @@ output_kv:
                        | _ -> "tsv") in
           let rest  = List.filter (fun (k,_) -> k <> "every" && k <> "format") kvs in
           `Traj { otevery = every; otquantities = rest; otformat = fmt }
-        | "flows" ->
-          let every = List.assoc_opt "every" kvs |> Option.value ~default:(EConst 1.0) in
-          let fmt   = (match List.assoc_opt "format" kvs with
-                       | Some (EIdent (s, _)) | Some (EFuncCall (s, [])) -> s
-                       | _ -> "tsv") in
-          let rest  = List.filter (fun (k,_) -> k <> "every" && k <> "format") kvs in
-          `Flows { otevery = every; otquantities = rest; otformat = fmt }
-        | "summary" ->
-          let fmt   = (match List.assoc_opt "format" kvs with
-                       | Some (EIdent (s, _)) | Some (EFuncCall (s, [])) -> s
-                       | _ -> "tsv") in
-          let rest  = List.filter (fun (k,_) -> k <> "format") kvs in
-          `Summ { osquantities = rest; osformat = fmt }
         | _ ->
           Parser_errors.push_error ~sp:$startpos ~ep:$endpos
             ~code:"E106"
-            ~msg:(Printf.sprintf "unknown output section '%s': expected one of trajectories, flows, summary" $1);
-          `Summ { osquantities = []; osformat = "tsv" } }
+            ~msg:(Printf.sprintf "unknown output section '%s': expected 'trajectories'" $1);
+          `Traj { otevery = EConst 1.0; otquantities = []; otformat = "tsv" } }
 
 (* ── Simulate block ──────────────────────────────────────────────────────── *)
 
