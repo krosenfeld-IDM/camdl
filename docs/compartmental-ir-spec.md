@@ -477,8 +477,8 @@ evaluates `log p(y_obs | projection, params)`.
 
 ```
 observation_model: {
-  name: string,
-  data_stream: string,           -- column name in output CSV (v0.1) or input data (v0.2)
+  name: string,                  -- also the data-stream key: the input data column,
+                                 -- or `--data NAME=PATH`, binds to a block by this name
   schedule: observation_schedule,
   projection: projection,
   likelihood: likelihood
@@ -564,27 +564,36 @@ output_schedule :=
 ### 5.2 Input: Data for Inference (v0.2)
 
 When the runtime is in inference mode, it reads observed data from a
-preprocessed TSV/CSV file. Observation-to-column mapping is driven by
-each `observation_model.data_stream` field; no separate top-level
-`data_contract` schema is emitted (the placeholder once planned for it
-has been removed — m20 in the 2026-04-19 compiler review).
+preprocessed TSV/CSV file. Observation-to-column mapping is driven by the
+`observation_model.name`: `--data PATH` binds a single-stream model's only
+block; `--data NAME=PATH` (repeatable), or a wide TSV with one value column per
+block (column header = block name), binds each block by name. The data's time
+column supplies the observation times, and all streams must share one time grid.
+No separate top-level `data_contract` schema is emitted (the placeholder once
+planned for it has been removed — m20 in the 2026-04-19 compiler review).
 
 **Preprocessing assumptions (v0.2).** The data file is:
 
 - Complete: no missing values (row-wise deletion has already been applied)
 - Clean: correct types, no parsing issues
-- Aligned: time column values correspond to observation schedule times
 - Sorted: time column is monotonically non-decreasing
+- On-grid: each observation time lands on a simulation substep
 
-The runtime validates these assumptions at startup and fails loudly if violated.
-Missing data handling (NA semantics, partial streams, irregular observation) is
-deferred to v0.3.
+When fitting, the data file's **time column supplies the observation times**;
+the observation block's declared `schedule` (`every`/`at`) is *not* consulted in
+the inverse direction — it is used only for forward synthetic-data generation
+under `simulate`. The runtime validates chronological order and substep/grid
+alignment of the data times and fails loudly on violation. (The one
+schedule-vs-data alignment constraint is on the *output* schedule, not the
+observation schedule: the deterministic/ODE fit path requires an output
+snapshot at each observation time.) Missing data handling (NA semantics, partial
+streams, irregular observation) is deferred to v0.3.
 
 ### 5.3 Spatial/Stratified Data (v0.2)
 
-For spatially stratified models, the OCaml expander generates one `data_stream`
-per stratum. For 774 LGAs this means 774 columns — verbose but explicit and
-mechanically correct. A more compact indexed-stream representation is a v0.3
+For spatially stratified models, the OCaml expander generates one observation
+block per stratum — hence one named data column per stratum. For 774 LGAs this
+means 774 columns — verbose but explicit and mechanically correct. A more compact indexed-stream representation is a v0.3
 optimization.
 
 ---
@@ -1236,7 +1245,6 @@ refers to the projection output (§4.2).
   "observations": [
     {
       "name": "reported_cases",
-      "data_stream": "cases",
       "schedule": { "obs_regular": { "start": 7.0, "step": 7.0, "end": 365.0 } },
       "projection": { "cumulative_flow": "infection" },
       "likelihood": {
