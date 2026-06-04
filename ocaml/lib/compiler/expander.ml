@@ -3895,7 +3895,7 @@ let expand_observations ctx =
     in
     let sched_v = match od.oschedule with
       | Some s -> s
-      | None -> missing_field "schedule"; ObsEvery (EConst 1.0)
+      | None -> missing_field "schedule"; SchedEvery (EConst 1.0)
     in
     let proj_v = match od.oprojection with
       | Some p -> p
@@ -3917,10 +3917,10 @@ let expand_observations ctx =
       | Some sd -> resolve_float_expr ctx sd.sim_to
     in
     let schedule = match sched_v with
-      | ObsEvery every ->
+      | SchedEvery every ->
         let step = resolve_float_expr ctx every in
         Ir.ObsRegular { Ir.start = t_start; Ir.step; Ir.end_ = t_end }
-      | ObsTimes ts ->
+      | SchedAt ts ->
         Ir.ObsAtTimes (List.map (resolve_float_expr ctx) ts)
     in
     (* `prevalence(X)` projects a compartment snapshot at observation time.
@@ -4441,10 +4441,10 @@ let check_surface_time_typing ctx =
   List.iter (fun (od : obs_decl) ->
     let loc = diag_loc_of_ast_ctx ctx od.oloc in
     (match od.oschedule with
-     | Some (ObsEvery e) ->
+     | Some (SchedEvery e) ->
        walk_expr_rule1 ~loc ~context:("observation '" ^ od.oname ^ "'.every") e;
        check_recurring_cadence ~loc ~field:"every" e
-     | Some (ObsTimes ts) ->
+     | Some (SchedAt ts) ->
        List.iter (fun e ->
          walk_expr_rule1 ~loc ~context:("observation '" ^ od.oname ^ "'.at") e
        ) ts

@@ -165,10 +165,6 @@ type schedule_core =
   | SchedEvery of expr        (* every = E  *)
   | SchedAt    of expr list   (* at = [...] *)
 
-type obs_schedule =
-  | ObsEvery of expr
-  | ObsTimes of expr list
-
 type obs_projection =
   | ProjIncidence  of string * index_item list
   | ProjPrevalence of string * index_item list
@@ -191,7 +187,7 @@ type obs_decl = {
      silently producing a meaningless but compile-green likelihood.
      Represented as option here so the expander can emit a specific
      diagnostic naming the missing field. *)
-  oschedule   : obs_schedule option;
+  oschedule   : schedule_core option;
   oprojection : obs_projection option;
   olikelihood : likelihood_kind option;
   oloc        : loc;

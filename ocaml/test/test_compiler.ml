@@ -511,6 +511,48 @@ let test_output_every_and_at_conflict () =
   | Error _ -> ()  (* expected: conflicting schedule rejected *)
   | Ok _ -> Alcotest.fail "expected error: every and at are mutually exclusive"
 
+(* A.2 guard: observations and output share the `schedule_core` grammar/AST
+   but their expander lowerings are NOT identical — obs `every` lowers
+   start = t_start, output `every` lowers start = min(0, t_start). For
+   t_start > 0 they diverge (obs.start = t_start, output.start = 0). Pin it
+   so a future shared schedule_core lowering helper can't silently shift
+   observation times (which PGAS conditions on). *)
+let test_obs_output_start_divergence () =
+  let src = {|
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  rho : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 10 'days  to = 120 'days }
+    observations {
+      cases : {
+        projected  = incidence(recovery)
+        every      = 1 'days
+        likelihood = poisson(rate = rho * projected)
+      }
+    }
+    output { trajectories { every = 1 'days } }
+  |} in
+  match Compiler.compile ~name:"test_obs_out_start" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.output.Ir.times with
+     | Ir.OutRegular r ->
+       Alcotest.(check (float 1e-9)) "output.start = min(0,t_start) = 0" 0.0 r.Ir.start
+     | _ -> Alcotest.fail "expected OutRegular output schedule");
+    (match m.Ir.observations with
+     | om :: _ ->
+       (match om.Ir.schedule with
+        | Ir.ObsRegular r ->
+          Alcotest.(check (float 1e-9))
+            "obs.start = t_start = 10 (NOT min(0,t_start))" 10.0 r.Ir.start
+        | _ -> Alcotest.fail "expected ObsRegular obs schedule")
+     | [] -> Alcotest.fail "expected an observation model")
+
 (* ── BUG-2: Parameterised table values ───────────────────────────────────────
    Compile a model with a table that references a parameter. The compiled
    table values should include Ir.Param "beta_mf", not drop it. ─────────── *)
@@ -5435,6 +5477,8 @@ let () =
       Alcotest.test_case "at = [...] → OutAtTimes" `Quick test_output_at_times;
       Alcotest.test_case "format = parquet" `Quick test_output_format_parquet;
       Alcotest.test_case "every and at conflict → error" `Quick test_output_every_and_at_conflict;
+      Alcotest.test_case "obs.start=t_start vs output.start=0 (A.2 lowering divergence guard)"
+        `Quick test_obs_output_start_divergence;
     ];
     "parameterised_tables", [
       Alcotest.test_case "param survives as Ir.Param" `Quick test_parameterised_table;

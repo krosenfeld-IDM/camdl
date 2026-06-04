@@ -474,8 +474,7 @@ obs_decl:
           oloc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
 
 obs_kv:
-  | EVERY EQ e = expr { `Schedule (ObsEvery e) }
-  | AT_KW EQ LBRACKET ts = separated_list(COMMA, expr) RBRACKET { `Schedule (ObsTimes ts) }
+  | s = schedule_core { `Schedule s }
   | IDENT EQ proj = obs_projection { `Proj proj }
   | LIKELIHOOD EQ e = expr
       { `Lik (match e with
