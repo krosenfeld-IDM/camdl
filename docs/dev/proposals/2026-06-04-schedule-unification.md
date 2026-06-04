@@ -81,8 +81,19 @@ Each construct reuses it and keeps its own extension rule; the expander
 lowers `schedule_core` to the existing IR variant:
 
 - **observations** use the full core (`SchedEvery`→`ObsRegular`,
-  `SchedAt`→`ObsAtTimes`); `from_data` stays its own rule (it is a derived
-  source, not a schedule).
+  `SchedAt`→`ObsAtTimes`). (`ObsFromData` has no frontend producer today —
+  it is an IR-only stub, not a live obs `from_data` rule — so the obs
+  surface is exactly the two-arm core.) **Critical — the obs and output
+  lowerings are NOT identical:** obs `every` lowers `start = t_start`
+  (expander.ml:3922); output lowers `start = min 0.0 t_start`
+  (expander.ml:3217). They agree at `t_start = 0` (the common case) and for
+  negative `t_start` (where `min(0, t_start) = t_start`), but **diverge for
+  `t_start > 0`** — e.g. `simulate { from = 10 }` or an anchored `from`
+  after `origin`: obs.start = 10 while output.start = 0. Share only the
+  grammar rule + AST type; keep the two expander lowering sites distinct with
+  their existing `start` expressions. Do **not** factor a shared
+  `lower_schedule_core` helper — that would silently shift observation times
+  (which PGAS conditions on).
 - **output** use the full core (`→ OutRegular` / `OutAtTimes`); `format`
   stays its own field.
 - **interventions / events** reuse only the `SchedAt` arm (explicit times).
@@ -101,7 +112,11 @@ collapse, not A.
 Migration order, asserting byte-identical golden IR at each step: output
 (already `OtEvery`/`OtAt`) → observations (delete `obs_schedule`) → the
 `at` arm of interventions/events. Behavior-preserving; gated by the
-existing golden + integration suite.
+existing golden + integration suite — **plus, for the obs step, a NEW test**
+with `t_start > 0` (e.g. `simulate { from = 10 }`) carrying an obs `every`,
+pinning `obs.start = t_start` while `output.start = 0`. Existing goldens use
+`from = 0` (where the two lowerings agree), so the suite would not otherwise
+catch a regressed shared lowering (the trap above).
 
 Wins: `every`/`at` parse identically by construction (a fifth surface can't
 drift), and two identical AST types plus their parsing collapse to one.
@@ -120,25 +135,46 @@ Don't build that.
 
 The *right* merge factors two axes the current types conflate — **specified
 times** (`every`/`at`/parametric, genuinely shared) vs **derived source**
-(`from_data`, `match_observations`, which are not schedules at all):
+(`from_data`, `match_observations`, which are not schedules at all; note
+both — plus the intervention-only `External` — are currently IR-only stubs
+with no frontend producer, so a clean B must first decide whether they are
+roadmap or delete-on-sight):
 
 ```ocaml
-type schedule = Every of {…} | At of expr list | AtExpr of expr list  (* shared *)
+type schedule =
+  | Every of { step; from?; until?; at_day? }   (* windowing/at_day live HERE *)
+  | At    of expr list
+  | AtExpr of expr list                          (* parametric; intervention-only today *)
 
 (* observations *)  source = Specified of schedule | FromData
 (* output *)        source = Specified of schedule | MatchObservations
-(* interventions *) source = Specified of schedule   (* + at_day / windowing on the regular case *)
+(* interventions *) source = Specified of schedule | External   (* 4th variant, also a stub *)
 ```
 
-Now the shared `schedule` is clean (no validity matrix) and each surface's
-one derived-source variant lives where it belongs. This is good ADT design
-and probably the right long-term shape.
+This factors the **derived-source** axis cleanly — that part is real and
+good. But it does **not** eliminate the validity matrix, only relocate it:
+`at_day`/windowing are fields of `Every` that are always-`None` for
+obs/output, and `AtExpr` (parametric `at`, gh#69) is intervention-only
+today, so a shared `schedule` makes it *representable* where it is currently
+unrepresentable. The within-`schedule` per-surface legality (which of
+`at_day` / windowing / `AtExpr` is valid where) is an open decision to settle
+**before** building B — it determines whether `schedule` is genuinely shared
+or carries per-surface phantom fields. (`at_day` is also not a peer variant:
+in the IR it is an `Option` field of the recurring case — `RecurringSchedule
+{ start; period; end; at_day }` — so the proposal's earlier "peer extension"
+framing was wrong.)
 
 The boundary that keeps it honest: **share the *times*, never the
 *evaluation*.** The schedule answers "when"; the surfaces differ in "what
 happens then" — sampled vs snapshotted vs fired-with-propensity-effects,
-where the paired-seed CRN coupling and PGAS conditioning live. Unify the
-`schedule` type; do not push the unification down into shared evaluation.
+where the paired-seed CRN coupling and PGAS conditioning live. This boundary
+holds **structurally, not by discipline**: PGAS reads obs times as a plain
+`Vec<f64>` from the *data* path (zero `ObservationSchedule` references in
+`crates/sim/src/inference/`), and `output_times` / `intervention_fire_times`
+are pure functions of the payload — so a faithful merge cannot perturb CRN
+ordering. The load-bearing B equivalence tests are therefore
+`output_times(old) == new` and `intervention_fire_times(old) == new` over
+all goldens, plus golden-IR byte-identity — not anything inside `pgas.rs`.
 
 Why defer it anyway — none of these is "it is a bad abstraction":
 - **Execution risk.** A cross-language IR schema change (OCaml types + the
@@ -161,12 +197,25 @@ event density; obs times set what PGAS conditions on). The bulk is
 mechanical: dozens of inline construction sites (`OutputConfig { times: …
 }` / `schedule: …`, mostly in tests) re-shape under the factored `source`
 wrapper. The sharp edge is **run identity**: `runid/src/ir_hash.rs`
-hand-hashes each schedule type into the `run_id` (a `ContentAddressed` impl
-per type, `header` + fields). B must keep the emitted hash bytes
-byte-identical or every `run_id`, CAS path, and golden `run_id` churns —
-make it an explicit equivalence test, not an assumption. Plus a full golden
-IR regen (schedule JSON tags change) reviewed to confirm only serialization
-moved, not semantics.
+hand-hashes each schedule type into the `run_id` via a `ContentAddressed`
+impl that emits the **fully-qualified type-path string** (e.g.
+`"ir::observation::ObservationSchedule"`) plus **positional `u32` variant
+indices**. Renaming the three types into a shared `Schedule` + `source`
+necessarily changes those — so byte-identical `run_id` is **not** the
+default; achieving it would mean hand-forging the legacy tag strings + flat
+indices in the new impls (ugly, and a perpetual trap for the next `ir_hash`
+editor who "tidies" a tag to match the new type name). The honest plan is
+the opposite: **accept a one-time re-key** — bump the schedule types' `SV`
+and the committed `GOLDEN` pin in `runid/src/ir_hash/tests.rs`, with a test
+pinning the NEW hash. The churn is the test pin + any operator's live store,
+**not** golden files (CAS dirs `results/` / `output/` are gitignored).
+
+And it is a full **"Changing the IR schema"** procedure, not a Rust-side
+refactor: it also restructures the six hand-written OCaml serde
+`to_json`/`of_json` pairs (`ocaml/lib/ir/serde.ml`), with byte-identity of
+the emitted JSON through OCaml as its own obligation, and regenerates all
+golden IR atomically (schema.json + VERSION + OCaml serde + Rust types +
+Rust ir_hash + goldens).
 
 If taken, B should also settle: do *all* surfaces gain parametric `at`
 (gh#69) and `at_day`, or does the type carry per-context legality? Its own
