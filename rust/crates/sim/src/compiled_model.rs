@@ -802,7 +802,6 @@ impl CompiledModel {
                     }
                     times
                 }
-                ir::intervention::InterventionSchedule::External(_) => Vec::new(),
             })
             .collect();
 

@@ -74,7 +74,6 @@ pub struct RegularSchedule {
 pub enum ObservationSchedule {
     AtTimes(Vec<f64>),
     Regular(RegularSchedule),
-    FromData,
 }
 
 // ── Observation model ─────────────────────────────────────────────────────────

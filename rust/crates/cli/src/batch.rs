@@ -1358,8 +1358,6 @@ fn write_obs_into_cas(
         );
         let obs_times = crate::obs_schedule_times(
             &obs_ir.schedule,
-            model.simulation.t_start,
-            model.simulation.t_end,
         );
         let projected = crate::project_all_obs_times(traj, obs_ir, model, &obs_times);
 

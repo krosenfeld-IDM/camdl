@@ -144,7 +144,6 @@ intervention: {
 intervention_schedule :=
   | AtTimes(float list)                          -- explicit times
   | Recurring(start: float, period: float, end: float, at_day: float | null)
-  | External(string)                             -- times from external data
 
 action :=
   | FractionTransfer(src, dst, fraction: expr)   -- move fraction of src to dst
@@ -487,7 +486,6 @@ observation_model: {
 observation_schedule :=
   | ObsAtTimes(float list)
   | ObsRegular(start: float, step: float, end: float)
-  | ObsFromData                  -- v0.2+: observation times from data file
 ```
 
 ### 4.4 Reporting Pipelines `[v0.2+, essential]`
@@ -558,7 +556,6 @@ output: {
 output_schedule :=
   | Regular(start: float, step: float, end: float)
   | AtTimes(float list)
-  | MatchObservations         -- output at observation times
 ```
 
 ### 5.2 Input: Data for Inference (v0.2)

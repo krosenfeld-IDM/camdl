@@ -116,7 +116,7 @@ fn obs_model(compiled: &Arc<CompiledModel>) -> MultiStreamObsModel {
             projection: sim::inference::multi_stream_obs::StreamProjection::FlowSum(vec![0]),
             ir_model: ir::observation::ObservationModel {
                 name: "cases".into(),
-                schedule: ir::observation::ObservationSchedule::FromData,
+                schedule: ir::observation::ObservationSchedule::AtTimes(vec![]),
                 projection: ir::observation::Projection::CumulativeFlow("death".into()),
                 likelihood: ir::observation::Likelihood::Poisson(ir::observation::PoissonLikelihood {
                     // rate = projected + 0.1 (floor to avoid Poisson(0) → -inf)

@@ -77,7 +77,7 @@ fn model() -> Arc<CompiledModel> {
         observations: vec![
             IrObs {
                 name: "cases".into(),
-                schedule: ObservationSchedule::FromData,
+                schedule: ObservationSchedule::AtTimes(vec![]),
                 projection: Projection::CurrentPop("I".into()),
                 likelihood: Likelihood::NegBinomial(NegBinomialLikelihood {
                     // mean = rho * I  (Pop ref → reads counts)

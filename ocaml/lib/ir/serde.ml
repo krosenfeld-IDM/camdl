@@ -499,8 +499,6 @@ let intervention_schedule_to_json (s : intervention_schedule) : Yojson.Safe.t =
        ("end",    flt r.end_)]
       @ (match r.at_day with None -> [] | Some d -> [("at_day", flt d)])
     ))]
-  | External name ->
-    obj [("external", str name)]
 
 let intervention_schedule_of_json j =
   match j with
@@ -516,7 +514,6 @@ let intervention_schedule_of_json j =
         at_day = (match member_opt "at_day" v with
                   | Some n -> Some (as_float n) | None -> None);
       }
-    | "external" -> External (as_string v)
     | k -> fail "unknown intervention_schedule '%s'" k
   )
   | _ -> fail "intervention_schedule must be a single-key object"
@@ -689,11 +686,9 @@ let obs_schedule_to_json (s : observation_schedule) : Yojson.Safe.t =
       ("step",  flt r.step);
       ("end",   flt r.end_);
     ])]
-  | ObsFromData -> str "from_data"
 
 let obs_schedule_of_json j =
   match j with
-  | `String "from_data" -> ObsFromData
   | `Assoc [(key, v)] -> (
     match key with
     | "at_times" -> ObsAtTimes (List.map as_float (as_list v))
@@ -705,7 +700,7 @@ let obs_schedule_of_json j =
       }
     | k -> fail "unknown observation_schedule '%s'" k
   )
-  | _ -> fail "observation_schedule must be a string or single-key object"
+  | _ -> fail "observation_schedule must be a single-key object"
 
 let observation_model_to_json (om : observation_model) : Yojson.Safe.t =
   obj [
@@ -869,12 +864,9 @@ let output_schedule_to_json (s : output_schedule) : Yojson.Safe.t =
     ])]
   | OutAtTimes ts ->
     obj [("at_times", arr (List.map flt ts))]
-  | OutMatchObservations ->
-    str "match_observations"
 
 let output_schedule_of_json j =
   match j with
-  | `String "match_observations" -> OutMatchObservations
   | `Assoc [(key, v)] -> (
     match key with
     | "regular" ->
@@ -886,7 +878,7 @@ let output_schedule_of_json j =
     | "at_times" -> OutAtTimes (List.map as_float (as_list v))
     | k -> fail "unknown output_schedule '%s'" k
   )
-  | _ -> fail "output_schedule must be a string or single-key object"
+  | _ -> fail "output_schedule must be a single-key object"
 
 let output_config_to_json (o : output_config) : Yojson.Safe.t =
   obj [

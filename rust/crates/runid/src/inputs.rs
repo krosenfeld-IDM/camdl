@@ -55,7 +55,6 @@ pub enum CalendarMode {
 pub enum ResolvedOutputSchedule {
     Regular { start: FiniteF64, step: FiniteF64, end: FiniteF64 },
     AtTimes(Vec<FiniteF64>),
-    MatchObservations,
 }
 
 /// A resolved parameter name.

@@ -191,7 +191,6 @@ type intervention_schedule =
      when every entry is a compile-time constant so existing golden IRs
      stay byte-identical. *)
   | Recurring of recurring_schedule
-  | External  of string
 
 type fraction_transfer = { src: string; dst: string; fraction: expr }
 type absolute_transfer = { src: string; dst: string; count: expr }
@@ -240,7 +239,6 @@ type regular_obs_schedule = { start: float; step: float; end_: float }
 type observation_schedule =
   | ObsAtTimes of float list
   | ObsRegular of regular_obs_schedule
-  | ObsFromData
 
 type observation_model = {
   name:        string;
@@ -345,7 +343,6 @@ type regular_output_schedule = { start: float; step: float; end_: float }
 type output_schedule =
   | OutRegular          of regular_output_schedule
   | OutAtTimes          of float list
-  | OutMatchObservations
 
 type output_config = {
   times:        output_schedule;

@@ -268,6 +268,6 @@ fn changing_a_field_changes_the_hash() {
     assert_ne!(base, m_tend.content_hash(), "t_end change must matter");
 
     let mut m_out = representative_model();
-    m_out.output.times = OutputSchedule::MatchObservations;
+    m_out.output.times = OutputSchedule::AtTimes(vec![1.0, 2.0, 3.0]);
     assert_ne!(base, m_out.content_hash(), "output schedule change must matter");
 }

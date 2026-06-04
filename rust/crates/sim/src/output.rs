@@ -13,6 +13,5 @@ pub fn output_times(sched: &OutputSchedule) -> Vec<f64> {
             times
         }
         OutputSchedule::AtTimes(ts) => ts.clone(),
-        OutputSchedule::MatchObservations => vec![],
     }
 }

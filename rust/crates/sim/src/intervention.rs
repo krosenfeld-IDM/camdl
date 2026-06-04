@@ -62,7 +62,6 @@ pub fn intervention_fire_times(
             }
             times
         }
-        InterventionSchedule::External(_) => vec![],
     }
 }
 

@@ -26,7 +26,6 @@ pub enum InterventionSchedule {
     /// in `AtTimes` so existing golden IRs remain byte-identical.
     AtTimesExpr(Vec<Expr>),
     Recurring(RecurringSchedule),
-    External(String),
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────

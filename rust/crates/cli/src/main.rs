@@ -654,7 +654,7 @@ fn run_simulate(a: &args::SimulateArgs) {
         // Validate schedule compatibility for --obs (single file)
         if obs_path.is_some() && model_check.observations.len() > 1 {
             let schedules: Vec<_> = model_check.observations.iter()
-                .map(|o| obs_schedule_times(&o.schedule, model_check.simulation.t_start, model_check.simulation.t_end))
+                .map(|o| obs_schedule_times(&o.schedule))
                 .collect();
             let all_same = schedules.windows(2).all(|w| w[0] == w[1]);
             if !all_same {
@@ -1490,11 +1490,7 @@ impl engine::RunSink for StreamSink {
                 for obs_model in &model.observations {
                     self.obs_stream_names.push(obs_model.name.clone());
                     self.obs_data.push(Vec::new());
-                    let times = obs_schedule_times(
-                        &obs_model.schedule,
-                        model.simulation.t_start,
-                        model.simulation.t_end,
-                    );
+                    let times = obs_schedule_times(&obs_model.schedule);
                     self.obs_times_cache.push(times);
                 }
             }
@@ -1633,8 +1629,6 @@ impl StreamSink {
 /// Generate observation times from an IR schedule.
 pub(crate) fn obs_schedule_times(
     schedule: &ir::observation::ObservationSchedule,
-    t_start: f64,
-    t_end: f64,
 ) -> Vec<f64> {
     match schedule {
         ir::observation::ObservationSchedule::Regular(reg) => {
@@ -1647,19 +1641,6 @@ pub(crate) fn obs_schedule_times(
             times
         }
         ir::observation::ObservationSchedule::AtTimes(times) => times.clone(),
-        ir::observation::ObservationSchedule::FromData => {
-            // In simulate mode there's no data — generate a reasonable grid
-            // using the simulation output times (every dt from t_start to t_end).
-            eprintln!("warning: observation schedule is 'from_data' but no data provided; \
-                       using simulation output grid (every 1 unit from {} to {})", t_start, t_end);
-            let mut times = Vec::new();
-            let mut t = t_start + 1.0;
-            while t <= t_end + 1e-9 {
-                times.push(t);
-                t += 1.0;
-            }
-            times
-        }
     }
 }
 
@@ -2575,7 +2556,7 @@ mod tests {
     /// in IR envelope so it parses through the new ir::from_str path.
     fn ir_with_prior(name: &str, bounds: &str, prior_json: &str, extras: &str) -> String {
         format!(r#"{{
-          "ir_version": "0.7",
+          "ir_version": "0.8",
           "validated_by": "test-fixture",
           "model": {{
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2653,7 +2634,7 @@ mod tests {
         // should succeed (sampled beta + fixed N0).
         // gh#audit-C8: wrap in IR envelope.
         let json = r#"{
-          "ir_version": "0.7",
+          "ir_version": "0.8",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2901,7 +2882,7 @@ I0    = { bounds = [1, 1000] }
     fn prior_draws_errors_only_when_neither_fit_toml_nor_ir_has_a_prior() {
         // Hand-rolled IR: `beta` has a log_normal prior, `gamma` has none.
         let ir_json = r#"{
-          "ir_version": "0.7",
+          "ir_version": "0.8",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2955,7 +2936,7 @@ gamma = { bounds = [0.05, 1.0] }
     fn prior_draws_fit_toml_prior_wins_over_ir_prior() {
         // beta declared with normal(0, 1) — very narrow around 0.
         let ir_json = r#"{
-          "ir_version": "0.7",
+          "ir_version": "0.8",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",

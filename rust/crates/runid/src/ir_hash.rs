@@ -440,9 +440,6 @@ impl ContentAddressed for ObservationSchedule {
                 h.write_u32(1);
                 r.hash_into(h);
             }
-            ObservationSchedule::FromData => {
-                h.write_u32(2);
-            }
         }
     }
 }
@@ -596,10 +593,6 @@ impl ContentAddressed for InterventionSchedule {
                 h.write_u32(2);
                 r.hash_into(h);
             }
-            InterventionSchedule::External(s) => {
-                h.write_u32(3);
-                h.write_str(s);
-            }
         }
     }
 }
@@ -706,9 +699,6 @@ impl ContentAddressed for OutputSchedule {
             OutputSchedule::AtTimes(times) => {
                 h.write_u32(1);
                 h.write_f64_slice(times);
-            }
-            OutputSchedule::MatchObservations => {
-                h.write_u32(2);
             }
         }
     }

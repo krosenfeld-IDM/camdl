@@ -66,7 +66,7 @@ fn model_with_obs_param() -> (Arc<CompiledModel>, Vec<f64>) {
         observations: vec![
             IrObs {
                 name: "cases".into(),
-                schedule: ObservationSchedule::FromData,
+                schedule: ObservationSchedule::AtTimes(vec![]),
                 projection: Projection::CumulativeFlow("death".into()),
                 likelihood: Likelihood::NegBinomial(NegBinomialLikelihood {
                     // mean = projected (cumulative deaths)

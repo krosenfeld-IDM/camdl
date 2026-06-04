@@ -118,7 +118,6 @@ fn resolve_output(sched: &ir::model::OutputSchedule) -> Result<ResolvedOutputSch
             }
             ResolvedOutputSchedule::AtTimes(v)
         }
-        O::MatchObservations => ResolvedOutputSchedule::MatchObservations,
     })
 }
 

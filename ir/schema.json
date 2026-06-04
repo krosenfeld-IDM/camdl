@@ -427,13 +427,6 @@
             }
           },
           "additionalProperties": false
-        },
-        {
-          "required": ["external"],
-          "properties": {
-            "external": { "type": "string" }
-          },
-          "additionalProperties": false
         }
       ]
     },
@@ -633,10 +626,6 @@
             }
           },
           "additionalProperties": false
-        },
-        {
-          "type": "string",
-          "enum": ["from_data"]
         }
       ]
     },
@@ -862,10 +851,6 @@
             "at_times": { "type": "array", "items": { "type": "number" } }
           },
           "additionalProperties": false
-        },
-        {
-          "type": "string",
-          "enum": ["match_observations"]
         }
       ]
     },

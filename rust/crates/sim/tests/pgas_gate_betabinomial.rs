@@ -69,7 +69,7 @@ fn build_betabinomial_obs_block(alpha_param: &str) -> ir::observation::Observati
 
     ObservationModel {
         name: "weekly_cases".into(),
-        schedule: ObservationSchedule::FromData,
+        schedule: ObservationSchedule::AtTimes(vec![]),
         projection: Projection::CumulativeFlow("infection".into()),
         likelihood: Likelihood::BetaBinomial(BetaBinomialLikelihood { n, alpha, beta }),
     }

@@ -2081,7 +2081,10 @@ The `observations {}` block is evaluated at runtime in both directions.
   data against the same likelihood family, producing log p(y | θ).
   PGAS, IF2, particle filtering, and PMMH all consume the
   `observations {}` declarations via the compiled `dmeasure` / `rmeasure`
-  paths.
+  paths. When fitting with `--data`, the data file's time column supplies
+  the observation times and the declared schedule (`every` / `at`) is not
+  consulted; the schedule is used only for forward synthetic-data generation
+  under `simulate`.
 
 Monthly incidence can be obtained natively by setting `every = 30 'days` (or
 `every = 1 'months` once time-unit arithmetic is implemented).

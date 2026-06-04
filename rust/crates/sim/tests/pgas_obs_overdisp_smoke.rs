@@ -95,7 +95,7 @@ fn smoke_pgas_nuts_estimates_sigma_se() {
             projection: StreamProjection::FlowSum(vec![0]),
             ir_model: ir::observation::ObservationModel {
                 name: "weekly_cases".into(),
-                schedule: ir::observation::ObservationSchedule::FromData,
+                schedule: ir::observation::ObservationSchedule::AtTimes(vec![]),
                 projection: ir::observation::Projection::CumulativeFlow("infection".into()),
                 likelihood: ir::observation::Likelihood::NegBinomial(
                     ir::observation::NegBinomialLikelihood {

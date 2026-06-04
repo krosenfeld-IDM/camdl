@@ -97,7 +97,7 @@ fn time_varying_obs(compiled: &Arc<CompiledModel>, obs_times: Vec<f64>, observat
             projection: StreamProjection::FlowSum(vec![0]),
             ir_model: ir::observation::ObservationModel {
                 name: "cases".into(),
-                schedule: ir::observation::ObservationSchedule::FromData,
+                schedule: ir::observation::ObservationSchedule::AtTimes(vec![]),
                 projection: ir::observation::Projection::CumulativeFlow("death".into()),
                 likelihood: ir::observation::Likelihood::Poisson(
                     ir::observation::PoissonLikelihood { rate },

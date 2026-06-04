@@ -139,11 +139,7 @@ fn generate_one_dataset(
     let mut all_times: Vec<Vec<f64>> = Vec::with_capacity(model.observations.len());
     let mut all_draws: Vec<Vec<f64>> = Vec::with_capacity(model.observations.len());
     for obs_ir in &model.observations {
-        let times = crate::obs_schedule_times(
-            &obs_ir.schedule,
-            model.simulation.t_start,
-            model.simulation.t_end,
-        );
+        let times = crate::obs_schedule_times(&obs_ir.schedule);
         let projected = crate::project_all_obs_times(&traj, obs_ir, &model, &times);
 
         let sampler = sim::inference::obs_model::compile_obs_sample_pf(

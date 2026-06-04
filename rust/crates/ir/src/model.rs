@@ -52,7 +52,6 @@ pub struct RegularOutputSchedule {
 pub enum OutputSchedule {
     Regular(RegularOutputSchedule),
     AtTimes(Vec<f64>),
-    MatchObservations,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

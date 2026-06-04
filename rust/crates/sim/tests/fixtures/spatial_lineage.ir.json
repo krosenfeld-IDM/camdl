@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.7",
-  "validated_by": "ocaml-compiler-v0.7",
+  "ir_version": "0.8",
+  "validated_by": "ocaml-compiler-v0.8",
   "model": {
     "name": "spatial_lineage",
     "version": "0.3",
