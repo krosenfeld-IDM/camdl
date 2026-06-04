@@ -158,6 +158,13 @@ type init_entry = {
   iloc      : loc;
 }
 
+(* Shared "specified times" schedule core: `every = E` (regular cadence) or
+   `at = [...]` (explicit times). Reused across observation / output (and the
+   `at` arm of interventions); each surface lowers it to its own IR variant. *)
+type schedule_core =
+  | SchedEvery of expr        (* every = E  *)
+  | SchedAt    of expr list   (* at = [...] *)
+
 type obs_schedule =
   | ObsEvery of expr
   | ObsTimes of expr list
@@ -226,14 +233,8 @@ type func_decl = {
   fargs    : (string * expr) list;
 }
 
-(* How often the trajectory is sampled. Mirrors the observation schedule
-   surface: `every = E` (regular cadence) or `at = [...]` (explicit times). *)
-type output_schedule_spec =
-  | OtEvery of expr        (* every = E   -> regular cadence *)
-  | OtAt    of expr list   (* at = [...]  -> explicit output times *)
-
 type output_traj_decl = {
-  otschedule  : output_schedule_spec;
+  otschedule  : schedule_core;
   otformat    : string;
 }
 

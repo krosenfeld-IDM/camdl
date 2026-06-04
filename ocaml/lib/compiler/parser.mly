@@ -657,25 +657,28 @@ output_kv:
                 ~msg:"trajectories: specify only one of `every` or `at`"
           in
           List.iter (function
-            | `Every e  -> set_sched (OtEvery e)
-            | `At ts    -> set_sched (OtAt ts)
+            | `Sched s  -> set_sched s
             | `Format f -> fmt := f
           ) fields;
-          let otschedule = Option.value !sched ~default:(OtEvery (EConst 1.0)) in
+          let otschedule = Option.value !sched ~default:(SchedEvery (EConst 1.0)) in
           `Traj { otschedule; otformat = !fmt }
         | _ ->
           Parser_errors.push_error ~sp:$startpos ~ep:$endpos
             ~code:"E106"
             ~msg:(Printf.sprintf "unknown output section '%s': expected 'trajectories'" name);
-          `Traj { otschedule = OtEvery (EConst 1.0); otformat = "tsv" } }
+          `Traj { otschedule = SchedEvery (EConst 1.0); otformat = "tsv" } }
 
 traj_field:
+  | s = schedule_core      { `Sched s }
+  | FORMAT EQ f = IDENT    { `Format f }
+
+(* Shared schedule core (every = E | at = [...]), reused by the surfaces
+   that need a "specified times" schedule. *)
+schedule_core:
   | EVERY EQ e = expr
-      { `Every e }
+      { SchedEvery e }
   | AT_KW EQ LBRACKET ts = separated_list(COMMA, expr) RBRACKET
-      { `At ts }
-  | FORMAT EQ f = IDENT
-      { `Format f }
+      { SchedAt ts }
 
 (* ── Simulate block ──────────────────────────────────────────────────────── *)
 

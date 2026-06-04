@@ -3211,8 +3211,8 @@ let expand_output ctx =
   let times = match ctx.output_decl with
     | Some { out_trajectories = Some ot; _ } ->
       (match ot.otschedule with
-       | OtEvery e -> Ir.OutRegular { Ir.start; Ir.step = resolve_float_expr ctx e; Ir.end_ = t_end }
-       | OtAt ts   -> Ir.OutAtTimes (List.map (resolve_float_expr ctx) ts))
+       | SchedEvery e -> Ir.OutRegular { Ir.start; Ir.step = resolve_float_expr ctx e; Ir.end_ = t_end }
+       | SchedAt ts   -> Ir.OutAtTimes (List.map (resolve_float_expr ctx) ts))
     | _ -> Ir.OutRegular { Ir.start; Ir.step = 1.0; Ir.end_ = t_end }
   in
   { Ir.times;
