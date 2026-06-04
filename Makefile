@@ -103,8 +103,21 @@ test: test-ocaml test-rust test-integration
 test-ocaml:
 	cd ocaml && dune runtest
 
-test-rust:
-	cd rust && cargo test --workspace
+# Resolve the freshly-built camdlc by putting it FIRST on PATH (not via the
+# CAMDLC env var): several tests (compile_once, ir_cache) inject their own
+# camdlc shim through PATH, and a CAMDLC env (find_camdlc priority 2) would
+# override them. PATH-prepend works WITH that design — a test that prepends
+# its own shim still wins. This shadows any stale shared ~/.local/bin/camdlc,
+# so camdl uses the compiler under test, never a stale PATH fallback (no
+# divergence). Skip the version handshake too: it is an end-user safeguard
+# against drifted *installed* binaries; with the fresh camdlc pinned on PATH
+# it would only false-red on a cargo-cached stale camdl binary — which, having
+# unchanged Rust, is schema-compatible by construction. See docs/dev/testing.md.
+CAMDLC_BIN := $(abspath rust/target/_camdlc_bin)
+test-rust: build-ocaml
+	@mkdir -p $(CAMDLC_BIN)
+	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
+	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 cargo test --workspace
 
 test-integration: build
 	CAMDLC="$(CAMDLC)" CAMDL="$(CAMDL)" bash tests/test_ocaml_to_rust.sh
