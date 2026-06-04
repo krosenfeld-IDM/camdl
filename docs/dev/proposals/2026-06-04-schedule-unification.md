@@ -1,8 +1,18 @@
 # Unifying the scheduling surfaces
 
-Status: Proposed. Option A (frontend `schedule_core`) is specified to
-implementation level below and recommended; Option B (the *factored*
-IR-type merge) is the long-term design, deferred. No code yet.
+Status: **Option A landed** — `schedule_core` (`SchedEvery | SchedAt`)
+shared by **output** (A.1, 99806f6) and **observations** (A.2, 546635a),
+collapsing the two structurally-identical frontend schedule types into one,
+byte-identical IR. **A.3 (interventions/events) deliberately NOT done as a
+frontend reuse:** their `schedule_decl` is genuinely richer (windowed
+`every` with `from`/`to`, `at_day`, parametric `at`), overlapping
+`schedule_core` only in the bare `at` arm; forcing the full core onto them
+makes a windowless `SchedEvery` representable (an illegal state), for a
+one-line grammar saving. Interventions keep their own type — that's
+honest, and their unification belongs in Option B's factored IR design
+(`source = Specified(schedule) | External`), not a frontend contortion.
+Option B (the *factored* IR-type merge) remains the long-term design,
+deferred.
 
 ## Problem
 
