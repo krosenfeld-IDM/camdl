@@ -1,9 +1,12 @@
 # Output trajectory customization: cadence, format, derived quantities
 
-Status: Proposed. The `output { trajectories { … } }` block parses as an
-empty no-op today; every documented field (`every`, `format`,
-`quantities`) fails to parse. This proposal designs wiring it for real, in
-two phases of very different cost.
+Status: **Phase 1 implemented** — `every = E` (regular cadence, sub-unit
+allowed), `at = [...]` (explicit times), and `format` now parse and wire
+through to the IR `output` schedule (`OutRegular` / `OutAtTimes`); `every`
+and `at` are mutually exclusive. **Remaining:** `match_observations`
+(deferred pending verification of its emission path — `output.rs` returns
+`vec![]` for it) and Phase 2 (named derived `quantities`, a cross-language
+IR schema change). The original two-phase analysis is preserved below.
 
 ## Problem
 

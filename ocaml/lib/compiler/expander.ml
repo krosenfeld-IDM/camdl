@@ -3193,17 +3193,9 @@ let expand_output ctx =
       ( resolve_float_expr ctx sd.sim_from,
         resolve_float_expr ctx sd.sim_to )
   in
-  let step = match ctx.output_decl with
-    | Some od -> (match od.out_trajectories with
-      | Some ot -> resolve_float_expr ctx ot.otevery
-      | None    -> 1.0)
-    | None    -> 1.0
-  in
   let format = match ctx.output_decl with
-    | Some od -> (match od.out_trajectories with
-      | Some ot -> ot.otformat
-      | None    -> "tsv")
-    | None    -> "tsv"
+    | Some { out_trajectories = Some ot; _ } -> ot.otformat
+    | _ -> "tsv"
   in
   (* Default the output schedule's start to cover the full integration
      window. With anchored models that use `from = date(...)` before
@@ -3213,9 +3205,17 @@ let expand_output ctx =
      pre-origin observations and hard-exits. Defaulting to
      min(0.0, t_start) preserves the existing start=0 behaviour for
      unanchored models (t_start ≥ 0) and extends it to cover negative
-     t_start without changing the step or output cadence. *)
+     t_start without changing the step or output cadence. (start applies
+     only to the regular schedule; `at = [...]` lists explicit times.) *)
   let start = min 0.0 t_start in
-  { Ir.times        = Ir.OutRegular { Ir.start; Ir.step; Ir.end_ = t_end };
+  let times = match ctx.output_decl with
+    | Some { out_trajectories = Some ot; _ } ->
+      (match ot.otschedule with
+       | OtEvery e -> Ir.OutRegular { Ir.start; Ir.step = resolve_float_expr ctx e; Ir.end_ = t_end }
+       | OtAt ts   -> Ir.OutAtTimes (List.map (resolve_float_expr ctx) ts))
+    | _ -> Ir.OutRegular { Ir.start; Ir.step = 1.0; Ir.end_ = t_end }
+  in
+  { Ir.times;
     Ir.format       = format;
     Ir.trajectory   = true;
     Ir.observations = true;

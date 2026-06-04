@@ -2451,14 +2451,33 @@ aggregate helper for proportional allocation is future sugar (v0.2).
 ## 16. Output
 
 A simulation writes a **trajectory** — the time series of compartment states,
-sampled on a schedule. Cadence and window come from the model's `time_unit` and
-`simulate {}` block; file emission is controlled by the CLI (§21).
+sampled on a schedule. With no `output {}` block the default schedule applies;
+declare one to set the cadence, give explicit output times, or choose the file
+format.
 
 > **Default schedule.** Snapshots every `1` in the model's `time_unit`, format
 > `tsv`, covering `[min(0, t_start), t_end]` — where the window is taken from
 > the `simulate {}` block (or `(0, 100)` if `simulate {}` is omitted). The
 > simulate command writes the trajectory to `--output` (or stdout) and writes
 > observation files only when `--obs` / `--obs-dir` / `--obs-only` is passed.
+
+```camdl
+output {
+  trajectories {
+    every  = 0.5 'days     # regular cadence (sub-unit is fine for fast dynamics)
+    format = parquet       # tsv (default) | parquet
+  }
+}
+```
+
+The schedule mirrors the observation surface: use **either** `every = E` for a
+regular cadence **or** `at = [t1, t2, ...]` for an explicit list of output times
+— the two are mutually exclusive (specifying both is an error). `format`
+selects the on-disk format.
+
+```camdl
+output { trajectories { at = [0, 30, 60, 90] } }   # snapshot only at these times
+```
 
 ### 16.1 Output Files
 
@@ -2469,8 +2488,10 @@ metadata.json         # run provenance (see §19)
 
 ### 16.2 IR Mapping
 
-The IR `output` section specifies the trajectory snapshot schedule (cadence,
-window, format); the runtime writes the trajectory directly during simulation.
+The trajectories block compiles to the IR `output` schedule: `every = E` →
+`OutRegular { start, step, end }` (start defaults to `min(0, t_start)` so the
+schedule covers anchored models with a negative `t_start`); `at = [...]` →
+`OutAtTimes`. The runtime writes the trajectory directly during simulation.
 
 Synthetic observations (forward simulation) are not part of the trajectory
 output; they are produced by the simulate command's `--obs` family of flags

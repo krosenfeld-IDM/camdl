@@ -226,9 +226,14 @@ type func_decl = {
   fargs    : (string * expr) list;
 }
 
+(* How often the trajectory is sampled. Mirrors the observation schedule
+   surface: `every = E` (regular cadence) or `at = [...]` (explicit times). *)
+type output_schedule_spec =
+  | OtEvery of expr        (* every = E   -> regular cadence *)
+  | OtAt    of expr list   (* at = [...]  -> explicit output times *)
+
 type output_traj_decl = {
-  otevery     : expr;
-  otquantities: (string * expr) list;
+  otschedule  : output_schedule_spec;
   otformat    : string;
 }
 

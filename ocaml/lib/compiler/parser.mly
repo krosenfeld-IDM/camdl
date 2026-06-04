@@ -644,20 +644,38 @@ output_body:
         { out_trajectories = !traj } }
 
 output_kv:
-  | IDENT LBRACE kvs = list(func_arg) RBRACE
-      { match $1 with
+  | name = IDENT LBRACE fields = list(traj_field) RBRACE
+      { match name with
         | "trajectories" ->
-          let every = List.assoc_opt "every" kvs |> Option.value ~default:(EConst 1.0) in
-          let fmt   = (match List.assoc_opt "format" kvs with
-                       | Some (EIdent (s, _)) | Some (EFuncCall (s, [])) -> s
-                       | _ -> "tsv") in
-          let rest  = List.filter (fun (k,_) -> k <> "every" && k <> "format") kvs in
-          `Traj { otevery = every; otquantities = rest; otformat = fmt }
+          let sched = ref None in
+          let fmt   = ref "tsv" in
+          let set_sched s =
+            match !sched with
+            | None   -> sched := Some s
+            | Some _ ->
+              Parser_errors.push_error ~sp:$startpos ~ep:$endpos ~code:"E106"
+                ~msg:"trajectories: specify only one of `every` or `at`"
+          in
+          List.iter (function
+            | `Every e  -> set_sched (OtEvery e)
+            | `At ts    -> set_sched (OtAt ts)
+            | `Format f -> fmt := f
+          ) fields;
+          let otschedule = Option.value !sched ~default:(OtEvery (EConst 1.0)) in
+          `Traj { otschedule; otformat = !fmt }
         | _ ->
           Parser_errors.push_error ~sp:$startpos ~ep:$endpos
             ~code:"E106"
-            ~msg:(Printf.sprintf "unknown output section '%s': expected 'trajectories'" $1);
-          `Traj { otevery = EConst 1.0; otquantities = []; otformat = "tsv" } }
+            ~msg:(Printf.sprintf "unknown output section '%s': expected 'trajectories'" name);
+          `Traj { otschedule = OtEvery (EConst 1.0); otformat = "tsv" } }
+
+traj_field:
+  | EVERY EQ e = expr
+      { `Every e }
+  | AT_KW EQ LBRACKET ts = separated_list(COMMA, expr) RBRACKET
+      { `At ts }
+  | FORMAT EQ f = IDENT
+      { `Format f }
 
 (* ── Simulate block ──────────────────────────────────────────────────────── *)
 

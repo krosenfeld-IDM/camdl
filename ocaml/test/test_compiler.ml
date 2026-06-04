@@ -449,6 +449,68 @@ let test_output_default_start_anchored_negative_t_start () =
          "output.start covers negative t_start" (-34.0) r.Ir.start
      | _ -> Alcotest.fail "expected OutRegular schedule")
 
+(* Output trajectory customization (Phase 1): the trajectories block accepts
+   `every = E` (regular cadence) and `at = [...]` (explicit times), mirroring
+   the observation schedule surface, plus `format = NAME`. *)
+
+let output_model_body = {|
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+    simulate { from = 0 'days  to = 120 'days }
+  |}
+
+let test_output_every_explicit () =
+  let src = output_model_body ^ "output { trajectories { every = 7 'days } }" in
+  match Compiler.compile ~name:"test_output_every" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.output.Ir.times with
+     | Ir.OutRegular r ->
+       Alcotest.(check (float 0.01)) "explicit step from every=7" 7.0 r.Ir.step
+     | _ -> Alcotest.fail "expected OutRegular schedule")
+
+let test_output_every_subunit () =
+  (* the user-facing goal: finer-scale trajectories via sub-unit cadence *)
+  let src = output_model_body ^ "output { trajectories { every = 0.5 'days } }" in
+  match Compiler.compile ~name:"test_output_subunit" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.output.Ir.times with
+     | Ir.OutRegular r ->
+       Alcotest.(check (float 0.001)) "sub-unit step from every=0.5" 0.5 r.Ir.step
+     | _ -> Alcotest.fail "expected OutRegular schedule")
+
+let test_output_at_times () =
+  let src = output_model_body ^ "output { trajectories { at = [10, 20, 30] } }" in
+  match Compiler.compile ~name:"test_output_at" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.output.Ir.times with
+     | Ir.OutAtTimes ts ->
+       Alcotest.(check (list (float 0.01))) "explicit times" [10.0; 20.0; 30.0] ts
+     | _ -> Alcotest.fail "expected OutAtTimes schedule")
+
+let test_output_format_parquet () =
+  let src = output_model_body
+            ^ "output { trajectories { every = 1 'days format = parquet } }" in
+  match Compiler.compile ~name:"test_output_fmt_parquet" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m -> Alcotest.(check string) "format parquet" "parquet" m.Ir.output.Ir.format
+
+let test_output_every_and_at_conflict () =
+  (* specifying both schedules is ambiguous -> hard error, not silent pick *)
+  let src = output_model_body
+            ^ "output { trajectories { every = 1 'days at = [5] } }" in
+  match Compiler.compile ~name:"test_output_conflict" src with
+  | Error _ -> ()  (* expected: conflicting schedule rejected *)
+  | Ok _ -> Alcotest.fail "expected error: every and at are mutually exclusive"
+
 (* ── BUG-2: Parameterised table values ───────────────────────────────────────
    Compile a model with a table that references a parameter. The compiled
    table values should include Ir.Param "beta_mf", not drop it. ─────────── *)
@@ -5368,6 +5430,11 @@ let () =
         `Quick test_output_default_start_unanchored_stays_zero;
       Alcotest.test_case "anchored t_start<0 → output.start covers full integration window"
         `Quick test_output_default_start_anchored_negative_t_start;
+      Alcotest.test_case "every = E → OutRegular step" `Quick test_output_every_explicit;
+      Alcotest.test_case "every = 0.5 → sub-unit cadence" `Quick test_output_every_subunit;
+      Alcotest.test_case "at = [...] → OutAtTimes" `Quick test_output_at_times;
+      Alcotest.test_case "format = parquet" `Quick test_output_format_parquet;
+      Alcotest.test_case "every and at conflict → error" `Quick test_output_every_and_at_conflict;
     ];
     "parameterised_tables", [
       Alcotest.test_case "param survives as Ir.Param" `Quick test_parameterised_table;
