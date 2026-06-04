@@ -46,63 +46,20 @@ runtime — the model file is parameter-free.
 
 ---
 
-## Canonical workflow (follow this order)
+## Canonical workflow
 
-For most "build me a model and fit it" requests, this is the bring-up
-sequence. Skipping steps will burn time.
+`camdl docs workflow` is the authoritative, command-verified runbook — read it
+for the full sequence, the diagnostics table, and the guardrails. In one line:
 
 ```
-        ┌─────────────────────────────────────────┐
-        │  1. WRITE / EDIT MODEL.camdl            │
-        └────────────────┬────────────────────────┘
-                         │
-                         ▼
-        ┌─────────────────────────────────────────┐
-        │  2. camdl check model.camdl             │   ← compile + dim-check
-        │     If errors: see ERROR TABLE below    │
-        └────────────────┬────────────────────────┘
-                         │ green
-                         ▼
-        ┌─────────────────────────────────────────┐
-        │  3. camdl simulate model.camdl          │   ← sanity check trajectory
-        │     --param ... --output traj.tsv       │
-        │     Look at traj.tsv — does it look     │
-        │     epidemiologically reasonable?       │
-        └────────────────┬────────────────────────┘
-                         │ ok
-                         ▼
-        ┌─────────────────────────────────────────┐
-        │  4. camdl survey model.camdl            │   ← likelihood landscape
-        │     --data cases.tsv --n-points 200     │
-        │     --render                            │
-        │     Identifies basins, ridges, bound    │
-        │     pinning BEFORE you commit to a fit  │
-        └────────────────┬────────────────────────┘
-                         │ basin visible
-                         ▼
-        ┌─────────────────────────────────────────┐
-        │  5. WRITE fit.toml                      │   ← see FIT.TOML SHAPE
-        │     Every estimated param NEEDS a       │
-        │     prior block (no implicit Flat!)     │
-        └────────────────┬────────────────────────┘
-                         │
-                         ▼
-        ┌─────────────────────────────────────────┐
-        │  6. camdl fit run fit.toml              │   ← all stages declared
-        │     --stage scout (one stage at a time  │
-        │     while iterating)                    │
-        └────────────────┬────────────────────────┘
-                         │
-                         ▼
-        ┌─────────────────────────────────────────┐
-        │  7. camdl fit summary <fit-dir>         │   ← R̂, ESS, MLE table
-        │     If diagnostics fire: see            │
-        │     DIAGNOSTICS TABLE below             │
-        └─────────────────────────────────────────┘
+check -> simulate (sanity) -> survey -> write fit.toml -> fit run
+      -> fit summary -> read diagnostics -> refine priors -> validate
 ```
 
-When iterating: `camdl list` to see prior fits, `camdl fit diff old new` to
-compare.
+Two reflexes it drills (and you should not import elsewhere): a failing
+convergence gate is *information*, not a thing to tune away; and `Â` (IF2
+chain-agreement) is not `R̂` (posterior mixing). The *why* behind the
+procedure — identifiability, what priors are for — is `camdl docs concepts`.
 
 ---
 
@@ -289,66 +246,14 @@ trace TSVs is for debugging the summary, not for routine inspection.
 
 ---
 
-## fit.toml shape (canonical)
+## fit.toml shape
 
-```toml
-[model]
-camdl = "model.camdl"
-
-[data.observations]
-weekly_cases = "data/cases.tsv"
-
-# Optional: holdout for out-of-sample validation
-[holdout]
-weekly_cases = "data/cases_holdout.tsv"
-
-# Every estimated param needs an explicit prior (PGAS refuses Flat)
-[estimate.beta]
-bounds = [0.001, 2.0]
-prior  = { log_normal = { mu = -1.0, sigma = 0.5 } }
-
-[estimate.gamma]
-bounds = [0.01, 1.0]
-prior  = { log_normal = { mu = -2.3, sigma = 0.3 } }
-
-[estimate.rho]
-bounds = [0.3, 0.6]
-prior  = { beta = { alpha = 5, beta = 5 } }
-
-# Fixed (not estimated) parameters
-[fixed]
-N0 = 1_000_000
-mu = 0.000027
-
-# Stages — declared by name, run in declaration order by default
-[stages.scout]
-algorithm   = "if2"
-backend     = "chain_binomial"
-chains      = 16
-particles   = 2000
-iterations  = 200
-init_method = "lhs"           # latin-hypercube; "survey_top_k" if you ran survey
-
-[stages.refine]
-algorithm   = "pgas"
-backend     = "chain_binomial"
-chains      = 4
-particles   = 2000
-sweeps      = 5000
-burn_in     = 500
-starts_from = "scout"
-
-[stages.validate]
-algorithm  = "pfilter"
-backend    = "chain_binomial"
-particles  = 4000
-replicates = 8
-starts_from = "refine"
-```
-
-`camdl fit methods` lists the supported `(algorithm, backend)` pairs.
-`camdl fit new --from base.toml variant.toml` derives a new fit.toml from an
-existing one (renames model file, keeps stage structure).
+The full, verified schema — `[model]`, `[data.observations]`, `[estimate]`
+(bounds, prior, transform), `[fixed]`, and user-named `[stages.<name>]` blocks
+with `algorithm = if2|pgas|pmmh|pfilter` — is `camdl docs fit-toml`. Two
+load-bearing rules: every estimated parameter needs an explicit prior for a
+Bayesian stage (in the model's `~` declaration or `[estimate].prior`; PGAS
+refuses *silent* flat), and fits run the `chain_binomial` backend.
 
 ---
 
@@ -384,59 +289,29 @@ with the source can reproduce the result bit-for-bit.
 
 ## Where the docs live
 
-### If you're working inside the camdl repo
+**Run `camdl docs`.** The guides are embedded in the binary — offline, and
+version-matched to the `camdl` you're running. No checkout, no network:
 
-| For                                          | Read                                                                          |
-| -------------------------------------------- | ----------------------------------------------------------------------------- |
-| DSL syntax reference                         | `docs/camdl-language-spec.md`                                                 |
-| IR schema (the OCaml↔Rust contract)          | `docs/camdl-data-spec.md`, `docs/compartmental-ir-spec.md`, `ir/schema.json`  |
-| Inference workflow (fit.toml fields, stages) | `docs/camdl-inference-spec.md`, `docs/inference.md`                           |
-| Batch / sweep system                         | `docs/camdl-run-spec.md`                                                      |
-| Simulation backends                          | `docs/runtimes.md`                                                            |
-| Feature catalogue with pomp comparison       | `docs/user-features.md`                                                       |
-| Tutorial                                     | `docs/intro.md`                                                               |
-| Debugging via `camdl eval`                   | `docs/debugging.md`                                                           |
-| Recent breaking changes (audit remediation)  | `docs/dev/reviews/2026-05-12-full-audit.md`, `docs/dev/proposals/2026-05-13-pre-alpha-audit-remediation.md` |
-| In-flight design proposals                   | `docs/dev/proposals/`                                                         |
+| For                                                 | Run                                              |
+| --------------------------------------------------- | ------------------------------------------------ |
+| Writing a model (the DSL by example)                | `camdl docs getting-started`, `camdl docs language` |
+| The fit workflow, in depth                          | `camdl docs workflow`                            |
+| The `fit.toml` schema                               | `camdl docs fit-toml`                            |
+| The reasoning (identifiability, priors, the stance) | `camdl docs concepts`                            |
+| Backends / data format / debugging                  | `camdl docs backends` / `data` / `debugging`     |
+| Full topic list / search                            | `camdl docs` / `camdl docs --search <term>`      |
 
-For deeper reading: `docs/methods/particle-methods.md`, `docs/methods/cooling.md`.
+For sustained work you can also pin the source (working `.camdl` for every
+language feature under `ocaml/golden/`):
 
-### If you're working in a downstream project that uses camdl
+```bash
+git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/vsbuffalo/camdl .camdl-source
+(cd .camdl-source && git sparse-checkout set docs ocaml/golden)
+```
 
-The docs aren't on the local filesystem by default. Three options, in order
-of preference:
-
-1. **Shallow-clone the docs into the project** (recommended for any
-   non-trivial camdl work — version-pinned, offline, fast):
-   ```bash
-   git clone --depth 1 --filter=blob:none --sparse \
-       https://github.com/vsbuffalo/camdl .camdl-source
-   cd .camdl-source && git sparse-checkout set docs ocaml/golden && cd ..
-   ```
-   This pins ~5 MB of `docs/` + `ocaml/golden/` (working examples for every
-   language feature) into `.camdl-source/`. Add `.camdl-source/` to
-   `.gitignore`. Re-run `git -C .camdl-source pull` to sync to upstream.
-   Reference `.camdl-source/docs/camdl-language-spec.md` etc. just as you
-   would inside the repo.
-
-2. **Fetch from the hosted docs** at
-   [vincebuffalo.com/camdl](https://vincebuffalo.com/camdl/docs/) via
-   `WebFetch` (or the agent's equivalent). Slower per query, online-only,
-   but no setup. Use for one-off lookups; switch to (1) for sustained work.
-
-3. **Read the binary's `--help` output.** `camdl --help`, `camdl fit run
-   --help`, `camdl fit methods`, etc. cover the CLI surface authoritatively
-   — the help text is part of CI. This catches the *what flags exist* and
-   *what stages are supported* questions, not the *what does the language
-   look like* questions.
-
-Working examples are often faster than reading the spec: `.camdl-source/
-ocaml/golden/sir_basic.camdl` is the canonical SIR; `seir_age.camdl` covers
-stratification; `polio_spatial_5.camdl` covers spatial coupling; the rest of
-the directory exercises every language feature at least once.
-
-A future `camdl docs <topic>` subcommand would emit relevant sections to
-stdout (proposed; not yet implemented). Until then, options 1–3 above.
+Inside the camdl repo itself, the same content is the source `docs/*.md`, with
+`docs/dev/` for design proposals and reviews.
 
 ---
 
