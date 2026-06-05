@@ -44,6 +44,32 @@ use std::sync::Arc;
 use crate::cas::typed::ContentHash;
 use crate::run_paths::output_root;
 
+/// Burn-in discarded from each per-cell PMMH chain on the profile path.
+/// Fixed (not user-tunable) here; the cell only reports its MAP sample,
+/// so the chain just needs to clear transient. Named so the early
+/// `pmmh_steps > burn_in` validation and the `PMMHConfig` site below
+/// share one source of truth and cannot drift.
+const PROFILE_PMMH_BURN_IN: usize = 100;
+
+/// gh#102 (H10): reject a per-cell PMMH chain length that the fixed
+/// burn-in would consume entirely. With `steps <= burn_in` every
+/// sample is discarded, leaving zero post-burn-in records — the cell
+/// silently yields empty diagnostics rather than a chain to summarise.
+/// Pure (no I/O, no exit) so it is unit-testable; `cmd_profile` maps
+/// the `Err` to a stderr message + `exit(1)`.
+fn validate_profile_pmmh_steps(steps: usize, burn_in: usize) -> Result<(), String> {
+    if steps <= burn_in {
+        return Err(format!(
+            "--pmmh-steps = {} must exceed the per-cell burn-in ({}). \
+             Profile PMMH discards the first {} samples of each cell's \
+             chain; with steps <= burn-in no post-burn-in samples survive \
+             and the cell yields empty diagnostics. Re-run with \
+             `--pmmh-steps {}` or more.",
+            steps, burn_in, burn_in, burn_in + 1));
+    }
+    Ok(())
+}
+
 /// Per-cell optimizer choice. `--algorithm if2 --backend chain_binomial`
 /// (the default) keeps the historical PF-based per-cell MLE; the new
 /// `--algorithm nl-* --backend ode` paths run NLopt deterministic MLE
@@ -111,6 +137,15 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
              `--backend chain_binomial`."
         );
         std::process::exit(1);
+    }
+    // gh#102 (H10): each per-cell PMMH chain discards a fixed burn-in.
+    // Reject steps <= burn_in early, before any setup (see
+    // validate_profile_pmmh_steps for the rationale).
+    if matches!(profile_algo, ProfileAlgo::Pmmh) {
+        if let Err(msg) = validate_profile_pmmh_steps(a.pmmh_steps, PROFILE_PMMH_BURN_IN) {
+            eprintln!("error: {}", msg);
+            std::process::exit(1);
+        }
     }
 
     let ir_path = a.model.to_string_lossy().into_owned();
@@ -1302,7 +1337,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     adapt: true,
                     adapt_start: 50,
                     thin: 1,
-                    burn_in: 100,
+                    burn_in: PROFILE_PMMH_BURN_IN,
                     rho: pmmh_rho_opt,
                     n_source_groups: compiled.source_groups.len(),
                 };
@@ -1837,6 +1872,40 @@ mod tests {
     fn focal_log_prior_offset_empty_is_zero() {
         let offset = compute_focal_log_prior_offset(&[], &[], &[]);
         assert_eq!(offset, 0.0);
+    }
+
+    // ── gh#102 (H10): profile-PMMH steps-vs-burn-in guard ─────────────
+
+    #[test]
+    fn profile_pmmh_steps_below_burn_in_rejected() {
+        // steps < burn_in: every sample is burned → empty diagnostics.
+        let err = validate_profile_pmmh_steps(50, PROFILE_PMMH_BURN_IN)
+            .expect_err("steps below burn-in must be rejected");
+        assert!(err.contains("50") && err.contains("100"),
+            "error must report the offending steps and the burn-in: {}", err);
+        assert!(err.contains("burn-in") && err.contains("--pmmh-steps"),
+            "error must name the cause and the flag to fix: {}", err);
+        // Suggested fix is burn_in + 1.
+        assert!(err.contains("101"),
+            "error must suggest a working steps value (burn_in + 1): {}", err);
+    }
+
+    #[test]
+    fn profile_pmmh_steps_equal_burn_in_rejected() {
+        // Boundary: steps == burn_in is still degenerate (0 post-burn-in).
+        assert!(validate_profile_pmmh_steps(PROFILE_PMMH_BURN_IN, PROFILE_PMMH_BURN_IN)
+            .is_err(),
+            "steps == burn-in leaves zero post-burn-in samples — must reject");
+    }
+
+    #[test]
+    fn profile_pmmh_steps_above_burn_in_ok() {
+        // Control: steps > burn_in leaves a non-empty post-burn-in chain.
+        assert!(validate_profile_pmmh_steps(PROFILE_PMMH_BURN_IN + 1, PROFILE_PMMH_BURN_IN)
+            .is_ok(),
+            "steps just above burn-in must pass");
+        assert!(validate_profile_pmmh_steps(5000, PROFILE_PMMH_BURN_IN).is_ok(),
+            "a realistic chain length must pass");
     }
 
 

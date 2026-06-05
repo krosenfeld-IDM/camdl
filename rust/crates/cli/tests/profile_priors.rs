@@ -233,7 +233,9 @@ fn run_profile(
         "--obs".into(), "cases".into(),
         "--sweep".into(), "beta=lin(0.2,0.4,2)".into(),
         "--algorithm".into(), "pmmh".into(),
-        "--pmmh-steps".into(), "20".into(),
+        // Must exceed the fixed per-cell burn-in (100); 120 leaves 20
+        // post-burn-in samples — still a fast smoke run (gh#102).
+        "--pmmh-steps".into(), "120".into(),
         "--pmmh-particles".into(), "30".into(),
         "--pmmh-rho".into(), "0.99".into(),
         "--particles".into(), "30".into(),

@@ -83,7 +83,9 @@ fn profile_pmmh_smoke_writes_mle_and_algorithm_block() {
             "--sweep", "beta=lin(0.25,0.35,2)",
             "--particles", "100",
             "--algorithm", "pmmh",
-            "--pmmh-steps", "100",
+            // Must exceed the fixed per-cell burn-in (100); 150 leaves 50
+            // post-burn-in samples — still a fast smoke run (gh#102).
+            "--pmmh-steps", "150",
             "--pmmh-particles", "100",
             "--pmmh-rho", "0.99",
             "--starts", "1",
@@ -141,7 +143,7 @@ fn profile_pmmh_smoke_writes_mle_and_algorithm_block() {
         assert_eq!(inputs.get("method").and_then(|v| v.as_str()), Some("pmmh"),
             "method should be pmmh, got: {:?}", inputs.get("method"));
         let alg = inputs.get("algorithm").expect("algorithm block");
-        assert_eq!(alg.get("steps").and_then(|v| v.as_u64()), Some(100),
+        assert_eq!(alg.get("steps").and_then(|v| v.as_u64()), Some(150),
             "algorithm.steps mismatch: {:?}", alg);
         assert_eq!(alg.get("particles").and_then(|v| v.as_u64()), Some(100),
             "algorithm.particles mismatch: {:?}", alg);
