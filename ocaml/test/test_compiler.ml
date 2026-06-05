@@ -1746,6 +1746,55 @@ let test_scenario_enable_known_intervention_compiles () =
     }
   |}) in ()
 
+(* gh#130: an indexed intervention `sia[reg in region]` expands to
+   per-instance names (`sia_north`, `sia_south`). A scenario may enable
+   a single expanded instance — the runtime filter
+   (`resolve_enable_list`, rust/crates/cli/src/util.rs) accepts an exact
+   instance name, so the E267 validator must too. Before the fix it knew
+   only the family name `sia` and false-positived on `sia_north`. *)
+let indexed_intervention_boilerplate = {|
+    time_unit = 'days
+    dimensions { region = [north, south] }
+    compartments { S, V }
+    stratify(by = region)
+    parameters { x : rate  cov : probability }
+    transitions {}
+    init { S[reg in region] = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+    interventions {
+      sia[reg in region] : transfer(fraction = cov, from = S[reg], to = V[reg]) at [1]
+    }
+  |}
+
+let test_scenario_enable_expanded_instance_compiles () =
+  let _m = compile_expect_ok
+    (indexed_intervention_boilerplate ^ {|
+    scenarios {
+      targeted_north { enable = [sia_north] }
+    }
+  |}) in ()
+
+let test_scenario_disable_expanded_instance_compiles () =
+  let _m = compile_expect_ok
+    (indexed_intervention_boilerplate ^ {|
+    scenarios {
+      baseline {}
+      drop_south { extends = baseline   disable = [sia_south] }
+    }
+  |}) in ()
+
+(* Negative control: the union accepts only *real* expanded instances —
+   a typo on an instance name (`sia_east`, no such region) still E267s,
+   so the gh#130 fix did not silently widen the validator to accept any
+   `sia_*`. *)
+let test_scenario_enable_bogus_instance_still_e267 () =
+  compile_expect_error_code ~code:"E267" ~contains:"sia_east"
+    (indexed_intervention_boilerplate ^ {|
+    scenarios {
+      typo { enable = [sia_east] }
+    }
+  |})
+
 let test_extends_w310_on_enable_dedup () =
   (* Compile should succeed but emit a W310 warning naming the parent
      and showing the resolved enable list. *)
@@ -5682,6 +5731,7 @@ let () =
       Alcotest.test_case "malaria_two_species"     `Quick (test_golden "malaria_two_species");
       Alcotest.test_case "seir_age_table_rates"    `Quick (test_golden "seir_age_table_rates");
       Alcotest.test_case "sia_anchored_dates"      `Quick (test_golden "sia_anchored_dates");
+      Alcotest.test_case "sia_instance_enable"     `Quick (test_golden "sia_instance_enable");
     ];
     "table_lookup_flattening", [
       Alcotest.test_case "single index per lookup" `Quick test_table_lookup_single_index;
@@ -5796,6 +5846,9 @@ let () =
       Alcotest.test_case "E268 scenario scale typo"    `Quick test_scenario_scale_unknown_param_is_e268;
       Alcotest.test_case "E269 scenario compose typo"  `Quick test_scenario_compose_unknown_scenario_is_e269;
       Alcotest.test_case "scenario enable known name"  `Quick test_scenario_enable_known_intervention_compiles;
+      Alcotest.test_case "gh#130 enable expanded instance"  `Quick test_scenario_enable_expanded_instance_compiles;
+      Alcotest.test_case "gh#130 disable expanded instance" `Quick test_scenario_disable_expanded_instance_compiles;
+      Alcotest.test_case "gh#130 bogus instance still E267"  `Quick test_scenario_enable_bogus_instance_still_e267;
       Alcotest.test_case "W310 fires on append-dedup collision"      `Quick test_extends_w310_on_enable_dedup;
     ];
     "l401_lint", [

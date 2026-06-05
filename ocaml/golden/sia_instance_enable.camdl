@@ -1,0 +1,74 @@
+# gh#130: a scenario may enable/disable a single FULLY-EXPANDED
+# intervention-instance name (e.g. `sia_north`), not only the family
+# name (`sia`). The runtime filter (rust/crates/cli/src/util.rs,
+# `resolve_enable_list`) accepts an exact instance name via its
+# exact-match arm, so the E267 expander validator must accept it too —
+# previously it only knew family names and false-positived on
+# `sia_north`.
+#
+# `sia[reg in region]` expands to `sia_north` and `sia_south`. The
+# `targeted_north` scenario enables exactly one instance.
+time_unit = 'days
+
+dimensions {
+  region = [north, south]
+}
+
+compartments { S, I, R, V }
+
+stratify(by = region)
+
+parameters {
+  beta     : rate        in [0.001, 2.0]
+  gamma    : rate        in [0.01,  1.0]
+  vacc_cov : probability in [0.0, 1.0]
+  I0       : count       in [1, 1000]
+  N0       : count       in [1000, 1000000]
+}
+
+let N[reg in region] = S[reg] + I[reg] + R[reg] + V[reg]
+
+transitions {
+  infection[reg in region] : S[reg] --> I[reg] @ beta * S[reg] * I[reg] / N[reg]
+  recovery[reg in region]  : I[reg] --> R[reg] @ gamma * I[reg]
+}
+
+interventions {
+  # Expands to sia_north and sia_south.
+  sia[reg in region]
+    : transfer(fraction = vacc_cov, from = S[reg], to = V[reg]) at [120]
+}
+
+init {
+  S[reg in region] = N0 - I0
+  I[reg in region] = I0
+}
+
+simulate {
+  from = 0 'days
+  to   = 365 'days
+}
+
+scenarios {
+  baseline {
+    label = "no campaigns"
+    set = {
+      beta     = 0.11
+      gamma    = 0.1
+      vacc_cov = 0.0
+      I0       = 10
+      N0       = 10000
+    }
+  }
+  targeted_north {
+    label  = "SIA in north patch only"
+    enable = [sia_north]
+    set = {
+      beta     = 0.11
+      gamma    = 0.1
+      vacc_cov = 0.5
+      I0       = 10
+      N0       = 10000
+    }
+  }
+}

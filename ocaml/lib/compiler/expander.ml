@@ -4743,9 +4743,31 @@ let expand_scenarios ctx : Ir.preset list =
      run time. Build the validation sets once and check every scenario
      before the IR build below. *)
   let intervention_names : (string, unit) Hashtbl.t =
+    (* Accept both the family name ("sia") and every fully-expanded
+       per-instance name ("sia_kano", "sia_lagos"). The runtime filter
+       `resolve_enable_list` (rust/crates/cli/src/util.rs) accepts both an
+       exact instance name and a family base_name, so a scenario that
+       enables/disables a single expanded instance is legal — gh#130. The
+       instance names mirror `expand_scheduled_actions` exactly: same
+       cartesian product, same guard, same `ivname ^ "_" ^ parts`. *)
     let t = Hashtbl.create (List.length ctx.interv_decls) in
     List.iter (fun (iv : intervention_decl) ->
-      Hashtbl.replace t iv.ivname ()
+      Hashtbl.replace t iv.ivname ();
+      let combos = cartesian_product iv.ivindices ctx in
+      List.iter (fun env ->
+        let pass_guard = match iv.ivguard with
+          | None   -> true
+          | Some g -> eval_guard env g
+        in
+        if pass_guard then begin
+          let parts = name_parts_from_bindings iv.ivindices env in
+          let iv_name =
+            if parts = [] then iv.ivname
+            else iv.ivname ^ "_" ^ String.concat "_" parts
+          in
+          Hashtbl.replace t iv_name ()
+        end
+      ) combos
     ) ctx.interv_decls;
     t
   in
