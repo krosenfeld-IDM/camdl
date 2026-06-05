@@ -100,7 +100,11 @@ dev-camdlc: build-ocaml
 
 test: test-ocaml test-rust test-integration
 
-test-ocaml:
+# build-ocaml regenerates the gitignored ir_version_generated.ml from
+# ir/VERSION; without this dep, `dune runtest` runs against a stale version
+# constant after an ir/VERSION bump (emits the old version, mismatches the
+# regenerated goldens) — the OCaml-side instance of the gh#178 staleness.
+test-ocaml: build-ocaml
 	cd ocaml && dune runtest
 
 # Resolve the freshly-built camdlc by putting it FIRST on PATH (not via the
@@ -114,7 +118,12 @@ test-ocaml:
 # it would only false-red on a cargo-cached stale camdl binary — which, having
 # unchanged Rust, is schema-compatible by construction. See docs/dev/testing.md.
 CAMDLC_BIN := $(abspath rust/target/_camdlc_bin)
-test-rust: build-ocaml
+# build-rust is required: `cargo test` builds debug artifacts, but tests that
+# spawn the binary (e.g. cli/tests/simulate_dt_knob.rs) use the *release*
+# rust/target/release/camdl. Without this dep `make test` runs them against a
+# stale release binary (false red/green — gh#178). build-rust is shared with
+# test-integration's `build`, so make runs it once.
+test-rust: build-ocaml build-rust
 	@mkdir -p $(CAMDLC_BIN)
 	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
 	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 cargo test --workspace
