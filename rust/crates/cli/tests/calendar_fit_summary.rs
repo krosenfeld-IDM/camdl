@@ -19,10 +19,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    p.exists().then_some(p)
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn dated_model_ir() -> PathBuf {
@@ -178,7 +184,7 @@ fn exec_summary(camdl: &Path, fit_dir: &Path, format: &str) -> String {
 /// non-instant `beta` is NOT date-annotated.
 #[test]
 fn instant_estimand_renders_as_calendar_date() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let ir = dated_model_ir();
     if !ir.exists() {
         return; // committed fixture absent (shouldn't happen in-tree)

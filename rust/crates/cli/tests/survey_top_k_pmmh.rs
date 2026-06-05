@@ -22,10 +22,16 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -288,7 +294,7 @@ fn cas_stage_leaf(fits_root: &Path, stage_substr: &str) -> PathBuf {
 
 #[test]
 fn pmmh_survey_top_k_writes_chain_starts_with_survey_ranks() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("pmmh");
     let (ir, data) = write_fixture(tmp.path());

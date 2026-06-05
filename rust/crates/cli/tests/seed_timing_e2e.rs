@@ -23,10 +23,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    p.exists().then_some(p)
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn model_ir() -> PathBuf {
@@ -112,10 +118,7 @@ fn simulate_summary(camdl: &Path, backend: &str, tau: f64, out: &Path) -> (i64, 
 /// 1. Dynamics respond to `tau`, and Gillespie matches chain-binomial.
 #[test]
 fn seed_pulse_shifts_onset_and_backends_agree() {
-    let Some(camdl) = camdl_bin() else {
-        eprintln!("skipping: release camdl binary not built");
-        return;
-    };
+    let camdl = camdl_bin();
     let tmp = tempdir("dyn");
 
     for backend in ["gillespie", "chain_binomial"] {
@@ -148,7 +151,7 @@ fn seed_pulse_shifts_onset_and_backends_agree() {
 /// 2. The seed inflow is Import-rooted in the line list (§8 contract).
 #[test]
 fn seed_inflow_is_import_rooted() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("import");
     let ir = model_ir();
     let ev = tmp.join("ev.tsv");
@@ -215,7 +218,7 @@ fn pfilter_loglik(camdl: &Path, data: &Path, tau: f64, particles: &str, seed: &s
 ///    seed time — `tau` is identifiable when the seed size is fixed (E1).
 #[test]
 fn likelihood_profile_identifies_seed_time() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("ident");
     let ir = model_ir();
 

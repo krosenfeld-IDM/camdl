@@ -18,10 +18,15 @@ use std::process::Command;
 
 /// The release binary; skip (pass vacuously) when it isn't built — the gate
 /// runner builds `--release` first, so a skip in plain `cargo test` is fine.
-fn bin() -> Option<PathBuf> {
+fn bin() -> PathBuf {
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/release/camdl");
-    p.exists().then_some(p)
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn model_ir() -> PathBuf {
@@ -183,7 +188,7 @@ fn read_scout_mle(out: &Path) -> String {
 /// hit (its `run_id` is unchanged) and only the posterior re-keys.
 #[test]
 fn chained_stage_reuse_only_rekeys_posterior() {
-    let Some(bin) = bin() else { return };
+    let bin = bin();
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("out");
     let data = write_data(tmp.path());
@@ -241,7 +246,7 @@ fn chained_stage_reuse_only_rekeys_posterior() {
 /// (CAS fits run watchdog-None; the engine is parallel-invariant).
 #[test]
 fn fit_theta_hat_identical_across_parallelism() {
-    let Some(bin) = bin() else { return };
+    let bin = bin();
     let tmp = tempfile::tempdir().unwrap();
     let data = write_data(tmp.path());
 
@@ -274,7 +279,7 @@ fn fit_theta_hat_identical_across_parallelism() {
 /// knob. (Property 2 covers the env path; this covers the flag path.)
 #[test]
 fn fit_theta_hat_identical_across_parallel_flag() {
-    let Some(bin) = bin() else { return };
+    let bin = bin();
     let tmp = tempfile::tempdir().unwrap();
     let data = write_data(tmp.path());
 
@@ -310,7 +315,7 @@ fn fit_theta_hat_identical_across_parallel_flag() {
 /// the announced path was empty / nonexistent. This pins them to one basis.
 #[test]
 fn fit_run_announces_the_real_leaf_directory() {
-    let Some(bin) = bin() else { return };
+    let bin = bin();
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("out");
     let data = write_data(tmp.path());

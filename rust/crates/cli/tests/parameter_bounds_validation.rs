@@ -27,13 +27,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// Write a small SIR-ish model with bounds on `beta` and `gamma`,
@@ -101,7 +102,7 @@ fn run_simulate(
 
 #[test]
 fn param_above_upper_bound_errors() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -125,7 +126,7 @@ fn param_above_upper_bound_errors() {
 
 #[test]
 fn param_below_lower_bound_errors() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -144,7 +145,7 @@ fn param_below_lower_bound_errors() {
 
 #[test]
 fn param_on_lower_bound_is_accepted() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -160,7 +161,7 @@ fn param_on_lower_bound_is_accepted() {
 
 #[test]
 fn param_on_upper_bound_is_accepted() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -178,7 +179,7 @@ fn param_on_upper_bound_is_accepted() {
 
 #[test]
 fn param_nan_errors() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -208,7 +209,7 @@ fn param_nan_errors() {
 
 #[test]
 fn param_positive_infinity_errors() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -227,7 +228,7 @@ fn param_positive_infinity_errors() {
 
 #[test]
 fn unbounded_param_with_finite_value_is_accepted() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -250,7 +251,7 @@ fn unbounded_param_with_finite_value_is_accepted() {
 
 #[test]
 fn params_file_with_oob_value_errors() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("bad.toml");
@@ -274,7 +275,7 @@ fn params_file_with_oob_value_errors() {
 
 #[test]
 fn scenario_scale_taking_value_out_of_bounds_errors() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");
@@ -299,7 +300,7 @@ fn scenario_scale_taking_value_out_of_bounds_errors() {
 
 #[test]
 fn multiple_oob_params_reported_in_one_error() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     let params = tmp.path().join("p.toml");

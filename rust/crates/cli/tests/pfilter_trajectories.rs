@@ -14,13 +14,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing() -> Option<PathBuf> {
+fn skip_if_missing() -> PathBuf {
     let b = binary();
-    if !b.exists() {
-        eprintln!("skipping: binary not built at {}", b.display());
-        return None;
-    }
-    Some(b)
+    assert!(
+        b.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        b.display()
+    );
+    b
 }
 
 /// A pure-death model with a Poisson observation on N. Small fixture
@@ -41,7 +42,7 @@ fn write_fixture(tmp: &Path) -> (PathBuf, PathBuf) {
 
 #[test]
 fn save_paths_writes_n_times_t_rows() {
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let (data, params) = write_fixture(tmp.path());
     let paths = tmp.path().join("paths.tsv");
@@ -77,7 +78,7 @@ fn save_paths_writes_n_times_t_rows() {
 
 #[test]
 fn save_filtering_writes_n_times_t_particles() {
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let (data, params) = write_fixture(tmp.path());
     let filter = tmp.path().join("filter.tsv");
@@ -106,7 +107,7 @@ fn save_filtering_emits_mandatory_info_log() {
     // The info log explaining "this is not a smoothing path" fires
     // unconditionally. Load-bearing because the alternative — users
     // treating filtering marginals as sample paths — is silent.
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let (data, params) = write_fixture(tmp.path());
     let filter = tmp.path().join("f.tsv");
@@ -131,7 +132,7 @@ fn save_paths_does_not_emit_filtering_caveat() {
     // Sanity-check the inverse: --save-paths without --save-filtering
     // should NOT print the filtering-marginals info log (it's a
     // --save-filtering-specific warning).
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let (data, params) = write_fixture(tmp.path());
     let paths = tmp.path().join("p.tsv");
@@ -153,7 +154,7 @@ fn save_paths_does_not_emit_filtering_caveat() {
 fn save_paths_values_are_monotone_nonincreasing_for_pure_death() {
     // Scientific sanity: in a pure-death model, N can only decrease.
     // Every sampled path should have N[t+1] ≤ N[t].
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let (data, params) = write_fixture(tmp.path());
     let paths = tmp.path().join("paths.tsv");

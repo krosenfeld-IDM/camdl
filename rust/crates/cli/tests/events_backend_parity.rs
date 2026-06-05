@@ -17,10 +17,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    p.exists().then_some(p)
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn tempdir() -> PathBuf {
@@ -88,10 +94,7 @@ fn run_simulate(camdl: &Path, model: &Path, backend: &str, traj: &Path) {
 /// digits (slow dynamics) across the entire run.
 #[test]
 fn events_fire_under_every_backend() {
-    let Some(camdl) = camdl_bin() else {
-        eprintln!("skipping: release camdl binary not built");
-        return;
-    };
+    let camdl = camdl_bin();
     let tmp = tempdir();
     let model = tmp.join("model.camdl");
     std::fs::write(&model, MODEL_SRC).unwrap();

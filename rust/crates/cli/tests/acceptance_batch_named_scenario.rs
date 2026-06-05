@@ -23,13 +23,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// Pure-death model whose parameter `mu` has **no default and no
@@ -107,7 +108,7 @@ fn data_rows(tsv: &str) -> Vec<String> {
 ///   `Validation("parameter 'mu' has no value; supply it via --params ...")`
 #[test]
 fn batch_resolves_named_scenario_as_sole_param_source() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("pd.camdl");
     let output = tmp.path().join("output");
@@ -150,7 +151,7 @@ name = "baseline"
 /// acceptance criterion #1.
 #[test]
 fn batch_named_scenario_matches_simulate_trajectory() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("pd.camdl");
     write_scenario_only_param_model(&model);

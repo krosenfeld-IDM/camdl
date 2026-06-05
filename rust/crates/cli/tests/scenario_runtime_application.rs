@@ -21,13 +21,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// Write a pure-death SIR-ish camdl with named scenarios that set or
@@ -98,7 +99,7 @@ fn simulate_terminal_s(
 
 #[test]
 fn scenario_set_replaces_mu_value() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("pd.camdl");
     let params = tmp.path().join("p.toml");
@@ -132,7 +133,7 @@ fn scenario_set_replaces_mu_value() {
 
 #[test]
 fn scenario_scale_multiplies_mu_value() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("pd.camdl");
     let params = tmp.path().join("p.toml");

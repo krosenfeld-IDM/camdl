@@ -22,13 +22,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 fn seir_observations_ir() -> PathBuf {
@@ -63,7 +64,7 @@ fn synth_weekly_cases_tsv(bin: &Path, tmp: &Path) -> PathBuf {
 
 #[test]
 fn profile_pmmh_smoke_writes_mle_and_algorithm_block() {
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let data_path = synth_weekly_cases_tsv(&bin, tmp.path());
 
@@ -156,7 +157,7 @@ fn profile_pmmh_smoke_writes_mle_and_algorithm_block() {
 
 #[test]
 fn profile_pmmh_rejects_ode_backend() {
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let data_path = synth_weekly_cases_tsv(&bin, tmp.path());
 

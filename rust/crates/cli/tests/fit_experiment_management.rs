@@ -29,14 +29,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -314,7 +316,7 @@ fn cas_stage_leaf(fit_dir: &Path, stage_substr: &str) -> Option<PathBuf> {
 /// real fit dir.
 #[test]
 fn fit_summary_walks_real_fit_run_v2_output() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
 
     let tmp = tempdir("xpt_a");
@@ -387,7 +389,7 @@ fn fit_summary_walks_real_fit_run_v2_output() {
             hash-bearing CAS paths; needs the spec-doc rewrite + a \
             shape/template verification redesign — M4 (gh#159)"]
 fn spec_layout_diagrams_match_fit_run_v2_output() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
 
     let tmp = tempdir("xpt_b");
@@ -487,7 +489,7 @@ fn spec_layout_diagrams_match_fit_run_v2_output() {
 /// will go flaky — that flakiness is the alarm.
 #[test]
 fn summary_table_row_equals_table_first_row() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
 
     let tmp = tempdir("xpt_c");
@@ -753,7 +755,7 @@ mod parser_tests {
 ///   4. fit table reflects the new label after the rewrite
 #[test]
 fn fit_label_workflow_persists_and_surfaces_in_table() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
 
     let tmp = tempdir("xpt_label");
@@ -825,7 +827,7 @@ fn fit_label_workflow_persists_and_surfaces_in_table() {
 /// Empty / whitespace-only `--label "<text>"` is rejected at the CLI.
 #[test]
 fn fit_label_rejects_empty_label_at_cli() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
     let tmp = tempdir("xpt_label_empty");
     let (ir, data) = build_fixture(&camdlc, tmp.path());
@@ -875,7 +877,7 @@ fn fit_label_rejects_empty_label_at_cli() {
 /// would have failed with "cannot read model at '../models/sir.ir.json'".
 #[test]
 fn fit_run_resolves_toml_relative_paths_from_any_cwd() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
 
     let tmp = tempdir("xpt_relpath");

@@ -24,13 +24,14 @@ fn golden_sir_basic() -> PathBuf {
     Path::new(&manifest).join("../../../ocaml/golden/sir_basic.ir.json")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 // ── New-format (runid::RunRecord) helpers ──────────────────────────────────
@@ -56,7 +57,7 @@ fn level_hash<'a>(meta: &'a serde_json::Value, name: &str) -> &'a str {
 
 #[test]
 fn cas_first_run_writes_cache_and_metadata() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -103,7 +104,7 @@ fn cas_second_identical_run_does_not_rewrite_leaf() {
     // idempotent: `commit_atomic` resolves the existing identical leaf to
     // `AlreadyCompleted` and never re-writes its `traj.tsv`. The proof is the
     // unchanged mtime.
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -141,7 +142,7 @@ fn cas_second_identical_run_does_not_rewrite_leaf() {
 
 #[test]
 fn cas_different_seed_new_cache_entry() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -183,7 +184,7 @@ fn cas_different_seed_new_cache_entry() {
 /// parameter value, so `base_params_canonical` is identical between them.
 #[test]
 fn cas_different_models_do_not_collide() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -264,7 +265,7 @@ fn cas_multi_seeds_writes_one_leaf_per_seed() {
     // multi-run writes one content-addressed leaf per cell — exactly like
     // `batch run`. `--seeds 1:3` is three seed-slots → three leaves with
     // three distinct seed-level segments.
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -305,7 +306,7 @@ fn cas_multi_seeds_writes_one_leaf_per_seed() {
 /// `Point` param-source (regression: it previously collapsed to one run).
 #[test]
 fn cas_replicates_write_one_leaf_each_and_single_run_writes_one() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
 
     // 3 replicates → 3 leaves, 3 distinct run_ids.
@@ -348,7 +349,7 @@ fn cas_replicates_write_one_leaf_each_and_single_run_writes_one() {
 /// cache lookup, or vice versa).
 #[test]
 fn simulate_and_batch_leaves_are_byte_identical() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
 
     let params = tmp.path().join("params.toml");
@@ -416,7 +417,7 @@ name = "baseline"
 
 #[test]
 fn list_shows_cached_runs() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -451,7 +452,7 @@ fn list_shows_cached_runs() {
 /// new spelling).
 #[test]
 fn starts_from_resolves_short_hash() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let results = tmp.path().join("results");
     // Fake a stage dir with a known-hash run.json. The resolver
@@ -564,7 +565,7 @@ init_mle = "{{use CLI}}"
 /// should hide fit rows. Covers docs/dev/notes/2026-04-20-unified-output-tree-cleanup.md:L2.
 #[test]
 fn list_kind_filter_isolates_sections() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -600,7 +601,7 @@ fn list_kind_filter_isolates_sections() {
 /// — that keeps the test fast and orthogonal to fit-runner behaviour.
 #[test]
 fn list_shows_fit_entries() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
     // gh#147 (M3.2): a CAS fit segment with two stage leaves + the fit-level
@@ -631,7 +632,7 @@ fn list_shows_fit_entries() {
 /// are replaced with the correct trajectory.
 #[test]
 fn cas_tampered_leaf_is_repaired_on_rerun() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -668,7 +669,7 @@ fn cas_tampered_leaf_is_repaired_on_rerun() {
 
 #[test]
 fn show_resolves_fit_by_hash_prefix() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
     // gh#147 (M3.2): a CAS fit is addressed by its stage-leaf `run_id` prefix;
@@ -689,7 +690,7 @@ fn show_resolves_fit_by_hash_prefix() {
 
 #[test]
 fn cat_emits_cached_trajectory() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -737,7 +738,7 @@ fn batch_sweep_records_sweep_point_in_run_json() {
     // asserts the sweep point is recoverable from the live tree (the `params`
     // level label + `camdl list`). manifest.json was retired (gh#147 item D);
     // the per-leaf run.json + derived index.json are the only index.
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -813,7 +814,7 @@ beta = [0.2, 0.3, 0.4]
 fn simulate_batch_dry_run_prints_grid_no_output() {
     // --dry-run on `batch run` must print the resolved sweep grid
     // on stderr, exit 0, and touch zero files under output/runs/.
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
     let params_path = tmp.path().join("params.toml");
@@ -865,7 +866,7 @@ fn simulate_batch_flag_rejected_cleanly() {
     // first positional as the batch TOML path. With the flag removed,
     // the single-run parser errors cleanly on the unknown flag rather
     // than panicking or silently doing the wrong thing.
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let batch_path = tmp.path().join("foo.toml");
     std::fs::write(&batch_path, "").unwrap();
@@ -883,7 +884,7 @@ fn simulate_batch_flag_rejected_cleanly() {
 
 #[test]
 fn show_prints_metadata() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -994,7 +995,7 @@ fn write_cas_fit(output: &Path, label: &str, fit_h8: &str, stages: &[&str], mode
 /// CAS fit-stage `RunRecord` — factored levels + the recorded FitStageMeta.
 #[test]
 fn show_renders_fit_stage_metadata() {
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
     let run_id = "5ca1ab1e00000000000000000000000000000000000000000000000000000000";
@@ -1030,7 +1031,7 @@ fn show_renders_fit_stage_metadata() {
 /// profile-running harness lives.
 #[test]
 fn label_works_on_sim_runs() {
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -1070,7 +1071,7 @@ fn label_works_on_sim_runs() {
 /// (gh#147 M4: the derived index.)
 #[test]
 fn reindex_builds_index_and_show_still_resolves() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -1114,7 +1115,7 @@ fn reindex_builds_index_and_show_still_resolves() {
 /// index lacks it.
 #[test]
 fn out_of_band_leaf_is_found_via_walk_fallback() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -1163,7 +1164,7 @@ fn out_of_band_leaf_is_found_via_walk_fallback() {
 /// clean "no match" instead of pointing at the missing leaf.
 #[test]
 fn removed_leaf_does_not_resolve_to_dead_path() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("output");
 
@@ -1215,7 +1216,7 @@ fn sole_ensemble_leaf(out: &Path) -> PathBuf {
 /// cell set (and its count) is in the key (the n_trajectories collision class).
 #[test]
 fn ensemble_cell_count_is_in_the_run_id() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
 
     let out3 = tmp.path().join("out3");
@@ -1253,7 +1254,7 @@ fn ensemble_cell_count_is_in_the_run_id() {
 /// byte-identical to the `-o` mirror; `list --kind ensemble` surfaces it.
 #[test]
 fn ensemble_round_trip_deps_cat_and_list() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("out");
     let mirror = tmp.path().join("combined.tsv");
@@ -1341,7 +1342,7 @@ fn ensemble_round_trip_deps_cat_and_list() {
 /// thing).
 #[test]
 fn single_run_writes_no_ensemble() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("out");
     let st = Command::new(&bin)
@@ -1361,7 +1362,7 @@ fn single_run_writes_no_ensemble() {
 /// still works, and the leaf/ensemble exist either way.
 #[test]
 fn simulate_writes_nothing_to_stdout_without_output_flag() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
 
     // Single-run, no -o: empty stdout, one Sim leaf, no ensemble.
@@ -1478,7 +1479,7 @@ simulate { from = 0 'days  to = 60 'days }
 /// trajectory).
 #[test]
 fn event_log_lands_in_sim_leaf_alongside_traj() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let Some(ir) = compile_lineage_model(&bin, tmp.path()) else { return; };
     let ir_s = ir.to_string_lossy().into_owned();
@@ -1532,7 +1533,7 @@ fn event_log_lands_in_sim_leaf_alongside_traj() {
 /// rerun.) Conversely, a label-less rerun must NOT wipe an existing label.
 #[test]
 fn simulate_label_applies_on_cached_leaf() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("store");
     let gold = golden_sir_basic();
@@ -1568,7 +1569,7 @@ fn simulate_label_applies_on_cached_leaf() {
 /// positional ROOT (consistency with `cat`/`show`).
 #[test]
 fn list_collapses_ensemble_members_and_accepts_root_flag() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store");
     let store_s = store.to_string_lossy().into_owned();
@@ -1609,7 +1610,7 @@ fn list_collapses_ensemble_members_and_accepts_root_flag() {
 /// plus the `camdl cat <run_id>` that reads the run back.
 #[test]
 fn stored_banner_includes_output_dir_prefix_and_cat_hint() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store");
     let out = Command::new(&bin)
@@ -1629,7 +1630,7 @@ fn stored_banner_includes_output_dir_prefix_and_cat_hint() {
 /// and NO banner — the escape hatch for piping.
 #[test]
 fn stdout_streams_trajectory_and_skips_the_store() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store");
     let out = Command::new(&bin)
@@ -1657,7 +1658,7 @@ fn stdout_streams_trajectory_and_skips_the_store() {
 /// must never perturb the RNG / draw order (the engine's determinism contract).
 #[test]
 fn progress_mode_does_not_change_trajectories() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let run = |mode: &str, tag: &str| -> Vec<u8> {
         let o = tmp.path().join(format!("traj_{tag}.tsv"));

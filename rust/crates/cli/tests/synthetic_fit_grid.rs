@@ -9,10 +9,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_sim() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_sim() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc() -> Option<PathBuf> {
@@ -220,7 +226,7 @@ fn datagen_segment(out: &Path) -> PathBuf {
 // ── mode 1: a single fit lands at its CAS stage leaf ───────────────────
 #[test]
 fn single_fit_lands_at_cas_stage_leaf() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("single");
     let (ir, _) = write_fixture(tmp.path());
@@ -256,7 +262,7 @@ cases = "{}"
 // ── mode 2: fit_seeds list → one CAS stage leaf per seed ───────────────
 #[test]
 fn fit_seeds_list_produces_per_seed_dirs() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("list");
     let (ir, _) = write_fixture(tmp.path());
@@ -307,7 +313,7 @@ cases = "{}"
 /// survives, so a correct runner completes the fit.
 #[test]
 fn fit_run_skips_degenerate_if2_chain_and_continues() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("degenskip");
     let (ir, _) = write_fixture(tmp.path());
@@ -372,7 +378,7 @@ cooling = 0.7
 // ── mode 3: synthetic generation — N datasets → N content-addressed cells ──
 #[test]
 fn synthetic_generates_n_datasets_and_fits() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("syn");
     let (ir, truth) = write_fixture(tmp.path());
@@ -415,7 +421,7 @@ sim_seeds = [1, 2, 3]
 // ── mode 4: synthetic × fit_seeds full matrix ─────────────────────────
 #[test]
 fn synthetic_and_fit_seeds_full_matrix() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("matrix");
     let (ir, truth) = write_fixture(tmp.path());
@@ -458,7 +464,7 @@ sim_seeds = [10, 20]
 //    same base_params at iter 0. ─────────────────────────────────────
 #[test]
 fn v2_if2_chains_diverge_at_iter_0_when_no_starts_from() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("chain_starts");
     let (ir, truth) = write_fixture(tmp.path());
@@ -551,7 +557,7 @@ cooling    = 0.9
 //    parameter-recovery bias discrepancy. ──────────────────────────────────
 #[test]
 fn obs_only_and_synthetic_agree_byte_for_byte_at_same_seed() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("seed_parity");
     let (ir, truth) = write_fixture(tmp.path());
@@ -598,7 +604,7 @@ sim_seeds = [10]
 // ── mode 5: [data] + [synthetic] errors cleanly ───────────────────────
 #[test]
 fn data_and_synthetic_errors_cleanly() {
-    let Some(bin) = camdl_sim() else { return; };
+    let bin = camdl_sim();
     if camdlc().is_none() { return; }
     let tmp = tempdir("mutex");
     let (ir, truth) = write_fixture(tmp.path());

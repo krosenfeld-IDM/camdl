@@ -12,13 +12,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing() -> Option<PathBuf> {
+fn skip_if_missing() -> PathBuf {
     let b = binary();
-    if !b.exists() {
-        eprintln!("skipping: binary not built at {}", b.display());
-        return None;
-    }
-    Some(b)
+    assert!(
+        b.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        b.display()
+    );
+    b
 }
 
 fn golden_pure_death() -> PathBuf {
@@ -54,7 +55,7 @@ n_particles = 500
 
 #[test]
 fn simulate_auto_matches_fit_backend_when_backend_not_passed() {
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle.toml");
     write_fake_mle(&mle, "chain_binomial", 1.0);
@@ -76,7 +77,7 @@ fn simulate_auto_matches_fit_backend_when_backend_not_passed() {
 
 #[test]
 fn simulate_warns_on_explicit_backend_mismatch() {
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle.toml");
     write_fake_mle(&mle, "chain_binomial", 1.0);
@@ -102,7 +103,7 @@ fn simulate_warns_on_explicit_backend_mismatch() {
 
 #[test]
 fn simulate_silent_on_matching_explicit_backend() {
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle.toml");
     write_fake_mle(&mle, "chain_binomial", 1.0);
@@ -124,7 +125,7 @@ fn simulate_silent_on_matching_explicit_backend() {
 
 #[test]
 fn simulate_unchanged_on_standalone_params_file() {
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let standalone = tmp.path().join("p.toml");
     // No [provenance] block — should behave as pre-guardrail.
@@ -151,7 +152,7 @@ fn simulate_from_mle_params_writes_a_valid_sim_record() {
     // the params as a `dep` ArtifactRef on the fit's run_id — lands in M3,
     // when fits migrate to RunRecord. In M2 the consumed params are captured
     // by value in the params-level digest, not by a from_fit pointer.)
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle.toml");
     // Use a distinctive fit_hash so we can grep for it.
@@ -264,7 +265,7 @@ fn run_json_records_chain_binomial_when_provenance_says_chain_binomial() {
     // Fixture A: provenance says chain_binomial. No --backend passed.
     // Expected: run.json records backend=chain_binomial (auto-match
     // actually took effect, not just the log text).
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle_cbin.toml");
     write_fake_mle(&mle, "chain_binomial", 1.0);
@@ -279,7 +280,7 @@ fn run_json_records_gillespie_when_provenance_says_gillespie() {
     // Fixture B: provenance says gillespie (tests the opposite
     // direction — guards against a bug where we hardcoded
     // chain_binomial in the auto-match path).
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle_gill.toml");
     write_fake_mle(&mle, "gillespie", 1.0);
@@ -294,7 +295,7 @@ fn run_json_records_auto_matched_dt_not_just_backend() {
     // where we auto-match backend but NOT dt would make run.json
     // record dt=1.0 (CLI default) despite the fit having used 0.5.
     // Subtly wrong behavior, silent, hard to spot without this check.
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle_dt05.toml");
     write_fake_mle(&mle, "chain_binomial", 0.5);
@@ -311,7 +312,7 @@ fn explicit_backend_overrides_provenance_in_run_json() {
     // fires, but the run proceeds with gillespie). Regression
     // guard: a bug where the auto-match path always overrides
     // --backend would silently ignore the user's explicit choice.
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle.toml");
     write_fake_mle(&mle, "chain_binomial", 1.0);
@@ -327,7 +328,7 @@ fn standalone_params_use_chain_binomial_default_in_run_json() {
     // run.json must record chain_binomial (the CLI default, matching
     // `camdl fit`'s default — see the 2026-04-19 incident). Regression
     // guard on the "no leakage from prior runs" invariant.
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let standalone = tmp.path().join("p.toml");
     std::fs::write(&standalone, "mu = 0.05\n").unwrap();
@@ -342,7 +343,7 @@ fn explicit_dt_overrides_provenance_in_run_json() {
     // User's choice wins. Companion to the backend-override test —
     // dt and backend are paired fields and the override semantics
     // should be symmetric.
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let mle = tmp.path().join("mle.toml");
     write_fake_mle(&mle, "chain_binomial", 0.5);

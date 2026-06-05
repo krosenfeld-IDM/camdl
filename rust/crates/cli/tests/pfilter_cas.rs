@@ -11,10 +11,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -129,7 +135,7 @@ fn camdl_read(bin: &Path, out_root: &Path, args: &[&str]) -> String {
 /// missing-binary guard would find none and panic, not pass silently).
 #[test]
 fn pfilter_eval_round_trips_through_reader() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("roundtrip");
     let (ir, data) = write_fixture(tmp.path());
@@ -179,7 +185,7 @@ fn pfilter_eval_round_trips_through_reader() {
 /// (collision-free on the params axis); the same point is stable.
 #[test]
 fn distinct_points_distinct_leaves() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("identity");
     let (ir, data) = write_fixture(tmp.path());
@@ -209,7 +215,7 @@ fn distinct_points_distinct_leaves() {
 /// loglik (the second run cache-colliding the first).
 #[test]
 fn replicate_count_is_in_the_identity() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("reps_identity");
     let (ir, data) = write_fixture(tmp.path());
@@ -233,7 +239,7 @@ fn replicate_count_is_in_the_identity() {
 /// "no run found" even though `show` could resolve the same leaf.
 #[test]
 fn label_works_on_pfilter_runs() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("label_pfilter");
     let (ir, data) = write_fixture(tmp.path());

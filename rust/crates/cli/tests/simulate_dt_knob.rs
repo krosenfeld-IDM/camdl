@@ -11,13 +11,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing() -> Option<PathBuf> {
+fn skip_if_missing() -> PathBuf {
     let b = binary();
-    if !b.exists() {
-        eprintln!("skipping: binary not built at {}", b.display());
-        return None;
-    }
-    Some(b)
+    assert!(
+        b.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        b.display()
+    );
+    b
 }
 
 /// `ocaml/golden/sir_dt.ir.json` declares `simulate { dt = 0.5 }`.
@@ -81,7 +82,7 @@ fn run_simulate(bin: &Path, tmp: &Path, extra: &[&str]) -> PathBuf {
 fn model_dt_is_the_default_step() {
     // No --dt passed → the model's `simulate { dt = 0.5 }` is the effective
     // step. Pre-fix the CLI ignored the model knob and used dt=1.0.
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let output = run_simulate(&bin, tmp.path(), &[]);
     let (_backend, dt) = read_sim_config(&output);
@@ -94,7 +95,7 @@ fn model_dt_is_the_default_step() {
 fn explicit_dt_overrides_model_dt() {
     // --dt 0.25 must win over the model's dt = 0.5 (the override is for
     // sensitivity sweeps / Richardson extrapolation).
-    let Some(bin) = skip_if_missing() else { return; };
+    let bin = skip_if_missing();
     let tmp = tempfile::tempdir().unwrap();
     let output = run_simulate(&bin, tmp.path(), &["--dt", "0.25"]);
     let (_backend, dt) = read_sim_config(&output);

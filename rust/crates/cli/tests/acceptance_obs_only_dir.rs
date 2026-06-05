@@ -20,13 +20,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// SIR with TWO observation streams at different cadences (weekly + biweekly)
@@ -85,7 +86,7 @@ fn write_params(path: &Path) {
 /// trajectory (ObsOutput::OnlyDir).
 #[test]
 fn obs_only_dir_writes_one_file_per_stream() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("sir.camdl");
     let params = tmp.path().join("p.toml");
@@ -128,7 +129,7 @@ fn obs_only_dir_writes_one_file_per_stream() {
 /// regardless of which obs mode they were reaching for.
 #[test]
 fn multi_cadence_single_file_error_names_both_dir_flags() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("sir.camdl");
     let params = tmp.path().join("p.toml");

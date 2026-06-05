@@ -15,10 +15,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -165,7 +171,7 @@ fn snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
 /// original base.
 #[test]
 fn pgas_resume_writes_distinct_leaf_with_base_untouched_and_dep() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("continues");
     let (ir, data) = write_fixture(tmp.path());
@@ -218,7 +224,7 @@ fn pgas_resume_writes_distinct_leaf_with_base_untouched_and_dep() {
 /// (chains=1) won't match the new run (chains=2).
 #[test]
 fn pgas_resume_rejects_when_identity_field_changes() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("rejects");
     let (ir, data) = write_fixture(tmp.path());

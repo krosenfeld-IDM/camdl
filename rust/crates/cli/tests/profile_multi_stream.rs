@@ -29,13 +29,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// 5-patch SEIR with five neg_binomial obs streams `cases_p1`...
@@ -145,7 +146,7 @@ fn profile_family_root_sums_all_expanded_streams() {
     // expect a factor of ~5; we assert a much weaker lower bound
     // (≥3×) to stay robust to per-stream variation under stochastic
     // IF2 with iterations=1.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let data_path = synth_obs_tsv(&bin, tmp.path());
 
@@ -189,7 +190,7 @@ fn profile_multi_stream_model_requires_explicit_obs() {
     // silently default to the first stream. The error message must
     // list the available streams so the user knows the family root
     // (or one specific stream) to pass.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let data_path = synth_obs_tsv(&bin, tmp.path());
     let out_dir = tmp.path().join("out_no_obs");

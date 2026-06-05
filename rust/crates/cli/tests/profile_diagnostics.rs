@@ -30,10 +30,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -227,7 +233,7 @@ fn run_profile_if2(
             deferred M4 derived view; raw per-start [diagnostics] survive per \
             leaf (see profile_leaf_mle_carries_per_start_diagnostics)"]
 fn profile_pmmh_emits_acc_rate_columns() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("pmmh_acc_rate");
     let (ir, data) = write_fixture(tmp.path());
@@ -284,7 +290,7 @@ fn profile_pmmh_loglik_rhat_nan_at_k_lt_3() {
     // Gelman-Rubin R-hat is undefined / unstable for K < 3 chains.
     // With --starts 2 the column must hold NaN; the K<3 rule is
     // part of the documented schema.
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("rhat_nan_k2");
     let (ir, data) = write_fixture(tmp.path());
@@ -312,7 +318,7 @@ fn profile_pmmh_loglik_rhat_nan_at_k_lt_3() {
 fn profile_pmmh_loglik_rhat_finite_at_k_3() {
     // At K=3 starts the K<3 rule lifts and R-hat must hold a finite
     // numeric value.
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("rhat_finite_k3");
     let (ir, data) = write_fixture(tmp.path());
@@ -342,7 +348,7 @@ fn profile_if2_emits_diagnostic_columns() {
     // the shared loglik_spread / loglik_rhat / starts_n_completed
     // columns. acc_rate_* is NaN for IF2 (the algorithm has no MH
     // acceptance step).
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("if2_diag");
     let (ir, data) = write_fixture(tmp.path());
@@ -388,7 +394,7 @@ fn profile_if2_emits_diagnostic_columns() {
 fn profile_tsv_schema_stable_across_runs() {
     // Two runs with different seeds must produce a byte-identical
     // header. The schema doesn't reorder based on data.
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("schema_stable");
     let (ir, data) = write_fixture(tmp.path());
@@ -438,7 +444,7 @@ fn profile_starts_n_completed_reflects_diverged_chains() {
     // filters and extreme sweep values, so the integration test
     // exercises the "common path" (K everywhere) and the unit test
     // covers the < K case.
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("diverged");
     let (ir, data) = write_fixture(tmp.path());
@@ -511,7 +517,7 @@ fn collect_leaf_mle(out_root: &Path) -> Vec<String> {
 /// deferred M4 reindex re-aggregates — so the raw data can't silently vanish.
 #[test]
 fn profile_leaf_mle_carries_per_start_diagnostics() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("leaf_diag");
     let (ir, data) = write_fixture(tmp.path());

@@ -15,10 +15,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    p.exists().then_some(p)
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn seed_timing_ir() -> PathBuf {
@@ -95,10 +101,7 @@ fn parse_loglik(out: &std::process::Output) -> f64 {
 /// data hand-converted to day-numbers against the origin.
 #[test]
 fn dated_loglik_matches_numeric() {
-    let Some(camdl) = camdl_bin() else {
-        eprintln!("skipping: release camdl binary not built");
-        return;
-    };
+    let camdl = camdl_bin();
     let tmp = tempdir("byteid");
     let model = model_with_origin(&tmp, "2020-02-28");
 
@@ -137,7 +140,7 @@ fn dated_loglik_matches_numeric() {
 /// `index out of bounds: the len is 0 but the index is 0`.
 #[test]
 fn empty_observation_file_errors_cleanly() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("emptyobs");
     let model = model_with_origin(&tmp, "2020-02-28");
     let empty = tmp.join("empty.tsv");
@@ -161,7 +164,7 @@ fn empty_observation_file_errors_cleanly() {
 /// §9.4 origin-missing: dated cells against a model with no origin → error.
 #[test]
 fn dated_without_origin_errors() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("noorigin");
     // seed_timing.ir.json (committed) declares no origin.
     let model = seed_timing_ir();
@@ -179,7 +182,7 @@ fn dated_without_origin_errors() {
 /// §9.4 mixed column: numeric + date in one column → hard error naming rows.
 #[test]
 fn mixed_column_errors() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("mixed");
     let model = model_with_origin(&tmp, "2020-02-28");
     let mixed = tmp.join("mixed.tsv");
@@ -196,7 +199,7 @@ fn mixed_column_errors() {
 /// §9.4 distinct-substep collision: two distinct times within dt → error.
 #[test]
 fn distinct_substep_collision_errors() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("collide");
     let model = model_with_origin(&tmp, "2020-02-28");
     // Numeric times 10.0 and 10.4 at dt=1 both round to step 10.
@@ -215,7 +218,7 @@ fn distinct_substep_collision_errors() {
 /// §9.4 `--time-format numeric` forbids date cells.
 #[test]
 fn time_format_numeric_forbids_dates() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("fmtnum");
     let model = model_with_origin(&tmp, "2020-02-28");
     let dated = tmp.join("dated.tsv");
@@ -244,7 +247,7 @@ fn model_with_t_start(dir: &Path, c: f64) -> PathBuf {
 /// after the first obs → negative internal times).
 #[test]
 fn numeric_shift_invariance() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("shift");
 
     // Baseline data at tau=30: numeric daily cases (chosen to give a real
@@ -296,7 +299,7 @@ fn numeric_shift_invariance() {
 /// unchanged (byte-identical to a run without `--dates`).
 #[test]
 fn dates_flag_adds_calendar_column() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("datesout");
     let model = model_with_origin(&tmp, "2020-02-28");
 
@@ -345,7 +348,7 @@ fn dates_flag_adds_calendar_column() {
 /// §9.8 `--dates` with no origin → clear error.
 #[test]
 fn dates_flag_requires_origin() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("datesnoorigin");
     let ir = seed_timing_ir();
     let mut args = vec![
@@ -367,7 +370,7 @@ fn dates_flag_requires_origin() {
 /// pre-feature behaviour — no `date` column anywhere.
 #[test]
 fn no_dates_flag_is_unchanged() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("nodates");
     let model = model_with_origin(&tmp, "2020-02-28");
     let mut args = vec![
@@ -389,7 +392,7 @@ fn no_dates_flag_is_unchanged() {
 /// sibling — the offset is discarded, every row maps to the same civil date.
 #[test]
 fn multitz_offsets_collapse_to_civil_date() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("multitz");
     let model = model_with_origin(&tmp, "2020-02-28");
 

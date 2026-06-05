@@ -43,10 +43,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -267,7 +273,7 @@ fn run_fit(bin: &Path, fit_toml: &Path) -> std::process::Output {
 /// the priors from the model IR.
 #[test]
 fn fit_run_with_model_ir_priors_only_succeeds() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("ir_only");
     let (ir, data) = write_fixture(tmp.path(), TildeMode::Default);
@@ -301,7 +307,7 @@ fn fit_run_with_model_ir_priors_only_succeeds() {
 /// pre-gh#75 behaviour and stays unchanged.
 #[test]
 fn fit_run_with_fit_toml_priors_only_succeeds() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("toml_only");
     // No `~` priors in the model — only fit-toml priors.
@@ -330,7 +336,7 @@ fn fit_run_with_fit_toml_priors_only_succeeds() {
 /// source labels.
 #[test]
 fn fit_run_with_mixed_priors_succeeds_and_sources_correctly() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("mixed");
     let (ir, data) = write_fixture(tmp.path(), TildeMode::Default);
@@ -361,7 +367,7 @@ fn fit_run_with_mixed_priors_succeeds_and_sources_correctly() {
 /// remedies: model `~`, fit-toml `prior`, explicit `prior = { flat = {} }`.
 #[test]
 fn fit_run_with_no_priors_anywhere_fails_at_config_load() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("nothing");
     // No `~` priors in the model AND no prior= in the fit TOML.
@@ -409,7 +415,7 @@ fn fit_run_with_no_priors_anywhere_fails_at_config_load() {
 /// source as `flat_explicit`. No warning emitted.
 #[test]
 fn fit_run_with_explicit_flat_prior_succeeds_without_warning() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("flat_explicit");
     // Model has no `~` priors; fit TOML opts in explicitly to flat.
@@ -463,7 +469,7 @@ fn fit_run_with_explicit_flat_prior_succeeds_without_warning() {
 /// resolver wires the IR-prior into the fit cache key path.
 #[test]
 fn fit_run_priors_cache_invalidates_on_model_ir_prior_change() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("cas_invalidate");
 

@@ -16,10 +16,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() { return None; }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// Build a minimal IR JSON: two compartments (S, V), zero transitions,
@@ -102,7 +106,7 @@ fn s_at(traj: &str, t: f64) -> i64 {
 /// never written to stdout — Item C). A unique `-o` file + isolated
 /// `--output-dir` are appended so concurrent test runs never share a CAS root.
 fn run_simulate(args: &[&str]) -> String {
-    let bin = skip_if_missing_binary().expect("binary");
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let traj_path = tmp.path().join("traj.tsv");
     let cas_dir = tmp.path().join("results");
@@ -123,7 +127,7 @@ fn run_simulate(args: &[&str]) -> String {
 
 #[test]
 fn simulate_default_event_fires_intervention_does_not() {
-    let Some(_) = skip_if_missing_binary() else { return; };
+    let _ = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let ir = write_ir(&tmp);
     let traj = run_simulate(&[
@@ -150,7 +154,7 @@ fn simulate_enable_activates_toggleable_intervention() {
     // task #85 — chain_binomial currently double-fires interventions,
     // an orthogonal pre-existing bug). Testing "did it fire at all" is
     // sufficient for the default-activation contract under test.
-    let Some(_) = skip_if_missing_binary() else { return; };
+    let _ = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let ir = write_ir(&tmp);
     let traj = run_simulate(&[
@@ -169,7 +173,7 @@ fn simulate_enable_activates_toggleable_intervention() {
 
 #[test]
 fn simulate_scenario_enable_activates_by_name() {
-    let Some(_) = skip_if_missing_binary() else { return; };
+    let _ = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let ir = write_ir(&tmp);
     let traj = run_simulate(&[
@@ -183,7 +187,7 @@ fn simulate_scenario_enable_activates_by_name() {
 
 #[test]
 fn simulate_disable_silences_event() {
-    let Some(_) = skip_if_missing_binary() else { return; };
+    let _ = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let ir = write_ir(&tmp);
     let traj = run_simulate(&[
@@ -200,7 +204,7 @@ fn simulate_disable_silences_event() {
 
 #[test]
 fn simulate_wildcard_enable_activates_all_interventions() {
-    let Some(_) = skip_if_missing_binary() else { return; };
+    let _ = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let ir = write_ir(&tmp);
     let traj = run_simulate(&[
@@ -220,7 +224,7 @@ fn fit_toml_v2_accepts_scenario_field() {
     // Spec-contract: the v2 fit.toml schema must accept
     // `scenario = "..."` as a top-level field. If we regress the
     // serde wiring, TOML parsing fails with "unknown field".
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let fit_path = tmp.path().join("fit.toml");
     std::fs::write(&fit_path, r#"
@@ -252,7 +256,7 @@ observations = {}
 
 #[test]
 fn fit_toml_rejects_scenario_and_enable_simultaneously() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let fit_path = tmp.path().join("fit.toml");
     // Reference a real model so we get past TOML parse + model load

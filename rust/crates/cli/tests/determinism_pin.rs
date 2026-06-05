@@ -29,13 +29,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// SIR + V with a vaccination intervention (S→V transfer) that fires at
@@ -112,7 +113,7 @@ fn run_sim(bin: &Path, model: &Path, extra: &[&str], out: &Path) {
 /// no-op that makes the test pass vacuously).
 #[test]
 fn crn_coupling_pre_intervention_byte_identical() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     write_model(&model);
@@ -151,7 +152,7 @@ fn crn_coupling_pre_intervention_byte_identical() {
 /// `--seed <that value>` trajectory exactly. "Seed 2" must mean one thing.
 #[test]
 fn explicit_seeds_match_single_runs() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     write_model(&model);
@@ -195,7 +196,7 @@ fn explicit_seeds_match_single_runs() {
 /// might introduce (e.g. iteration over a HashMap, time-seeded fallback).
 #[test]
 fn same_invocation_is_byte_identical() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("m.camdl");
     write_model(&model);

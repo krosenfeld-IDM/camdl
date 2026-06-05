@@ -24,13 +24,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 /// SIR with a single daily reported-cases observation stream. `rho` (reporting
@@ -118,7 +119,7 @@ fn obs_stream_files(seed_leaf: &Path) -> Vec<PathBuf> {
 /// must deposit, under every seed leaf, an `obs/<...>/<stream>.tsv`.
 #[test]
 fn batch_writes_observation_ensemble_into_cas() {
-    let Some(bin) = skip_if_missing_binary() else { return; };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let model = tmp.path().join("sir.camdl");
     let params = tmp.path().join("params.toml");

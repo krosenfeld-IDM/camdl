@@ -29,13 +29,14 @@ fn binary() -> PathBuf {
     Path::new(&manifest).join("../../target/release/camdl")
 }
 
-fn skip_if_missing_binary() -> Option<PathBuf> {
+fn skip_if_missing_binary() -> PathBuf {
     let bin = binary();
-    if !bin.exists() {
-        eprintln!("skipping: camdl binary not built at {}", bin.display());
-        return None;
-    }
-    Some(bin)
+    assert!(
+        bin.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        bin.display()
+    );
+    bin
 }
 
 fn multi_block_model() -> PathBuf {
@@ -70,7 +71,7 @@ fn pfilter_single_stream_data_path_regression_on_single_block_model() {
     // single-block model. This is the legacy compatibility path —
     // any breakage here would silently break every existing
     // pfilter invocation in the wild.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &single_block_model(), tmp.path(), &[]);
 
@@ -102,7 +103,7 @@ fn pfilter_multi_stream_named_pairs_joint_scoring() {
     // NAME=PATH` repeats bind every stream. The joint loglik should
     // be substantially more negative than a single-stream cell, and
     // NO unbound-streams warning should fire.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &multi_block_model(), tmp.path(),
         &["--scenario", "true_params"]);
@@ -166,7 +167,7 @@ fn pfilter_single_stream_with_obs_on_multi_block_emits_warning() {
     // Must succeed (the user explicitly named --obs) but must also
     // surface the warning so the user knows the other blocks are
     // silently zero in the likelihood.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &multi_block_model(), tmp.path(),
         &["--scenario", "true_params"]);
@@ -202,7 +203,7 @@ fn pfilter_mixed_data_forms_errors() {
     // --data PATH and --data NAME=PATH in one invocation is a hard
     // error — mixing single-stream and multi-stream forms is a
     // user-confusion smell.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &multi_block_model(), tmp.path(),
         &["--scenario", "true_params"]);
@@ -230,7 +231,7 @@ fn pfilter_multi_block_no_data_with_no_obs_errors_actionable() {
     // is ambiguous: refuses to silently score one of N streams.
     // Error must name both --data NAME=PATH and --data PATH --obs
     // NAME as fixes.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &multi_block_model(), tmp.path(),
         &["--scenario", "true_params"]);
@@ -260,7 +261,7 @@ fn pfilter_cli_data_overrides_fit_toml_when_both_supplied() {
     // CLI `--data` ALWAYS wins over a `--fit` toml's `[data.observations]`
     // section. An info line should announce the precedence so the
     // user knows which path took effect.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &multi_block_model(), tmp.path(),
         &["--scenario", "true_params"]);
@@ -323,7 +324,7 @@ fn pfilter_fit_toml_fallback_when_no_cli_data() {
     // The fit-toml fallback: --fit fit.toml + no CLI --data flags →
     // read multi-stream binding from [data.observations]. Same
     // joint-scoring as the named-pairs path.
-    let Some(bin) = skip_if_missing_binary() else { return };
+    let bin = skip_if_missing_binary();
     let tmp = tempfile::tempdir().unwrap();
     let obs = synth_obs(&bin, &multi_block_model(), tmp.path(),
         &["--scenario", "true_params"]);

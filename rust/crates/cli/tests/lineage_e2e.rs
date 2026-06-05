@@ -12,10 +12,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    p.exists().then_some(p)
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn tempdir(tag: &str) -> PathBuf {
@@ -68,10 +74,7 @@ fn count_tips(newick: &str) -> usize {
 
 #[test]
 fn lineage_end_to_end_tsv_and_parquet() {
-    let Some(camdl) = camdl_bin() else {
-        eprintln!("skipping: release camdl binary not built");
-        return;
-    };
+    let camdl = camdl_bin();
 
     let tmp = tempdir("e2e");
     let model = tmp.join("sir.camdl");
@@ -283,7 +286,7 @@ fn lineage_end_to_end_tsv_and_parquet() {
 /// nothing.
 #[test]
 fn lineage_on_ode_is_rejected() {
-    let Some(camdl) = camdl_bin() else { return };
+    let camdl = camdl_bin();
     let tmp = tempdir("ode_reject");
     let model = tmp.join("sir.camdl");
     std::fs::write(&model, SIR_LINEAGE).unwrap();

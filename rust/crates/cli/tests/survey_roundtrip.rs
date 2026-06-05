@@ -21,10 +21,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -106,10 +112,10 @@ fn find_survey_leaf(root: &Path) -> PathBuf {
 
 #[test]
 fn survey_write_then_list_show_cat_roundtrip() {
-    let (Some(bin), Some(_camdlc)) = (camdl_bin(), camdlc_bin()) else {
-        eprintln!("skipping: release binary or camdlc.exe not present");
-        return;
-    };
+    // `camdl_bin()` is fail-loud (gh#105); `write_fixture` below already
+    // `.expect()`s camdlc.exe, so a missing OCaml compiler also surfaces
+    // loudly rather than skipping.
+    let bin = camdl_bin();
 
     let tmp = tempdir("rt");
     let (ir, data) = write_fixture(tmp.path());

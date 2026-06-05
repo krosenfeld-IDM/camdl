@@ -29,10 +29,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn camdl_bin() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+fn camdl_bin() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR set under cargo test");
     let p = Path::new(&manifest).join("../../target/release/camdl");
-    if p.exists() { Some(p) } else { None }
+    assert!(
+        p.exists(),
+        "release camdl binary missing: {} - run `make build-rust` or `make test` (gh#105)",
+        p.display()
+    );
+    p
 }
 
 fn camdlc_bin() -> Option<PathBuf> {
@@ -258,7 +264,7 @@ fn run_profile(
 
 #[test]
 fn profile_pmmh_with_neither_warns_and_uses_flat() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("flat_warning");
     let (ir, data) = write_fixture(tmp.path());
@@ -306,7 +312,7 @@ fn profile_pmmh_with_neither_warns_and_uses_flat() {
 
 #[test]
 fn profile_pmmh_with_fit_toml_silences_flat_warning() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("fit_priors");
     let (ir, data) = write_fixture(tmp.path());
@@ -350,7 +356,7 @@ fn same_model_different_fit_toml_different_cas_dir() {
     // Hash provenance: two profile runs with the same model + data
     // but different fit tomls (different priors) must produce
     // different CAS dirs.
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("hash_two_fits");
     let (ir, data) = write_fixture(tmp.path());
@@ -379,7 +385,7 @@ fn same_model_different_fit_toml_different_cas_dir() {
 
 #[test]
 fn same_model_no_fit_vs_with_fit_different_cas_dir() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("hash_fit_vs_none");
     let (ir, data) = write_fixture(tmp.path());
@@ -407,7 +413,7 @@ fn same_model_no_fit_vs_with_fit_different_cas_dir() {
 fn focal_param_in_fixed_errors_clearly() {
     // Spec §2 rule: a parameter cannot simultaneously be the sweep
     // axis and in --fixed. The error must name the conflict source.
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("focal_conflict");
     let (ir, data) = write_fixture(tmp.path());
@@ -478,7 +484,7 @@ fn first_leaf_run_id(base: &Path) -> String {
 /// provenance silently — the round-trip is what catches that.
 #[test]
 fn provenance_round_trips_through_reader() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("prov_roundtrip");
     let (ir, data) = write_fixture(tmp.path());
@@ -555,7 +561,7 @@ fn provenance_round_trips_through_reader() {
 /// Relabeling touches one file regardless of how many cells the profile has.
 #[test]
 fn label_command_relabels_profile_sidecar() {
-    let Some(bin) = camdl_bin() else { return };
+    let bin = camdl_bin();
     if camdlc_bin().is_none() { return }
     let tmp = tempdir("label_profile");
     let (ir, data) = write_fixture(tmp.path());
