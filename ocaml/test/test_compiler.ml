@@ -3511,6 +3511,47 @@ let test_incidence_unstratified () =
     Alcotest.fail "unstratified incidence must stay a single CumulativeFlow"
   | _ -> Alcotest.fail "expected CumulativeFlow infection on unstratified transition"
 
+(* Defect A' (gh#164/#165): a let-bound bare identifier in `projected`
+   must inline the let body (a DerivedExpr), not fall through to a dangling
+   CumulativeFlow. `projected = I_total` with `let I_total = I[child] +
+   I[adult]` resolves to a state expression over the expanded compartments. *)
+let test_let_bound_projection_inlines () =
+  let src = stratified_age_seir_with_obs {|
+    let I_total = I[child] + I[adult]
+    observations {
+      prevalence_total : {
+        projected  = I_total
+        every      = 7 'days
+        likelihood = neg_binomial(mean = projected, r = k)
+      }
+    }
+  |} in
+  let m = compile_expect_ok src in
+  match (List.hd m.observations).projection with
+  | Ir.DerivedExpr e ->
+    (* The let body I[child] + I[adult] resolves to a sum over the two
+       expanded infectious compartments. Accept either the normalized
+       PopSum form or an Add over the two Pops — both denote the same
+       sum; the load-bearing assertion is that it is NOT a dangling
+       CumulativeFlow. *)
+    let comps =
+      let acc = ref [] in
+      let rec walk = function
+        | Ir.Pop c -> acc := c :: !acc
+        | Ir.PopSum cs -> List.iter (fun c -> acc := c :: !acc) cs
+        | Ir.BinOp { left; right; _ } -> walk left; walk right
+        | _ -> ()
+      in
+      walk e; List.sort compare !acc
+    in
+    Alcotest.(check (list string))
+      "let-bound projection inlines to a sum over the expanded compartments"
+      ["I_adult"; "I_child"] comps
+  | Ir.CumulativeFlow name ->
+    Alcotest.failf
+      "let-bound projection must inline, not emit CumulativeFlow(%s)" name
+  | _ -> Alcotest.fail "expected DerivedExpr for let-bound projection"
+
 (* ── Likelihood keyword-argument parsing ──────────────────────────────────
    `rate` is a reserved keyword in parameter type annotations; the kwarg
    rule in the parser must allow it (and other soft keywords) in kwarg
@@ -5857,6 +5898,7 @@ let () =
       Alcotest.test_case "incidence(infection[child]) picks one stratum" `Quick test_incidence_positional_indexed_pins_one_stratum;
       Alcotest.test_case "incidence(infection[age=adult]) named index"   `Quick test_incidence_named_indexed_pins_one_stratum;
       Alcotest.test_case "incidence(infection) unstratified unchanged"   `Quick test_incidence_unstratified;
+      Alcotest.test_case "let-bound projected inlines (not E507)"        `Quick test_let_bound_projection_inlines;
     ];
     "likelihood_kwargs", [
       Alcotest.test_case "poisson(rate = projected) parses"              `Quick test_poisson_rate_kwarg_parses;

@@ -4024,9 +4024,16 @@ let expand_observations ctx =
          | Some (EIndex (n, idxs)) ->
            prevalence_projection n (List.map (index_item_to_str env) idxs)
          | _ -> Ir.CurrentPop "?")
-      | ProjDerived (EIdent (name, _)) ->
-        (* Disambiguate: is this a compartment (prevalence) or transition (flow)? *)
-        if Hashtbl.mem ctx.expanded_comp_tbl name then
+      | ProjDerived (EIdent (name, _) as e) ->
+        (* Disambiguate: let-binding, compartment (prevalence), or
+           transition (flow)? A let-bound bare identifier (e.g.
+           `projected = I_total` with `let I_total = I_child + I_adult`)
+           must inline the let body via the canonical resolver, not fall
+           through to `CumulativeFlow "I_total"` — that name is neither a
+           transition nor a compartment, so it would E507 (gh#164/#165). *)
+        if Hashtbl.mem ctx.let_tbl name then
+          Ir.DerivedExpr (resolve_expr ctx env e)
+        else if Hashtbl.mem ctx.expanded_comp_tbl name then
           Ir.CurrentPop name
         else if Hashtbl.mem ctx.comp_tbl name then
           prevalence_projection name []
