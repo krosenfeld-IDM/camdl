@@ -788,6 +788,21 @@ fn run_simulate(a: &args::SimulateArgs) {
         vec![HashMap::new()]
     };
     let n_draws = draws.len();
+
+    // ── Persist sampled draws (gh#157) ──────────────────────────────────────
+    // `--draws-out PATH` materializes the sampled θ-per-draw as a TSV the
+    // `--draws PATH` loader reads back (one row per draw, one column per
+    // parameter). Opt-in only: absent the flag nothing is written, so the
+    // content-addressed store leaves are untouched.
+    if let Some(ref out) = a.draws_out {
+        let out = out.to_string_lossy().into_owned();
+        if let Err(e) = write_draws_tsv(&out, &draws) {
+            eprintln!("error writing --draws-out {}: {}", out, e);
+            std::process::exit(1);
+        }
+        eprintln!("draws.tsv: wrote {} draws to {}", n_draws, out);
+    }
+
     let n_scenarios = scenario_list.len();
     let total_runs = n_draws * replicates * n_scenarios;
     if total_runs > 1 {
@@ -2225,6 +2240,42 @@ fn parse_seeds_spec(spec: &str) -> Result<Vec<u64>, String> {
     }
 }
 
+/// Write sampled draws to a TSV (gh#157), one row per draw and one column
+/// per parameter. The column set is the union of every draw's keys, sorted
+/// for a deterministic header; values use `{:.17e}` (full f64 precision, the
+/// same format the fit pipeline writes). This is exactly the format
+/// `load_draws_tsv` reads back, so `--draws-out` output round-trips through
+/// `--draws PATH`. An empty/no-parameter draw set (the no-`--draws` single
+/// point) yields a header-only file.
+fn write_draws_tsv(path: &str, draws: &[HashMap<String, f64>]) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    use std::io::Write;
+
+    let cols: Vec<String> = {
+        let mut set: BTreeSet<&str> = BTreeSet::new();
+        for d in draws {
+            for k in d.keys() {
+                set.insert(k.as_str());
+            }
+        }
+        set.into_iter().map(|s| s.to_string()).collect()
+    };
+
+    let mut f = std::io::BufWriter::new(
+        std::fs::File::create(path).map_err(|e| format!("cannot create {}: {}", path, e))?,
+    );
+    writeln!(f, "{}", cols.join("\t")).map_err(|e| e.to_string())?;
+    for d in draws {
+        let row: Vec<String> = cols
+            .iter()
+            .map(|c| format!("{:.17e}", d.get(c).copied().unwrap_or(f64::NAN)))
+            .collect();
+        writeln!(f, "{}", row.join("\t")).map_err(|e| e.to_string())?;
+    }
+    f.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Load a draws TSV file. Each row is a complete parameter vector.
 /// Column names must match model parameter names.
 /// Returns Vec<HashMap<param_name, value>>.
@@ -2508,6 +2559,52 @@ mod tests {
         std::fs::write(&path, "beta\tgamma\n").unwrap();
         let err = load_draws_tsv(path.to_str().unwrap()).unwrap_err();
         assert!(err.contains("no data rows"));
+    }
+
+    // gh#157: --draws-out writes the sampled draws as a round-trippable TSV.
+    #[test]
+    fn write_draws_tsv_roundtrips_through_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out_draws.tsv");
+
+        // Three sampled draws over two params (HashMap order is arbitrary;
+        // the writer must produce a deterministic, loadable header).
+        let draws: Vec<HashMap<String, f64>> = vec![
+            HashMap::from([("beta".to_string(), 0.31), ("gamma".to_string(), 0.11)]),
+            HashMap::from([("beta".to_string(), 0.52), ("gamma".to_string(), 0.15)]),
+            HashMap::from([("beta".to_string(), 0.73), ("gamma".to_string(), 0.19)]),
+        ];
+
+        write_draws_tsv(path.to_str().unwrap(), &draws).unwrap();
+
+        // N rows out, values exact-match the sampled draws (full f64
+        // precision round-trips through {:.17e}).
+        let loaded = load_draws_tsv(path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 3, "one row per draw");
+        for (orig, got) in draws.iter().zip(loaded.iter()) {
+            assert_eq!(orig["beta"], got["beta"]);
+            assert_eq!(orig["gamma"], got["gamma"]);
+        }
+
+        // Negative control: distinct param values are not collapsed — a
+        // writer that dropped rows or duplicated the first draw would fail
+        // here even though len() matched.
+        assert_ne!(loaded[0]["beta"], loaded[2]["beta"]);
+        assert!((loaded[2]["beta"] - 0.73).abs() < 1e-15);
+    }
+
+    // Control for the CLI guard: the writer is the *only* thing that
+    // creates the file, so a path never passed to write_draws_tsv stays
+    // absent. (The CLI only calls it under `--draws-out`.)
+    #[test]
+    fn write_draws_tsv_not_called_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("never_written.tsv");
+        assert!(!path.exists());
+        // No write_draws_tsv call → no file. Loading errors rather than
+        // silently materializing anything.
+        assert!(load_draws_tsv(path.to_str().unwrap()).is_err());
+        assert!(!path.exists());
     }
 
     #[test]

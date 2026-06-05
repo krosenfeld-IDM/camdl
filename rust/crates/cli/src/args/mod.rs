@@ -492,6 +492,14 @@ pub struct SimulateArgs {
     #[arg(short = 'n', long)]
     pub n_draws: Option<usize>,
 
+    /// Write the sampled per-draw parameter vectors to this TSV (gh#157).
+    /// One row per draw, one column per parameter — the same column-per-
+    /// param format `--draws PATH` reads back, so the file round-trips.
+    /// Only written when given; the content-addressed store leaves are
+    /// unaffected.
+    #[arg(long, value_name = "PATH", requires = "draws")]
+    pub draws_out: Option<PathBuf>,
+
     /// Write a plain-TSV trajectory mirror to this file, IN ADDITION to the
     /// content-addressed store leaf (the default system of record). Without
     /// `-o` the trajectory is not written to a loose file — read it back with
