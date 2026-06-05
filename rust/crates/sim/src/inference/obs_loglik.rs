@@ -81,6 +81,32 @@ pub fn negbin_logpmf_grad(y: f64, mu: f64, k: f64) -> (f64, f64) {
     (d_mu, d_k)
 }
 
+/// Gradient of `beta_binomial_logpmf` w.r.t. (alpha, beta).
+///
+/// With ψ = digamma and log P = logC(n,k) + lgamma(k+α) + lgamma(n−k+β)
+/// + lgamma(α+β) − lgamma(n+α+β) − lgamma(α) − lgamma(β):
+///
+///   ∂logP/∂α = ψ(k+α) − ψ(α) − ψ(n+α+β) + ψ(α+β)
+///   ∂logP/∂β = ψ(n−k+β) − ψ(β) − ψ(n+α+β) + ψ(α+β)
+///
+/// `n` is the (integer) number of trials; only `α`, `β` are continuous
+/// likelihood parameters, so the gradient is taken w.r.t. them. `k` is the
+/// observed count. The combinatorial `logC(n,k)` term has no α/β dependence
+/// and drops out. Mirrors the `(d_mu, d_k)` shape of `negbin_logpmf_grad`.
+///
+/// Returns `(0.0, 0.0)` outside the domain (`α ≤ 0`, `β ≤ 0`, or `k > n`),
+/// matching the value function's `NEG_INFINITY` clamp — the gradient of a
+/// constant `-inf` floor is zero, consistent with the other helpers.
+pub fn beta_binomial_logpmf_grad(k: f64, n: f64, alpha: f64, beta: f64) -> (f64, f64) {
+    if alpha <= 0.0 || beta <= 0.0 || k > n { return (0.0, 0.0); }
+    let k = k.round().max(0.0);
+    let psi_apb = digamma(alpha + beta);
+    let psi_napb = digamma(n + alpha + beta);
+    let d_alpha = digamma(k + alpha) - digamma(alpha) - psi_napb + psi_apb;
+    let d_beta = digamma(n - k + beta) - digamma(beta) - psi_napb + psi_apb;
+    (d_alpha, d_beta)
+}
+
 /// Gradient of normal_logpdf w.r.t. (mu, sigma).
 pub fn normal_logpdf_grad(y: f64, mu: f64, sigma: f64) -> (f64, f64) {
     if sigma <= 0.0 { return (0.0, 0.0); }
@@ -615,5 +641,70 @@ mod tests {
         let d = poisson_logpmf_grad(k, lambda);
         let fd = (poisson_logpmf(k, lambda + eps) - poisson_logpmf(k, lambda - eps)) / (2.0 * eps);
         assert!((d - fd).abs() < 1e-5);
+    }
+
+    /// EXTERNAL (absolute-correctness) validation of the BetaBinomial
+    /// gradient helper against scipy. Reference values computed with:
+    ///
+    /// ```python
+    /// from scipy.special import digamma
+    /// def grad(n, k, a, b):
+    ///     da = digamma(k+a) - digamma(a) - digamma(n+a+b) + digamma(a+b)
+    ///     db = digamma(n-k+b) - digamma(b) - digamma(n+a+b) + digamma(a+b)
+    ///     return da, db
+    /// ```
+    ///
+    /// Each (∂α, ∂β) below was further cross-checked against a central
+    /// finite difference of `scipy.stats.betabinom.logpmf(k, n, a, b)`
+    /// (varying a, b) — analytic-vs-scipy-FD agreement was ≤ 1e-7 relative,
+    /// so these constants pin the helper to scipy's PMF, not just to the
+    /// digamma identity.
+    #[test]
+    fn test_beta_binomial_grad_matches_scipy() {
+        // (n, k, alpha, beta, d_alpha, d_beta)
+        let cases: [(f64, f64, f64, f64, f64, f64); 4] = [
+            (20.0,  7.0, 2.0, 3.0,  0.02523230,  0.12560415),
+            (50.0,  5.0, 0.8, 4.0,  0.10049902,  0.09177322),
+            (10.0,  9.0, 5.0, 1.5,  0.11696038, -0.31317337),
+            (100.0, 50.0, 2.0, 2.0, 0.13535535,  0.13535535),
+        ];
+        for (n, k, alpha, beta, ref_da, ref_db) in cases {
+            let (da, db) = beta_binomial_logpmf_grad(k, n, alpha, beta);
+            assert!((da - ref_da).abs() <= 1e-7,
+                "d_alpha(n={n}, k={k}, α={alpha}, β={beta}) = {da}, scipy ref {ref_da}");
+            assert!((db - ref_db).abs() <= 1e-7,
+                "d_beta(n={n}, k={k}, α={alpha}, β={beta}) = {db}, scipy ref {ref_db}");
+        }
+    }
+
+    /// INTERNAL (self-consistency) check: the analytic helper matches a
+    /// central finite difference of `beta_binomial_logpmf`, confirming the
+    /// gradient differentiates the *implemented* value function (the unit
+    /// uses integer n/k via u64; FD over α, β with k, n held fixed).
+    #[test]
+    fn test_beta_binomial_grad_vs_fd() {
+        let eps = 1e-6;
+        for &(n, k, alpha, beta) in &[
+            (20u64, 7u64, 2.0, 3.0),
+            (50, 5, 0.8, 4.0),
+            (10, 9, 5.0, 1.5),
+        ] {
+            let (d_a, d_b) = beta_binomial_logpmf_grad(k as f64, n as f64, alpha, beta);
+            let fd_a = (beta_binomial_logpmf(k, n, alpha + eps, beta)
+                      - beta_binomial_logpmf(k, n, alpha - eps, beta)) / (2.0 * eps);
+            let fd_b = (beta_binomial_logpmf(k, n, alpha, beta + eps)
+                      - beta_binomial_logpmf(k, n, alpha, beta - eps)) / (2.0 * eps);
+            assert!((d_a - fd_a).abs() < 1e-5, "d_alpha: {d_a} vs fd {fd_a}");
+            assert!((d_b - fd_b).abs() < 1e-5, "d_beta: {d_b} vs fd {fd_b}");
+        }
+    }
+
+    /// Out-of-domain returns (0, 0) — the gradient of the constant -inf
+    /// floor that `beta_binomial_logpmf` produces there.
+    #[test]
+    fn test_beta_binomial_grad_out_of_domain() {
+        assert_eq!(beta_binomial_logpmf_grad(5.0, 10.0, 0.0, 3.0), (0.0, 0.0)); // α ≤ 0
+        assert_eq!(beta_binomial_logpmf_grad(5.0, 10.0, 2.0, -1.0), (0.0, 0.0)); // β ≤ 0
+        assert_eq!(beta_binomial_logpmf_grad(11.0, 10.0, 2.0, 3.0), (0.0, 0.0)); // k > n
     }
 }
