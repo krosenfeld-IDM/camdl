@@ -57,6 +57,14 @@ pub fn cmd_fit_summary(args: &FitSummaryArgs) {
     // against this set rather than a hard-coded constant.
     let discovered = discover_stages(Path::new(&dir));
 
+    // gh#103 (H17): warn (once, to stderr) when the fit has instant-kind
+    // calendar-date parameters but the model declares no `origin` — the
+    // dates can't be rendered and the omission is otherwise silent.
+    // stderr keeps the warning out of the JSON/stdout payload.
+    if let Some(msg) = load_calendar_context(Path::new(&dir)).missing_origin_warning() {
+        eprintln!("\x1b[33mwarning:\x1b[0m {}", msg);
+    }
+
     if args.params_only {
         match dump_params_only(&dir, args.stage.as_deref(), &discovered) {
             Ok(s) => {
@@ -127,6 +135,29 @@ impl CalendarContext {
         // unknown time_unit; both would have failed earlier loads, so a
         // None here is a safe numeric-only fallback rather than a crash.
         ir::caltime::internal_to_date(origin, value, &self.time_unit).ok()
+    }
+
+    /// gh#103 (H17): warn when the model declares `instant`-kind
+    /// (calendar-date) parameters but no `origin`. Without an origin the
+    /// internal-time ↔ date map is undefined, so these estimands render
+    /// numeric-only and the intended calendar dates silently never
+    /// appear. Returns `Some(msg)` for the caller to print to stderr;
+    /// `None` when there is nothing to warn about (no instant params, or
+    /// an origin is set so dates render).
+    fn missing_origin_warning(&self) -> Option<String> {
+        if self.origin.is_some() || self.instant_params.is_empty() {
+            return None;
+        }
+        let mut names: Vec<&str> =
+            self.instant_params.iter().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        Some(format!(
+            "instant-kind parameter(s) {} render as calendar dates, but \
+             the model declares no `origin` — they will be shown as raw \
+             internal-time numbers instead.\n  \
+             Add an `origin` to the model (e.g. `origin: 2020-01-01`) to \
+             map internal time to dates.",
+            names.join(", ")))
     }
 }
 
@@ -2236,6 +2267,48 @@ mod tests {
         assert_eq!(cal.date_for("tau", 23.0), None);
         // The fully-empty (default) context is also numeric-only.
         assert_eq!(CalendarContext::default().date_for("tau", 23.0), None);
+    }
+
+    // ── gh#103 (H17): missing-origin warning for instant params ────────
+
+    #[test]
+    fn missing_origin_warns_with_instant_params_and_no_origin() {
+        // The triggering case: instant-kind params present, origin absent.
+        let cal = CalendarContext {
+            origin: None,
+            time_unit: "days".into(),
+            instant_params: ["tau".to_string(), "t_seed".to_string()]
+                .into_iter().collect(),
+        };
+        let msg = cal.missing_origin_warning()
+            .expect("instant params without origin must warn");
+        assert!(msg.contains("tau") && msg.contains("t_seed"),
+            "warning must name the instant params: {}", msg);
+        assert!(msg.contains("origin"),
+            "warning must point at the missing `origin`: {}", msg);
+    }
+
+    #[test]
+    fn missing_origin_silent_when_origin_present() {
+        // Control: instant params but origin set → dates render, no warning.
+        assert!(instant_cal().missing_origin_warning().is_none(),
+            "origin present — dates render, so no warning expected");
+    }
+
+    #[test]
+    fn missing_origin_silent_when_no_instant_params() {
+        // Control: no origin, but also no instant params → nothing to
+        // render as a date, so nothing to warn about.
+        let cal = CalendarContext {
+            origin: None,
+            time_unit: "days".into(),
+            instant_params: Default::default(),
+        };
+        assert!(cal.missing_origin_warning().is_none(),
+            "no instant params — no calendar rendering, so no warning");
+        // The fully-default context (no origin, no instant params) is silent.
+        assert!(CalendarContext::default().missing_origin_warning().is_none(),
+            "default context has nothing to warn about");
     }
 
     /// FitState with an `instant`-kind estimand `tau` so the IF2
