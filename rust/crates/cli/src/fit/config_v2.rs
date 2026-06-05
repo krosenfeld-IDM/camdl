@@ -13,7 +13,16 @@ use std::path::PathBuf;
 // ─── Top-level ──────────────────────────────────────────────────────────────
 
 /// A fit.toml v2 — single inference task with named stages.
+///
+/// `deny_unknown_fields` (gh#173): a misplaced or typo'd top-level key is a
+/// hard error, not a silent drop. The honored `dt` lives under `[config]`; a
+/// top-level `dt` used to be silently ignored (dt=1/2/5 gave byte-identical
+/// fits — a wasted timing experiment). The same strictness is applied to the
+/// nested config structs below, except `FixedParams`, whose `#[serde(flatten)]`
+/// for arbitrary `param = value` entries is incompatible with — and the very
+/// opposite of — `deny_unknown_fields`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitConfigV2 {
     pub model: ModelRef,
 
@@ -123,11 +132,13 @@ pub struct FitConfigV2 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRef {
     pub camdl: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitBackendConfig {
     #[serde(default = "default_backend")]
     pub backend: crate::args::types::Backend,
@@ -150,6 +161,7 @@ impl Default for FitBackendConfig {
 /// accumulate) are defined in the .camdl file — fit.toml only provides the
 /// data file paths.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DataSpec {
     /// Single-file shorthand: every observation stream declared in the
     /// model expects a column with the same name in this TSV.
@@ -247,6 +259,7 @@ impl DataSpec {
 /// Schema is forward-compatible with a future `prior:
 /// MultivariatePriorSpec` field for Dirichlet support.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimplexGroup {
     /// Parameter names that form a probability simplex (sum = 1).
     /// Each must appear in `[estimate]`. Order is preserved for
@@ -261,6 +274,7 @@ pub struct SimplexGroup {
 /// one. Output directory structure places these under `synthetic/ds_NN/`
 /// — see docs/dev/proposals/2026-04-17-synthetic-fit-replicates.md.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SyntheticSpec {
     /// Path to a TOML file of `name = value` lines supplying the ground
     /// truth used to generate data and to compute coverage / bias.
@@ -406,6 +420,7 @@ pub enum FitStarts {
 // ─── Estimate ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EstimateSpecV2 {
     /// Search bounds. When `None`, the model file's
     /// `parameters { foo : rate in [lo, hi] }` declaration is the source
@@ -979,6 +994,7 @@ pub enum Stage {
 /// (`nl-sbplx`, `nl-bobyqa`). Both algorithms read identical knobs;
 /// the variant tag picks which NLopt algorithm runs.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NloptStageConfig {
     pub backend: crate::run_meta::Backend,
     /// Number of LHS-spread starting points. Each runs an independent
@@ -1256,6 +1272,7 @@ impl Default for CombineMode {
 /// winner. Closes the ~40-nat extraction bias from argmax over noisy
 /// 500-particle in-run evaluations. See proposal §Proposal 1.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoglikEvalConfig {
     /// Particle count per clean PF replicate. Must be ≫ in-run scout
     /// particle count to bring SE under control.
@@ -1313,6 +1330,7 @@ impl Default for LoglikEvalConfig {
 /// log-likelihood spread (decibans, with an SE-aware floor). See
 /// proposal §Proposal 3.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateConfig {
     /// Maximum tolerated chain-agreement statistic Â (Gelman–Rubin–style
     /// applied to IF2 chain tails). Pass requires `max(Â) < a_thresh`.
@@ -1349,6 +1367,7 @@ impl Default for GateConfig {
 /// `effective_threshold_for_backend` in `dt_check.rs`); the struct
 /// fields here are pre-resolution.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct DtCheckConfig {
     /// Master toggle. Default `true` — every fit gets the audit.
     /// Set `false` to opt out (CI smoke fits, known-converged-dt
@@ -1459,6 +1478,7 @@ impl<'de> serde::Deserialize<'de> for StartsFrom {
 
 /// Optional metadata linking this fit to a parent.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FitProvenance {
     pub derived_from: Option<String>,
     pub reason: Option<String>,
@@ -4862,5 +4882,102 @@ init_method = "lhs"
 
         assert!(err.contains("init_method") && err.contains("init"),
             "nlopt-stage legacy-key error must mirror the IF2/PGAS shape; got: {err}");
+    }
+
+    // ── gh#173: strict fit.toml — unknown keys must hard-error ───────────────
+
+    /// A minimal, valid fit.toml. Tests below inject one bad key into it.
+    const STRICT_BASE: &str = r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 8
+particles = 1000
+iterations = 80
+cooling = 0.70
+"#;
+
+    #[test]
+    fn strict_base_still_parses() {
+        // Guard: the base used by the rejection tests must itself be valid,
+        // so a rejection below is attributable to the injected key, not a
+        // broken fixture.
+        parse(STRICT_BASE).expect("STRICT_BASE must parse cleanly");
+    }
+
+    #[test]
+    fn top_level_dt_is_rejected() {
+        // The honored dt lives under [config]; a top-level `dt` was silently
+        // dropped pre-fix (dt=1/2/5 gave byte-identical fits — a wasted
+        // timing experiment, gh#173). It must now hard-error and name `dt`.
+        let bad = format!("dt = 5.0\n{STRICT_BASE}");
+        let err = parse(&bad).expect_err(
+            "a top-level `dt` (belongs under [config]) must be rejected");
+        assert!(err.contains("dt"),
+            "error must name the offending key `dt`; got: {err}");
+    }
+
+    #[test]
+    fn typoed_top_level_key_is_rejected() {
+        // A typo'd key (here `iteration`, a near-miss for the stage's
+        // `iterations`) must not be silently ignored — strict config.
+        let bad = format!("iteration = 80\n{STRICT_BASE}");
+        let err = parse(&bad).expect_err(
+            "a typo'd top-level key must be rejected, not silently dropped");
+        assert!(err.contains("iteration"),
+            "error must name the offending key `iteration`; got: {err}");
+    }
+
+    #[test]
+    fn fixed_params_still_accept_arbitrary_param_keys() {
+        // Guard the deny_unknown_fields CAVEAT: [fixed] uses serde(flatten)
+        // for arbitrary `param = value` entries, so it must NOT gain
+        // deny_unknown_fields — a model parameter name is a legitimate
+        // "unknown" key there. STRICT_BASE's [fixed] already carries N0; this
+        // confirms an additional arbitrary param key flattens in.
+        let cfg = parse(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000000
+some_param = 0.5
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 8
+particles = 1000
+iterations = 80
+cooling = 0.70
+"#).expect("arbitrary [fixed] param keys must still be accepted");
+        assert!(cfg.fixed.values.contains_key("some_param"),
+            "[fixed] must keep flattening arbitrary param keys");
     }
 }

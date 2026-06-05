@@ -76,6 +76,17 @@ simulator (`chain_binomial` for fits — needed for chain-binomial process noise
 and `balance`). A downstream stage warm-starts from an upstream one with
 `init_mle = "<stage-name>"`.
 
+**`[config]`** — fit-wide simulator settings: `backend` (default
+`chain_binomial`) and `dt` (the integrator step, default `1.0`). The `dt` you
+care about lives here; a `dt` written at the top level of the file is a typo,
+not a setting.
+
+> **Unknown keys are rejected.** A misplaced or misspelled key is a hard error
+> naming the offending key — `fit.toml` is parsed strictly. A top-level `dt`
+> (it belongs in `[config]`) or `particle` (it is `particles`, under a stage)
+> fails at load rather than being silently dropped, so a sweep that varies a
+> typo'd knob can't quietly produce identical fits.
+
 ## Priors
 
 Externally-tagged inline tables (the wire format matches the IR emission):
