@@ -4,6 +4,7 @@ status: proposal
 related:
   - 2026-06-05-observation-data-binding.md
   - 2026-05-14-reactive-interventions-and-evsi.md
+  - archive/pre-alpha/2026-05-04-ode-inference-three-phase.md
 area: simulation engine / inference / DSL
 issue: TBD
 ---
@@ -165,9 +166,14 @@ times. They consolidate into one **schedule** (below); the kernel `step_one` is
 already singular.
 
 One boundary on what "one process" can mean: a single fixed-step `step(dt)`
-contract subsumes chain-binomial and tau-leap, but **not** Gillespie
-(event-driven, no fixed `dt`) and **not** ODE (no RNG, no seed). Those remain
-distinct dynamics; the schedule is shared, the `step` contract is not universal.
+contract subsumes chain-binomial, tau-leap, **and ODE** — ODE steps in `dt`
+(RK4 sub-stepping within each step) and simply ignores the `rng` argument
+because it is deterministic. It does **not** subsume Gillespie, whose advance is
+event-driven (continuous-time, no fixed `dt`). All four still share the
+`Schedule` — Gillespie already steps to boundaries (`gillespie.rs`); what
+differs is its internal kernel. ODE's *inference* diverges further because it is
+deterministic — the trajectory-match driver below — but that is a driver
+concern, not a dynamics one.
 
 ### Everything else is a typed timeline of triggered effects
 
@@ -307,30 +313,38 @@ A driver applies, at each substep, the due `Mutate`s in `Phase` order (reading
 snapshot or current per `read_from`), then the `Constrain`s; and at an
 `Observation` boundary, the `Observe` for that stream.
 
-### The two drivers (divergent) — forward generates, inference evaluates
+### The drivers — generate, filter, trajectory-match
 
-Both drivers consume the **same** compiled model (process kernel + effects +
-schedule). They diverge only in what they *do* at each boundary.
+All drivers consume the **same** compiled model (process kernel + effects +
+schedule). They diverge only in what they *do* at each boundary — and there are
+**three**, not two, because the inference question itself forks on whether the
+dynamics carry process noise.
+
+**Forward — generate.** Allocates freely; records the full trajectory; emits
+observations (samples `y ~ p(y|x)`, consuming RNG); handles all trigger kinds,
+including reactive. One pass.
 
 ```rust
-/// FORWARD — generate. Allocates freely; records the full trajectory; EMITS
-/// observations (samples y ~ p(y|x), consuming RNG); handles ALL trigger kinds,
-/// including reactive (StateCondition checked each substep). One pass.
 pub fn run_forward(model: &Compiled, params: &[f64], seed: u64, cfg: &SimConfig)
     -> Trajectory
 {
     // for each (t_next, boundaries) from schedule.next(t):
-    //   advance process: step_one(state, params, t, t_next - t, rng, scratch)
+    //   advance process: step_one | integrate (state, params, t, t_next - t, rng, scratch)
     //   evaluate StateCondition triggers against the realized state
     //   apply due Mutate effects in Phase order, then Constrain
     //   Output(_)       => record Snapshot
     //   Observation(i)  => sample y ~ p(y | state, params)  [RNG] and record
 }
+```
 
-/// INFERENCE — evaluate. Alloc-free hot loop (reusable Scratch); SCORES
-/// observations (evaluates log p(y_obs | x), no RNG); rejects reactive triggers
-/// at construction via the capability gate. PF/IF2/PMMH need only ProcessModel;
-/// PGAS additionally needs DensityProcess and records a per-substep reference.
+**Stochastic filter — evaluate by filtering.** The alloc-free hot loop. Scores
+observations (`log p(y_obs|x)`, no RNG); rejects reactive triggers at
+construction. PF / IF2 / PMMH need only `ProcessModel`; PGAS additionally needs
+`DensityProcess` and records a per-substep reference for CSMC-AS. State is
+`ParticleState` (integer counts); gradients come from `rate_grad` threaded
+through the filter.
+
+```rust
 pub fn run_filter<P: ProcessModel>(
     process:  &P,
     obs:      &dyn ObservationModel<P::State>,   // the scoring seam (traits.rs:89)
@@ -347,7 +361,46 @@ pub fn run_filter<P: ProcessModel>(
 }
 ```
 
-### Why forward and inference must diverge (the six reasons)
+**Deterministic trajectory-match — evaluate by integration.** When the dynamics
+are deterministic (the ODE backend), the latent trajectory is a function of `θ`
+and the initial conditions alone — there is no process noise to filter, so a
+particle filter is structurally redundant: every particle is identical, and the
+filter burns 100×–1000× the compute on copies. The right driver integrates the
+ODE once per `θ`, scores the observation likelihood of that single trajectory,
+and optimises or samples `θ` directly. Gradients come from the **forward
+sensitivity equations** — evolve `∂x/∂θ` alongside `x`, using the same symbolic
+`∂f/∂x`, `∂f/∂θ` the autodiff pass already emits — not from a particle filter.
+This is the deterministic-skeleton / trajectory-matching path (pomp's
+`traj_match`, King, Nguyen & Ionides 2016; Stan's ODE models), and it is what
+unlocks endemic age-stratified fits — malaria EIR-by-age, typhoid SIRC — where
+the filter is pure waste. Its algorithms (NLopt MLE, Metropolis–Hastings,
+NUTS-via-sensitivity-ODE) are worked out in
+`archive/pre-alpha/2026-05-04-ode-inference-three-phase.md`; the unified
+architecture gives them a home beside the filter rather than as a parallel stack.
+
+```rust
+pub fn run_trajmatch(
+    ode:      &OdeProcess,                      // State = OdeState (Vec<f64>), deterministic
+    obs:      &dyn ObservationModel<OdeState>,  // same scoring seam
+    effects:  &CompiledEffects,                 // reactive pre-rejected
+    schedule: &Schedule,                        // same merged timeline
+    params:   &[f64],
+) -> (Loglik, Option<Grad>)                     // grad via forward-sensitivity ODE
+{
+    // integrate ONCE over schedule boundaries (no particles, no process RNG):
+    //   advance ODE: integrate(state [+ ∂state/∂θ], params, t, t_next - t)
+    //   apply due Mutate (Phase order), then Constrain
+    //   Observation(i) => L += obs.log_likelihood(state, i, params); accumulate grad
+    // then NLopt / MH / NUTS over θ on (L, grad).
+}
+```
+
+So the divergence axis is not forward-vs-inference but **generate / filter /
+integrate** — three interpretations of one timeline, picked by the question
+(simulate? fit a stochastic process? fit a deterministic skeleton?), over one
+schedule, one set of effects, and one family of dynamics kernels.
+
+### Why the drivers diverge (the six reasons, plus determinism)
 
 The divergence is confined to the driver, and every part of it is forced:
 
@@ -375,9 +428,74 @@ The divergence is confined to the driver, and every part of it is forced:
 
 What is *shared*, then, is everything that matters for consistency: the model,
 the schedule, the trigger/effect types, and the dynamics kernel. What diverges is
-a thin, enumerable set of per-boundary behaviours. That is the whole point —
-forward and inference can no longer disagree about *when* things happen or *what*
-the effects are, only about generate-vs-evaluate, which is their actual job.
+a thin, enumerable set of per-boundary behaviours. That is the whole point — the
+drivers can no longer disagree about *when* things happen or *what* the effects
+are, only about generate / filter / integrate, which is their actual job.
+
+The trajectory-match driver adds two divergences beyond the six, both from
+determinism: with no process noise the filter degenerates, so it integrates once
+rather than resampling N identical particles; and its gradient comes from the
+forward sensitivity equations (`∂x/∂θ` evolved with `x`) rather than from
+`rate_grad` threaded through a filter. Same scoring seam, same schedule, same
+effects — a third way to turn `θ` into a likelihood.
+
+## How the pieces relate and flow
+
+Existing types are kept and mapped into the new effect types; one compiled model
+feeds three pluggable drivers:
+
+```
+ EXISTING (kept)                     NEW (this proposal)
+ ───────────────                     ───────────────────────────────
+ step_one ............ kernel        Schedule ......... merged timeline
+ ParticleState (i64 counts)          Boundary = Substep|Output|Obs|Effect
+ OdeState      (f64)                 Trigger  = AtTimes|Recurring|EverySubstep
+ DensityProcess (PGAS only)                     |StateCondition|ObservationTime
+ ObservationModel / log_likelihood   TriggerCaps{ differentiable, markov }
+                                     Phase = Transition<Event<Intervention<Balance
+                                     ReadFrom = Snapshot | Current
+
+   existing IR types        ── map ──►   new effect types
+   ─────────────────                     ────────────────
+   StreamProjection, Likelihood ──────►  Observe   (Read,  &state)
+   Intervention/Action/Schedule ──────►  Mutate    (&mut state, Phase)
+   (reactive trigger: new)               Constrain (structural, last)
+   ResolvedBalance ───────────────────►  ──┘
+
+                    ┌──────────────────────────────────┐
+                    │          COMPILED MODEL           │
+                    │  kernel + [effects] + Schedule    │
+                    └──────────────────────────────────┘
+                                   │
+          ┌────────────────────────┼────────────────────────┐
+          ▼                        ▼                         ▼
+     run_forward              run_filter               run_trajmatch
+     GENERATE                 FILTER (stochastic)      INTEGRATE (determ.)
+     emit + record            score + resample         integrate + score
+     all triggers (reactive)  PF/IF2/PMMH/PGAS         NLopt / MH / NUTS
+     chain/tau/ode/gillespie  chain-binomial           ODE
+                              ParticleState            OdeState + ∂x/∂θ
+                              grad: rate_grad          grad: sensitivity ODE
+```
+
+The per-boundary control loop is the same for every driver; only the marked
+lines differ:
+
+```
+  ┌─► Schedule.next(t) → (t_next, [Boundary…])
+  │       │
+  │       ▼   advance kernel  t → t_next         (step_one | integrate)
+  │       ▼   reactive? eval StateCondition       [forward / trajmatch only]
+  │       ▼   apply Mutate by Phase:  Event(Snapshot) → Intervention(Current)
+  │       ▼   apply Constrain (balance) — last
+  │       ▼   at Boundary:
+  │             Output(i)      → record snapshot            [forward]
+  │             Observation(i) → forward:   sample y~p(y|x)  [RNG, emit]
+  │                              filter:    w += log p(y|x)  [score]
+  │                              trajmatch: L += log p(y|x)  [score]
+  │       ▼   (PGAS only: record SubstepRecord at schedule index)
+  └───────┘   loop to next boundary
+```
 
 ## Leaky abstractions the types must honour
 
@@ -487,8 +605,11 @@ and the reason this is a proposal rather than a refactor PR.
 
 ## Out of scope
 
-- Gillespie and ODE under a single `step(dt)` dynamics trait — they do not fit;
-  the schedule is shared, the `step` contract is not universal.
+- Gillespie's *internal advance* under a fixed `step(dt)` contract — it is
+  event-driven (continuous-time, exact), so its kernel is "advance to the next
+  event or boundary," not a fixed step. It still rides the shared `Schedule`;
+  only its dynamics primitive differs. ODE is **not** excluded — it steps in
+  `dt` and gets the trajectory-match driver above.
 - Vital dynamics, spatial coupling — structural (transition-graph) changes.
 - Reporting-delay convolutions — scoring-with-memory, designed separately.
 
