@@ -38,7 +38,11 @@ camdl fit run fit.toml
 
 ## Documentation
 
-- **[camdl by Example](guide/intro.md)** — learn the language through worked examples
-- **[Language Specification](language/spec.md)** — complete reference for `.camdl` syntax
-- **[Inference Guide](inference/guide.md)** — particle filtering, IF2, PGAS, diagnostics
-- **[IR Specification](architecture/ir-spec.md)** — the JSON intermediate representation
+- **[camdl by Example](guide/intro.md)** — learn the language through worked
+  examples
+- **[Language Specification](language/spec.md)** — complete reference for
+  `.camdl` syntax
+- **[Inference Guide](inference/guide.md)** — particle filtering, IF2, PGAS,
+  diagnostics
+- **[IR Specification](architecture/ir-spec.md)** — the JSON intermediate
+  representation

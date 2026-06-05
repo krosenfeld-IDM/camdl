@@ -1,7 +1,6 @@
 # Gillespie freezes propensities for rates that depend on bare `t`
 
-Date: 2026-05-20
-Severity: high (silent wrong dynamics; no error, no warning)
+Date: 2026-05-20 Severity: high (silent wrong dynamics; no error, no warning)
 Backends affected: Gillespie only (chain-binomial / tau-leap / ODE correct)
 Status: fixed
 
@@ -17,12 +16,12 @@ plausible-looking trajectory that was simply wrong.
 Concretely, on a SIR model seeded by such a pulse (`seed : --> I @ ...`), with
 `lambda = 2`, `w = 3`:
 
-| backend | τ=10 seed inflow | τ=40 seed inflow |
-|---|---|---|
-| gillespie (before fix) | 10 | **0** |
-| gillespie (after fix) | 189 | 141 |
-| chain_binomial | 213 | 166 |
-| tau_leap | 213 | 166 |
+| backend                | τ=10 seed inflow | τ=40 seed inflow |
+| ---------------------- | ---------------- | ---------------- |
+| gillespie (before fix) | 10               | **0**            |
+| gillespie (after fix)  | 189              | 141              |
+| chain_binomial         | 213              | 166              |
+| tau_leap               | 213              | 166              |
 
 At τ=40 the pulse is essentially off at `t=0` (`rate(0) ≈ 3·10⁻⁶`), so the
 frozen propensity stayed ≈0 for the entire run and **no seeding ever occurred —
@@ -34,10 +33,10 @@ introduction silently vanishes.
 
 While hand-verifying mechanism B of the seed-timing proposal
 (`docs/dev/proposals/2026-05-20-seed-timing-inference.md`), comparing seed
-inflow across backends. Gillespie disagreed sharply with the fixed-step
-backends and produced zero inflow for a late seed. The per-substep tracer
-(`CAMDL_TRACE_STEPS=1`) confirmed `rate_seed` *was* computed correctly when
-re-evaluated, isolating the fault to *which* transitions get re-evaluated.
+inflow across backends. Gillespie disagreed sharply with the fixed-step backends
+and produced zero inflow for a late seed. The per-substep tracer
+(`CAMDL_TRACE_STEPS=1`) confirmed `rate_seed` _was_ computed correctly when
+re-evaluated, isolating the fault to _which_ transitions get re-evaluated.
 
 ## Root cause
 
@@ -49,10 +48,10 @@ forcings such as `seasonal(t)`) and **not** `Expr::Time` (a bare `t`). So a rate
 using bare `t` was omitted from `time_dep_transitions` and never re-evaluated as
 time advanced; its propensity stayed at the `t=0` value.
 
-The fixed-step backends (chain-binomial, tau-leap) re-evaluate *all* propensities
-every substep regardless of this set, so they were unaffected — which is why the
-bug hid: the blessed seasonal-forcing path uses `TimeFunc`, and no golden model
-used bare `t` in a rate, so no test exercised the gap.
+The fixed-step backends (chain-binomial, tau-leap) re-evaluate _all_
+propensities every substep regardless of this set, so they were unaffected —
+which is why the bug hid: the blessed seasonal-forcing path uses `TimeFunc`, and
+no golden model used bare `t` in a rate, so no test exercised the gap.
 
 `rust/crates/sim/src/compiled_model.rs` — `expr_has_time_func` (the classifier),
 consumed at the `time_dep_transitions` build site and in
@@ -61,8 +60,8 @@ consumed at the `time_dep_transitions` build site and in
 ## Remediation
 
 - Extended the classifier to treat `Expr::Time` as time-dependent and renamed it
-  `expr_is_time_dependent` (the old name described only half of what the set must
-  contain). `Expr::Dt` (the step-size constant) is deliberately *not*
+  `expr_is_time_dependent` (the old name described only half of what the set
+  must contain). `Expr::Dt` (the step-size constant) is deliberately _not_
   time-dependent.
 - Added unit tests (`compiled_model::tests`) asserting bare `Time` — including
   nested under `BinOp`/`UnOp` as in a logistic pulse — classifies as

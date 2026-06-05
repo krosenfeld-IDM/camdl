@@ -22,11 +22,11 @@ transform. A few commands delegate to the compiler.
 
 ### Produce inference artifacts
 
-| Command              | Produces                                                                                                               |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `fit run`            | The full inference pipeline: a `fit.toml`'s named stages, in order — MLE, posterior, diagnostics. The production path. An MLE-only fit is a `fit.toml` with one `algorithm = "if2"` stage. |
-| `pfilter`            | A log-likelihood at _fixed_ parameters via a bootstrap particle filter (no estimation).                                |
-| `profile`            | A profile-likelihood curve — parallel IF2 over a grid of one focal parameter.                                          |
+| Command   | Produces                                                                                                                                                                                   |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fit run` | The full inference pipeline: a `fit.toml`'s named stages, in order — MLE, posterior, diagnostics. The production path. An MLE-only fit is a `fit.toml` with one `algorithm = "if2"` stage. |
+| `pfilter` | A log-likelihood at _fixed_ parameters via a bootstrap particle filter (no estimation).                                                                                                    |
+| `profile` | A profile-likelihood curve — parallel IF2 over a grid of one focal parameter.                                                                                                              |
 
 ### Produce diagnostic artifacts
 
@@ -149,7 +149,7 @@ camdl fit run fit.toml --resume <base-run-id> --stage posterior   # extend a com
 camdl fit summary results/fits/<dir>/               # Â / gate verdict / MLE table
 ```
 
-A resumed fit reads the base run read-only and writes a *new* run keyed on the
+A resumed fit reads the base run read-only and writes a _new_ run keyed on the
 extended length. It is a distinct deterministic artifact — not bit-identical to
 an uninterrupted fit of the same length (both are valid posterior samples).
 

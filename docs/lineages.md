@@ -1,13 +1,13 @@
 # Lineages: event logs, line lists, and transmission trees
 
 camdl's backends track compartment **counts**. The lineage layer adds an
-optional **identity** layer that records *which* individual infected *which* —
+optional **identity** layer that records _which_ individual infected _which_ —
 but it does so in three cleanly separated stages, because the genealogy is a
-*conditional sample*, not a deterministic function of the epidemic.
+_conditional sample_, not a deterministic function of the epidemic.
 
 This is for **benchmark and synthetic-data generation** (e.g. validating
-phylodynamic inference against a known true tree). Enabling it never changes
-the count dynamics.
+phylodynamic inference against a known true tree). Enabling it never changes the
+count dynamics.
 
 ## Why three layers: the line list is a conditional sample
 
@@ -18,20 +18,20 @@ P(augmented trajectory) = P(count trajectory) × P(identity attribution | count 
 ```
 
 The compartmental simulation draws the **first** factor — it fixes the ordered
-event sequence (a transmission fired at t₁, a recovery at t₂, …). It does *not*
-fix the second: given that event sequence, *which* individual was the infector
-at each transmission, and *which* recovered at each recovery, are a separate
+event sequence (a transmission fired at t₁, a recovery at t₂, …). It does _not_
+fix the second: given that event sequence, _which_ individual was the infector
+at each transmission, and _which_ recovered at each recovery, are a separate
 stochastic layer. Many identity attributions are equally consistent with one
 count trajectory. So **one epidemic defines a distribution over genealogies**,
 not a single tree — and benchmark validation needs the ensemble.
 
 camdl therefore separates three stages, each independently cacheable:
 
-| Layer | Command | Produces |
-|---|---|---|
-| **1. Event log** | `simulate --event-log` | the epidemic: ordered events, identity-free |
-| **2. Line list** | `lineage realize --identity-seed` | one genealogy realization + its log-probability |
-| **3. Tree** | `lineage tree --scheme --sample-seed` | a sampled, pruned, Newick transmission tree (sampling over all individuals, pendant tips at sampling time) |
+| Layer            | Command                               | Produces                                                                                                   |
+| ---------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **1. Event log** | `simulate --event-log`                | the epidemic: ordered events, identity-free                                                                |
+| **2. Line list** | `lineage realize --identity-seed`     | one genealogy realization + its log-probability                                                            |
+| **3. Tree**      | `lineage tree --scheme --sample-seed` | a sampled, pruned, Newick transmission tree (sampling over all individuals, pendant tips at sampling time) |
 
 ```bash
 camdl simulate model.camdl --params p.toml --seed 42 --event-log epi.parquet
@@ -66,16 +66,16 @@ of `I`) and errors with `E601`. Nonlinear mixing is future work.
 **Overdispersion is transparent.** `overdispersed(β·S·I/N, σ²)` on a
 `#[lineage]` transition compiles: the classifier sees through the noise wrapper
 and extracts the same linear weight `β·S/N`. The σ² environmental noise affects
-the *count dynamics*, not the *attribution* — so overdispersed processes work,
+the _count dynamics_, not the _attribution_ — so overdispersed processes work,
 on the chain-binomial / tau-leap backends that `overdispersed()` requires.
 
 ## Backends and tree accuracy
 
-| Backend | Lineage support | Tree accuracy |
-|---|---|---|
-| `gillespie` | exact | one event at a time — exact attribution; sub-`dt` bias = 0 |
-| `tau_leap`, `chain_binomial` | approximate | *k* events per step against frozen start-of-step pools; **systematically loses parent→child edges shorter than `dt`**. `realize` reports the sub-`dt` edge-loss fraction. |
-| `ode` | rejected | no individuals — hard error |
+| Backend                      | Lineage support | Tree accuracy                                                                                                                                                             |
+| ---------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gillespie`                  | exact           | one event at a time — exact attribution; sub-`dt` bias = 0                                                                                                                |
+| `tau_leap`, `chain_binomial` | approximate     | _k_ events per step against frozen start-of-step pools; **systematically loses parent→child edges shorter than `dt`**. `realize` reports the sub-`dt` edge-loss fraction. |
+| `ode`                        | rejected        | no individuals — hard error                                                                                                                                               |
 
 `overdispressed()` models require chain-binomial / tau-leap, so their trees are
 approximate; shrink `--dt` for trustworthy trees, and read the reported sub-`dt`
@@ -110,13 +110,13 @@ log P(line list | event log) = Σ_events log P(attribution)
 ```
 
 `realize` accumulates this and reports it (and stores it per line list). **This
-is the only clean exact likelihood the architecture provides.** There is *no*
+is the only clean exact likelihood the architecture provides.** There is _no_
 cheap full-tree product: recovery attributions are not independent of the tree
-(they set which individuals remain available as parents), so any tree
-likelihood requires a marginalization that is combinatorial — the sampled-tree
-likelihood is exactly what structured-coalescent methods (MASCOT et al.)
-approximate. See the design proposal for the counterexample and the
-summary-statistic synthetic-likelihood route.
+(they set which individuals remain available as parents), so any tree likelihood
+requires a marginalization that is combinatorial — the sampled-tree likelihood
+is exactly what structured-coalescent methods (MASCOT et al.) approximate. See
+the design proposal for the counterexample and the summary-statistic
+synthetic-likelihood route.
 
 ### Line-list columns
 
@@ -135,20 +135,19 @@ camdl lineage sojourn line_list.parquet --compartment 1            # I dwell-tim
 camdl lineage cohort  line_list.parquet --event infection --window 7
 ```
 
-`lineage tree` builds the parent→child forest, samples observed tips from **all**
-individuals (placing each pendant tip at its sampling time), prunes to the
-minimal subtree spanning them (suppressing unsampled unary nodes), and emits
+`lineage tree` builds the parent→child forest, samples observed tips from
+**all** individuals (placing each pendant tip at its sampling time), prunes to
+the minimal subtree spanning them (suppressing unsampled unary nodes), and emits
 Newick with **time-calibrated branch lengths** (tip branches reach the sampling
 time). See [Sampling](#sampling-current-and-planned) for the schemes.
 
 ### Forest vs. tree
 
 The structure recovered from a line list is in general a **forest** — one tree
-per *independent introduction*. A root is any individual with no in-simulation
-parent: each seed infective (`I₀ > 1`) and each importation founds its own
-tree. Only a single introduction yields a single tree. `lineage tree` reports
-how many forest components survived sampling and emits one Newick per surviving
-root.
+per _independent introduction_. A root is any individual with no in-simulation
+parent: each seed infective (`I₀ > 1`) and each importation founds its own tree.
+Only a single introduction yields a single tree. `lineage tree` reports how many
+forest components survived sampling and emits one Newick per surviving root.
 
 ## Sampling (current and planned)
 
@@ -156,7 +155,7 @@ Sampling draws from **all** individuals — an infector can be sampled, not only
 chain endpoints — and places each sampled individual's pendant tip at its
 **sampling time**: its removal time (the last progression / recovery / death
 event in which it is the focal individual), or the simulation horizon if it was
-never removed. A sampled infector becomes an internal node *plus* a pendant tip
+never removed. A sampled infector becomes an internal node _plus_ a pendant tip
 at its sampling time; its onward-transmission subtree is preserved. This matches
 realistic surveillance (cases are sampled at observation time, regardless of
 whether they later transmit), unlike the old leaf-only / infection-time scheme.
@@ -206,10 +205,11 @@ all-individuals sampling with pendant tips at sampling (removal) time, `flat`
 and `stratified` (per-deme index) schemes.
 
 **Coming next / not yet built** (don't rely on these):
+
 - **`lineage { sampling }` model block** — declaring the scheme structurally in
   the model with rates as ordinary parameters and stratum **names** (the
-  projection-time `flat` / `stratified:idx=rate` path is shipped; the model-block
-  declaration is the remaining milestone).
+  projection-time `flat` / `stratified:idx=rate` path is shipped; the
+  model-block declaration is the remaining milestone).
 - **`Tree`/`SyntheticTree` no-cheating split** — an observable `Tree` boundary
   type for the inference-validation loop.
 - **`lineage loglik`** — tree-likelihood scoring; only the line-list logprob

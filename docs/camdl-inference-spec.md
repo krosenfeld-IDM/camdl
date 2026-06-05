@@ -1,50 +1,47 @@
 # camdl Inference Workflow Specification
 
-**Version:** 0.1-draft
-**Date:** 2026-03-30
-**Depends on:** Experiment Spec v0.5 (output schemas), VOI Spec v0.1
+**Version:** 0.1-draft **Date:** 2026-03-30 **Depends on:** Experiment Spec v0.5
+(output schemas), VOI Spec v0.1
 
 ---
 
 ## 1. Design Principles
 
-**Files are the workflow.** Every inference step reads files and
-writes files. The pipeline exists in the filesystem, not in the
-researcher's head. Any step can be rerun. Any result can be traced
-to its inputs.
+**Files are the workflow.** Every inference step reads files and writes files.
+The pipeline exists in the filesystem, not in the researcher's head. Any step
+can be rerun. Any result can be traced to its inputs.
 
-**params.toml is the universal interface.** The inference pipeline's
-final output is a params.toml. It feeds directly into `camdl simulate`,
-`camdl batch run`, `camdl voi run`. No format conversion. One
-chain from raw data to decision.
+**params.toml is the universal interface.** The inference pipeline's final
+output is a params.toml. It feeds directly into `camdl simulate`,
+`camdl batch run`, `camdl voi run`. No format conversion. One chain from raw
+data to decision.
 
-**The fixed/free partition is explicit and exhaustive.** Every model
-parameter must be declared as either estimated or fixed. No silent
-defaults. Accidental fixation — the most common calibration error —
-is a compile-time error, not a runtime surprise.
+**The fixed/free partition is explicit and exhaustive.** Every model parameter
+must be declared as either estimated or fixed. No silent defaults. Accidental
+fixation — the most common calibration error — is a compile-time error, not a
+runtime surprise.
 
-**Provenance is structural.** Every machine-generated file includes
-a content hash and input references. Modified files are detectable.
-The full chain from data to decision is auditable.
+**Provenance is structural.** Every machine-generated file includes a content
+hash and input references. Modified files are detectable. The full chain from
+data to decision is auditable.
 
-**TOML for humans, JSON for agents, TSV for data.** No file serves
-two masters.
+**TOML for humans, JSON for agents, TSV for data.** No file serves two masters.
 
 ---
 
 ## 2. File Roles
 
-| File | Format | Written by | Read by | Purpose |
-|------|--------|-----------|---------|---------|
-| `fit.toml` | TOML | Human | All fit commands | Inference configuration |
-| `fit_state.toml` | TOML | Each stage | Next stage | Inter-stage handoff |
-| `{stage}_summary.json` | JSON | Each stage | Agent / status | Machine-readable diagnostics |
-| `mle_params.toml` | TOML | validate | experiment system | Final MLE (IS a params.toml) |
-| `fit_record.json` | JSON | validate | Audit / archive | Self-contained provenance |
-| `fit_report.txt` | Text | validate | Human / methods section | Human-readable summary |
-| `parameter_traces.tsv` | TSV | Each stage | Plotting | Per-iteration param values |
-| `diagnostics.tsv` | TSV | Each stage | Plotting / analysis | Per-iteration ESS, loglik |
-| `profiles/*.tsv` | TSV | validate | Plotting / CI | Profile likelihood curves |
+| File                   | Format | Written by | Read by                 | Purpose                      |
+| ---------------------- | ------ | ---------- | ----------------------- | ---------------------------- |
+| `fit.toml`             | TOML   | Human      | All fit commands        | Inference configuration      |
+| `fit_state.toml`       | TOML   | Each stage | Next stage              | Inter-stage handoff          |
+| `{stage}_summary.json` | JSON   | Each stage | Agent / status          | Machine-readable diagnostics |
+| `mle_params.toml`      | TOML   | validate   | experiment system       | Final MLE (IS a params.toml) |
+| `fit_record.json`      | JSON   | validate   | Audit / archive         | Self-contained provenance    |
+| `fit_report.txt`       | Text   | validate   | Human / methods section | Human-readable summary       |
+| `parameter_traces.tsv` | TSV    | Each stage | Plotting                | Per-iteration param values   |
+| `diagnostics.tsv`      | TSV    | Each stage | Plotting / analysis     | Per-iteration ESS, loglik    |
+| `profiles/*.tsv`       | TSV    | validate   | Plotting / CI           | Profile likelihood curves    |
 
 ---
 
@@ -84,14 +81,14 @@ dt = 1.0
 # If specified, rw_sd is on the NATURAL scale (converted internally
 # via delta method).
 [estimate]
-R0        = { rw_sd = 5.0 }
-sigma     = {}                  # auto rw_sd from bounds
-gamma     = {}                  # auto rw_sd from bounds
-rho       = { rw_sd = 0.02 }   # explicit override
+R0 = { rw_sd = 5.0 }
+sigma = {} # auto rw_sd from bounds
+gamma = {} # auto rw_sd from bounds
+rho = { rw_sd = 0.02 } # explicit override
 amplitude = {}
-S0        = { ivp = true }      # auto rw_sd, perturbed only at t=0
-E0        = { ivp = true }
-I0        = { ivp = true }
+S0 = { ivp = true } # auto rw_sd, perturbed only at t=0
+E0 = { ivp = true }
+I0 = { ivp = true }
 
 # Optional: override starting value (default: from model)
 # sigma = { start = 0.1 }
@@ -108,67 +105,64 @@ I0        = { ivp = true }
 # The user MUST explicitly assign every model parameter to
 # either [estimate] or [fixed]. Missing parameters are an error.
 [fixed]
-N0     = true
-mu     = true
-k      = true
-psi    = true
+N0 = true
+mu = true
+k = true
+psi = true
 cohort = true
 ```
 
 ### 3.2 Search Bounds
 
-The model declares structural bounds:
-`R0 : positive in [1.0, 100.0]` — the physically valid range.
+The model declares structural bounds: `R0 : positive in [1.0, 100.0]` — the
+physically valid range.
 
-The fit.toml can declare narrower **search bounds** — "for this
-data, focus the search here":
+The fit.toml can declare narrower **search bounds** — "for this data, focus the
+search here":
 
 ```toml
 R0 = { rw_sd = 5.0, bounds = [30.0, 80.0] }
 ```
 
-Search bounds are optional on every parameter. When omitted, the
-full model bounds apply. Typically only 1-2 parameters need
-narrowing — those where prior knowledge constrains the plausible
-region.
+Search bounds are optional on every parameter. When omitted, the full model
+bounds apply. Typically only 1-2 parameters need narrowing — those where prior
+knowledge constrains the plausible region.
 
 **Rules:**
 
-1. **Fit bounds must be within model bounds.** `bounds = [0.5, 80]`
-   on a parameter declared `in [1.0, 100.0]` is an error:
-   
+1. **Fit bounds must be within model bounds.** `bounds = [0.5, 80]` on a
+   parameter declared `in [1.0, 100.0]` is an error:
+
    ```
    error: fit bound [0.5, 80] for 'R0' extends below model bound [1.0, 100.0].
      Fit search bounds must be within model structural bounds.
    ```
 
-2. **Fit bounds control the transform.** When `bounds` is specified,
-   the logit/scaled-logit transform maps to that interval instead of
-   the model bounds. This concentrates the random walk in the region
-   of interest rather than wasting perturbation on implausible values.
+2. **Fit bounds control the transform.** When `bounds` is specified, the
+   logit/scaled-logit transform maps to that interval instead of the model
+   bounds. This concentrates the random walk in the region of interest rather
+   than wasting perturbation on implausible values.
 
-3. **Fit bounds control scout random starts.** Scout initializes
-   chains from uniform random within the fit bounds, not the full
-   model bounds.
+3. **Fit bounds control scout random starts.** Scout initializes chains from
+   uniform random within the fit bounds, not the full model bounds.
 
-4. **Boundary proximity warning.** If the MLE is within 1% of a
-   fit bound, warn that the true MLE may be outside the search
-   region:
-   
+4. **Boundary proximity warning.** If the MLE is within 1% of a fit bound, warn
+   that the true MLE may be outside the search region:
+
    ```
    ⚠ R0 = 30.2 is within 1% of fit lower bound (30.0).
      The MLE may be outside the search region.
      Consider widening: R0 = { bounds = [15.0, 80.0] }
    ```
-   
+
    This is reported in `{stage}_summary.json` and `camdl fit summary`:
-   
+
    ```
    R0 = 30.2   rw_sd=5.0  bounds=[30, 80]  ⚠ AT LOWER BOUND
    ```
-   
-   The warning is the safety net. Without it, narrowed bounds can
-   hide the true MLE. With it, they're a useful search tool.
+
+   The warning is the safety net. Without it, narrowed bounds can hide the true
+   MLE. With it, they're a useful search tool.
 
 ### 3.3 Exhaustive Partition Rule
 
@@ -195,40 +189,39 @@ if estimated ∩ fixed ≠ ∅:
        Each parameter must appear in exactly one section."
 ```
 
-This is a hard error. No warnings, no defaults. The user must
-explicitly decide the fate of every parameter.
+This is a hard error. No warnings, no defaults. The user must explicitly decide
+the fate of every parameter.
 
 ### 3.4 No `params` Field
 
-Starting values come from the model's parameter defaults (declared
-in the `.camdl` file or in params files referenced by the model's
-`simulate {}` block). The fit.toml does not reference params files.
+Starting values come from the model's parameter defaults (declared in the
+`.camdl` file or in params files referenced by the model's `simulate {}` block).
+The fit.toml does not reference params files.
 
-If the user wants a non-default starting value, they use `start`
-in the `[estimate]` section:
+If the user wants a non-default starting value, they use `start` in the
+`[estimate]` section:
 
 ```toml
 sigma = { rw_sd = 0.005, start = 0.1 }
 ```
 
-This keeps the fit.toml self-contained: it says what to estimate
-and how, not what the values are.
+This keeps the fit.toml self-contained: it says what to estimate and how, not
+what the values are.
 
 ### 3.5 Observation Model
 
-The observation model is declared in the `.camdl` file's
-`observations {}` block. The fit.toml references it by name:
+The observation model is declared in the `.camdl` file's `observations {}`
+block. The fit.toml references it by name:
 
 ```toml
 [data]
 weekly_cases = "data/london_cases.tsv"
 ```
 
-The key `weekly_cases` must match an observation block name in the
-model. The data file provides (time, value) pairs. The observation
-model (likelihood family, projection, variance formula) comes from
-the DSL — it's part of the model specification, not the fit
-configuration.
+The key `weekly_cases` must match an observation block name in the model. The
+data file provides (time, value) pairs. The observation model (likelihood
+family, projection, variance formula) comes from the DSL — it's part of the
+model specification, not the fit configuration.
 
 For models with multiple observation streams:
 
@@ -238,28 +231,28 @@ afp_cases = "data/afp_by_district.tsv"
 es_positive = "data/es_results.tsv"
 ```
 
-The particle filter sums log-likelihoods across all streams at
-each observation time.
+The particle filter sums log-likelihoods across all streams at each observation
+time.
 
 ### 3.7 Replicate fits and synthetic-data calibration
 
-A fit config can describe a grid of fits instead of a single fit,
-varying two orthogonal axes:
+A fit config can describe a grid of fits instead of a single fit, varying two
+orthogonal axes:
 
-- **Data axis** — real data (`[data]`) or synthetic data
-  (`[synthetic]`, generated from known truth). Mutually exclusive.
-- **Fit axis** — list-valued `fit_seeds`. Each seed runs the full
-  stage pipeline independently with a different IF2/PGAS seed and
-  (optionally) perturbation start.
+- **Data axis** — real data (`[data]`) or synthetic data (`[synthetic]`,
+  generated from known truth). Mutually exclusive.
+- **Fit axis** — list-valued `fit_seeds`. Each seed runs the full stage pipeline
+  independently with a different IF2/PGAS seed and (optionally) perturbation
+  start.
 
-The grid is the Cartesian product. Collapses orthogonally: omit both
-and the fit runs once, unchanged from today.
+The grid is the Cartesian product. Collapses orthogonally: omit both and the fit
+runs once, unchanged from today.
 
 #### Config shape
 
 ```toml
 # Top-level scalars must precede any [table] header.
-fit_seeds = [101, 102, 103]   # optional; list-only
+fit_seeds = [101, 102, 103] # optional; list-only
 
 [model]
 camdl = "models/sir.camdl"
@@ -271,24 +264,24 @@ cases = "data/cases.tsv"
 # …or:
 [synthetic]
 true_params = "params/truth.toml"
-sim_seeds   = "1:20"           # or an explicit list
-datasets    = 20               # optional; inferred from sim_seeds
-scenario    = "baseline"       # optional
+sim_seeds = "1:20" # or an explicit list
+datasets = 20 # optional; inferred from sim_seeds
+scenario = "baseline" # optional
 ```
 
 #### Canonical modes
 
-| Mode                    | `[synthetic]` | `fit_seeds`  | Output layout                       | Cells |
-|-------------------------|---------------|--------------|-------------------------------------|-------|
-| Single fit              | —             | scalar / absent | `real/fit_<seed>/`              | 1     |
-| Start-sensitivity       | —             | list, len M  | `real/fit_<seed>/` × M              | M     |
-| SBC (classical)         | N datasets    | scalar / absent | `synthetic/ds_NN/fit_<seed>/`   | N     |
-| SBC × start-sensitivity | N datasets    | list, len M  | `synthetic/ds_NN/fit_<seed>/` × M   | N × M |
+| Mode                    | `[synthetic]` | `fit_seeds`     | Output layout                     | Cells |
+| ----------------------- | ------------- | --------------- | --------------------------------- | ----- |
+| Single fit              | —             | scalar / absent | `real/fit_<seed>/`                | 1     |
+| Start-sensitivity       | —             | list, len M     | `real/fit_<seed>/` × M            | M     |
+| SBC (classical)         | N datasets    | scalar / absent | `synthetic/ds_NN/fit_<seed>/`     | N     |
+| SBC × start-sensitivity | N datasets    | list, len M     | `synthetic/ds_NN/fit_<seed>/` × M | N × M |
 
 #### Output directory
 
-Every fit lives under a data-source subdirectory. No single-fit
-exception — the seed is always the leaf:
+Every fit lives under a data-source subdirectory. No single-fit exception — the
+seed is always the leaf:
 
 ```
 results/fits/<name>/
@@ -306,48 +299,45 @@ results/fits/<name>/
                                           …
 ```
 
-`summary.tsv` (always): one row per `(dataset, fit_seed)` with
-every estimated parameter's MLE, the log-likelihood, and the
-content hash.
+`summary.tsv` (always): one row per `(dataset, fit_seed)` with every estimated
+parameter's MLE, the log-likelihood, and the content hash.
 
-`coverage.tsv` (synthetic mode only): one row per estimated
-parameter with `truth`, `mean_mle`, `bias`, `sd_mle`, `q05`, `q95`,
-`covers_truth`, `n_datasets`. `covers_truth = 1` when the central
-90 % MLE window brackets the declared ground truth.
+`coverage.tsv` (synthetic mode only): one row per estimated parameter with
+`truth`, `mean_mle`, `bias`, `sd_mle`, `q05`, `q95`, `covers_truth`,
+`n_datasets`. `covers_truth = 1` when the central 90 % MLE window brackets the
+declared ground truth.
 
 #### Synthetic data semantics
 
-When `[synthetic]` is present, the runner generates
-`len(sim_seeds)` datasets before dispatching any fits. Each
-dataset is a single run of the chosen backend at `true_params`
-with `sim_seed`, sampled through every declared observation stream
-at its declared schedule. The resulting wide-format TSV is written
-to `<fit_dir>/synthetic/data/ds_NN.tsv` and handed to the fit
-runner as if the user had supplied it via `[data.observations]`.
+When `[synthetic]` is present, the runner generates `len(sim_seeds)` datasets
+before dispatching any fits. Each dataset is a single run of the chosen backend
+at `true_params` with `sim_seed`, sampled through every declared observation
+stream at its declared schedule. The resulting wide-format TSV is written to
+`<fit_dir>/synthetic/data/ds_NN.tsv` and handed to the fit runner as if the user
+had supplied it via `[data.observations]`.
 
-Generation is deterministic: same `(true_params, sim_seed)`
-produces bit-identical data. The content hash of each dataset
-participates in the per-cell provenance hash so regenerating with
-unchanged inputs is a cache hit, not a redo.
+Generation is deterministic: same `(true_params, sim_seed)` produces
+bit-identical data. The content hash of each dataset participates in the
+per-cell provenance hash so regenerating with unchanged inputs is a cache hit,
+not a redo.
 
 #### Validation
 
 - `[data]` + `[synthetic]` — hard error (choose one).
 - Neither present — hard error.
-- `sim_seeds` range/list with duplicates — hard error (would
-  collide on provenance hashes).
+- `sim_seeds` range/list with duplicates — hard error (would collide on
+  provenance hashes).
 - `datasets` supplied and `≠ len(sim_seeds)` — hard error.
 - `fit_seeds` list with duplicates — hard error.
 
 ### 3.8 IC-free inference
 
-Stochastic compartmental models have a ridge in `(β, I₀)`: short
-observation windows admit many parameter combinations that fit the
-data equally well. Fixing `I₀` gives a tight `β` posterior that is
-paid for with a pretence; estimating `I₀` reveals the ridge but
-needs a prior on `I₀` to resolve along it. The principled alternative
-from the pomp literature (King et al. 2008; Bretó et al. 2009) is to
-condition the likelihood on the first observation and let the
+Stochastic compartmental models have a ridge in `(β, I₀)`: short observation
+windows admit many parameter combinations that fit the data equally well. Fixing
+`I₀` gives a tight `β` posterior that is paid for with a pretence; estimating
+`I₀` reveals the ridge but needs a prior on `I₀` to resolve along it. The
+principled alternative from the pomp literature (King et al. 2008; Bretó et
+al. 2009) is to condition the likelihood on the first observation and let the
 particle filter's initial reweight pin `I₀` implicitly:
 
 ```toml
@@ -357,35 +347,32 @@ ic_free = true
 
 When set:
 
-- The PF / IF2 / PGAS runs still weight and resample at `y₁`
-  (that's what pins `x₀` given `y₁` via Bayesian update on the
-  particle cloud).
-- The log-likelihood accumulation skips `y₁`. The returned loglik
-  is `log L_c(θ | y₁) = Σ_{t=2}^T log p(y_t | y_{1:t-1})` rather than
-  the full `log L(θ)`. These differ by `log p(y_1)` and are not
-  directly comparable across runs with different `ic_free` settings.
+- The PF / IF2 / PGAS runs still weight and resample at `y₁` (that's what pins
+  `x₀` given `y₁` via Bayesian update on the particle cloud).
+- The log-likelihood accumulation skips `y₁`. The returned loglik is
+  `log L_c(θ | y₁) = Σ_{t=2}^T log p(y_t | y_{1:t-1})` rather than the full
+  `log L(θ)`. These differ by `log p(y_1)` and are not directly comparable
+  across runs with different `ic_free` settings.
 
-Precondition: at least one `[estimate.*]` entry must be
-`ivp = true`. Without per-particle spread at `t=0`, the first
-reweight cannot discriminate between particles and `ic_free`
-silently degenerates to dropping the first observation. Config
-validation rejects the degenerate case:
+Precondition: at least one `[estimate.*]` entry must be `ivp = true`. Without
+per-particle spread at `t=0`, the first reweight cannot discriminate between
+particles and `ic_free` silently degenerates to dropping the first observation.
+Config validation rejects the degenerate case:
 
 ```toml
 [estimate]
-I0 = { bounds = [1, 500], ivp = true }   # required under ic_free
+I0 = { bounds = [1, 500], ivp = true } # required under ic_free
 ```
 
-See `docs/dev/proposals/2026-04-18-ic-free-inference.md` for the
-mathematical derivation, references (King Nguyen Ionides 2016 JSS,
-Ionides et al. 2015 PNAS, King et al. 2008 Nature, Bretó He Ionides
-King 2009 AOAS), and the epistemic-laundering motivation.
+See `docs/dev/proposals/2026-04-18-ic-free-inference.md` for the mathematical
+derivation, references (King Nguyen Ionides 2016 JSS, Ionides et al. 2015 PNAS,
+King et al. 2008 Nature, Bretó He Ionides King 2009 AOAS), and the
+epistemic-laundering motivation.
 
-Explicitly not the same: the Cori-Fraser-Cauchemez / EpiEstim
-renewal-equation approach avoids `I₀` by replacing the compartmental
-structure during growth with a branching process parameterised by
-`R_t`. That is a different process model, not a different likelihood
-factorisation, and is out of scope for this feature.
+Explicitly not the same: the Cori-Fraser-Cauchemez / EpiEstim renewal-equation
+approach avoids `I₀` by replacing the compartmental structure during growth with
+a branching process parameterised by `R_t`. That is a different process model,
+not a different likelihood factorisation, and is out of scope for this feature.
 
 ---
 
@@ -393,9 +380,9 @@ factorisation, and is out of scope for this feature.
 
 ### 4.1 Purpose
 
-`fit_state.toml` is the inter-stage handoff. Each stage reads the
-previous stage's fit_state.toml and produces its own. The user
-never needs to edit it (but can, for debugging).
+`fit_state.toml` is the inter-stage handoff. Each stage reads the previous
+stage's fit_state.toml and produces its own. The user never needs to edit it
+(but can, for debugging).
 
 ### 4.2 Schema
 
@@ -449,8 +436,17 @@ gamma = 1.07
 # The compound scout-convergence gate combines these with
 # tail_chain_agreement to compute an SE-aware decibans-spread
 # threshold (see §6.1.1).
-chain_eval_logliks = [-3893.4, -3891.2, -3897.8, -3895.1, -3892.0, -3899.4, -3895.7, -3894.8]
-chain_eval_ses     = [   0.5,    0.4,    0.6,    0.5,    0.4,    0.7,    0.5,    0.5]
+chain_eval_logliks = [
+  -3893.4,
+  -3891.2,
+  -3897.8,
+  -3895.1,
+  -3892.0,
+  -3899.4,
+  -3895.7,
+  -3894.8,
+]
+chain_eval_ses = [0.5, 0.4, 0.6, 0.5, 0.4, 0.7, 0.5, 0.5]
 
 ivp_params = ["S0", "E0", "I0"]
 
@@ -495,20 +491,22 @@ fit.toml
 
 > **v2 layout note.** Stage directories live under
 > `<fit_dir>/real/fit_<seed>/<stage>/` (or
-> `<fit_dir>/synthetic/ds_NN/fit_<seed>/<stage>/` for SBC replicates).
-> The `real/fit_<seed>/` wrapper was introduced in commit `5f1e704`
-> (2026-04-18); diagrams that show stages directly under `<fit_dir>/`
-> are pre-v2 and no fit produced by `cmd_fit_run_v2` writes that
-> shape.
+> `<fit_dir>/synthetic/ds_NN/fit_<seed>/<stage>/` for SBC replicates). The
+> `real/fit_<seed>/` wrapper was introduced in commit `5f1e704` (2026-04-18);
+> diagrams that show stages directly under `<fit_dir>/` are pre-v2 and no fit
+> produced by `cmd_fit_run_v2` writes that shape.
 
-When the stage declares `init = "from_mle"` + `init_mle = "<prior-stage-or-dir>"`:
+When the stage declares `init = "from_mle"` +
+`init_mle = "<prior-stage-or-dir>"`:
+
 - Starting values come from the prior stage's `fit_state.toml [start_values]`
   (overrides model defaults and fit.toml `start` fields)
-- rw_sd comes from that `fit_state.toml [rw_sd]`
-  (overrides fit.toml rw_sd values)
+- rw_sd comes from that `fit_state.toml [rw_sd]` (overrides fit.toml rw_sd
+  values)
 - Explicit `--rw-sd` CLI flags override everything
 
 When no `init_mle` is declared (default `init = "lhs"`, etc.):
+
 - Starting values come from model defaults + fit.toml `start` fields
 - rw_sd comes from fit.toml `[estimate]` rw_sd values
 
@@ -518,8 +516,7 @@ When no `init_mle` is declared (default `init = "lhs"`, etc.):
 
 ### 5.1 `mle_params.toml`
 
-The final output of inference. A valid params.toml with provenance
-in comments:
+The final output of inference. A valid params.toml with provenance in comments:
 
 ```toml
 # camdl fit output
@@ -564,9 +561,9 @@ input_hash = sha256(
 )[:8]
 ```
 
-Answers: "what computation produced this?" Includes the seed so
-that two runs with different seeds have different input hashes.
-When no `--seed` is given, one is generated, recorded, and included.
+Answers: "what computation produced this?" Includes the seed so that two runs
+with different seeds have different input hashes. When no `--seed` is given, one
+is generated, recorded, and included.
 
 **Content hash (in `mle_params.toml` header):** detects manual edits.
 
@@ -576,11 +573,10 @@ content_hash = sha256(
 )[:8]
 ```
 
-Answers: "have the output values been changed since the fit wrote
-them?" Computed purely from the parameter values in the file.
+Answers: "have the output values been changed since the fit wrote them?"
+Computed purely from the parameter values in the file.
 
-If the user edits any parameter value, `camdl fit status` detects
-the mismatch:
+If the user edits any parameter value, `camdl fit status` detects the mismatch:
 
 ```
 $ camdl fit status fit.toml
@@ -591,14 +587,13 @@ $ camdl fit status fit.toml
     This file has been hand-tuned. It is no longer an MLE output.
 ```
 
-The hash doesn't prevent editing. It makes edits VISIBLE. The
-distinction between "inference-derived" and "hand-tuned" is
-auditable.
+The hash doesn't prevent editing. It makes edits VISIBLE. The distinction
+between "inference-derived" and "hand-tuned" is auditable.
 
 ### 5.3 `fit_record.json`
 
-Self-contained provenance record. Everything needed to understand
-and reproduce the fit:
+Self-contained provenance record. Everything needed to understand and reproduce
+the fit:
 
 ```json
 {
@@ -617,8 +612,7 @@ and reproduce the fit:
   "fit_config": {
     "path": "fit.toml",
     "hash": "b2c4d6e8",
-    "estimated": ["R0", "sigma", "gamma", "rho", "amplitude",
-                   "S0", "E0", "I0"],
+    "estimated": ["R0", "sigma", "gamma", "rho", "amplitude", "S0", "E0", "I0"],
     "fixed": ["N0", "mu", "k", "psi", "cohort"]
   },
   "method": {
@@ -634,9 +628,14 @@ and reproduce the fit:
   },
   "results": {
     "mle": {
-      "R0": 56.82, "sigma": 0.0791, "gamma": 0.0832,
-      "rho": 0.488, "amplitude": 0.554,
-      "S0": 73151, "E0": 127, "I0": 127
+      "R0": 56.82,
+      "sigma": 0.0791,
+      "gamma": 0.0832,
+      "rho": 0.488,
+      "amplitude": 0.554,
+      "S0": 73151,
+      "E0": 127,
+      "I0": 127
     },
     "loglik": -3804.9,
     "loglik_sd": 5.2,
@@ -671,15 +670,14 @@ and reproduce the fit:
 camdl fit scout fit.toml [--seed 1]
 ```
 
-**Defaults:** 8 chains, 500 particles, 30 iterations,
-`cooling_fraction = 0.5` (mild contraction — find basins, don't
-converge), rw_sd from fit.toml or auto from bounds (`/20` for
-log, `/6` for logit).
+**Defaults:** 8 chains, 500 particles, 30 iterations, `cooling_fraction = 0.5`
+(mild contraction — find basins, don't converge), rw_sd from fit.toml or auto
+from bounds (`/20` for log, `/6` for logit).
 
-**Seeded chains:** When `[estimate]` parameters have `start` values,
-chain 1 starts near those values (jittered by rw_sd). Remaining
-chains start from random positions within bounds. Controlled by
-`start_chains` in `[scout]` (default 1 when any start exists).
+**Seeded chains:** When `[estimate]` parameters have `start` values, chain 1
+starts near those values (jittered by rw_sd). Remaining chains start from random
+positions within bounds. Controlled by `start_chains` in `[scout]` (default 1
+when any start exists).
 
 **Writes:**
 
@@ -695,66 +693,61 @@ chains start from random positions within bounds. Controlled by
   run.json                          ← stage metadata (post-Phase-3)
 ```
 
-> **v2 layout note.** The `real/fit_<seed>/` wrapper was added in
-> commit `5f1e704` (2026-04-18). Pre-v2 paths
-> (`fit/{name}/scout/...`) are stale; no fit produced by
-> `cmd_fit_run_v2` writes that shape.
+> **v2 layout note.** The `real/fit_<seed>/` wrapper was added in commit
+> `5f1e704` (2026-04-18). Pre-v2 paths (`fit/{name}/scout/...`) are stale; no
+> fit produced by `cmd_fit_run_v2` writes that shape.
 
-For an interpretation surface — gate verdict, parameter table,
-filter health — read `camdl fit summary --format json` (§7.2.2).
-There is no separate `<stage>_summary.json` file written; that was
-a v1 artefact superseded by the summary command.
+For an interpretation surface — gate verdict, parameter table, filter health —
+read `camdl fit summary --format json` (§7.2.2). There is no separate
+`<stage>_summary.json` file written; that was a v1 artefact superseded by the
+summary command.
 
 #### 6.1.1 Clean-evaluation re-scoring and the compound gate
 
-Picking the winning chain by argmax over IF2's in-run 500-particle
-PF log-likelihood is biased by ~tens of nats (Monte Carlo noise gets
-selected on, not just signal), and "all Â small" alone fails to
-catch chains that agree per-parameter while sitting in different
-likelihood basins. After IF2 finishes, scout runs a loglik-evaluation
-pass:
+Picking the winning chain by argmax over IF2's in-run 500-particle PF
+log-likelihood is biased by ~tens of nats (Monte Carlo noise gets selected on,
+not just signal), and "all Â small" alone fails to catch chains that agree
+per-parameter while sitting in different likelihood basins. After IF2 finishes,
+scout runs a loglik-evaluation pass:
 
-1. **Candidate.** Each chain contributes one candidate θ̂: the
-   IF2 final-iteration parameter mean
-   (`iterations.last().param_means`). This is the pomp-canonical
-   estimator for IF2 (King, Ionides, Bretó 2016 JSS; Ionides et al.
-   2015 PNAS supplementary materials). Within-chain candidate
-   selection (e.g. argmax over a finite candidate pool) was
-   stripped in commit `20d48fe` because it introduced
-   selection-bias-on-top-of-bias-fix; see
-   `docs/dev/notes/2026-04-27-clean-eval-strip.md` for the
-   audit trail.
-2. **Independent re-scoring.** Each candidate is scored with M
-   independent high-particle PF replicates. Per-replicate logliks
-   are combined via `logmeanexp` (unbiased on the likelihood scale)
-   to a single combined score; the SE is the delta-method
-   approximation on the log scale via
+1. **Candidate.** Each chain contributes one candidate θ̂: the IF2
+   final-iteration parameter mean (`iterations.last().param_means`). This is the
+   pomp-canonical estimator for IF2 (King, Ionides, Bretó 2016 JSS; Ionides et
+   al. 2015 PNAS supplementary materials). Within-chain candidate selection
+   (e.g. argmax over a finite candidate pool) was stripped in commit `20d48fe`
+   because it introduced selection-bias-on-top-of-bias-fix; see
+   `docs/dev/notes/2026-04-27-clean-eval-strip.md` for the audit trail.
+2. **Independent re-scoring.** Each candidate is scored with M independent
+   high-particle PF replicates. Per-replicate logliks are combined via
+   `logmeanexp` (unbiased on the likelihood scale) to a single combined score;
+   the SE is the delta-method approximation on the log scale via
    `evidence::logmeanexp_with_se`. Defaults: `n_particles = 4000`,
-   `n_replicates = 8`, `combine = LogMeanExp`. Override per-stage
-   with `--loglik-eval-particles N` / `--loglik-eval-reps M`.
-3. **Cross-chain selection.** The maximum across per-chain clean
-   logliks names the overall winner (the chain whose θ̂ is reported
-   as the MLE). NaN chains are explicitly skipped; an
-   all-NaN cohort errors rather than silently picking chain 0.
+   `n_replicates = 8`, `combine = LogMeanExp`. Override per-stage with
+   `--loglik-eval-particles N` / `--loglik-eval-reps M`.
+3. **Cross-chain selection.** The maximum across per-chain clean logliks names
+   the overall winner (the chain whose θ̂ is reported as the MLE). NaN chains are
+   explicitly skipped; an all-NaN cohort errors rather than silently picking
+   chain 0.
 
-The compound scout-convergence gate (read by `camdl fit refine`)
-passes iff:
+The compound scout-convergence gate (read by `camdl fit refine`) passes iff:
 
 - `max(Â) < a_thresh` over per-parameter chain-agreement, **and**
 - `Δ_dB < threshold_dB` over the per-chain loglik-eval logliks,
 
-where `Δ_dB = (max − min) · NATS_TO_DB` is the decibans spread,
-and `threshold_dB = max(decibans_thresh, 8 · σ_max · NATS_TO_DB)`
-with `σ_max = max(chain_eval_ses)`. The SE-aware floor prevents
-the gate from firing on noisy chains whose spread is statistically
-indistinguishable from zero. Defaults: `a_thresh = 1.01`,
-`decibans_thresh = 30.0`. Override per-stage with `--decibans-thresh X`.
+where `Δ_dB = (max − min) · NATS_TO_DB` is the decibans spread, and
+`threshold_dB = max(decibans_thresh, 8 · σ_max · NATS_TO_DB)` with
+`σ_max = max(chain_eval_ses)`. The SE-aware floor prevents the gate from firing
+on noisy chains whose spread is statistically indistinguishable from zero.
+Defaults: `a_thresh = 1.01`, `decibans_thresh = 30.0`. Override per-stage with
+`--decibans-thresh X`.
 
 Status surfaces the verdict as
-`loglik-eval Δ = X dB / threshold Y dB (σ_max=Z) ✓/✗` under scout and
-refine. The full per-(chain × candidate) score table is written to
-`<stage>/chain_evaluations.tsv` (header: `chain  candidate  loglik
-se  <param₁>  …`) and the run-root winner to `<stage>/final_params.toml`.
+`loglik-eval Δ = X dB / threshold Y dB (σ_max=Z) ✓/✗` under scout and refine.
+The full per-(chain × candidate) score table is written to
+`<stage>/chain_evaluations.tsv` (header:
+`chain  candidate  loglik
+se  <param₁>  …`) and the run-root winner to
+`<stage>/final_params.toml`.
 
 ### 6.2 Refine
 
@@ -763,15 +756,14 @@ se  <param₁>  …`) and the run-root winner to `<stage>/final_params.toml`.
 camdl fit run fit.toml --stage refine [--seed 1]
 ```
 
-**Defaults:** 4 chains, 1000 particles, 50 iterations,
-cooling_fraction=0.95 over 50 iterations.
+**Defaults:** 4 chains, 1000 particles, 50 iterations, cooling_fraction=0.95
+over 50 iterations.
 
-**Reads:** `scout/fit_state.toml` for start values and rw_sd (resolved
-from the `init_mle` toml key).
+**Reads:** `scout/fit_state.toml` for start values and rw_sd (resolved from the
+`init_mle` toml key).
 
-**Writes:** same shape as scout (above). Use
-`camdl fit summary --format json` for the interpretation surface
-(§7.2.2).
+**Writes:** same shape as scout (above). Use `camdl fit summary --format json`
+for the interpretation surface (§7.2.2).
 
 ### 6.3 Validate
 
@@ -780,16 +772,15 @@ from the `init_mle` toml key).
 camdl fit run fit.toml --stage validate [--seed 1]
 ```
 
-**Defaults:** 4 chains, 5000 particles, 100 iterations,
-cooling_fraction=0.95. Profiles for ALL estimated parameters
-(embarrassingly parallel). Final pfilter at MLE with N=10000 for
-precise loglik and ESS measurement.
+**Defaults:** 4 chains, 5000 particles, 100 iterations, cooling_fraction=0.95.
+Profiles for ALL estimated parameters (embarrassingly parallel). Final pfilter
+at MLE with N=10000 for precise loglik and ESS measurement.
 
-**ESS at MLE:** The most informative single diagnostic. Run a clean
-pfilter at the MLE and report mean and min ESS across observation
-times. High ESS (>N/2) means the model generates trajectories that
-track the data. Low ESS (<N/4) means the model can't produce
-trajectories consistent with the data even at its best parameters:
+**ESS at MLE:** The most informative single diagnostic. Run a clean pfilter at
+the MLE and report mean and min ESS across observation times. High ESS (>N/2)
+means the model generates trajectories that track the data. Low ESS (<N/4) means
+the model can't produce trajectories consistent with the data even at its best
+parameters:
 
 ```
 ESS at MLE: mean=3842, min=1205  ✓ filter is healthy
@@ -827,21 +818,21 @@ ESS at MLE: mean=312, min=8  ✗ filter is degenerate
 > **v2 layout note.** Same `real/fit_<seed>/` wrapper convention as
 > scout/refine; introduced in commit `5f1e704` (2026-04-18).
 
-For an interpretation surface, `camdl fit summary --format json`
-(§7.2.2) covers all stages uniformly.
+For an interpretation surface, `camdl fit summary --format json` (§7.2.2) covers
+all stages uniformly.
 
 ---
 
 ## 7. Status and Summary Commands
 
-camdl exposes three single-fit / multi-fit commands with sharp,
-non-overlapping responsibilities:
+camdl exposes three single-fit / multi-fit commands with sharp, non-overlapping
+responsibilities:
 
-| command                  | answers                                        | scope                |
-|--------------------------|------------------------------------------------|----------------------|
-| `camdl fit table <dir>`  | "what fits live under this tree?"              | cross-fit aggregator |
-| `camdl fit summary <dir>`| "what does this fit say?"                      | single-fit interpretation |
-| `camdl compare`          | "which of these models predicts better?"       | multi-model comparison |
+| command                   | answers                                  | scope                     |
+| ------------------------- | ---------------------------------------- | ------------------------- |
+| `camdl fit table <dir>`   | "what fits live under this tree?"        | cross-fit aggregator      |
+| `camdl fit summary <dir>` | "what does this fit say?"                | single-fit interpretation |
+| `camdl compare`           | "which of these models predicts better?" | multi-model comparison    |
 
 ### 7.1 Summary
 
@@ -849,8 +840,8 @@ non-overlapping responsibilities:
 camdl fit summary results/fits/<dir>/
 ```
 
-Walks the fit dir, checks which stages have completed, reports
-convergence and identifiability:
+Walks the fit dir, checks which stages have completed, reports convergence and
+identifiability:
 
 ```
 fit/he2010/ — He et al. 2010 London measles
@@ -886,8 +877,8 @@ fit/he2010/ — He et al. 2010 London measles
           --params <fit_dir>/real/fit_<seed>/validate/mle_params.toml
 ```
 
-A stage that ran IF2 + loglik-eval but failed the compound gate
-(no `run.json`) is reported with a one-line pointer:
+A stage that ran IF2 + loglik-eval but failed the compound gate (no `run.json`)
+is reported with a one-line pointer:
 
 ```
 fit/he2010/
@@ -905,26 +896,23 @@ camdl fit summary fit/he2010
 Reads each MLE stage's `fit_state.toml` + `final_params.toml` +
 `mle_params.toml` and renders a per-stage interpretation block:
 
-- compound scout-convergence gate verdict (Â + decibans-spread,
-  rendered against the *resolved* gate config persisted in
-  `fit_state.toml` — i.e. the threshold the run was actually
-  judged by, not whatever `fit.toml` says at summary-time)
+- compound scout-convergence gate verdict (Â + decibans-spread, rendered against
+  the _resolved_ gate config persisted in `fit_state.toml` — i.e. the threshold
+  the run was actually judged by, not whatever `fit.toml` says at summary-time)
 - parameter table: estimated params with Â glyph, IVP marker
 - per-chain loglik-eval table with winner row marked
-- provenance cross-check —
-  `final_params.toml ↔ mle_params.toml` and
-  `fit_state.toml ↔ final_params.toml`. The `final ↔ mle`
-  cross-check guards against the GH #16 silent-wrong-answer class
-  on every read.
+- provenance cross-check — `final_params.toml ↔ mle_params.toml` and
+  `fit_state.toml ↔ final_params.toml`. The `final ↔ mle` cross-check guards
+  against the GH #16 silent-wrong-answer class on every read.
 
 #### 7.2.1 Output formats
 
-| `--format`  | use case                                                             |
-|-------------|----------------------------------------------------------------------|
-| `text` (default) | terminal block with ANSI colour. Auto-disables under non-TTY; honours `NO_COLOR`. |
-| `json`      | machine-readable, versioned via `schema.version: 1`. The book pipeline reads this directly. |
-| `md`        | GitHub-flavoured Markdown. Embeddable in chapters via Quarto's `run_cli`. |
-| `latex`     | `\begin{tabular}` blocks per stage. No preamble — embed inside an existing document. |
+| `--format`       | use case                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| `text` (default) | terminal block with ANSI colour. Auto-disables under non-TTY; honours `NO_COLOR`.           |
+| `json`           | machine-readable, versioned via `schema.version: 1`. The book pipeline reads this directly. |
+| `md`             | GitHub-flavoured Markdown. Embeddable in chapters via Quarto's `run_cli`.                   |
+| `latex`          | `\begin{tabular}` blocks per stage. No preamble — embed inside an existing document.        |
 
 #### 7.2.2 JSON schema
 
@@ -980,19 +968,18 @@ Top-level shape:
 
 Schema-stability rules:
 
-- **`schema.version` is the contract.** Adding fields is
-  non-breaking; renames / removals / type changes bump the version.
-  Consumers that don't recognise newly-added fields must skip them.
+- **`schema.version` is the contract.** Adding fields is non-breaking; renames /
+  removals / type changes bump the version. Consumers that don't recognise
+  newly-added fields must skip them.
 - **`_heuristic` is advisory.** Strings inside (`overall_status`,
   `interpretation`) may shift across camdl versions even at stable
-  `schema.version`. Hard fields outside `_heuristic` (numeric
-  thresholds, pass/fail booleans) obey the schema-version contract.
-- **`gate.threshold_source`** is `"resolved"` when the persisted
-  resolved gate config was found in `fit_state.toml` (the post-
-  Phase-3 case), and `"default_fallback"` for legacy fit_state files
-  written before Phase 3 — in which case the rendered thresholds
-  come from `GateConfig::default()` and may differ from what the
-  run was actually judged against.
+  `schema.version`. Hard fields outside `_heuristic` (numeric thresholds,
+  pass/fail booleans) obey the schema-version contract.
+- **`gate.threshold_source`** is `"resolved"` when the persisted resolved gate
+  config was found in `fit_state.toml` (the post- Phase-3 case), and
+  `"default_fallback"` for legacy fit_state files written before Phase 3 — in
+  which case the rendered thresholds come from `GateConfig::default()` and may
+  differ from what the run was actually judged against.
 
 #### 7.2.3 `--params-only`
 
@@ -1001,41 +988,42 @@ camdl pfilter model.camdl --data cases.tsv \
     --params <(camdl fit summary --params-only fit/he2010)
 ```
 
-Emits only the winner θ̂ as a flat parameter TOML — no headers
-beyond a single `# camdl ...` comment, no `[provenance]` block,
-no metadata. By default picks the *terminal* completed stage in
-pipeline order (validate → refine → scout). Combine with
-`--stage <stage>` to pick a different stage's winner.
+Emits only the winner θ̂ as a flat parameter TOML — no headers beyond a single
+`# camdl ...` comment, no `[provenance]` block, no metadata. By default picks
+the _terminal_ completed stage in pipeline order (validate → refine → scout).
+Combine with `--stage <stage>` to pick a different stage's winner.
 
-Use case: re-run the pfilter under a higher particle budget or a
-different RNG seed at the reported MLE, without hand-stripping
-metadata from `final_params.toml`.
+Use case: re-run the pfilter under a higher particle budget or a different RNG
+seed at the reported MLE, without hand-stripping metadata from
+`final_params.toml`.
 
 #### 7.2.4 `--strict`
 
 Exits non-zero on any provenance mismatch:
-- `final_params.toml` ↔ `mle_params.toml` disagree on the shared
-  parameter subset (the GH #16 silent-wrong-answer class)
+
+- `final_params.toml` ↔ `mle_params.toml` disagree on the shared parameter
+  subset (the GH #16 silent-wrong-answer class)
 - `fit_state.toml`'s `start_values` diverge from the winner's θ̂ in
   `final_params.toml`
 
-**Auto-enabled when `CI=true` or `CI=1` is set in the
-environment**, matching cargo / pytest convention. Without strict
-mode the cross-checks still render `✗` glyphs; the binary just
-exits 0 so interactive use isn't disrupted.
+**Auto-enabled when `CI=true` or `CI=1` is set in the environment**, matching
+cargo / pytest convention. Without strict mode the cross-checks still render `✗`
+glyphs; the binary just exits 0 so interactive use isn't disrupted.
 
 ---
 
 ## 8. Connection to Experiment System
 
-The inference pipeline's output is the experiment system's input.
-One shared format: params.toml.
+The inference pipeline's output is the experiment system's input. One shared
+format: params.toml.
 
 ```toml
 # experiment.toml
 [experiment]
 model = "models/he2010_london.camdl"
-params = ["<fit_dir>/real/fit_<seed>/validate/mle_params.toml"]   # ← from inference
+params = [
+  "<fit_dir>/real/fit_<seed>/validate/mle_params.toml",
+] # ← from inference
 
 [config]
 backend = "chain_binomial"
@@ -1043,9 +1031,9 @@ seeds = { n = 200 }
 # ...
 ```
 
-The experiment system doesn't know or care that the params came from
-IF2. It's just a params.toml. But the provenance hash in the
-comments lets anyone trace it back to the fit.
+The experiment system doesn't know or care that the params came from IF2. It's
+just a params.toml. But the provenance hash in the comments lets anyone trace it
+back to the fit.
 
 ### 8.1 The Complete Pipeline
 
@@ -1077,19 +1065,19 @@ model.camdl + data.tsv + fit.toml
 
 With inference-derived parameters:
 
-- **Sensitivity analysis at the MLE.** Sobol indices tell you which
-  parameter uncertainties matter most for the decision — but only
-  if you're centered on the right parameter values. Sensitivity
-  analysis at the prior mean is less useful than at the MLE.
+- **Sensitivity analysis at the MLE.** Sobol indices tell you which parameter
+  uncertainties matter most for the decision — but only if you're centered on
+  the right parameter values. Sensitivity analysis at the prior mean is less
+  useful than at the MLE.
 
-- **VOI with informative priors.** The IF2 profiles give approximate
-  posterior marginals. These feed into the VOI spec's `prior`
-  fields as Beta/LogNormal fits to the profile curves. EVSI with
-  data-informed priors is more realistic than with vague priors.
+- **VOI with informative priors.** The IF2 profiles give approximate posterior
+  marginals. These feed into the VOI spec's `prior` fields as Beta/LogNormal
+  fits to the profile curves. EVSI with data-informed priors is more realistic
+  than with vague priors.
 
-- **Predictive simulation.** `camdl simulate` at the MLE produces
-  the "best guess" trajectory. The experiment system's seed
-  ensemble around the MLE produces prediction intervals.
+- **Predictive simulation.** `camdl simulate` at the MLE produces the "best
+  guess" trajectory. The experiment system's seed ensemble around the MLE
+  produces prediction intervals.
 
 ---
 
@@ -1109,12 +1097,11 @@ input_hash = sha256(
 )[:8]
 ```
 
-Covers all inputs including the RNG seed. Two runs with different
-seeds have different input hashes — the computation is fully
-specified and reproducible.
+Covers all inputs including the RNG seed. Two runs with different seeds have
+different input hashes — the computation is fully specified and reproducible.
 
-**Content hash:** detects manual edits. Stored in `mle_params.toml`
-comment header.
+**Content hash:** detects manual edits. Stored in `mle_params.toml` comment
+header.
 
 ```
 content_hash = sha256(
@@ -1122,14 +1109,13 @@ content_hash = sha256(
 )[:8]
 ```
 
-Computed purely from the parameter values in the file. If any value
-is changed, the content hash no longer matches.
+Computed purely from the parameter values in the file. If any value is changed,
+the content hash no longer matches.
 
 ### 9.2 Overwrite and Cache Semantics
 
-When a fit command runs, it computes the input hash and checks
-whether the output directory already contains results with a
-matching input hash:
+When a fit command runs, it computes the input hash and checks whether the
+output directory already contains results with a matching input hash:
 
 ```
 $ camdl fit scout fit.toml --seed 1
@@ -1139,20 +1125,21 @@ $ camdl fit scout fit.toml --seed 1
 ```
 
 **Rules:**
+
 - Input hash match → skip (results are deterministic given inputs)
 - Input hash mismatch → run (different inputs = different computation)
 - `--force` → always run (bypass cache, overwrite existing results)
 - No `--seed` given → generate a seed, record it, include in hash
 
-This ensures the cache is reliable: same inputs always produce the
-same hash, and different inputs always produce different hashes.
-The seed in the hash is what makes this work — without it, two
-runs with different seeds would look identical to the cache.
+This ensures the cache is reliable: same inputs always produce the same hash,
+and different inputs always produce different hashes. The seed in the hash is
+what makes this work — without it, two runs with different seeds would look
+identical to the cache.
 
 ### 9.3 Content Verification
 
-`camdl fit status` checks whether `mle_params.toml` has been
-modified since the fit produced it:
+`camdl fit status` checks whether `mle_params.toml` has been modified since the
+fit produced it:
 
 ```rust
 fn verify_mle_params(path: &str) -> ProvenanceStatus {
@@ -1172,8 +1159,8 @@ fn verify_mle_params(path: &str) -> ProvenanceStatus {
 
 ### 9.4 When Provenance Breaks
 
-If the user edits `mle_params.toml`, the content hash is broken.
-This is not an error — it's information:
+If the user edits `mle_params.toml`, the content hash is broken. This is not an
+error — it's information:
 
 ```
 mle_params.toml: ⚠ MODIFIED (content hash mismatch)
@@ -1185,8 +1172,8 @@ mle_params.toml: ⚠ MODIFIED (content hash mismatch)
               ([stages.validate] init = "from_mle", init_mle = "refine")
 ```
 
-The modified file still works as a params.toml everywhere. The
-provenance status is advisory, not blocking.
+The modified file still works as a params.toml everywhere. The provenance status
+is advisory, not blocking.
 
 ---
 
@@ -1202,11 +1189,11 @@ time	cases
 28	201
 ```
 
-`time` in model time units (days for He et al.). One value column
-named to match the observation projection output.
+`time` in model time units (days for He et al.). One value column named to match
+the observation projection output.
 
-**Observation times must be exact multiples of dt.** A time that
-does not fall on a step boundary is a hard error:
+**Observation times must be exact multiples of dt.** A time that does not fall
+on a step boundary is a hard error:
 
 ```
 error: observation at t=7.5 is not a multiple of dt=1.0.
@@ -1214,14 +1201,14 @@ error: observation at t=7.5 is not a multiple of dt=1.0.
   Adjust observation times or dt to align.
 ```
 
-Silent snapping would change which flows accumulate into the
-projected quantity, altering the likelihood. This is a user error
-that must be caught, not papered over.
+Silent snapping would change which flows accumulate into the projected quantity,
+altering the likelihood. This is a user error that must be caught, not papered
+over.
 
 ### 10.2 Multi-Stream
 
-Each observation stream has its own file. The `[data]` section in
-fit.toml maps stream names to files:
+Each observation stream has its own file. The `[data]` section in fit.toml maps
+stream names to files:
 
 ```toml
 [data]
@@ -1231,34 +1218,30 @@ es_positive = "data/es_results.tsv"
 
 ### 10.2.1 Incidence vs. Prevalence
 
-Incidence data (event counts accumulated over the interval since the
-last observation) and prevalence data (point-in-time compartment
-counts) project the simulator state differently. Both are
-first-class: the observation block's projection (`incidence(X)`,
-`prevalence(X)`, or a derived expression like `B1 + B2`) selects the
-mode. See `camdl-run-spec.md` §14 for the snapshot-timing and
-intervention-ordering rules.
+Incidence data (event counts accumulated over the interval since the last
+observation) and prevalence data (point-in-time compartment counts) project the
+simulator state differently. Both are first-class: the observation block's
+projection (`incidence(X)`, `prevalence(X)`, or a derived expression like
+`B1 + B2`) selects the mode. See `camdl-run-spec.md` §14 for the snapshot-timing
+and intervention-ordering rules.
 
-Prevalence and incidence carry different Fisher information about the
-parameters — prevalence is more informative about the recovery rate
-γ (decay shape), incidence about the transmission rate β (direct flow
-into I). A fit against prevalence-only data may have a substantially
-wider posterior for β than the same model fit against incidence data
-on the same trajectory; this is a feature of the data, not a bug in
-the fit.
+Prevalence and incidence carry different Fisher information about the parameters
+— prevalence is more informative about the recovery rate γ (decay shape),
+incidence about the transmission rate β (direct flow into I). A fit against
+prevalence-only data may have a substantially wider posterior for β than the
+same model fit against incidence data on the same trajectory; this is a feature
+of the data, not a bug in the fit.
 
 Pair likelihoods with projection types deliberately: NegBinomial or
-Poisson-with-reporting for incidence, Binomial or Poisson for
-prevalence counts, Beta or Binomial for prevalence fractions. The
-`fit run` and `pfilter` startup diagnostic lists the
-`(projection, likelihood)` pairing for every stream so that a mismatch
-is visible before the filter runs.
+Poisson-with-reporting for incidence, Binomial or Poisson for prevalence counts,
+Beta or Binomial for prevalence fractions. The `fit run` and `pfilter` startup
+diagnostic lists the `(projection, likelihood)` pairing for every stream so that
+a mismatch is visible before the filter runs.
 
 ### 10.3 Missing Data
 
-Rows with `NA` or blank values are skipped (no contribution to
-log-likelihood at that time). Missing entire time points: omit the
-row.
+Rows with `NA` or blank values are skipped (no contribution to log-likelihood at
+that time). Missing entire time points: omit the row.
 
 ### 10.4 Spatially Indexed Data
 
@@ -1273,8 +1256,8 @@ time	patch	cases
 60	lagos	1
 ```
 
-The `patch` column matches the model's spatial dimension. The
-particle filter sums log-likelihoods across patches at each time.
+The `patch` column matches the model's spatial dimension. The particle filter
+sums log-likelihoods across patches at each time.
 
 ---
 
@@ -1311,8 +1294,7 @@ particle filter sums log-likelihoods across patches at each time.
 └──────────────────────────┘
 ```
 
-The dependency chain is one-way. Each spec consumes the outputs of
-the one above it. No circular dependencies. The observation model
-lives in the .camdl file and is shared by both the fit pipeline
-(for dmeasure) and the experiment pipeline (for synthetic
-observations).
+The dependency chain is one-way. Each spec consumes the outputs of the one above
+it. No circular dependencies. The observation model lives in the .camdl file and
+is shared by both the fit pipeline (for dmeasure) and the experiment pipeline
+(for synthetic observations).

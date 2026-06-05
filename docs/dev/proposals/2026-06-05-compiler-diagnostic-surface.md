@@ -10,30 +10,29 @@ supersedes-partially: the gh#170 front-end-unification (collect_detail), which t
 
 ## Problem
 
-The compiler expresses one notion — "did this source compile, and what is
-wrong with it" — four incompatible ways, so no caller can handle errors
-uniformly:
+The compiler expresses one notion — "did this source compile, and what is wrong
+with it" — four incompatible ways, so no caller can handle errors uniformly:
 
-| entry point | type | how a failure escapes |
-|---|---|---|
-| `compile_detail_result` | `(compile_detail, string) result` | front-end **only**; `Error` = a *rendered string* |
-| `run_validate` | `compile_detail -> bool` | diagnostics side-effected into a `mutable ctx` |
-| `run_dimcheck` / `run_lint` | `compile_detail -> unit` | pure side-effect into `ctx` |
-| `compile` | `(Ir.model, string) result` | **raises** `Compile_error of string` on validate/dimcheck (via `report_and_exit`) |
+| entry point                 | type                              | how a failure escapes                                                             |
+| --------------------------- | --------------------------------- | --------------------------------------------------------------------------------- |
+| `compile_detail_result`     | `(compile_detail, string) result` | front-end **only**; `Error` = a _rendered string_                                 |
+| `run_validate`              | `compile_detail -> bool`          | diagnostics side-effected into a `mutable ctx`                                    |
+| `run_dimcheck` / `run_lint` | `compile_detail -> unit`          | pure side-effect into `ctx`                                                       |
+| `compile`                   | `(Ir.model, string) result`       | **raises** `Compile_error of string` on validate/dimcheck (via `report_and_exit`) |
 
 Consequences, each verified in `compiler.ml` / `diagnostics.ml`:
 
 1. **The `result` type lies for late-phase errors.** `compile`'s signature
-   promises errors as `Error` values, but validate/dimcheck failures
-   *raise* `Compile_error` (`report_and_exit`, diagnostics.ml:242, raises —
-   it does not `exit`). A caller writing `match compile src with Ok … | Error …`
-   hits an uncaught exception on, e.g., E507.
+   promises errors as `Error` values, but validate/dimcheck failures _raise_
+   `Compile_error` (`report_and_exit`, diagnostics.ml:242, raises — it does not
+   `exit`). A caller writing `match compile src with Ok … | Error …` hits an
+   uncaught exception on, e.g., E507.
 2. **Structure is flattened at every boundary.** Both the exception and the
-   `result` error carry a pre-rendered *string*, discarding the structured
-   `diagnostic list` (severity/code/loc/hint). A library caller cannot filter
-   by code or re-render.
+   `result` error carry a pre-rendered _string_, discarding the structured
+   `diagnostic list` (severity/code/loc/hint). A library caller cannot filter by
+   code or re-render.
 3. **Passes report output by mutation, not by type.** `run_dimcheck : … -> unit`
-   *produces* diagnostics but its type doesn't say so — output is smuggled
+   _produces_ diagnostics but its type doesn't say so — output is smuggled
    through `ctx.diags` (a `mutable diagnostic list`, cons-prepended, hence the
    recurring "reverse to source order" step).
 4. **Two entry points, same type, different pipelines.** `compile_detail_result`
@@ -53,14 +52,15 @@ representable.
   real currency.
 - `collect_detail` (gh#170) already runs the full pipeline and returns
   diagnostics as values without raising — this is the right shape; the work is
-  to make it *the* surface, not a parallel one.
+  to make it _the_ surface, not a parallel one.
 
 ## Target design
 
-1. **Passes return their diagnostics.** `run_validate / run_dimcheck /
-   run_lint : compile_detail -> diagnostic list`. No mutation, no `bool`/`unit`.
-   The pipeline becomes a fold that accumulates and short-circuits on the first
-   `Error`-severity result.
+1. **Passes return their diagnostics.**
+   `run_validate / run_dimcheck /
+   run_lint : compile_detail -> diagnostic list`.
+   No mutation, no `bool`/`unit`. The pipeline becomes a fold that accumulates
+   and short-circuits on the first `Error`-severity result.
 
 2. **One structured outcome type** for every caller:
    ```ocaml
@@ -71,7 +71,7 @@ representable.
    }
    val compile : ?name:string -> ?filename:string -> string -> Ir.model outcome
    ```
-   Errors are *values*; nothing in the library raises. `value = None` exactly
+   Errors are _values_; nothing in the library raises. `value = None` exactly
    when `diagnostics` contains an `Error`. (This is `collect_detail`
    generalized + a clean projection.)
 
@@ -80,8 +80,8 @@ representable.
    `match compile src with { value = Some m; _ } -> … | { diagnostics; source; _ } -> render diagnostics source; exit 1`.
    If an exception is kept anywhere, it carries `diagnostic list`, not a string.
 
-4. **Make `Diagnostics.t` immutable (or local).** Each pass returns a list;
-   the fold concatenates. Removes the `mutable` + cons-reverse dance.
+4. **Make `Diagnostics.t` immutable (or local).** Each pass returns a list; the
+   fold concatenates. Removes the `mutable` + cons-reverse dance.
 
 ## Migration (incremental, each step green)
 
@@ -92,8 +92,8 @@ representable.
 3. Change `run_validate/dimcheck/lint` to return `diagnostic list`; rewrite the
    pipeline as a fold; delete the mutable-accumulator reliance.
 4. Delete `report_and_exit` from the library; move render+exit to the CLI
-   top-level. Delete `compile_detail_result` and the string-typed `result`
-   entry points once callers are migrated.
+   top-level. Delete `compile_detail_result` and the string-typed `result` entry
+   points once callers are migrated.
 5. Each step gates on a clean `make test` (OCaml unit + golden + integration);
    the gh#181-flagged caller (a `result` consumer seeing E507 as an exception)
    gets a regression test asserting it now arrives as a value.
@@ -101,11 +101,11 @@ representable.
 ## Aspirational (separate, larger): phantom-typed validated model
 
 Distinguish `Ir.model` (unvalidated, straight from the expander) from a
-`Validated.t` that is *only* constructible by passing validation, and have
+`Validated.t` that is _only_ constructible by passing validation, and have
 `simulate`/`fit` require `Validated.t`. Then an unvalidated model cannot reach
 the runtime — the gh#160 class becomes a compile error by construction, not a
-runtime E507. Bigger change (touches the OCaml↔Rust boundary and every
-runtime entry); call it out, don't bundle it.
+runtime E507. Bigger change (touches the OCaml↔Rust boundary and every runtime
+entry); call it out, don't bundle it.
 
 ## Out of scope
 

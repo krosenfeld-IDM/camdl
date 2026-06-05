@@ -411,13 +411,13 @@ intersection, no ambiguity. The scenario system composes them.
 expressions and schedule times are in the declared time unit after compilation.
 The runtime operates in a single unit — no conversions at simulation time.
 
-**The convention:** all *numeric* time values in CSVs are in the model's
+**The convention:** all _numeric_ time values in CSVs are in the model's
 `time_unit`. Campaign day 180 means day 180. Climate week 26 means... day 26? No
 — the user converts. If `time_unit = 'days` and the CSV has weekly data, the
 time column should be `7, 14, 21, ...` (days), not `1, 2, 3, ...` (weeks). The
 DSL doesn't do unit conversion on numeric CSV columns.
 
-**ISO-date time columns, however, *are* converted.** If the time column holds
+**ISO-date time columns, however, _are_ converted.** If the time column holds
 ISO dates (`2020-03-15, …`) instead of numbers, camdl auto-detects this and
 converts each to internal time via the model's `origin` + `time_unit` — so dated
 surveillance data loads directly, no hand-anchoring. Numeric columns stay

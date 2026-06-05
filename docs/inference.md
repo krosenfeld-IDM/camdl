@@ -301,64 +301,57 @@ worse penalty than "predicted 5", collapsing ESS. Default matches pomp.
 
 ### Filtering marginals vs smoothing paths
 
-At each observation step `t`, the bootstrap filter holds `N` particles
-weighted by `p(y_t | x_t, θ)`. Two different distributions come out of
-this setup, and conflating them produces quietly-wrong plots:
+At each observation step `t`, the bootstrap filter holds `N` particles weighted
+by `p(y_t | x_t, θ)`. Two different distributions come out of this setup, and
+conflating them produces quietly-wrong plots:
 
-- **Filtering marginals** `p(x_t | y_{1..t}, θ)` — the per-step
-  distribution of particle states at time `t`, weighted by their
-  log-weights. `camdl pfilter --save-filtering PATH` dumps these as a
-  long-format TSV. **Joining particles across `t` by index is NOT a
-  sample path.** Resampling between steps shuffles the swarm; the
-  particle indexed `i` at step `t+1` is not a descendant of particle
-  `i` at step `t`.
+- **Filtering marginals** `p(x_t | y_{1..t}, θ)` — the per-step distribution of
+  particle states at time `t`, weighted by their log-weights.
+  `camdl pfilter --save-filtering PATH` dumps these as a long-format TSV.
+  **Joining particles across `t` by index is NOT a sample path.** Resampling
+  between steps shuffles the swarm; the particle indexed `i` at step `t+1` is
+  not a descendant of particle `i` at step `t`.
 
-- **Smoothing paths** — samples from `p(x_{1:T} | y_{1:T}, θ)`. Each
-  path is a coherent latent trajectory consistent with all
-  observations. Obtained via ancestor tracing: at the final step,
-  sample a particle proportional to its weight, walk its ancestor
-  chain backwards to collect the state at each earlier step.
-  `camdl pfilter --save-paths N PATH` writes `N` such paths.
+- **Smoothing paths** — samples from `p(x_{1:T} | y_{1:T}, θ)`. Each path is a
+  coherent latent trajectory consistent with all observations. Obtained via
+  ancestor tracing: at the final step, sample a particle proportional to its
+  weight, walk its ancestor chain backwards to collect the state at each earlier
+  step. `camdl pfilter --save-paths N PATH` writes `N` such paths.
 
-For **"does this fit match the data?" plots**, use `--save-paths`.
-Its quantile ribbon over `N` paths estimates the smoothing marginal
-at each `t` — what the model believes the latent trajectory was given
-all the data.
+For **"does this fit match the data?" plots**, use `--save-paths`. Its quantile
+ribbon over `N` paths estimates the smoothing marginal at each `t` — what the
+model believes the latent trajectory was given all the data.
 
-For **PF diagnostics** (particle degeneracy, ESS decay, obs-model
-sanity checks, filter-implementation debugging), use
-`--save-filtering`. The per-step log-weights are what you need to
-detect those pathologies; they're not what you need to compare
-trajectories to data.
+For **PF diagnostics** (particle degeneracy, ESS decay, obs-model sanity checks,
+filter-implementation debugging), use `--save-filtering`. The per-step
+log-weights are what you need to detect those pathologies; they're not what you
+need to compare trajectories to data.
 
 ### The diagnostic plot: unconditional vs smoothing
 
-A fitted stochastic compartmental model gives you three distinct
-views of the data:
+A fitted stochastic compartmental model gives you three distinct views of the
+data:
 
 1. **Unconditional posterior predictive.** `camdl simulate --replicates
-   N` at the MLE. "What does the fitted model predict a priori?"
-2. **Smoothing over latent.** `camdl pfilter --save-paths N` at the
-   MLE. "What does the model think the latent trajectory was, given
-   the data?"
+   N` at
+   the MLE. "What does the fitted model predict a priori?"
+2. **Smoothing over latent.** `camdl pfilter --save-paths N` at the MLE. "What
+   does the model think the latent trajectory was, given the data?"
 3. **Raw observations.**
 
 Plot (1) and (2) as ribbons, (3) as points, side by side:
 
-- If both ribbons track the data: well-specified model, inference
-  worked.
-- If (2) tracks the data but (1) misses it: **diagnostic of over-
-  flexible process noise papering over structural mis-specification.**
-  The PF log-likelihood is high because the model is flexible enough
-  to thread through any data via stochastic fluctuations — not
-  because it predicts well.
+- If both ribbons track the data: well-specified model, inference worked.
+- If (2) tracks the data but (1) misses it: **diagnostic of over- flexible
+  process noise papering over structural mis-specification.** The PF
+  log-likelihood is high because the model is flexible enough to thread through
+  any data via stochastic fluctuations — not because it predicts well.
 - If both miss the data: the fit is wrong.
 
-The second case is pedagogically important and easy to misread. A
-reader seeing (1) alone miss the data will conclude "the fit is
-bad"; a reader seeing (2) alone track the data will conclude "the
-fit is good." Neither is right. The divergence between them *is* the
-diagnostic — teach it that way.
+The second case is pedagogically important and easy to misread. A reader seeing
+(1) alone miss the data will conclude "the fit is bad"; a reader seeing (2)
+alone track the data will conclude "the fit is good." Neither is right. The
+divergence between them _is_ the diagnostic — teach it that way.
 
 Background: `docs/dev/proposals/2026-04-19-pf-latent-trajectories.md`.
 
@@ -450,38 +443,37 @@ suggested adjustments.
 ### Multi-chain and chain-agreement Â
 
 Run multiple independent IF2 chains from different random seeds to detect
-multimodality and assess convergence. A single-method IF2 fit is a fit with
-one `algorithm = "if2"` stage:
+multimodality and assess convergence. A single-method IF2 fit is a fit with one
+`algorithm = "if2"` stage:
 
 ```toml
 # fit.toml
 [stages.fit]
-algorithm  = "if2"
-backend    = "chain_binomial"
-chains     = 4
-particles  = 1000
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 1000
 iterations = 50
-cooling    = 0.7
+cooling = 0.7
 ```
 
 ```bash
 camdl fit run fit.toml --seed 42
 ```
 
-**Chain-agreement Â** measures across-chain agreement (Gelman–Rubin 1992
-form, applied to IF2's per-iteration parameter-mean trajectory across
-chains; this is **not** a posterior mixing statistic — IF2 is an MLE
-optimizer, not a sampler, so Â here measures whether the optimizer's
-chains agreed on a basin, not whether a posterior has mixed). Computed
-from the last half of iterations:
+**Chain-agreement Â** measures across-chain agreement (Gelman–Rubin 1992 form,
+applied to IF2's per-iteration parameter-mean trajectory across chains; this is
+**not** a posterior mixing statistic — IF2 is an MLE optimizer, not a sampler,
+so Â here measures whether the optimizer's chains agreed on a basin, not whether
+a posterior has mixed). Computed from the last half of iterations:
 
 - Â < 1.1: converged (✓) — chains agree
 - Â 1.1–1.5: uncertain (~) — might need more iterations
 - Â > 1.5: not converged (✗) — surface may be multimodal
 
-Note: Bayesian (PGAS, PMMH) outputs continue to use the name `rhat` for
-their own posterior-mixing diagnostics; only the MLE pipeline (scout /
-refine / validate) uses `chain_agreement` / Â.
+Note: Bayesian (PGAS, PMMH) outputs continue to use the name `rhat` for their
+own posterior-mixing diagnostics; only the MLE pipeline (scout / refine /
+validate) uses `chain_agreement` / Â.
 
 ### Regimes: scout → refine → validate
 
@@ -501,12 +493,12 @@ multi-modality diagnostic.
 
 ```toml
 [stages.scout]
-algorithm  = "if2"
-backend    = "chain_binomial"
-chains     = 8
-particles  = 500
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 8
+particles = 500
 iterations = 30
-cooling    = 0.70
+cooling = 0.70
 ```
 
 **Refine** — 4 chains, 1000 particles, 50 iterations, **cooling = 0.05
@@ -574,86 +566,83 @@ independently.
 
 ### Priors and precedence
 
-Both `camdl fit run` and `camdl profile --algorithm pmmh` resolve
-priors for each estimated parameter via a three-tier precedence
-chain: fit-toml > model-IR `~` syntax > flat. The behaviour at tier
-3 differs between the two subcommands (warn vs error) — see below.
+Both `camdl fit run` and `camdl profile --algorithm pmmh` resolve priors for
+each estimated parameter via a three-tier precedence chain: fit-toml > model-IR
+`~` syntax > flat. The behaviour at tier 3 differs between the two subcommands
+(warn vs error) — see below.
 
 **Tier 1 — fit-toml priors (highest).** The fit toml's
-`[estimate.<param>.prior]` block wins over any other source. For
-`fit run` the fit toml is always loaded; for `profile` it's the
-`--fit <toml>` flag.
+`[estimate.<param>.prior]` block wins over any other source. For `fit run` the
+fit toml is always loaded; for `profile` it's the `--fit <toml>` flag.
+
+```toml
+[estimate]
+beta = { bounds = [0.01, 5.0], prior = { log_normal = { mu = -0.3, sigma = 0.5 } } }
+```
+
+**Tier 2 — model-IR `~` priors (fallback).** When the fit toml doesn't declare a
+prior for an estimated parameter, the resolver falls through to whatever the
+`.camdl` file declared via `~` syntax.
+
+```
+parameters {
+  beta : rate in [0.001, 5.0] ~ log_normal(mu = -0.3, sigma = 0.5)
+}
+```
+
+This is the recommended source of truth for stable priors: the model file is the
+single artifact reviewers read for the _structural_ priors, and individual fit
+tomls only override when doing sensitivity analysis. Stripping prior duplicates
+out of N fit tomls and into one model file is what gh#75 unblocked.
+
+**Tier 3 — `Prior::Flat` (last resort).** Improper uniform. The behaviour at
+this tier is **asymmetric across subcommands**:
+
+- `camdl profile`: tier 3 is a _silent fallback_ that emits a structured warning
+  naming the affected parameters and citing the two remedies (declare in the
+  model file or supply via `--fit`). Suppress with `--suppress-warnings` (loud —
+  the waiver is recorded into `run.json`'s `suppressed_warnings`). Per-cell PMMH
+  with flat priors is recoverable by spot-checking per-cell parameter values, so
+  silent-with-warning is the right shape.
+
+- `camdl fit run`: tier 3 is a **hard error** at config-load time (the fit
+  refuses to start). The downstream interpretation of a fit-run chain —
+  canonical posterior in `fit_summary.json`, consumed by tooling that treats
+  those samples authoritatively — is too high-stakes for a silent demotion to
+  "scaled likelihood". Users who genuinely want flat priors declare it
+  explicitly via
 
   ```toml
-  [estimate]
-  beta  = { bounds = [0.01, 5.0], prior = { log_normal = { mu = -0.3, sigma = 0.5 } } }
+  [estimate.beta]
+  prior = { flat = {} }
   ```
 
-**Tier 2 — model-IR `~` priors (fallback).** When the fit toml
-doesn't declare a prior for an estimated parameter, the resolver
-falls through to whatever the `.camdl` file declared via `~` syntax.
+  This opt-in path is fully accountable: the toml records the intent,
+  `run.json`'s `resolved_priors` records the source as `flat_explicit`, and no
+  warning fires (the user said what they meant). Silent fallback to flat is
+  unreachable.
 
-  ```
-  parameters {
-    beta : rate in [0.001, 5.0] ~ log_normal(mu = -0.3, sigma = 0.5)
-  }
-  ```
+When all three tiers fail (no fit-toml prior, no model `~`, no explicit-flat
+opt-in), `camdl fit run` errors with a 2-column table naming every offending
+parameter plus all three remedies:
 
-  This is the recommended source of truth for stable priors: the
-  model file is the single artifact reviewers read for the
-  *structural* priors, and individual fit tomls only override when
-  doing sensitivity analysis. Stripping prior duplicates out of N
-  fit tomls and into one model file is what gh#75 unblocked.
+```
+error: stage 'posterior' (method=pmmh) has parameters with no resolved prior:
 
-**Tier 3 — `Prior::Flat` (last resort).** Improper uniform. The
-behaviour at this tier is **asymmetric across subcommands**:
+  beta        no prior in fit toml, no `~` in model file
+  gamma       no prior in fit toml, no `~` in model file
 
-- `camdl profile`: tier 3 is a *silent fallback* that emits a
-  structured warning naming the affected parameters and citing the
-  two remedies (declare in the model file or supply via `--fit`).
-  Suppress with `--suppress-warnings` (loud — the waiver is
-  recorded into `run.json`'s `suppressed_warnings`). Per-cell PMMH
-  with flat priors is recoverable by spot-checking per-cell
-  parameter values, so silent-with-warning is the right shape.
+To proceed, do one of:
 
-- `camdl fit run`: tier 3 is a **hard error** at config-load time
-  (the fit refuses to start). The downstream interpretation of a
-  fit-run chain — canonical posterior in `fit_summary.json`,
-  consumed by tooling that treats those samples authoritatively —
-  is too high-stakes for a silent demotion to "scaled likelihood".
-  Users who genuinely want flat priors declare it explicitly via
-
-    ```toml
-    [estimate.beta]
-    prior = { flat = {} }
-    ```
-
-  This opt-in path is fully accountable: the toml records the
-  intent, `run.json`'s `resolved_priors` records the source as
-  `flat_explicit`, and no warning fires (the user said what they
-  meant). Silent fallback to flat is unreachable.
-
-When all three tiers fail (no fit-toml prior, no model `~`, no
-explicit-flat opt-in), `camdl fit run` errors with a 2-column
-table naming every offending parameter plus all three remedies:
-
-  ```
-  error: stage 'posterior' (method=pmmh) has parameters with no resolved prior:
-
-    beta        no prior in fit toml, no `~` in model file
-    gamma       no prior in fit toml, no `~` in model file
-
-  To proceed, do one of:
-
-    (i)   Declare `prior = { <dist> = { ... } }` in the fit toml's
-          [estimate.<param>] for each listed parameter.
-    (ii)  Declare a `~ <dist>(...)` prior in the model file for
-          each listed parameter.
-    (iii) Opt into flat priors explicitly via
-          `prior = { flat = {} }` in the fit toml — only do this if you
-          intentionally want the chain to target the unconditioned
-          likelihood (scaled-likelihood posterior).
-  ```
+  (i)   Declare `prior = { <dist> = { ... } }` in the fit toml's
+        [estimate.<param>] for each listed parameter.
+  (ii)  Declare a `~ <dist>(...)` prior in the model file for
+        each listed parameter.
+  (iii) Opt into flat priors explicitly via
+        `prior = { flat = {} }` in the fit toml — only do this if you
+        intentionally want the chain to target the unconditioned
+        likelihood (scaled-likelihood posterior).
+```
 
 ```bash
 # Profile-posterior sweep: --fit supplies priors and bounds
@@ -668,51 +657,47 @@ camdl profile model.camdl --data cases.tsv \
 camdl fit run fits/synth.toml --seed 0 --stage posterior
 ```
 
-**Precedence rules** for parameter values (the unified chain shipped
-in the 2026-05-25 CLI UX revision; see
-[`docs/camdl-run-spec.md §1.3`](camdl-run-spec.md) for the
-authoritative tier list and
+**Precedence rules** for parameter values (the unified chain shipped in the
+2026-05-25 CLI UX revision; see
+[`docs/camdl-run-spec.md §1.3`](camdl-run-spec.md) for the authoritative tier
+list and
 [`docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`](dev/proposals/2026-05-25-cli-init-and-params-ux.md)
-§"Precedence (last wins)" for the design rationale). Each tier
-overrides the tier above it:
+§"Precedence (last wins)" for the design rationale). Each tier overrides the
+tier above it:
 
-1. **Model parameter default.** The value declared in the `.camdl`
-   source.
-2. **`fit.toml` `[fixed]` block.** When `--fit` is in scope, every
-   key in `[fixed]` overrides the model default.
-3. **`--fixed-file <toml>`** (repeatable). A flat parameter TOML;
-   top-level keys are parameter names. Layered in declaration
-   order — later files override earlier ones.
-4. **Scenario preset** (`--scenario NAME` or composed
-   `--enable`/`--disable`). The active scenario's `params.set` /
-   `params.scale` directives override everything above. *Scenarios
-   travel with the model and beat user-supplied params files by
-   design — choosing a scenario is choosing the model author's
-   documented bundle.*
-5. **`--fixed NAME=VALUE`** (repeatable, highest). The
-   per-invocation override; always wins. Use this for "I want to
-   change one value for this one run."
+1. **Model parameter default.** The value declared in the `.camdl` source.
+2. **`fit.toml` `[fixed]` block.** When `--fit` is in scope, every key in
+   `[fixed]` overrides the model default.
+3. **`--fixed-file <toml>`** (repeatable). A flat parameter TOML; top-level keys
+   are parameter names. Layered in declaration order — later files override
+   earlier ones.
+4. **Scenario preset** (`--scenario NAME` or composed `--enable`/`--disable`).
+   The active scenario's `params.set` / `params.scale` directives override
+   everything above. _Scenarios travel with the model and beat user-supplied
+   params files by design — choosing a scenario is choosing the model author's
+   documented bundle._
+5. **`--fixed NAME=VALUE`** (repeatable, highest). The per-invocation override;
+   always wins. Use this for "I want to change one value for this one run."
 
-The legacy `--params` and `--param` flags on inference subcommands
-(profile, if2, fit run, survey) were removed in the same revision.
-Their replacements are:
+The legacy `--params` and `--param` flags on inference subcommands (profile,
+if2, fit run, survey) were removed in the same revision. Their replacements are:
+
 - `--fixed-file <toml>` for the "load many values from a file" case.
 - `--fixed NAME=VALUE` for the "change one value" case.
-- `--init from_params --params <toml>` (a *companion* of `--init`,
-  not a top-level flag) for the *warm-start chain origin* case —
-  when the file is a starting point for inference, not a pin.
+- `--init from_params --params <toml>` (a _companion_ of `--init`, not a
+  top-level flag) for the _warm-start chain origin_ case — when the file is a
+  starting point for inference, not a pin.
 
-`--fixed`/`--fixed-file` on inference subcommands also removes the
-listed parameter from the `[estimate]` set if it was there — so
+`--fixed`/`--fixed-file` on inference subcommands also removes the listed
+parameter from the `[estimate]` set if it was there — so
 `--fixed gamma=0.1 --sweep tau=lin(-35,-1,30)` is the canonical
-slice-while-holding-gamma pattern. The kick-out is announced on
-stderr (one line per parameter) so the override is never silent.
+slice-while-holding-gamma pattern. The kick-out is announced on stderr (one line
+per parameter) so the override is never silent.
 
-**Scenario-override visibility.** When a `--fixed-file` or
-`--fixed NAME=VALUE` value overrides a value that the active
-scenario *also* set, the resolver emits a `ScenarioOverridden`
-warning to stderr at resolve time and records both values into
-`run.json`'s `parameters_provenance` block:
+**Scenario-override visibility.** When a `--fixed-file` or `--fixed NAME=VALUE`
+value overrides a value that the active scenario _also_ set, the resolver emits
+a `ScenarioOverridden` warning to stderr at resolve time and records both values
+into `run.json`'s `parameters_provenance` block:
 
 ```json
 "beta": {
@@ -726,89 +711,82 @@ warning to stderr at resolve time and records both values into
 }
 ```
 
-CLI override of a scenario value is a legitimate quick-test
-workflow; the warning + provenance pair ensure six-months-later
-auditing of which value actually ran isn't blocked by archaeology.
+CLI override of a scenario value is a legitimate quick-test workflow; the
+warning + provenance pair ensure six-months-later auditing of which value
+actually ran isn't blocked by archaeology.
 
-**Profile focal parameters.** The focal swept parameter(s) are
-always removed from the estimated set, even when they appear in the
-fit toml's `[estimate]`. Listing a focal parameter in
-`--fixed`/`--fixed-file` (or in the fit toml's `[fixed]`) is a
-hard error — a parameter cannot be simultaneously swept and pinned.
+**Profile focal parameters.** The focal swept parameter(s) are always removed
+from the estimated set, even when they appear in the fit toml's `[estimate]`.
+Listing a focal parameter in `--fixed`/`--fixed-file` (or in the fit toml's
+`[fixed]`) is a hard error — a parameter cannot be simultaneously swept and
+pinned.
 
-**Provenance.** Both subcommands write per-parameter `resolved_priors`
-into `run.json`:
+**Provenance.** Both subcommands write per-parameter `resolved_priors` into
+`run.json`:
 
-  ```json
-  "resolved_priors": [
-    { "param": "beta",  "source": "fit_toml" },
-    { "param": "gamma", "source": "model_ir" },
-    { "param": "sigma", "source": "flat_explicit" }
-  ]
-  ```
+```json
+"resolved_priors": [
+  { "param": "beta",  "source": "fit_toml" },
+  { "param": "gamma", "source": "model_ir" },
+  { "param": "sigma", "source": "flat_explicit" }
+]
+```
 
-The four wire values are `"fit_toml"`, `"model_ir"`,
-`"flat_explicit"` (gh#75 — fit run only), and `"flat_fallback"`
-(profile only — the silent-fallback case). Reviewers reading a
-fit dir's `run.json` can audit at a glance whether the chain
+The four wire values are `"fit_toml"`, `"model_ir"`, `"flat_explicit"` (gh#75 —
+fit run only), and `"flat_fallback"` (profile only — the silent-fallback case).
+Reviewers reading a fit dir's `run.json` can audit at a glance whether the chain
 targeted a posterior with priors or the unconditioned likelihood.
 
-The CAS hash includes the model IR bytes (`fit_content_hash` in
-`FitConfigV2`), so re-running against the same fit toml after
-editing a `~` prior in the model file produces a different cache
-dir. For profile, the CAS hash additionally keys on
-`fit_toml_hash` + resolved per-parameter prior sources so
-re-running against the same model with a different `--fit` flag
-produces a different umbrella.
+The CAS hash includes the model IR bytes (`fit_content_hash` in `FitConfigV2`),
+so re-running against the same fit toml after editing a `~` prior in the model
+file produces a different cache dir. For profile, the CAS hash additionally keys
+on `fit_toml_hash` + resolved per-parameter prior sources so re-running against
+the same model with a different `--fit` flag produces a different umbrella.
 
 ### Per-cell diagnostics
 
-Profile output gains a fixed-schema block of per-cell convergence
-columns appended after the existing focal / loglik / parameter
-columns (gh#74 Option B). The columns are written into the umbrella
-`summary.tsv` (the file `--output` mirrors) and into each per-seed
-`profile.tsv`.
+Profile output gains a fixed-schema block of per-cell convergence columns
+appended after the existing focal / loglik / parameter columns (gh#74 Option B).
+The columns are written into the umbrella `summary.tsv` (the file `--output`
+mirrors) and into each per-seed `profile.tsv`.
 
-**Read by column name, not column index.** The diagnostic columns
-are the API; their order is stable across runs, but defensive
-consumers should look them up by name so future schema additions
-land cleanly.
+**Read by column name, not column index.** The diagnostic columns are the API;
+their order is stable across runs, but defensive consumers should look them up
+by name so future schema additions land cleanly.
 
 The full list:
 
-| Column | Algorithm | Meaning |
-|---|---|---|
-| `acc_rate_avg` | PMMH | Mean MH acceptance rate across the K `--starts` chains. Post-burn-in (matches `PMMHResult.acceptance_rate`). |
-| `acc_rate_min` | PMMH | Minimum acceptance rate across the K chains. Surfaces "one chain stalled at 2%" failures the mean would hide. |
-| `loglik_spread_starts` | all | `max − min` of per-start final log-likelihoods. > ~5 nats means the starts disagree on the basin. |
-| `loglik_rhat_starts` | PMMH, IF2 | Gelman–Rubin R̂ on the per-start log-likelihood traces (Gelman & Rubin 1992, *Statist. Sci.* 7(4); Brooks & Gelman 1998 corrected variant). > 1.05 is the conventional "chains haven't agreed yet" threshold. |
-| `starts_n_completed` | all | Count of starts that produced a finite final loglik (didn't diverge). |
-| `iterations_used` | IF2 | Final cooling-step index reached (= `--iterations` on normal completion). |
-| `cooling_final` | IF2 | Mean across estimated parameters of the final iteration's `effective_rw_sd` — the *actual* ending perturbation SD, not the target. |
+| Column                 | Algorithm | Meaning                                                                                                                                                                                                      |
+| ---------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `acc_rate_avg`         | PMMH      | Mean MH acceptance rate across the K `--starts` chains. Post-burn-in (matches `PMMHResult.acceptance_rate`).                                                                                                 |
+| `acc_rate_min`         | PMMH      | Minimum acceptance rate across the K chains. Surfaces "one chain stalled at 2%" failures the mean would hide.                                                                                                |
+| `loglik_spread_starts` | all       | `max − min` of per-start final log-likelihoods. > ~5 nats means the starts disagree on the basin.                                                                                                            |
+| `loglik_rhat_starts`   | PMMH, IF2 | Gelman–Rubin R̂ on the per-start log-likelihood traces (Gelman & Rubin 1992, _Statist. Sci._ 7(4); Brooks & Gelman 1998 corrected variant). > 1.05 is the conventional "chains haven't agreed yet" threshold. |
+| `starts_n_completed`   | all       | Count of starts that produced a finite final loglik (didn't diverge).                                                                                                                                        |
+| `iterations_used`      | IF2       | Final cooling-step index reached (= `--iterations` on normal completion).                                                                                                                                    |
+| `cooling_final`        | IF2       | Mean across estimated parameters of the final iteration's `effective_rw_sd` — the _actual_ ending perturbation SD, not the target.                                                                           |
 
-For algorithms that don't supply a given column (e.g. `acc_rate_avg`
-on an IF2 run, `iterations_used` on a PMMH run), the cell renders
-as `NaN` (capital N — camdl's TSV NaN convention).
+For algorithms that don't supply a given column (e.g. `acc_rate_avg` on an IF2
+run, `iterations_used` on a PMMH run), the cell renders as `NaN` (capital N —
+camdl's TSV NaN convention).
 
-**The K<3 rule.** `loglik_rhat_starts` is `NaN` when fewer than
-three of the K starts have a usable trace. Gelman–Rubin R̂ is
-undefined at K=1 and unstable at K=2; the rule prevents a spurious
-diagnostic from a single-chain spike. To get a finite R̂ supply
-`--starts 3` or more, *and* run the per-cell inner loop long enough
-to produce post-burn-in samples (`--pmmh-steps` must exceed the
+**The K<3 rule.** `loglik_rhat_starts` is `NaN` when fewer than three of the K
+starts have a usable trace. Gelman–Rubin R̂ is undefined at K=1 and unstable at
+K=2; the rule prevents a spurious diagnostic from a single-chain spike. To get a
+finite R̂ supply `--starts 3` or more, _and_ run the per-cell inner loop long
+enough to produce post-burn-in samples (`--pmmh-steps` must exceed the
 hard-coded `burn_in = 100` for PMMH).
 
-The diagnostic R̂ is computed on log-likelihood traces, not on
-per-parameter posteriors, so it is a chain-level "are these starts
-walking the same basin" check rather than a full multivariate
-convergence diagnostic. The column name reflects that: it's
-`loglik_rhat_starts`, not `rhat`.
+The diagnostic R̂ is computed on log-likelihood traces, not on per-parameter
+posteriors, so it is a chain-level "are these starts walking the same basin"
+check rather than a full multivariate convergence diagnostic. The column name
+reflects that: it's `loglik_rhat_starts`, not `rhat`.
 
 **Cross-seed aggregation.** For multi-seed profile runs (`--seeds
-1,2,3`), each cell's diagnostic columns are averaged across seeds
-in `summary.tsv` (with `starts_n_completed` summing rather than
-averaging — it's a total count). Per-seed values remain visible in
-each `replicates/seed_<n>/profile.tsv`.
+1,2,3`), each
+cell's diagnostic columns are averaged across seeds in `summary.tsv` (with
+`starts_n_completed` summing rather than averaging — it's a total count).
+Per-seed values remain visible in each `replicates/seed_<n>/profile.tsv`.
 
 ---
 
@@ -933,7 +911,7 @@ at end-of-substep. The transition log-density at that substep is exactly zero
 
 If a chain initialises with an event-time parameter (e.g., `tau`) outside the
 simulation window, the seed never fires within the simulation, predicted
-incidence stays zero, and the *observation* density goes to $-\infty$ against
+incidence stays zero, and the _observation_ density goes to $-\infty$ against
 real data with nonzero cases. camdl prints a split-by-component diagnostic at
 startup so the failure mode is identifiable (transition_ll vs observation_ll vs
 ivp_ll); the chain will still run if NUTS or MH can propose into a feasible
@@ -941,8 +919,8 @@ region.
 
 During CSMC ancestor sampling on event-using models, the density evaluator
 returns $-\infty$ for a free particle whose pre-step state has zero rate for a
-transition that fired in the reference's flow record. This is correct: the
-free particle cannot be the ancestor and is excluded from the categorical.
+transition that fired in the reference's flow record. This is correct: the free
+particle cannot be the ancestor and is excluded from the categorical.
 
 **Time step size.** The Euler-multinomial approximation assumes exit
 probabilities are small per substep. In spatial models with high $R_0$ and
@@ -953,17 +931,17 @@ approximation breakdown.
 
 ### MCMC initialization strategy
 
-PGAS chains should be initialized at or near a known high-likelihood region,
-not from random or diffuse starting points. The recommended workflow:
+PGAS chains should be initialized at or near a known high-likelihood region, not
+from random or diffuse starting points. The recommended workflow:
 
 1. **IF2 scout:** Run 8–16 chains with random starts to map the likelihood
    basins. More chains are needed for spatial models where the surface is
    multimodal (R0–sigma–amplitude ridges create multiple basins).
-2. **Profile likelihood:** Run a 1D profile over R0 (the parameter most prone
-   to basin structure) to confirm which basin has the highest likelihood.
+2. **Profile likelihood:** Run a 1D profile over R0 (the parameter most prone to
+   basin structure) to confirm which basin has the highest likelihood.
 3. **Initialize PGAS:** Start all chains at the best IF2 MLE ± small jitter
-   (e.g., ±5% per parameter). This avoids wasting burn-in searching for a
-   basin that IF2 already found.
+   (e.g., ±5% per parameter). This avoids wasting burn-in searching for a basin
+   that IF2 already found.
 
 Starting chains near the mode is standard MCMC practice (Gelman et al., BDA3;
 Stan's default workflow optimizes first, then samples). MCMC convergence
@@ -971,11 +949,11 @@ guarantees are asymptotic — initialization affects only burn-in length, not th
 target distribution. Starting from a good point reduces wasted computation; it
 does not bias the posterior.
 
-**When initialization matters most:** Spatial models with seasonal forcing.
-The R0–sigma trade-off creates basins separated by 50+ log-likelihood units.
-IF2 with only 4 chains can land in the wrong basin (e.g., R0≈28 instead of
-the true R0≈20), and PGAS initialized there may never cross the barrier. More
-IF2 scout chains is the fix — tempering can't bridge 50+ nat gaps either.
+**When initialization matters most:** Spatial models with seasonal forcing. The
+R0–sigma trade-off creates basins separated by 50+ log-likelihood units. IF2
+with only 4 chains can land in the wrong basin (e.g., R0≈28 instead of the true
+R0≈20), and PGAS initialized there may never cross the barrier. More IF2 scout
+chains is the fix — tempering can't bridge 50+ nat gaps either.
 
 ---
 
@@ -1028,8 +1006,8 @@ large. If parameters haven't moved after 20 iterations, rw_sd is too small.
   gamma        Â=3.20 ✗ range=[0.065, 0.120]
 ```
 
-R₀ and sigma have converged (Â < 1.1, tight range). Gamma has not (Â=3.2,
-wide range). This means gamma is either poorly identified or the surface is
+R₀ and sigma have converged (Â < 1.1, tight range). Gamma has not (Â=3.2, wide
+range). This means gamma is either poorly identified or the surface is
 multimodal along the gamma axis. Run a profile likelihood for gamma to
 distinguish.
 
@@ -1037,10 +1015,10 @@ distinguish.
 
 ## The fit workflow
 
-The low-level commands (`camdl pfilter`, `camdl profile`) are building
-blocks. IF2 is not a standalone command — a single-method IF2 fit is just a
-fit with one `algorithm = "if2"` stage. For all model fitting, `camdl fit`
-provides a structured workflow driven by a `fit.toml` configuration file:
+The low-level commands (`camdl pfilter`, `camdl profile`) are building blocks.
+IF2 is not a standalone command — a single-method IF2 fit is just a fit with one
+`algorithm = "if2"` stage. For all model fitting, `camdl fit` provides a
+structured workflow driven by a `fit.toml` configuration file:
 
 ```
 fit.toml + model.camdl + data.tsv
@@ -1055,16 +1033,15 @@ fit.toml + model.camdl + data.tsv
 
 > **v2 layout note.** Stage directories live under
 > `<fit_dir>/real/fit_<seed>/<stage>/` (or
-> `<fit_dir>/synthetic/ds_NN/fit_<seed>/<stage>/` for SBC
-> replicates). The `real/fit_<seed>/` and `synthetic/...` wrappers
-> were introduced in commit `5f1e704` (2026-04-18) to support
-> start-sensitivity and synthetic-data replicate grids; pre-2026-04-18
-> diagrams that show stages directly under `<fit_dir>/` are stale.
+> `<fit_dir>/synthetic/ds_NN/fit_<seed>/<stage>/` for SBC replicates). The
+> `real/fit_<seed>/` and `synthetic/...` wrappers were introduced in commit
+> `5f1e704` (2026-04-18) to support start-sensitivity and synthetic-data
+> replicate grids; pre-2026-04-18 diagrams that show stages directly under
+> `<fit_dir>/` are stale.
 
-Each named block under `[stages.NAME]` in `fit.toml` chains via
-the `init = "from_mle"` + `init_mle = "<prior-stage>"` pair. The
-default set is scout → refine → validate (+ pgas), but users can
-define any sequence.
+Each named block under `[stages.NAME]` in `fit.toml` chains via the
+`init = "from_mle"` + `init_mle = "<prior-stage>"` pair. The default set is
+scout → refine → validate (+ pgas), but users can define any sequence.
 
 **Scout** (8 chains, 200 particles, no cooling): random starts across the
 parameter space, MAD-based auto-calibration of rw_sd. Identifies the likelihood
@@ -1095,91 +1072,87 @@ camdl fit summary results/fits/<dir>/
 
 ### When `start =` is omitted in `[estimate]`
 
-Each `[estimate.X]` entry's `start =` field is optional. When you
-omit it (and the model file doesn't already declare a value for the
-parameter via `parameters { X : rate = 0.3 }` or a scenario), the
-runner draws a single Transform-aware uniform value within the
-parameter's bounds and uses that as the base point. From there the
-selected `init` mode perturbs per-chain as usual.
+Each `[estimate.X]` entry's `start =` field is optional. When you omit it (and
+the model file doesn't already declare a value for the parameter via
+`parameters { X : rate = 0.3 }` or a scenario), the runner draws a single
+Transform-aware uniform value within the parameter's bounds and uses that as the
+base point. From there the selected `init` mode perturbs per-chain as usual.
 
 The draw is:
 
-- **Log-uniform** for `Log`-typed parameters with strictly positive
-  bounds (rates, positive quantities) — equivalent to drawing
-  uniformly in `[ln(lo), ln(hi)]` and exponentiating, so a parameter
-  with bounds `[1e-6, 1.0]` doesn't collapse to a value near `0.5`.
-- **Linear-uniform** for `Logit`/`None` parameters and for any
-  parameter whose bounds aren't strictly positive.
+- **Log-uniform** for `Log`-typed parameters with strictly positive bounds
+  (rates, positive quantities) — equivalent to drawing uniformly in
+  `[ln(lo), ln(hi)]` and exponentiating, so a parameter with bounds
+  `[1e-6, 1.0]` doesn't collapse to a value near `0.5`.
+- **Linear-uniform** for `Logit`/`None` parameters and for any parameter whose
+  bounds aren't strictly positive.
 
-The draw is deterministic per `(seed, parameter_name)`: re-running
-with the same `--seed` gives the same fallback values, and two
-parameters with identical bounds at the same seed get *different*
-values (their names hash differently). Different seeds give
-different fallback points within bounds — useful when you want a
-seed sweep to also sweep over starting positions for the
-unspecified parameters.
+The draw is deterministic per `(seed, parameter_name)`: re-running with the same
+`--seed` gives the same fallback values, and two parameters with identical
+bounds at the same seed get _different_ values (their names hash differently).
+Different seeds give different fallback points within bounds — useful when you
+want a seed sweep to also sweep over starting positions for the unspecified
+parameters.
 
-This replaces an earlier bounds-midpoint heuristic that gave the
-same point at every seed and ignored the parameter's transform.
+This replaces an earlier bounds-midpoint heuristic that gave the same point at
+every seed and ignored the parameter's transform.
 
 ### Per-chain init: `init`
 
-How chain (or per-cell) starting points are drawn. Set on each
-stage in `fit.toml` via the `init = "<mode>"` key (or override
-per-stage on the CLI with `--init`); also available as `--init` on
-`camdl profile` for per-cell starts. Honoured by **IF2**, **PGAS**,
-**PMMH**, **NLopt** (`nl_sbplx`, `nl_bobyqa`), and **profile**.
+How chain (or per-cell) starting points are drawn. Set on each stage in
+`fit.toml` via the `init = "<mode>"` key (or override per-stage on the CLI with
+`--init`); also available as `--init` on `camdl profile` for per-cell starts.
+Honoured by **IF2**, **PGAS**, **PMMH**, **NLopt** (`nl_sbplx`, `nl_bobyqa`),
+and **profile**.
 
 ```toml
 [stages.scout]
 algorithm = "if2"
-backend   = "chain_binomial"
-chains    = 16
-init      = "lhs"            # this is now the default; shown for clarity
+backend = "chain_binomial"
+chains = 16
+init = "lhs" # this is now the default; shown for clarity
 ```
 
-| Mode | Behaviour | When to use |
-|---|---|---|
-| `lhs` (default) | Latin-hypercube stratified sampling, **scale-aware via the parameter's transform**: `Log`-typed rates are sampled in log space and exponentiated, so a single LHS pass spans orders of magnitude. `Logit`/`None`-typed parameters are sampled linearly in `[lo, hi]`. | The default for every multi-chain stage. Stratified coverage at the chain counts we typically run; supersedes the legacy `uniform` default. |
-| `uniform` | Per-chain uniform random within natural-scale bounds. Chain 0 keeps the seeded start. | Legacy mode. Equivalent to LHS for `Logit`/`None` parameters, but worse for `Log`-typed parameters at low chain count (clumps in linear space). Kept for reproducibility of pre-LHS results. |
-| `single` | Every chain at the seeded `[estimate].start` (or its `Transform`-aware uniform fallback when `start` is omitted). Chains differ only by per-chain RNG. | See "When `single` is the right choice" below. |
+| Mode            | Behaviour                                                                                                                                                                                                                                                             | When to use                                                                                                                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lhs` (default) | Latin-hypercube stratified sampling, **scale-aware via the parameter's transform**: `Log`-typed rates are sampled in log space and exponentiated, so a single LHS pass spans orders of magnitude. `Logit`/`None`-typed parameters are sampled linearly in `[lo, hi]`. | The default for every multi-chain stage. Stratified coverage at the chain counts we typically run; supersedes the legacy `uniform` default.                                                  |
+| `uniform`       | Per-chain uniform random within natural-scale bounds. Chain 0 keeps the seeded start.                                                                                                                                                                                 | Legacy mode. Equivalent to LHS for `Logit`/`None` parameters, but worse for `Log`-typed parameters at low chain count (clumps in linear space). Kept for reproducibility of pre-LHS results. |
+| `single`        | Every chain at the seeded `[estimate].start` (or its `Transform`-aware uniform fallback when `start` is omitted). Chains differ only by per-chain RNG.                                                                                                                | See "When `single` is the right choice" below.                                                                                                                                               |
 
-When a stage uses `init = "from_mle"` + `init_mle = "<prior>"`, every
-chain starts from the prior stage's MLE — that's the intent of the
-handoff.
+When a stage uses `init = "from_mle"` + `init_mle = "<prior>"`, every chain
+starts from the prior stage's MLE — that's the intent of the handoff.
 
-**Why LHS is the default.** With single-point starts (or clumpy
-uniform starts at low chain counts), chains find one basin and miss
-the rest. On stratified epi models with multiple modes, LHS-drawn
-starts reach basins that single-point starts never see — on the
-typhoid stratified scout, 30 LHS chains beat 8 uniform-random
-chains by ~80,000 nats, holding everything else equal.
+**Why LHS is the default.** With single-point starts (or clumpy uniform starts
+at low chain counts), chains find one basin and miss the rest. On stratified epi
+models with multiple modes, LHS-drawn starts reach basins that single-point
+starts never see — on the typhoid stratified scout, 30 LHS chains beat 8
+uniform-random chains by ~80,000 nats, holding everything else equal.
 
 **When `single` is the right choice.** Four legitimate cases:
-1. **Refine stages with `init = "from_mle"` + `init_mle = "<prior>"`** — all chains start
-   from the prior stage's MLE anyway; `single` is redundant but harmless.
-2. **Single-chain runs (`chains = 1`)** — there's no per-chain spread to
-   draw, so the three modes collapse to the same draw.
-3. **Reproducibility-critical tests** — `single` gives byte-identical
-   chain starts across runs at the same seed; LHS/uniform draws shift
-   if the RNG order changes upstream.
-4. **Deterministic NLopt with no spread desired** — `nl_sbplx` and
-   `nl_bobyqa` are deterministic, so `single` + `chains > 1` gives N
-   identical optimisations and the chain-agreement gate is uninformative;
-   only use this when you explicitly want a single optimisation from a
-   known seeded point.
 
-**Per-stage independence.** Scout and refine can use different
-`init` modes (LHS for basin-finding in scout, `single` in refine
-to converge from scout's MLE). The CLI `--init` flag requires
-`--stage` for the same reason — it's stage-scoped.
+1. **Refine stages with `init = "from_mle"` + `init_mle = "<prior>"`** — all
+   chains start from the prior stage's MLE anyway; `single` is redundant but
+   harmless.
+2. **Single-chain runs (`chains = 1`)** — there's no per-chain spread to draw,
+   so the three modes collapse to the same draw.
+3. **Reproducibility-critical tests** — `single` gives byte-identical chain
+   starts across runs at the same seed; LHS/uniform draws shift if the RNG order
+   changes upstream.
+4. **Deterministic NLopt with no spread desired** — `nl_sbplx` and `nl_bobyqa`
+   are deterministic, so `single` + `chains > 1` gives N identical optimisations
+   and the chain-agreement gate is uninformative; only use this when you
+   explicitly want a single optimisation from a known seeded point.
+
+**Per-stage independence.** Scout and refine can use different `init` modes (LHS
+for basin-finding in scout, `single` in refine to converge from scout's MLE).
+The CLI `--init` flag requires `--stage` for the same reason — it's
+stage-scoped.
 
 **`camdl profile`** dispatches the same way at each grid cell:
-`--starts N --init lhs` draws N stratified per-cell starts across
-the non-focal estimated parameters; the focal parameters stay
-pinned to the grid point. `--init single` reproduces the
-historical "every start at the same point, IF2 RNG provides the
-spread" behaviour.
+`--starts N --init lhs` draws N stratified per-cell starts across the non-focal
+estimated parameters; the focal parameters stay pinned to the grid point.
+`--init single` reproduces the historical "every start at the same point, IF2
+RNG provides the spread" behaviour.
 
 ### Out-of-sample validation
 

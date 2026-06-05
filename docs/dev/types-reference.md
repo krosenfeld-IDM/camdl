@@ -14,15 +14,15 @@ catalogue that drifts.
   per-level hashes.
 - **`runid::RunRecord`** (`record.rs`) — the on-disk `run.json`: the `run_id`
   leaf address, the ordered per-level `levels` (each a `LevelId` =
-  `{name, label, hash}`), upstream `deps`, the `kind`, a `RunStatus`
-  (Running → Completed/Failed), provenance (`argv`, version, timestamps), and a
+  `{name, label, hash}`), upstream `deps`, the `kind`, a `RunStatus` (Running →
+  Completed/Failed), provenance (`argv`, version, timestamps), and a
   recorded-not-hashed `inputs` payload for display.
 - **`runid::Layout`** (`layout.rs`) — the readable factored store path. Each
   segment is `{label}-{hash8}`; the label is provenance, the `hash8` is
   identity. `store_path(root, kind, levels)` builds the nested path.
-- **Identity inputs** (`inputs.rs`) — the per-level content types
-  (`FitDigest`, `DataDigest`, `StageConfig`/`StageLevel`, `Seed`,
-  `EngineVersion`, `Deps`, `ArtifactRef`, …) and their canonical hashing.
+- **Identity inputs** (`inputs.rs`) — the per-level content types (`FitDigest`,
+  `DataDigest`, `StageConfig`/`StageLevel`, `Seed`, `EngineVersion`, `Deps`,
+  `ArtifactRef`, …) and their canonical hashing.
 - **The store** (`store.rs`) — the filesystem-backed CAS rooted at `results/`:
   streaming claim (staging dir + atomic finalize), prefix-collision
   disambiguation, recursive artifact manifest at commit.

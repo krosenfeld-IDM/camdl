@@ -12,24 +12,28 @@ Every leaf directory contains a `run.json` (`runid::RunRecord`) with the
 authoritative fields:
 
 - `run_id` — the 64-hex canonical address of the run.
-- `kind` — `"sim" | "fit_stage" | "pfilter" | "survey" | "profile_point" |
-  "sim_ensemble"` (plus `"obs"` and `"projection"`, which are reserved — their
-  store partitions and run-id tags are pinned but no leaf is emitted yet).
-- `levels` — the factored identity, in order: each `{ name, label, hash,
+- `kind` —
+  `"sim" | "fit_stage" | "pfilter" | "survey" | "profile_point" |
+  "sim_ensemble"`
+  (plus `"obs"` and `"projection"`, which are reserved — their store partitions
+  and run-id tags are pinned but no leaf is emitted yet).
+- `levels` — the factored identity, in order: each
+  `{ name, label, hash,
   schema_version }`.
-- `deps` — lineage: the consumed upstream artifacts, each `{ run_id, kind,
-  artifact, digest }` (a `sim_ensemble` deps on its per-cell `sim` leaves; a
-  `sim` run records the fit it was launched from). Empty when there are none.
-- `children` — declared sub-artifacts: namespace → child `run_id`s (e.g.
-  `obs`). See "Sub-artifacts" below.
+- `deps` — lineage: the consumed upstream artifacts, each
+  `{ run_id, kind,
+  artifact, digest }` (a `sim_ensemble` deps on its per-cell
+  `sim` leaves; a `sim` run records the fit it was launched from). Empty when
+  there are none.
+- `children` — declared sub-artifacts: namespace → child `run_id`s (e.g. `obs`).
+  See "Sub-artifacts" below.
 - `status`, `provenance.created_at`, `provenance.label`, `inputs`, `artifacts`.
 
 Path segments mirror `levels` for human navigation, but the **label** in a
 segment is provenance only: renaming it produces a new directory (a harmless
 cache miss), never a wrong answer. Identity lives in the `hash8` suffix and,
-authoritatively, in `run.json`. Do not infer kind, parameters, seed, or
-lineage from the path — read `kind` / `levels` / `deps` / `children` from
-`run.json`.
+authoritatively, in `run.json`. Do not infer kind, parameters, seed, or lineage
+from the path — read `kind` / `levels` / `deps` / `children` from `run.json`.
 
 ## Path shape
 
@@ -40,33 +44,33 @@ results/<kind_dir>/<seg>/<seg>/…/run.json
 - `<kind_dir>`: `sims` | `fits` | `pfilters` | `surveys` | `profiles` |
   `ensembles` (reserved, not emitted yet: `obs`, `projections`).
 - `<seg>` = `<label>-<hash8>`, one segment per level in `levels` order.
-- **Collision suffix:** if two leaves would share a directory name, the
-  later one's final segment gets a `~<disambiguator>` suffix, escalating
-  `<label>-<hash8>` → `~<hash16>` → `~<full64>` until unique. Enumerate
-  sibling directories and read each `run.json` rather than reconstructing an
-  expected name — a `~`-suffixed sibling is a normal leaf. Both colliding runs
-  have distinct full `run_id`s.
+- **Collision suffix:** if two leaves would share a directory name, the later
+  one's final segment gets a `~<disambiguator>` suffix, escalating
+  `<label>-<hash8>` → `~<hash16>` → `~<full64>` until unique. Enumerate sibling
+  directories and read each `run.json` rather than reconstructing an expected
+  name — a `~`-suffixed sibling is a normal leaf. Both colliding runs have
+  distinct full `run_id`s.
 
 ### Levels per kind (the `levels` array; path segments mirror it)
 
-| kind            | `kind_dir`  | levels (in order)                          |
-| --------------- | ----------- | ------------------------------------------ |
-| `sim`           | `sims`      | model · config · params · scenario · seed  |
-| `fit_stage`     | `fits`      | fit · stage · seed                         |
-| `pfilter`       | `pfilters`  | model · config · params · seed             |
-| `survey`        | `surveys`   | model · config · box · seed                |
-| `profile_point` | `profiles`  | profile · point · stage · seed · start     |
-| `sim_ensemble`  | `ensembles` | model · config · params · grid             |
+| kind            | `kind_dir`  | levels (in order)                         |
+| --------------- | ----------- | ----------------------------------------- |
+| `sim`           | `sims`      | model · config · params · scenario · seed |
+| `fit_stage`     | `fits`      | fit · stage · seed                        |
+| `pfilter`       | `pfilters`  | model · config · params · seed            |
+| `survey`        | `surveys`   | model · config · box · seed               |
+| `profile_point` | `profiles`  | profile · point · stage · seed · start    |
+| `sim_ensemble`  | `ensembles` | model · config · params · grid            |
 
-A **fit** is the `fits/<stem>-<hash8>/` segment: it has no `run.json` of its
-own — it carries a `fit.meta.json` sidecar (fit-wide provenance: label,
-model/data hashes, estimated/fixed, resolved priors) and one `fit_stage`
-leaf per (cell × stage) underneath. Read the fit-level view by combining the
-sidecar with its stage-leaf `run.json`s.
+A **fit** is the `fits/<stem>-<hash8>/` segment: it has no `run.json` of its own
+— it carries a `fit.meta.json` sidecar (fit-wide provenance: label, model/data
+hashes, estimated/fixed, resolved priors) and one `fit_stage` leaf per (cell ×
+stage) underneath. Read the fit-level view by combining the sidecar with its
+stage-leaf `run.json`s.
 
-A **multi-cell `simulate`** (`--replicates` / `--seeds` / multiple
-`--scenario` / `--draws`) writes N per-cell `sim` leaves under `sims/` **plus**
-one `sim_ensemble` leaf under `ensembles/` holding the combined wide-format
+A **multi-cell `simulate`** (`--replicates` / `--seeds` / multiple `--scenario`
+/ `--draws`) writes N per-cell `sim` leaves under `sims/` **plus** one
+`sim_ensemble` leaf under `ensembles/` holding the combined wide-format
 trajectory TSV across all cells. The `sim_ensemble`'s `grid` level digests the
 sorted cell set and the cell count (count-in-the-key), and it `deps` on the N
 `sim` leaves; `cat <sim_ensemble run_id>` yields that combined TSV. A
@@ -83,29 +87,29 @@ the store today).
 
 ## What changed from the pre-refactor layout (the migration diff)
 
-- **All existing `results/` are cache-misses.** Level hash *contents*
-  changed (e.g. the model hash now covers the whole IR, including
-  output/origin/time-unit). There is no migration: clear `results/` and
-  re-run. Old paths/records are not readable by the new tools.
-- **Fit stage segments gained an `NN-` ordinal prefix** (`01-scout-<h8>`,
-  not `scout-<h8>`) so execution order sorts topologically.
+- **All existing `results/` are cache-misses.** Level hash _contents_ changed
+  (e.g. the model hash now covers the whole IR, including
+  output/origin/time-unit). There is no migration: clear `results/` and re-run.
+  Old paths/records are not readable by the new tools.
+- **Fit stage segments gained an `NN-` ordinal prefix** (`01-scout-<h8>`, not
+  `scout-<h8>`) so execution order sorts topologically.
 - **`pfilter` moved to its own `pfilters/` kind** (was nested elsewhere).
-- **`camdl if2` is removed.** A single-method IF2 run is now a one-stage
-  fit: `fits/<stem>-<h8>/01-fit-<h8>/…`, run via `camdl fit run` with a
+- **`camdl if2` is removed.** A single-method IF2 run is now a one-stage fit:
+  `fits/<stem>-<h8>/01-fit-<h8>/…`, run via `camdl fit run` with a
   `[stages.X] algorithm = "if2"` block.
 - **No fit-wide `run.json`** at the `fits/<stem>-<h8>/` level — read the
   `fit.meta.json` sidecar + the stage leaves (see above).
 
 ## Derived index (`results/index.json`)
 
-A rebuildable `index.json` at the store root caches `run_id → (path, kind,
-label, status, created_at)` for fast lookup. It is a **cache, not truth** —
-`run.json` is authoritative:
+A rebuildable `index.json` at the store root caches
+`run_id → (path, kind,
+label, status, created_at)` for fast lookup. It is a
+**cache, not truth** — `run.json` is authoritative:
 
-- An index miss falls back to a full tree walk (so an out-of-band-added leaf
-  is still found), then repairs the index.
-- An entry whose `run.json` is gone is dropped (never resolves to a dead
-  path).
+- An index miss falls back to a full tree walk (so an out-of-band-added leaf is
+  still found), then repairs the index.
+- An entry whose `run.json` is gone is dropped (never resolves to a dead path).
 - Consumers may read `index.json` for fast enumeration, but must treat a
-  missing/stale entry as "walk the tree", and must verify any entry against
-  the live `run.json`. `camdl reindex` rebuilds it from the `run.json` files.
+  missing/stale entry as "walk the tree", and must verify any entry against the
+  live `run.json`. `camdl reindex` rebuilds it from the `run.json` files.

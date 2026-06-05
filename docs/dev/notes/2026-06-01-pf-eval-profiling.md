@@ -1,8 +1,7 @@
 # Pre-resolution in the particle-filter inner loop: what it bought
 
-Date: 2026-06-01
-Project: camdl
-Tags: inference, particle-filter, eval, propensity, profiling, pre-resolution, scaling
+Date: 2026-06-01 Project: camdl Tags: inference, particle-filter, eval,
+propensity, profiling, pre-resolution, scaling
 
 ## Context / question
 
@@ -43,8 +42,8 @@ Expr::BindingRef(w)  => { ctx.model.model.bindings.iter().find(|b| b.name…)  /
 `param_index`, `comp_index`, `table_index`, `time_func_index` are all
 `HashMap<String, usize>`. `eval_resolved` (`resolved_expr.rs`) replaces each
 probe with `usize` array indexing and each `BindingRef` with an O(1) slot,
-resolved once at `CompiledModel::new()`. Both walk the *same* tree in the *same
-order* — the only difference is leaf access.
+resolved once at `CompiledModel::new()`. Both walk the _same_ tree in the _same
+order_ — the only difference is leaf access.
 
 ## Method
 
@@ -57,15 +56,17 @@ release build:
 1. **Per-eval microbench** (`cargo bench -p sim --bench eval_ab`): time both
    evaluators over a model's rate exprs at the initial state, identical
    `EvalCtx`. → speedup factor `k`, and a per-transition value-equality check.
-2. **End-to-end** (`bench_eval_ab.py` / `bench_scale_point.py`): `camdl
+2. **End-to-end** (`bench_eval_ab.py` / `bench_scale_point.py`):
+   `camdl
    pfilter` off vs on. Golden pair timed at two particle counts so the
    marginal slope cancels fixed startup → inner-loop ratio.
 3. **Bit-exactness** (`gate_trajectory_baseline` under the switch).
 
-The PF rate-eval path is `pfilter → ChainBinomialProcess::step → step_one →
-eval_propensities → eval_resolved`, so the one switch point covers the whole
-inner loop (obs-likelihood and resampling sit outside it; the 2026-05-29 PMMH
-flamegraph put them at ≈0%).
+The PF rate-eval path is
+`pfilter → ChainBinomialProcess::step → step_one →
+eval_propensities → eval_resolved`,
+so the one switch point covers the whole inner loop (obs-likelihood and
+resampling sit outside it; the 2026-05-29 PMMH flamegraph put them at ≈0%).
 
 ## Results
 
@@ -93,28 +94,28 @@ the content-addressed (CAS) run cache.
 
 `micro_eval_ab.tsv`. Median of 9 trials, ns per full rate eval:
 
-| model | transitions | probes/eval | resolved ns | unresolved ns | **k** |
-|---|---|---|---|---|---|
-| sir_basic            |   2 |  3.0 |  12.8 |   51.1 | **4.0×** |
-| seir_observations    |   3 |  2.7 |  11.5 |   46.3 | **4.0×** |
-| seir_age             |   6 |  4.0 |  16.5 |   86.6 | **5.2×** |
-| seir_spatial P=5     |  40 |  4.3 |  22.9 |   80.1 | **3.5×** |
-| spatial P=16, A=7    | 336 | 20.7 | 149.6 | 2794.4 | **18.7×** |
+| model             | transitions | probes/eval | resolved ns | unresolved ns | **k**     |
+| ----------------- | ----------- | ----------- | ----------- | ------------- | --------- |
+| sir_basic         | 2           | 3.0         | 12.8        | 51.1          | **4.0×**  |
+| seir_observations | 3           | 2.7         | 11.5        | 46.3          | **4.0×**  |
+| seir_age          | 6           | 4.0         | 16.5        | 86.6          | **5.2×**  |
+| seir_spatial P=5  | 40          | 4.3         | 22.9        | 80.1          | **3.5×**  |
+| spatial P=16, A=7 | 336         | 20.7        | 149.6       | 2794.4        | **18.7×** |
 
 For toy models the probe cost is ~13–18 ns each (a string hash + HashMap
 lookup), so `k ≈ 4–5×`. The large coupled model (P=16, A=7: 32 bindings, 72,912
-`binding_ref` sites, 30,464 table lookups) jumps to **18.7×** — `eval_expr` pays a
-linear scan over bindings *by name* plus string-keyed lookups throughout each
+`binding_ref` sites, 30,464 table lookups) jumps to **18.7×** — `eval_expr` pays
+a linear scan over bindings _by name_ plus string-keyed lookups throughout each
 re-evaluated binding body, where `eval_resolved` pays slot/array indexing. The
 win is not a constant; it grows with the O(P²·A) coupling width.
 
 ### End-to-end pfilter speedup — scales with eval's share of the loop
 
-| model | per-eval k | eval share of loop | end-to-end pfilter speedup |
-|---|---|---|---|
-| seir_observations (simple) | 4.1× | ~3–11% (derived) | **~1.1×** (marginal) |
-| seir_spatial P=5           | 3.5× | ~25% (derived)    | **~1.6×** (marginal) |
-| spatial P=16, A=7          | 19×  | ~72% (2026-05-29 PMMH flamegraph) | **13.5× / 15.7×** (measured, p=2000 / 1000) |
+| model                      | per-eval k | eval share of loop                | end-to-end pfilter speedup                  |
+| -------------------------- | ---------- | --------------------------------- | ------------------------------------------- |
+| seir_observations (simple) | 4.1×       | ~3–11% (derived)                  | **~1.1×** (marginal)                        |
+| seir_spatial P=5           | 3.5×       | ~25% (derived)                    | **~1.6×** (marginal)                        |
+| spatial P=16, A=7          | 19×        | ~72% (2026-05-29 PMMH flamegraph) | **13.5× / 15.7×** (measured, p=2000 / 1000) |
 
 The derived fraction uses `T_on/T_off = 1 + f·(k−1) ⟹ f = (ratio−1)/(k−1)`. For
 seir_observations and spatial P=5 it's the marginal (two-particle-count) ratio,
@@ -134,15 +135,15 @@ Its payoff tracks how much of the inner loop is propensity evaluation, which
 tracks the spatial-coupling width:
 
 - **Toy / single-population models:** eval is a sliver of the loop (RNG /
-  binomial draws and the obs likelihood dominate); pre-resolution buys ~1.1×.
-  If only these existed, it would barely be worth the `ResolvedModel` machinery.
+  binomial draws and the obs likelihood dominate); pre-resolution buys ~1.1×. If
+  only these existed, it would barely be worth the `ResolvedModel` machinery.
 - **Coupled spatial × age models — the national-scale target:** the FOI is an
   O(P²·A) sum lowered to shared `Reduce`/binding structure, and eval becomes the
   loop (72% at P=16,A=7, climbing toward 100% as P grows). Here the string-keyed
   path is **13–16× slower and rising** — the difference between a national fit
   completing and not. At national scale (P≈774) pre-resolution is load-bearing.
 
-This *refines* the 2026-05-29 roadmap's "~72% in eval_resolved": that 72% is a
+This _refines_ the 2026-05-29 roadmap's "~72% in eval_resolved": that 72% is a
 function of model scale, not a constant, and most of it is **banked** —
 pre-resolution already turned the leaf lookups into indexing. What remains
 inside `eval_resolved` is the arithmetic tree-walk, which is what roadmap
@@ -161,9 +162,9 @@ dispatch + float ops, not the lookups.
   dev/validation flag.
 - **Eval-internal optimization (lever 3) is still gated, correctly.** The
   roadmap sequences sparse coupling (~50×, byte-identical) and the per-step
-  binding cache *before* SIMD-ing the eval, because those change how many evals
+  binding cache _before_ SIMD-ing the eval, because those change how many evals
   happen. This A/B doesn't move that ordering; it sizes the prize: SIMD acts on
-  the ~150 ns/eval *resolved* arithmetic at scale, not the lookups (already
+  the ~150 ns/eval _resolved_ arithmetic at scale, not the lookups (already
   banked). Re-profile after sparse coupling lands before investing in lever 3.
 - **Model-class guidance:** pre-resolution / eval throughput matters for coupled
   spatial models and is nearly irrelevant for single-population fits. Optimize
@@ -202,10 +203,11 @@ the switch is worth keeping. Files:
 - `rust/crates/sim/src/propensity.rs` — one branch in `eval_propensities`
   (inference-math file; the change is a hoisted no-op when off, verified green).
 - `rust/crates/sim/benches/eval_ab.rs` + `Cargo.toml` `[[bench]]`.
-- `docs/dev/notes/assets/eval-ab/*` (harness + TSVs) and `scripts/plot_eval_ab.py`.
+- `docs/dev/notes/assets/eval-ab/*` (harness + TSVs) and
+  `scripts/plot_eval_ab.py`.
 
 No overlap with `pgas.rs` / `if2.rs`. The only inference-path edit is in
 `eval_propensities`; if the CAS run-identity work touches `propensity.rs`, the
-one-branch switch rebases trivially (it brackets the existing
-`eval_resolved` call). The switch reads `model.model.transitions[i].rate`,
-which is unaffected by CAS.
+one-branch switch rebases trivially (it brackets the existing `eval_resolved`
+call). The switch reads `model.model.transitions[i].rate`, which is unaffected
+by CAS.

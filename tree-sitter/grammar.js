@@ -49,24 +49,24 @@ module.exports = grammar({
 
     // ── Top-level declarations ───────────────────────────────────────────
 
-    time_unit_decl: ($) =>
-      seq("time_unit", "=", $.unit_literal),
+    time_unit_decl: ($) => seq("time_unit", "=", $.unit_literal),
 
-    description_decl: ($) =>
-      seq("description", "=", $.string),
+    description_decl: ($) => seq("description", "=", $.string),
 
     // origin = date("YYYY-MM-DD") — anchored-mode declaration.
     origin_decl: ($) =>
       seq(
-        "origin", "=", "date", "(",
+        "origin",
+        "=",
+        "date",
+        "(",
         field("iso_date", $.string),
         ")",
       ),
 
     // ── Dimensions ───────────────────────────────────────────────────────
 
-    dimensions_block: ($) =>
-      seq("dimensions", "{", repeat($.dim_entry), "}"),
+    dimensions_block: ($) => seq("dimensions", "{", repeat($.dim_entry), "}"),
 
     dim_entry: ($) =>
       seq(
@@ -75,23 +75,24 @@ module.exports = grammar({
         field("source", choice($.dim_inline, $.dim_read)),
       ),
 
-    dim_inline: ($) =>
-      seq("[", commaSep(field("level", $.identifier)), "]"),
+    dim_inline: ($) => seq("[", commaSep(field("level", $.identifier)), "]"),
 
     // e.g. read_levels("path.csv", col = "patch")
     dim_read: ($) =>
       seq(
-        field("fn", $.identifier), "(",
-        field("path", $.string), ",",
-        field("col_kw", $.identifier), "=",
+        field("fn", $.identifier),
+        "(",
+        field("path", $.string),
+        ",",
+        field("col_kw", $.identifier),
+        "=",
         field("col", $.string),
         ")",
       ),
 
     // ── Compartments ─────────────────────────────────────────────────────
 
-    compartments_block: ($) =>
-      seq("compartments", "{", commaSep($.compartment_decl), "}"),
+    compartments_block: ($) => seq("compartments", "{", commaSep($.compartment_decl), "}"),
 
     compartment_decl: ($) =>
       seq(
@@ -101,8 +102,7 @@ module.exports = grammar({
 
     // ── Parameters ───────────────────────────────────────────────────────
 
-    parameters_block: ($) =>
-      seq("parameters", "{", repeat($.parameter_decl), "}"),
+    parameters_block: ($) => seq("parameters", "{", repeat($.parameter_decl), "}"),
 
     parameter_decl: ($) =>
       seq(
@@ -131,8 +131,10 @@ module.exports = grammar({
 
     param_bounds: ($) =>
       seq(
-        "in", "[",
-        field("lo", $.expr), ",",
+        "in",
+        "[",
+        field("lo", $.expr),
+        ",",
         field("hi", $.expr),
         "]",
       ),
@@ -141,7 +143,8 @@ module.exports = grammar({
     param_prior: ($) =>
       seq(
         "~",
-        field("dist", $.identifier), "(",
+        field("dist", $.identifier),
+        "(",
         commaSep($.kw_arg),
         ")",
         optional(seq("|", field("pool_over", $.identifier))),
@@ -149,14 +152,18 @@ module.exports = grammar({
 
     param_kind: (_) =>
       choice(
-        "rate", "probability", "positive", "count", "real",
-        "instant", "duration",
+        "rate",
+        "probability",
+        "positive",
+        "count",
+        "real",
+        "instant",
+        "duration",
       ),
 
     // ── Tables ───────────────────────────────────────────────────────────
 
-    tables_block: ($) =>
-      seq("tables", "{", repeat($.table_decl), "}"),
+    tables_block: ($) => seq("tables", "{", repeat($.table_decl), "}"),
 
     table_decl: ($) =>
       choice(
@@ -184,11 +191,9 @@ module.exports = grammar({
 
     // ── Functions and forcing (time-varying) ─────────────────────────────
 
-    functions_block: ($) =>
-      seq("functions", "{", repeat($.function_decl), "}"),
+    functions_block: ($) => seq("functions", "{", repeat($.function_decl), "}"),
 
-    forcing_block: ($) =>
-      seq("forcing", "{", repeat($.function_decl), "}"),
+    forcing_block: ($) => seq("forcing", "{", repeat($.function_decl), "}"),
 
     function_decl: ($) =>
       seq(
@@ -202,13 +207,11 @@ module.exports = grammar({
         "}",
       ),
 
-    func_arg: ($) =>
-      seq(field("key", $.identifier), "=", field("value", $.expr)),
+    func_arg: ($) => seq(field("key", $.identifier), "=", field("value", $.expr)),
 
     // ── Transitions ──────────────────────────────────────────────────────
 
-    transitions_block: ($) =>
-      seq("transitions", "{", repeat($.transition_decl), "}"),
+    transitions_block: ($) => seq("transitions", "{", repeat($.transition_decl), "}"),
 
     transition_decl: ($) =>
       seq(
@@ -244,13 +247,11 @@ module.exports = grammar({
         ),
       ),
 
-    branch_entry: ($) =>
-      seq(field("name", $.identifier), ":", field("weight", $.expr)),
+    branch_entry: ($) => seq(field("name", $.identifier), ":", field("weight", $.expr)),
 
     // #[lineage] or any future #[…] attribute. Lexer rule: the `#[`
     // opener is one token with no intervening space.
-    attribute: ($) =>
-      seq($.hash_lbracket, field("name", $.identifier), "]"),
+    attribute: ($) => seq($.hash_lbracket, field("name", $.identifier), "]"),
 
     hash_lbracket: (_) => token("#["),
 
@@ -258,8 +259,7 @@ module.exports = grammar({
     // (sum) on the RHS of -->.
     stoich_ref_list: ($) => sep1($.stoich_ref, "+"),
 
-    stoich_ref: ($) =>
-      seq(field("name", $.identifier), optional($.index_items)),
+    stoich_ref: ($) => seq(field("name", $.identifier), optional($.index_items)),
 
     where_clause: ($) => seq("where", $.guard_expr),
 
@@ -278,7 +278,7 @@ module.exports = grammar({
       choice(
         $.guard_atom,
         prec.left(1, seq($.guard_expr, "and", $.guard_expr)),
-        prec.left(1, seq($.guard_expr, "or",  $.guard_expr)),
+        prec.left(1, seq($.guard_expr, "or", $.guard_expr)),
       ),
 
     guard_atom: ($) =>
@@ -290,8 +290,7 @@ module.exports = grammar({
 
     // ── Index bindings  [a in age, (a, a_next) in consecutive(age)] ──────
 
-    index_bindings: ($) =>
-      seq("[", commaSep($.index_binding), "]"),
+    index_bindings: ($) => seq("[", commaSep($.index_binding), "]"),
 
     index_binding: ($) =>
       choice(
@@ -323,8 +322,7 @@ module.exports = grammar({
 
     // ── Observations ─────────────────────────────────────────────────────
 
-    observations_block: ($) =>
-      seq("observations", "{", repeat($.obs_decl), "}"),
+    observations_block: ($) => seq("observations", "{", repeat($.obs_decl), "}"),
 
     obs_decl: ($) =>
       seq(
@@ -352,11 +350,9 @@ module.exports = grammar({
 
     // ── Interventions / events (same shape) ──────────────────────────────
 
-    interventions_block: ($) =>
-      seq("interventions", "{", repeat($.intervention_decl), "}"),
+    interventions_block: ($) => seq("interventions", "{", repeat($.intervention_decl), "}"),
 
-    events_block: ($) =>
-      seq("events", "{", repeat($.intervention_decl), "}"),
+    events_block: ($) => seq("events", "{", repeat($.intervention_decl), "}"),
 
     intervention_decl: ($) =>
       choice(
@@ -375,8 +371,14 @@ module.exports = grammar({
           field("name", $.identifier),
           optional(field("indices", $.index_bindings)),
           ":",
-          "transfer", "(", commaSep($.transfer_kwarg), ")",
-          "at", "[", commaSep($.expr), "]",
+          "transfer",
+          "(",
+          commaSep($.transfer_kwarg),
+          ")",
+          "at",
+          "[",
+          commaSep($.expr),
+          "]",
           optional($.where_clause),
         ),
         // transfer(...) { every = ..., from = ..., until = ... } — recurring
@@ -384,8 +386,13 @@ module.exports = grammar({
           field("name", $.identifier),
           optional(field("indices", $.index_bindings)),
           ":",
-          "transfer", "(", commaSep($.transfer_kwarg), ")",
-          "{", repeat($.recurring_kv), "}",
+          "transfer",
+          "(",
+          commaSep($.transfer_kwarg),
+          ")",
+          "{",
+          repeat($.recurring_kv),
+          "}",
           optional($.where_clause),
         ),
         // add(COMP, EXPR) at [...] — one-shot
@@ -393,8 +400,16 @@ module.exports = grammar({
           field("name", $.identifier),
           optional(field("indices", $.index_bindings)),
           ":",
-          "add", "(", field("comp", $.identifier), ",", field("count", $.expr), ")",
-          "at", "[", commaSep($.expr), "]",
+          "add",
+          "(",
+          field("comp", $.identifier),
+          ",",
+          field("count", $.expr),
+          ")",
+          "at",
+          "[",
+          commaSep($.expr),
+          "]",
           optional($.where_clause),
         ),
         // add(COMP, EXPR) { every = ..., from = ..., until = ... } — recurring
@@ -402,8 +417,15 @@ module.exports = grammar({
           field("name", $.identifier),
           optional(field("indices", $.index_bindings)),
           ":",
-          "add", "(", field("comp", $.identifier), ",", field("count", $.expr), ")",
-          "{", repeat($.recurring_kv), "}",
+          "add",
+          "(",
+          field("comp", $.identifier),
+          ",",
+          field("count", $.expr),
+          ")",
+          "{",
+          repeat($.recurring_kv),
+          "}",
           optional($.where_clause),
         ),
         // add(COMP, EXPR) every PERIOD at_day DAY
@@ -411,9 +433,16 @@ module.exports = grammar({
           field("name", $.identifier),
           optional(field("indices", $.index_bindings)),
           ":",
-          "add", "(", field("comp", $.identifier), ",", field("count", $.expr), ")",
-          "every", field("period", $.expr),
-          "at_day", field("day", $.expr),
+          "add",
+          "(",
+          field("comp", $.identifier),
+          ",",
+          field("count", $.expr),
+          ")",
+          "every",
+          field("period", $.expr),
+          "at_day",
+          field("day", $.expr),
           optional($.where_clause),
         ),
       ),
@@ -422,7 +451,7 @@ module.exports = grammar({
       choice(
         seq(field("key", $.identifier), "=", field("value", $.expr)),
         seq("from", "=", field("value", $.expr)),
-        seq("to",   "=", field("value", $.expr)),
+        seq("to", "=", field("value", $.expr)),
         seq("count", "=", field("value", $.expr)),
       ),
 
@@ -436,41 +465,35 @@ module.exports = grammar({
     recurring_kv: ($) =>
       choice(
         seq("every", "=", $.expr),
-        seq("from",  "=", $.expr),
+        seq("from", "=", $.expr),
         seq("until", "=", $.expr),
       ),
 
     // ── ODE block ────────────────────────────────────────────────────────
 
-    ode_block: ($) =>
-      seq("ode", "{", repeat($.ode_decl), "}"),
+    ode_block: ($) => seq("ode", "{", repeat($.ode_decl), "}"),
 
-    ode_decl: ($) =>
-      seq(field("comp", $.identifier), "=", field("deriv", $.expr)),
+    ode_decl: ($) => seq(field("comp", $.identifier), "=", field("deriv", $.expr)),
 
     // ── Output block ─────────────────────────────────────────────────────
 
-    output_block: ($) =>
-      seq("output", "{", repeat($.output_section), "}"),
+    output_block: ($) => seq("output", "{", repeat($.output_section), "}"),
 
-    output_section: ($) =>
-      seq($.identifier, "{", repeat($.func_arg), "}"),
+    output_section: ($) => seq($.identifier, "{", repeat($.func_arg), "}"),
 
     // ── Simulate block ───────────────────────────────────────────────────
 
-    simulate_block: ($) =>
-      seq("simulate", "{", repeat($.simulate_kv), "}"),
+    simulate_block: ($) => seq("simulate", "{", repeat($.simulate_kv), "}"),
 
     simulate_kv: ($) =>
       choice(
         seq("from", "=", $.expr),
-        seq("to",   "=", $.expr),
+        seq("to", "=", $.expr),
       ),
 
     // ── Init block ───────────────────────────────────────────────────────
 
-    init_block: ($) =>
-      seq("init", "{", repeat($.init_entry), "}"),
+    init_block: ($) => seq("init", "{", repeat($.init_entry), "}"),
 
     init_entry: ($) =>
       seq(
@@ -484,21 +507,17 @@ module.exports = grammar({
         field("value", $.expr),
       ),
 
-    init_brackets: ($) =>
-      seq("[", commaSep(choice($.index_binding, $.index_item)), "]"),
+    init_brackets: ($) => seq("[", commaSep(choice($.index_binding, $.index_item)), "]"),
 
     // ── Timepoints block ─────────────────────────────────────────────────
 
-    timepoints_block: ($) =>
-      seq("timepoints", "{", repeat($.timepoint_decl), "}"),
+    timepoints_block: ($) => seq("timepoints", "{", repeat($.timepoint_decl), "}"),
 
-    timepoint_decl: ($) =>
-      seq(field("name", $.identifier), "=", field("time", $.expr)),
+    timepoint_decl: ($) => seq(field("name", $.identifier), "=", field("time", $.expr)),
 
     // ── Stratify ─────────────────────────────────────────────────────────
 
-    stratify_decl: ($) =>
-      seq("stratify", "(", commaSep($.stratify_kv), ")"),
+    stratify_decl: ($) => seq("stratify", "(", commaSep($.stratify_kv), ")"),
 
     stratify_kv: ($) =>
       choice(
@@ -521,8 +540,7 @@ module.exports = grammar({
 
     // ── Scenarios ────────────────────────────────────────────────────────
 
-    scenarios_block: ($) =>
-      seq("scenarios", "{", repeat($.scenario_block), "}"),
+    scenarios_block: ($) => seq("scenarios", "{", repeat($.scenario_block), "}"),
 
     scenario_block: ($) =>
       seq(
@@ -539,12 +557,18 @@ module.exports = grammar({
         // set | scale = { name = value, ... } — param overrides
         seq(
           field("kind", choice("set", "scale")),
-          "=", "{", repeat($.scenario_kv_item), "}",
+          "=",
+          "{",
+          repeat($.scenario_kv_item),
+          "}",
         ),
         // enable | disable | compose = [ident, ident, ...] — toggles
         seq(
           field("kind", choice("enable", "disable", "compose")),
-          "=", "[", commaSep(field("ref", $.identifier)), "]",
+          "=",
+          "[",
+          commaSep(field("ref", $.identifier)),
+          "]",
         ),
         // label = "..."
         seq("label", "=", $.string),
@@ -566,7 +590,8 @@ module.exports = grammar({
     // last every substep.
     balance_block: ($) =>
       seq(
-        "balance", "{",
+        "balance",
+        "{",
         field("comp", $.identifier),
         "=",
         field("expr", $.expr),
@@ -592,18 +617,17 @@ module.exports = grammar({
         "null",
       ),
 
-    cond_expr: ($) =>
-      prec.right(0, seq("if", $.expr, "then", $.expr, "else", $.expr)),
+    cond_expr: ($) => prec.right(0, seq("if", $.expr, "then", $.expr, "else", $.expr)),
 
     binary_expr: ($) =>
       choice(
-        prec.left(1,  seq($.expr, choice("==", "!=", "<", ">", "<=", ">="), $.expr)),
-        prec.left(2,  seq($.expr, "+",  $.expr)),
-        prec.left(2,  seq($.expr, "-",  $.expr)),
-        prec.left(3,  seq($.expr, "*",  $.expr)),
-        prec.left(3,  seq($.expr, "/",  $.expr)),
-        prec.left(3,  seq($.expr, "×",  $.expr)),
-        prec.right(4, seq($.expr, "^",  $.expr)),
+        prec.left(1, seq($.expr, choice("==", "!=", "<", ">", "<=", ">="), $.expr)),
+        prec.left(2, seq($.expr, "+", $.expr)),
+        prec.left(2, seq($.expr, "-", $.expr)),
+        prec.left(3, seq($.expr, "*", $.expr)),
+        prec.left(3, seq($.expr, "/", $.expr)),
+        prec.left(3, seq($.expr, "×", $.expr)),
+        prec.right(4, seq($.expr, "^", $.expr)),
       ),
 
     unary_expr: ($) => prec(5, seq("-", $.expr)),
@@ -642,18 +666,15 @@ module.exports = grammar({
         "]",
       ),
 
-    list_expr: ($) =>
-      seq("[", commaSep(choice($.range_expr, $.expr)), "]"),
+    list_expr: ($) => seq("[", commaSep(choice($.range_expr, $.expr)), "]"),
 
     // `start : end` range expressions appear inside list literals, e.g.
     // `on = [7 'days : 100 'days, 115 'days : 199 'days]`.
-    range_expr: ($) =>
-      seq(field("start", $.expr), ":", field("end", $.expr)),
+    range_expr: ($) => seq(field("start", $.expr), ":", field("end", $.expr)),
 
     paren_expr: ($) => seq("(", $.expr, ")"),
 
-    unit_number: ($) =>
-      seq(field("value", $.number), field("unit", $.unit_literal)),
+    unit_number: ($) => seq(field("value", $.number), field("unit", $.unit_literal)),
 
     // ── Terminals ────────────────────────────────────────────────────────
 
@@ -664,9 +685,16 @@ module.exports = grammar({
         seq(
           "'",
           choice(
-            "days", "weeks", "months", "years",
-            "per_day", "per_week", "per_month", "per_year",
-            "count", "ratio",
+            "days",
+            "weeks",
+            "months",
+            "years",
+            "per_day",
+            "per_week",
+            "per_month",
+            "per_year",
+            "count",
+            "ratio",
           ),
         ),
       ),
@@ -683,7 +711,7 @@ module.exports = grammar({
         ),
       ),
 
-    string: (_) => token(seq('"', /[^"]*/, '"')),
+    string: (_) => token(seq("\"", /[^"]*/, "\"")),
 
     identifier: (_) => /[a-zA-Z_][a-zA-Z0-9_]*/,
 

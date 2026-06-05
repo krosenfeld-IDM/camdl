@@ -5,11 +5,12 @@ note: Superseded by PGAS proposal — PGAS avoids PF variance entirely, making C
 ---
 
 # Proposal: Correlated Pseudo-Marginal MCMC
-**Motivation:** Vanilla PMMH is impractical on long time series (T>500)
-because PF variance scales with T. On He et al. (T=1096), sd(log L̂) =
-30-170 at 2000 particles, giving 1-2% acceptance rates. CPM correlates
-the PF random numbers between current and proposed evaluations, reducing
-the variance of the likelihood RATIO to O(1) regardless of T.
+
+**Motivation:** Vanilla PMMH is impractical on long time series (T>500) because
+PF variance scales with T. On He et al. (T=1096), sd(log L̂) = 30-170 at 2000
+particles, giving 1-2% acceptance rates. CPM correlates the PF random numbers
+between current and proposed evaluations, reducing the variance of the
+likelihood RATIO to O(1) regardless of T.
 
 ## Design
 
@@ -31,10 +32,10 @@ struct PFRandomState {
 }
 ```
 
-The process noise (binomial draws in `reulermultinom`) is NOT stored
-and correlated. These are discrete draws that resist smooth correlation.
-The Gamma multiplier is the dominant continuous noise source and the
-primary target for correlation.
+The process noise (binomial draws in `reulermultinom`) is NOT stored and
+correlated. These are discrete draws that resist smooth correlation. The Gamma
+multiplier is the dominant continuous noise source and the primary target for
+correlation.
 
 ### Crank-Nicolson update
 
@@ -72,32 +73,32 @@ pub fn bootstrap_filter_correlated(
 ) -> Result<PFilterResult, SimError>
 ```
 
-The existing `bootstrap_filter` (seed-based) stays unchanged. All
-non-PMMH code paths are unaffected.
+The existing `bootstrap_filter` (seed-based) stays unchanged. All non-PMMH code
+paths are unaffected.
 
 ### Where randoms are consumed
 
 Per observation interval, the PF does:
-1. **Propagate**: call `step_fn` 7× (daily steps). Each step draws
-   a Gamma multiplier for the overdispersed infection transition.
-   → Use `randoms.gamma_noise[obs_idx][particle_idx]` transformed
-   via inverse Gamma CDF.
 
-2. **Resample**: systematic resampling with one uniform.
-   → Use `Phi(randoms.resample_noise[obs_idx])` as the base uniform.
+1. **Propagate**: call `step_fn` 7× (daily steps). Each step draws a Gamma
+   multiplier for the overdispersed infection transition. → Use
+   `randoms.gamma_noise[obs_idx][particle_idx]` transformed via inverse Gamma
+   CDF.
 
-The binomial draws in `reulermultinom` (infection count, death count)
-use a per-particle RNG seeded deterministically from the stored
-gamma noise. This gives partial correlation — same Gamma multiplier
-means similar rates, which means similar binomial probabilities,
-which means correlated (but not identical) counts.
+2. **Resample**: systematic resampling with one uniform. → Use
+   `Phi(randoms.resample_noise[obs_idx])` as the base uniform.
+
+The binomial draws in `reulermultinom` (infection count, death count) use a
+per-particle RNG seeded deterministically from the stored gamma noise. This
+gives partial correlation — same Gamma multiplier means similar rates, which
+means similar binomial probabilities, which means correlated (but not identical)
+counts.
 
 ### Sorted resampling
 
-Before systematic resampling, sort particles by a 1D projection of
-their state (e.g., I compartment value). This ensures that correlated
-resampling uniforms select similar particles between the current and
-proposed PF runs.
+Before systematic resampling, sort particles by a 1D projection of their state
+(e.g., I compartment value). This ensures that correlated resampling uniforms
+select similar particles between the current and proposed PF runs.
 
 ```rust
 fn sorted_systematic_resample(
@@ -132,13 +133,13 @@ for step in 0..n_steps {
 }
 ```
 
-No changes to the MH ratio formula. CPM preserves detailed balance
-because the Crank-Nicolson proposal on u is reversible with respect
-to N(0,I).
+No changes to the MH ratio formula. CPM preserves detailed balance because the
+Crank-Nicolson proposal on u is reversible with respect to N(0,I).
 
 ## Memory
 
 For N=2000 particles, T=1096 observations:
+
 - Gamma noise: 2000 × 1096 × 8 bytes = 17.5 MB
 - Resampling: 1096 × 8 bytes = 8.8 KB
 - Total: ~18 MB per chain. 4 chains = 72 MB. Fine.
@@ -147,8 +148,8 @@ For N=2000 particles, T=1096 observations:
 
 ```toml
 [pmmh]
-rho = 0.99          # Crank-Nicolson correlation (default 0.99)
-correlated = true   # enable CPM (default true when running pmmh)
+rho = 0.99 # Crank-Nicolson correlation (default 0.99)
+correlated = true # enable CPM (default true when running pmmh)
 ```
 
 ## Implementation plan

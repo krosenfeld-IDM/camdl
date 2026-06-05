@@ -11,40 +11,48 @@ pattern generalises.
 category = "forward-simulation"
 
 [camdl]
-model     = "model.camdl"
-params    = "params.toml"
+model = "model.camdl"
+params = "params.toml"
 # `--output` writes the full per-day trajectory including flow_infection
 # (per-day new infections). The harness summariser reads from that
 # column, matching the reference side after run.sh renames pomp's
 # `new_infections` to `flow_infection`.
-command   = [
-    "camdl", "simulate",
-    "@model", "--params", "@params",
-    "--backend", "chain_binomial", "--dt", "1.0",
-    "--seed", "@seed",
-    "--output", "@obs_out",
+command = [
+  "camdl",
+  "simulate",
+  "@model",
+  "--params",
+  "@params",
+  "--backend",
+  "chain_binomial",
+  "--dt",
+  "1.0",
+  "--seed",
+  "@seed",
+  "--output",
+  "@obs_out",
 ]
-n_seeds   = 20
+n_seeds = 20
 seed_base = 42
 
 [reference]
-kind         = "r-pomp"
-run          = "reference/run.sh"
+kind = "r-pomp"
+run = "reference/run.sh"
 ensemble_tsv = "reference/out/bsflu_ensemble.tsv"
-seed_col     = "sim"
+seed_col = "sim"
 
 [summary]
 kind = "ensemble-stats"
 stats = [
-    # Total new infections over the 14-day window, per seed.
-    # Analytical attack rate r_∞ ≈ 0.94 gives ~717 of 758 susceptibles;
-    # empirically pomp at n=200 shows mean ≈ 735 (some people become
-    # infected on day 14 who are still in I, so total new_infections >
-    # final R).
-    { name = "total_infections", aggregate = "sum", over = "flow_infection", scope = "per-seed" },
+  # Total new infections over the 14-day window, per seed.
+  # Analytical attack rate r_∞ ≈ 0.94 gives ~717 of 758 susceptibles;
+  # empirically pomp at n=200 shows mean ≈ 735 (some people become
+  # infected on day 14 who are still in I, so total new_infections >
+  # final R).
+  { name = "total_infections", aggregate = "sum", over = "flow_infection", scope = "per-seed" },
 
-    # Peak daily new infections per seed. pomp at n=200 shows mean ≈ 151,
-    # SD ≈ 9 (CV ≈ 6%). Catches "epidemic shape is wrong" bugs that
-    # total_infections would average over.
-    { name = "peak_infections",  aggregate = "max", over = "flow_infection", scope = "per-seed" },
+  # Peak daily new infections per seed. pomp at n=200 shows mean ≈ 151,
+  # SD ≈ 9 (CV ≈ 6%). Catches "epidemic shape is wrong" bugs that
+  # total_infections would average over.
+  { name = "peak_infections", aggregate = "max", over = "flow_infection", scope = "per-seed" },
 ]

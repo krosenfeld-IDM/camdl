@@ -2,8 +2,8 @@
 # Every check requires a rationale including a power statement.
 
 [checks.total_cases]
-compare   = "mean"
-tol_rel   = 0.05
+compare = "mean"
+tol_rel = 0.05
 rationale = """
 The pomp reference at the published MLE shows total 21-year cases per
 sim in the range ~520k–554k, with ensemble mean ~538k and empirical
@@ -23,8 +23,8 @@ tightening the tolerance; both are follow-ups.
 """
 
 [checks.persistence_rate]
-compare   = "proportion-test"
-alpha     = 0.01
+compare = "proportion-test"
+alpha = 0.01
 rationale = """
 Two-sample z-test for proportions at α = 0.01 gives consistent
 sensitivity across the full [0, 1] persistence range, where a fixed
@@ -46,8 +46,8 @@ v2 concern.
 """
 
 [checks.last52_cases]
-compare   = "mean"
-tol_rel   = 0.25
+compare = "mean"
+tol_rel = 0.25
 rationale = """
 Last-year case totals are substantially more variable across seeds
 than cumulative totals — pomp's 200-seed ensemble shows last52_cases

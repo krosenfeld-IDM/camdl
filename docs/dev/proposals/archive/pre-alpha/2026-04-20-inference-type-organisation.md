@@ -12,24 +12,22 @@ deferred:
 
 # Inference type organisation — move shared types out of `if2.rs`
 
-Companion to `docs/dev/reviews/2026-04-20-review-rust-design.md`
-(RdM1, RdM3, Rdn2). Three related changes that move foundational
-inference types from algorithm-specific files to the module where
-they belong.
+Companion to `docs/dev/reviews/2026-04-20-review-rust-design.md` (RdM1, RdM3,
+Rdn2). Three related changes that move foundational inference types from
+algorithm-specific files to the module where they belong.
 
 ---
 
 ## R1. Move `Transform` and `EstimatedParam` to `inference/types.rs`
 
 **Problem:** `Transform` and `EstimatedParam` are defined in
-`inference/if2.rs:104–168` but are the shared representation of
-parameter-scale management for every inference algorithm. Both PGAS
-and PMMH import them via `use crate::inference::if2::EstimatedParam`
-and `use super::if2::EstimatedParam` respectively. If IF2 is removed
-or refactored, the type definition disappears from under its dependents.
-The `impl EstimatedParam` block — `to_transformed`, `from_transformed`,
-`log_jacobian` — is the canonical transform contract for the entire
-inference stack, but its home gives no hint of that.
+`inference/if2.rs:104–168` but are the shared representation of parameter-scale
+management for every inference algorithm. Both PGAS and PMMH import them via
+`use crate::inference::if2::EstimatedParam` and `use super::if2::EstimatedParam`
+respectively. If IF2 is removed or refactored, the type definition disappears
+from under its dependents. The `impl EstimatedParam` block — `to_transformed`,
+`from_transformed`, `log_jacobian` — is the canonical transform contract for the
+entire inference stack, but its home gives no hint of that.
 
 **Proposed change:** Move the following from `if2.rs` to `types.rs`:
 
@@ -76,7 +74,9 @@ impl EstimatedParam {
 ```
 
 Update imports:
-- `if2.rs`: remove the definition; add `use super::types::{Transform,
+
+- `if2.rs`: remove the definition; add
+  `use super::types::{Transform,
   EstimatedParam};`.
 - `pgas.rs`: change `use crate::inference::if2::EstimatedParam;` →
   `use crate::inference::types::EstimatedParam;`.
@@ -85,12 +85,13 @@ Update imports:
 - `pgas_grad.rs`: same.
 
 Re-export from `inference/mod.rs` if downstream CLI crates import them:
+
 ```rust
 pub use types::{Transform, EstimatedParam};
 ```
 
-**Scope:** Four import-site changes plus the move itself. No logic
-changes; tests pass without modification.
+**Scope:** Four import-site changes plus the move itself. No logic changes;
+tests pass without modification.
 
 ---
 
@@ -100,6 +101,7 @@ changes; tests pass without modification.
 near-identical docstrings:
 
 `pgas.rs:164–189`:
+
 ```rust
 pub config_hash: String,
 pub params: Vec<f64>,
@@ -109,6 +111,7 @@ pub current_ll: f64,
 ```
 
 `pmmh.rs:87–100`:
+
 ```rust
 pub config_hash: String,
 pub params: Vec<f64>,
@@ -118,15 +121,15 @@ pub current_ll: f64,
 ```
 
 The `config_hash` field is the critical one: it is computed by
-`compute_config_hash` in the CLI, compared on resume, and if the hash
-strategy ever changes (adding a new field, changing serialisation),
-both structs must be updated together. Currently nothing enforces this.
+`compute_config_hash` in the CLI, compared on resume, and if the hash strategy
+ever changes (adding a new field, changing serialisation), both structs must be
+updated together. Currently nothing enforces this.
 
-The `param_names` field has an additional hazard: `pgas.rs:186–189`
-documents "Empty for legacy states (before this field was added)" and
-the resume logic handles this. PMMH has the same field but no such
-guard — a legacy PMMH resume state with an empty `param_names` would
-silently reorder parameters incorrectly on resume.
+The `param_names` field has an additional hazard: `pgas.rs:186–189` documents
+"Empty for legacy states (before this field was added)" and the resume logic
+handles this. PMMH has the same field but no such guard — a legacy PMMH resume
+state with an empty `param_names` would silently reorder parameters incorrectly
+on resume.
 
 **Proposed change:** Extract to `inference/types.rs`:
 
@@ -190,12 +193,12 @@ pub struct PMMHResumeState {
 ```
 
 The PMMH legacy-empty `param_names` guard is now handled by
-`BaseResumeState::reorder_params` in one place. Both algorithms call it
-on resume; neither can forget.
+`BaseResumeState::reorder_params` in one place. Both algorithms call it on
+resume; neither can forget.
 
-Note on `#[serde(flatten)]`: bincode does not support flattening. If the
-resume state is serialised via bincode (as it is today), use composition
-with explicit field delegation rather than `flatten`:
+Note on `#[serde(flatten)]`: bincode does not support flattening. If the resume
+state is serialised via bincode (as it is today), use composition with explicit
+field delegation rather than `flatten`:
 
 ```rust
 impl ChainResumeState {
@@ -207,25 +210,24 @@ impl ChainResumeState {
 }
 ```
 
-**Scope:** `pgas.rs` (struct definition + ~10 field access sites),
-`pmmh.rs` (same), `types.rs` (new struct). CLI resume-loading sites in
-`fit/pgas.rs` and `fit/pmmh.rs` update field accesses via delegation.
-Bincode-serialised files on disk are unaffected — the on-disk field
-order does not change if the embedded struct's fields are ordered the
-same as they were before embedding.
+**Scope:** `pgas.rs` (struct definition + ~10 field access sites), `pmmh.rs`
+(same), `types.rs` (new struct). CLI resume-loading sites in `fit/pgas.rs` and
+`fit/pmmh.rs` update field accesses via delegation. Bincode-serialised files on
+disk are unaffected — the on-disk field order does not change if the embedded
+struct's fields are ordered the same as they were before embedding.
 
 ---
 
 ## R3. Resolve the duplicate bounds fields on `EstimatedParam`
 
-**Problem (Rdn2):** `EstimatedParam` carries both `lower: f64` /
-`upper: f64` and, for `Log`/`Logit` transforms, `Transform { lo, hi }`
-which also encode the bounds. For `Transform::None`, `lower`/`upper`
-are unused. For `Log`/`Logit`, `lo == lower` and `hi == upper` should
-hold by construction, but nothing enforces this.
+**Problem (Rdn2):** `EstimatedParam` carries both `lower: f64` / `upper: f64`
+and, for `Log`/`Logit` transforms, `Transform { lo, hi }` which also encode the
+bounds. For `Transform::None`, `lower`/`upper` are unused. For `Log`/`Logit`,
+`lo == lower` and `hi == upper` should hold by construction, but nothing
+enforces this.
 
-**Proposed change:** Remove `lower` and `upper` as stand-alone fields.
-Derive them from the transform at the point of use:
+**Proposed change:** Remove `lower` and `upper` as stand-alone fields. Derive
+them from the transform at the point of use:
 
 ```rust
 impl EstimatedParam {
@@ -244,8 +246,9 @@ impl EstimatedParam {
 }
 ```
 
-Update the two call sites that access `.lower` / `.upper` directly
-(in `pgas.rs:1219–1220`, preflight diagnostic):
+Update the two call sites that access `.lower` / `.upper` directly (in
+`pgas.rs:1219–1220`, preflight diagnostic):
+
 ```rust
 // Before
 let lo = p.to_transformed(p.lower.max(1e-10));
@@ -256,14 +259,13 @@ let lo = p.to_transformed(p.lower().max(1e-10));
 let hi = p.to_transformed(p.upper().min(1e10));
 ```
 
-**Scope:** Remove two struct fields from `EstimatedParam` (~5 read
-sites, all in `pgas.rs`). Update CLI construction sites that set
-`lower`/`upper` when building `EstimatedParam` from a `FitConfigV2`
-(they instead set the bounds inside the `Transform` variant, which
-they already do).
+**Scope:** Remove two struct fields from `EstimatedParam` (~5 read sites, all in
+`pgas.rs`). Update CLI construction sites that set `lower`/`upper` when building
+`EstimatedParam` from a `FitConfigV2` (they instead set the bounds inside the
+`Transform` variant, which they already do).
 
-**Note:** Do R1 first — moving `EstimatedParam` to `types.rs` makes
-the field-removal a single-file change rather than a cross-file one.
+**Note:** Do R1 first — moving `EstimatedParam` to `types.rs` makes the
+field-removal a single-file change rather than a cross-file one.
 
 ---
 
@@ -271,10 +273,9 @@ the field-removal a single-file change rather than a cross-file one.
 
 R1 → R3 → R2.
 
-R1 (move types) is a pure refactor; any test suite that passes before
-passes after. R3 (remove duplicate fields) is easiest done immediately
-after the move, while `EstimatedParam` is already being edited. R2
-(base resume state) can follow independently once R1 is done.
+R1 (move types) is a pure refactor; any test suite that passes before passes
+after. R3 (remove duplicate fields) is easiest done immediately after the move,
+while `EstimatedParam` is already being edited. R2 (base resume state) can
+follow independently once R1 is done.
 
-All three are mechanical; none change simulation or inference
-semantics.
+All three are mechanical; none change simulation or inference semantics.

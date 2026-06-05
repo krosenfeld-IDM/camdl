@@ -23,7 +23,7 @@
     "transitions": [
       {
         "name": "infection_p0",
-        "stoichiometry": [ [ "S_p0", -1 ], [ "I_p0", 1 ] ],
+        "stoichiometry": [["S_p0", -1], ["I_p0", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -41,7 +41,7 @@
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_p0" },
-                    "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+                    "right": { "pop_sum": ["S_p0", "I_p0", "R_p0"] }
                   }
                 },
                 "right": {
@@ -66,14 +66,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 0.0 } ]
+                                            "indices": [{ "const": 0.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p0" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                      "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                     }
                                   }
                                 },
@@ -86,14 +86,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 1.0 } ]
+                                            "indices": [{ "const": 1.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p1" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                      "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                     }
                                   }
                                 }
@@ -108,14 +108,14 @@
                                     "left": {
                                       "table_lookup": {
                                         "table": "w",
-                                        "indices": [ { "const": 2.0 } ]
+                                        "indices": [{ "const": 2.0 }]
                                       }
                                     },
                                     "right": { "pop": "I_p2" }
                                   }
                                 },
                                 "right": {
-                                  "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                  "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                 }
                               }
                             }
@@ -130,14 +130,14 @@
                                 "left": {
                                   "table_lookup": {
                                     "table": "w",
-                                    "indices": [ { "const": 3.0 } ]
+                                    "indices": [{ "const": 3.0 }]
                                   }
                                 },
                                 "right": { "pop": "I_p3" }
                               }
                             },
                             "right": {
-                              "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                              "pop_sum": ["S_p3", "I_p3", "R_p3"]
                             }
                           }
                         }
@@ -166,7 +166,7 @@
                     "bin_op": {
                       "op": "div",
                       "left": { "pop": "I_p0" },
-                      "right": { "pop_sum": [ "S_p0", "I_p0", "R_p0" ] }
+                      "right": { "pop_sum": ["S_p0", "I_p0", "R_p0"] }
                     }
                   },
                   "right": {
@@ -191,14 +191,14 @@
                                           "left": {
                                             "table_lookup": {
                                               "table": "w",
-                                              "indices": [ { "const": 0.0 } ]
+                                              "indices": [{ "const": 0.0 }]
                                             }
                                           },
                                           "right": { "pop": "I_p0" }
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                        "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                       }
                                     }
                                   },
@@ -211,14 +211,14 @@
                                           "left": {
                                             "table_lookup": {
                                               "table": "w",
-                                              "indices": [ { "const": 1.0 } ]
+                                              "indices": [{ "const": 1.0 }]
                                             }
                                           },
                                           "right": { "pop": "I_p1" }
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                        "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                       }
                                     }
                                   }
@@ -233,14 +233,14 @@
                                       "left": {
                                         "table_lookup": {
                                           "table": "w",
-                                          "indices": [ { "const": 2.0 } ]
+                                          "indices": [{ "const": 2.0 }]
                                         }
                                       },
                                       "right": { "pop": "I_p2" }
                                     }
                                   },
                                   "right": {
-                                    "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                    "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                   }
                                 }
                               }
@@ -255,14 +255,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 3.0 } ]
+                                      "indices": [{ "const": 3.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p3" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                                "pop_sum": ["S_p3", "I_p3", "R_p3"]
                               }
                             }
                           }
@@ -302,14 +302,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 0.0 } ]
+                                      "indices": [{ "const": 0.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p0" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                "pop_sum": ["S_p0", "I_p0", "R_p0"]
                               }
                             }
                           },
@@ -322,14 +322,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 1.0 } ]
+                                      "indices": [{ "const": 1.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p1" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                "pop_sum": ["S_p1", "I_p1", "R_p1"]
                               }
                             }
                           }
@@ -344,13 +344,13 @@
                               "left": {
                                 "table_lookup": {
                                   "table": "w",
-                                  "indices": [ { "const": 2.0 } ]
+                                  "indices": [{ "const": 2.0 }]
                                 }
                               },
                               "right": { "pop": "I_p2" }
                             }
                           },
-                          "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                          "right": { "pop_sum": ["S_p2", "I_p2", "R_p2"] }
                         }
                       }
                     }
@@ -364,13 +364,13 @@
                           "left": {
                             "table_lookup": {
                               "table": "w",
-                              "indices": [ { "const": 3.0 } ]
+                              "indices": [{ "const": 3.0 }]
                             }
                           },
                           "right": { "pop": "I_p3" }
                         }
                       },
-                      "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                      "right": { "pop_sum": ["S_p3", "I_p3", "R_p3"] }
                     }
                   }
                 }
@@ -381,7 +381,7 @@
       },
       {
         "name": "infection_p1",
-        "stoichiometry": [ [ "S_p1", -1 ], [ "I_p1", 1 ] ],
+        "stoichiometry": [["S_p1", -1], ["I_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -399,7 +399,7 @@
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_p1" },
-                    "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+                    "right": { "pop_sum": ["S_p1", "I_p1", "R_p1"] }
                   }
                 },
                 "right": {
@@ -424,14 +424,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 4.0 } ]
+                                            "indices": [{ "const": 4.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p0" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                      "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                     }
                                   }
                                 },
@@ -444,14 +444,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 5.0 } ]
+                                            "indices": [{ "const": 5.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p1" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                      "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                     }
                                   }
                                 }
@@ -466,14 +466,14 @@
                                     "left": {
                                       "table_lookup": {
                                         "table": "w",
-                                        "indices": [ { "const": 6.0 } ]
+                                        "indices": [{ "const": 6.0 }]
                                       }
                                     },
                                     "right": { "pop": "I_p2" }
                                   }
                                 },
                                 "right": {
-                                  "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                  "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                 }
                               }
                             }
@@ -488,14 +488,14 @@
                                 "left": {
                                   "table_lookup": {
                                     "table": "w",
-                                    "indices": [ { "const": 7.0 } ]
+                                    "indices": [{ "const": 7.0 }]
                                   }
                                 },
                                 "right": { "pop": "I_p3" }
                               }
                             },
                             "right": {
-                              "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                              "pop_sum": ["S_p3", "I_p3", "R_p3"]
                             }
                           }
                         }
@@ -524,7 +524,7 @@
                     "bin_op": {
                       "op": "div",
                       "left": { "pop": "I_p1" },
-                      "right": { "pop_sum": [ "S_p1", "I_p1", "R_p1" ] }
+                      "right": { "pop_sum": ["S_p1", "I_p1", "R_p1"] }
                     }
                   },
                   "right": {
@@ -549,14 +549,14 @@
                                           "left": {
                                             "table_lookup": {
                                               "table": "w",
-                                              "indices": [ { "const": 4.0 } ]
+                                              "indices": [{ "const": 4.0 }]
                                             }
                                           },
                                           "right": { "pop": "I_p0" }
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                        "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                       }
                                     }
                                   },
@@ -569,14 +569,14 @@
                                           "left": {
                                             "table_lookup": {
                                               "table": "w",
-                                              "indices": [ { "const": 5.0 } ]
+                                              "indices": [{ "const": 5.0 }]
                                             }
                                           },
                                           "right": { "pop": "I_p1" }
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                        "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                       }
                                     }
                                   }
@@ -591,14 +591,14 @@
                                       "left": {
                                         "table_lookup": {
                                           "table": "w",
-                                          "indices": [ { "const": 6.0 } ]
+                                          "indices": [{ "const": 6.0 }]
                                         }
                                       },
                                       "right": { "pop": "I_p2" }
                                     }
                                   },
                                   "right": {
-                                    "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                    "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                   }
                                 }
                               }
@@ -613,14 +613,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 7.0 } ]
+                                      "indices": [{ "const": 7.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p3" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                                "pop_sum": ["S_p3", "I_p3", "R_p3"]
                               }
                             }
                           }
@@ -660,14 +660,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 4.0 } ]
+                                      "indices": [{ "const": 4.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p0" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                "pop_sum": ["S_p0", "I_p0", "R_p0"]
                               }
                             }
                           },
@@ -680,14 +680,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 5.0 } ]
+                                      "indices": [{ "const": 5.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p1" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                "pop_sum": ["S_p1", "I_p1", "R_p1"]
                               }
                             }
                           }
@@ -702,13 +702,13 @@
                               "left": {
                                 "table_lookup": {
                                   "table": "w",
-                                  "indices": [ { "const": 6.0 } ]
+                                  "indices": [{ "const": 6.0 }]
                                 }
                               },
                               "right": { "pop": "I_p2" }
                             }
                           },
-                          "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                          "right": { "pop_sum": ["S_p2", "I_p2", "R_p2"] }
                         }
                       }
                     }
@@ -722,13 +722,13 @@
                           "left": {
                             "table_lookup": {
                               "table": "w",
-                              "indices": [ { "const": 7.0 } ]
+                              "indices": [{ "const": 7.0 }]
                             }
                           },
                           "right": { "pop": "I_p3" }
                         }
                       },
-                      "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                      "right": { "pop_sum": ["S_p3", "I_p3", "R_p3"] }
                     }
                   }
                 }
@@ -739,7 +739,7 @@
       },
       {
         "name": "infection_p2",
-        "stoichiometry": [ [ "S_p2", -1 ], [ "I_p2", 1 ] ],
+        "stoichiometry": [["S_p2", -1], ["I_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -757,7 +757,7 @@
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_p2" },
-                    "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                    "right": { "pop_sum": ["S_p2", "I_p2", "R_p2"] }
                   }
                 },
                 "right": {
@@ -782,14 +782,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 8.0 } ]
+                                            "indices": [{ "const": 8.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p0" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                      "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                     }
                                   }
                                 },
@@ -802,14 +802,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 9.0 } ]
+                                            "indices": [{ "const": 9.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p1" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                      "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                     }
                                   }
                                 }
@@ -824,14 +824,14 @@
                                     "left": {
                                       "table_lookup": {
                                         "table": "w",
-                                        "indices": [ { "const": 10.0 } ]
+                                        "indices": [{ "const": 10.0 }]
                                       }
                                     },
                                     "right": { "pop": "I_p2" }
                                   }
                                 },
                                 "right": {
-                                  "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                  "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                 }
                               }
                             }
@@ -846,14 +846,14 @@
                                 "left": {
                                   "table_lookup": {
                                     "table": "w",
-                                    "indices": [ { "const": 11.0 } ]
+                                    "indices": [{ "const": 11.0 }]
                                   }
                                 },
                                 "right": { "pop": "I_p3" }
                               }
                             },
                             "right": {
-                              "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                              "pop_sum": ["S_p3", "I_p3", "R_p3"]
                             }
                           }
                         }
@@ -882,7 +882,7 @@
                     "bin_op": {
                       "op": "div",
                       "left": { "pop": "I_p2" },
-                      "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                      "right": { "pop_sum": ["S_p2", "I_p2", "R_p2"] }
                     }
                   },
                   "right": {
@@ -907,14 +907,14 @@
                                           "left": {
                                             "table_lookup": {
                                               "table": "w",
-                                              "indices": [ { "const": 8.0 } ]
+                                              "indices": [{ "const": 8.0 }]
                                             }
                                           },
                                           "right": { "pop": "I_p0" }
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                        "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                       }
                                     }
                                   },
@@ -927,14 +927,14 @@
                                           "left": {
                                             "table_lookup": {
                                               "table": "w",
-                                              "indices": [ { "const": 9.0 } ]
+                                              "indices": [{ "const": 9.0 }]
                                             }
                                           },
                                           "right": { "pop": "I_p1" }
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                        "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                       }
                                     }
                                   }
@@ -949,14 +949,14 @@
                                       "left": {
                                         "table_lookup": {
                                           "table": "w",
-                                          "indices": [ { "const": 10.0 } ]
+                                          "indices": [{ "const": 10.0 }]
                                         }
                                       },
                                       "right": { "pop": "I_p2" }
                                     }
                                   },
                                   "right": {
-                                    "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                    "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                   }
                                 }
                               }
@@ -971,14 +971,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 11.0 } ]
+                                      "indices": [{ "const": 11.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p3" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                                "pop_sum": ["S_p3", "I_p3", "R_p3"]
                               }
                             }
                           }
@@ -1018,14 +1018,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 8.0 } ]
+                                      "indices": [{ "const": 8.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p0" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                "pop_sum": ["S_p0", "I_p0", "R_p0"]
                               }
                             }
                           },
@@ -1038,14 +1038,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 9.0 } ]
+                                      "indices": [{ "const": 9.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p1" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                "pop_sum": ["S_p1", "I_p1", "R_p1"]
                               }
                             }
                           }
@@ -1060,13 +1060,13 @@
                               "left": {
                                 "table_lookup": {
                                   "table": "w",
-                                  "indices": [ { "const": 10.0 } ]
+                                  "indices": [{ "const": 10.0 }]
                                 }
                               },
                               "right": { "pop": "I_p2" }
                             }
                           },
-                          "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                          "right": { "pop_sum": ["S_p2", "I_p2", "R_p2"] }
                         }
                       }
                     }
@@ -1080,13 +1080,13 @@
                           "left": {
                             "table_lookup": {
                               "table": "w",
-                              "indices": [ { "const": 11.0 } ]
+                              "indices": [{ "const": 11.0 }]
                             }
                           },
                           "right": { "pop": "I_p3" }
                         }
                       },
-                      "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                      "right": { "pop_sum": ["S_p3", "I_p3", "R_p3"] }
                     }
                   }
                 }
@@ -1097,7 +1097,7 @@
       },
       {
         "name": "infection_p3",
-        "stoichiometry": [ [ "S_p3", -1 ], [ "I_p3", 1 ] ],
+        "stoichiometry": [["S_p3", -1], ["I_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -1115,7 +1115,7 @@
                   "bin_op": {
                     "op": "div",
                     "left": { "pop": "I_p3" },
-                    "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                    "right": { "pop_sum": ["S_p3", "I_p3", "R_p3"] }
                   }
                 },
                 "right": {
@@ -1140,14 +1140,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 12.0 } ]
+                                            "indices": [{ "const": 12.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p0" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                      "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                     }
                                   }
                                 },
@@ -1160,14 +1160,14 @@
                                         "left": {
                                           "table_lookup": {
                                             "table": "w",
-                                            "indices": [ { "const": 13.0 } ]
+                                            "indices": [{ "const": 13.0 }]
                                           }
                                         },
                                         "right": { "pop": "I_p1" }
                                       }
                                     },
                                     "right": {
-                                      "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                      "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                     }
                                   }
                                 }
@@ -1182,14 +1182,14 @@
                                     "left": {
                                       "table_lookup": {
                                         "table": "w",
-                                        "indices": [ { "const": 14.0 } ]
+                                        "indices": [{ "const": 14.0 }]
                                       }
                                     },
                                     "right": { "pop": "I_p2" }
                                   }
                                 },
                                 "right": {
-                                  "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                  "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                 }
                               }
                             }
@@ -1204,14 +1204,14 @@
                                 "left": {
                                   "table_lookup": {
                                     "table": "w",
-                                    "indices": [ { "const": 15.0 } ]
+                                    "indices": [{ "const": 15.0 }]
                                   }
                                 },
                                 "right": { "pop": "I_p3" }
                               }
                             },
                             "right": {
-                              "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                              "pop_sum": ["S_p3", "I_p3", "R_p3"]
                             }
                           }
                         }
@@ -1240,7 +1240,7 @@
                     "bin_op": {
                       "op": "div",
                       "left": { "pop": "I_p3" },
-                      "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                      "right": { "pop_sum": ["S_p3", "I_p3", "R_p3"] }
                     }
                   },
                   "right": {
@@ -1274,7 +1274,7 @@
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                        "pop_sum": ["S_p0", "I_p0", "R_p0"]
                                       }
                                     }
                                   },
@@ -1296,7 +1296,7 @@
                                         }
                                       },
                                       "right": {
-                                        "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                        "pop_sum": ["S_p1", "I_p1", "R_p1"]
                                       }
                                     }
                                   }
@@ -1311,14 +1311,14 @@
                                       "left": {
                                         "table_lookup": {
                                           "table": "w",
-                                          "indices": [ { "const": 14.0 } ]
+                                          "indices": [{ "const": 14.0 }]
                                         }
                                       },
                                       "right": { "pop": "I_p2" }
                                     }
                                   },
                                   "right": {
-                                    "pop_sum": [ "S_p2", "I_p2", "R_p2" ]
+                                    "pop_sum": ["S_p2", "I_p2", "R_p2"]
                                   }
                                 }
                               }
@@ -1333,14 +1333,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 15.0 } ]
+                                      "indices": [{ "const": 15.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p3" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p3", "I_p3", "R_p3" ]
+                                "pop_sum": ["S_p3", "I_p3", "R_p3"]
                               }
                             }
                           }
@@ -1380,14 +1380,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 12.0 } ]
+                                      "indices": [{ "const": 12.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p0" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p0", "I_p0", "R_p0" ]
+                                "pop_sum": ["S_p0", "I_p0", "R_p0"]
                               }
                             }
                           },
@@ -1400,14 +1400,14 @@
                                   "left": {
                                     "table_lookup": {
                                       "table": "w",
-                                      "indices": [ { "const": 13.0 } ]
+                                      "indices": [{ "const": 13.0 }]
                                     }
                                   },
                                   "right": { "pop": "I_p1" }
                                 }
                               },
                               "right": {
-                                "pop_sum": [ "S_p1", "I_p1", "R_p1" ]
+                                "pop_sum": ["S_p1", "I_p1", "R_p1"]
                               }
                             }
                           }
@@ -1422,13 +1422,13 @@
                               "left": {
                                 "table_lookup": {
                                   "table": "w",
-                                  "indices": [ { "const": 14.0 } ]
+                                  "indices": [{ "const": 14.0 }]
                                 }
                               },
                               "right": { "pop": "I_p2" }
                             }
                           },
-                          "right": { "pop_sum": [ "S_p2", "I_p2", "R_p2" ] }
+                          "right": { "pop_sum": ["S_p2", "I_p2", "R_p2"] }
                         }
                       }
                     }
@@ -1442,13 +1442,13 @@
                           "left": {
                             "table_lookup": {
                               "table": "w",
-                              "indices": [ { "const": 15.0 } ]
+                              "indices": [{ "const": 15.0 }]
                             }
                           },
                           "right": { "pop": "I_p3" }
                         }
                       },
-                      "right": { "pop_sum": [ "S_p3", "I_p3", "R_p3" ] }
+                      "right": { "pop_sum": ["S_p3", "I_p3", "R_p3"] }
                     }
                   }
                 }
@@ -1459,7 +1459,7 @@
       },
       {
         "name": "recovery_p0",
-        "stoichiometry": [ [ "I_p0", -1 ], [ "R_p0", 1 ] ],
+        "stoichiometry": [["I_p0", -1], ["R_p0", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -1476,7 +1476,7 @@
       },
       {
         "name": "recovery_p1",
-        "stoichiometry": [ [ "I_p1", -1 ], [ "R_p1", 1 ] ],
+        "stoichiometry": [["I_p1", -1], ["R_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -1493,7 +1493,7 @@
       },
       {
         "name": "recovery_p2",
-        "stoichiometry": [ [ "I_p2", -1 ], [ "R_p2", 1 ] ],
+        "stoichiometry": [["I_p2", -1], ["R_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -1510,7 +1510,7 @@
       },
       {
         "name": "recovery_p3",
-        "stoichiometry": [ [ "I_p3", -1 ], [ "R_p3", 1 ] ],
+        "stoichiometry": [["I_p3", -1], ["R_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -1558,7 +1558,7 @@
       {
         "name": "beta",
         "value": null,
-        "bounds": [ 0.0, 2.0 ],
+        "bounds": [0.0, 2.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -1569,7 +1569,7 @@
       {
         "name": "gamma",
         "value": null,
-        "bounds": [ 0.0, 1.0 ],
+        "bounds": [0.0, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -1580,7 +1580,7 @@
       {
         "name": "rho",
         "value": null,
-        "bounds": [ 0.0, 1.0 ],
+        "bounds": [0.0, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -1639,16 +1639,16 @@
     ],
     "model_structure": {
       "dimensions": [
-        { "name": "patch", "values": [ "p0", "p1", "p2", "p3" ] }
+        { "name": "patch", "values": ["p0", "p1", "p2", "p3"] }
       ],
       "compartment_dims": {
-        "S": [ "patch" ],
-        "I": [ "patch" ],
-        "R": [ "patch" ]
+        "S": ["patch"],
+        "I": ["patch"],
+        "R": ["patch"]
       },
-      "base_compartments": [ "S", "I", "R" ],
-      "transmission_transitions": [ "infection" ],
-      "infectious_compartments": [ "I" ]
+      "base_compartments": ["S", "I", "R"],
+      "transmission_transitions": ["infection"],
+      "infectious_compartments": ["I"]
     }
   }
 }

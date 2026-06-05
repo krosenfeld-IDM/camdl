@@ -53,8 +53,8 @@ compile error.
 ## Anchored vs unanchored, and calendar stepping
 
 A model is **anchored** if it declares `origin = date(...)`; otherwise
-**unanchored**. The split controls how dates and calendar arithmetic
-behave — see [`docs/dates.md`](dates.md) for the full reference.
+**unanchored**. The split controls how dates and calendar arithmetic behave —
+see [`docs/dates.md`](dates.md) for the full reference.
 
 ```camdl
 # (a) Anchored: daily axis, per-month rate parameters
@@ -91,11 +91,11 @@ let school_quarter = date_range(origin, date("2025-01-01"), calendar_months = 3)
 simulate { from = origin to = add_calendar_years(origin, 5) }
 ```
 
-`add_calendar_months` / `add_calendar_years` are the *only* way to
-step a date by calendar months/years; month-end clamping is canonical
+`add_calendar_months` / `add_calendar_years` are the _only_ way to step a date
+by calendar months/years; month-end clamping is canonical
 (`date("2021-01-31") + 1 month = date("2021-02-28")`). Direct
-`date(...) + N 'months` is a hard error (**E321**) — the language
-forbids the silent affine-drift that would produce.
+`date(...) + N 'months` is a hard error (**E321**) — the language forbids the
+silent affine-drift that would produce.
 
 ---
 

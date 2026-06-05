@@ -3,8 +3,8 @@
 # per-age weekly observation streams the IF2 / PGAS / PMMH fits then try to
 # recover. `beta`, `sigma`, `gamma` are estimated; `rho`, `k` are held fixed in
 # the fit configs at the values below.
-beta  = 0.05
+beta = 0.05
 sigma = 0.2
 gamma = 0.1
-rho   = 0.6
-k     = 10.0
+rho = 0.6
+k = 10.0

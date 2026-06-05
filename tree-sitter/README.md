@@ -4,40 +4,37 @@ Tree-sitter grammar for the [camdl](../) compartmental modelling DSL.
 
 ## Coverage
 
-Last refreshed against the language spec on **2026-05-26**. The grammar
-parses every model in `ocaml/golden/`, every model in `book-content/`,
-every test fixture under `rust/crates/sim/tests/fixtures/`, and every
-worked example in `docs/dev/proposals/fixtures/`. Sibling tooling for
-static document rendering (the KDE/Pandoc syntax XML at
-`camdl-book/_extensions/camdl/camdl.xml`) covers the same surface; the
-two are maintained in parallel.
+Last refreshed against the language spec on **2026-05-26**. The grammar parses
+every model in `ocaml/golden/`, every model in `book-content/`, every test
+fixture under `rust/crates/sim/tests/fixtures/`, and every worked example in
+`docs/dev/proposals/fixtures/`. Sibling tooling for static document rendering
+(the KDE/Pandoc syntax XML at `camdl-book/_extensions/camdl/camdl.xml`) covers
+the same surface; the two are maintained in parallel.
 
 Surface covered:
 
 - All 22 top-level block kinds — `time_unit`, `description`, `origin`,
-  `dimensions`, `compartments`, `parameters`, `tables`, `functions`,
-  `forcing`, `transitions`, `observations`, `interventions`, `events`,
-  `ode`, `output`, `simulate`, `init`, `timepoints`, `stratify`, `let`,
-  `scenarios`, `balance`.
-- `#[lineage]` transition attribute (and the lexer rule that requires
-  `#[` to be one token with no intervening space).
+  `dimensions`, `compartments`, `parameters`, `tables`, `functions`, `forcing`,
+  `transitions`, `observations`, `interventions`, `events`, `ode`, `output`,
+  `simulate`, `init`, `timepoints`, `stratify`, `let`, `scenarios`, `balance`.
+- `#[lineage]` transition attribute (and the lexer rule that requires `#[` to be
+  one token with no intervening space).
 - Calendar-time surface: `origin = date("YYYY-MM-DD")`, `date()` /
-  `add_calendar_*` / `date_range` builtins, `instant` / `duration`
-  parameter kinds.
+  `add_calendar_*` / `date_range` builtins, `instant` / `duration` parameter
+  kinds.
 - Multi-source stoichiometry (`A + B --> C`) and branching destinations
   (`--> { D1 : w1, D2 : w2 } @ rate`).
-- Tier-3 dimension annotations on parameter declarations — both unit
-  literals (`tau : positive 'ratio`) and bracket forms (`mu : positive
+- Tier-3 dimension annotations on parameter declarations — both unit literals
+  (`tau : positive 'ratio`) and bracket forms (`mu : positive
   [P*T^-1]`).
 - Range literals inside list expressions (`on = [7 'days : 100 'days]`).
 - Multi-name shared table declarations (`pop, init_sus : patch = read(...)`).
-- Indexed scenario overrides (`R0[north] = 2.5` in a `set = { ... }`
-  block).
+- Indexed scenario overrides (`R0[north] = 2.5` in a `set = { ... }` block).
 - Prior assignment (`beta : rate in [0, 1] ~ log_normal(mu = 0, sigma = 1)`)
   with optional hierarchical pooling (`| age`).
 
-If you hit a model the grammar doesn't parse, file an issue with the
-offending fragment.
+If you hit a model the grammar doesn't parse, file an issue with the offending
+fragment.
 
 ## Building
 
@@ -114,18 +111,17 @@ cp tree-sitter/queries/locals.scm     ~/.config/helix/runtime/queries/camdl/
 ### Zed
 
 Add to `~/.config/zed/settings.json` once the grammar is published to the
-tree-sitter registry, or use the [local grammar extension
-API](https://zed.dev/docs/extensions/languages).
+tree-sitter registry, or use the
+[local grammar extension API](https://zed.dev/docs/extensions/languages).
 
 ### VS Code
 
-VS Code consumes tree-sitter grammars via an extension. The simplest
-local path is to wrap this grammar in a minimal extension using
-[tree-sitter-vscode](https://github.com/tree-sitter/tree-sitter-vscode)
-or a custom extension that registers `.camdl` as a language and points
-at `tree-sitter/src/parser.c`. A maintained extension may be published
-to the marketplace later; until then, the local-extension path is the
-supported route.
+VS Code consumes tree-sitter grammars via an extension. The simplest local path
+is to wrap this grammar in a minimal extension using
+[tree-sitter-vscode](https://github.com/tree-sitter/tree-sitter-vscode) or a
+custom extension that registers `.camdl` as a language and points at
+`tree-sitter/src/parser.c`. A maintained extension may be published to the
+marketplace later; until then, the local-extension path is the supported route.
 
 ## Refreshing after a DSL change
 
@@ -133,8 +129,8 @@ When the DSL grammar changes (a new keyword, a new block, a new operator):
 
 1. Edit `grammar.js` to add the production.
 2. Update `queries/highlights.scm` for any new keyword or syntactic class.
-3. Update `queries/locals.scm` if the change introduces a new scope or
-   binding form.
+3. Update `queries/locals.scm` if the change introduces a new scope or binding
+   form.
 4. Run `tree-sitter generate` to regenerate `src/parser.c`.
 5. Verify by parsing the golden fixtures:
    ```bash
@@ -142,5 +138,5 @@ When the DSL grammar changes (a new keyword, a new block, a new operator):
    ```
 6. Update the "Last refreshed" date at the top of this README.
 
-The OCaml `parser.mly` is the source of truth for syntax decisions; if
-in doubt, mirror its productions.
+The OCaml `parser.mly` is the source of truth for syntax decisions; if in doubt,
+mirror its productions.

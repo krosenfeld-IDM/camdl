@@ -1,9 +1,9 @@
 # Incident: Spatial PGAS -inf complete-data log-likelihood
 
-**Date:** 2026-04-07
-**Status:** Resolved. Six bugs fixed across engine and CLI.
-**Severity:** Blocking — spatial PGAS inference produced -inf on every sweep, making Bayesian inference impossible for multi-patch models.
-**Fix commits:**
+**Date:** 2026-04-07 **Status:** Resolved. Six bugs fixed across engine and CLI.
+**Severity:** Blocking — spatial PGAS inference produced -inf on every sweep,
+making Bayesian inference impossible for multi-patch models. **Fix commits:**
+
 - `f64668f` — snapshot counts_before in SubstepRecord (simulate_reference)
 - `b15cb39` — reference particle counts_before mismatch in CSMC-AS traceback
 - `faffe8f` — near-zero rate/flow mismatch: soft handling + iota warning
@@ -30,9 +30,9 @@ the overdraft that triggers clamping.
 
 This is a known limitation of the Euler scheme. pomp has the same issue and
 handles it the same way (clamp negative counts). The correct fix for the
-approximation is smaller dt (subdivide each day into 4–10 substeps), which
-keeps $p_{\text{total}} < 0.3$ and makes overdrafts vanishingly rare. But
-smaller dt means more substeps, which means slower inference.
+approximation is smaller dt (subdivide each day into 4–10 substeps), which keeps
+$p_{\text{total}} < 0.3$ and makes overdrafts vanishingly rare. But smaller dt
+means more substeps, which means slower inference.
 
 The `counts_before`/`counts_after` fix addresses the implementation bug. The
 Euler approximation breakdown requires either smaller dt or the
@@ -45,8 +45,8 @@ spatial (multi-patch) models during PGAS inference. The root cause was a
 mismatch between the compartment counts used by `step_one` to draw transitions
 and the counts stored in the trajectory for density evaluation. Negative
 clamping in `step_one` reduced compartment counts after draws, so the density
-evaluated `Binom(k; n, p)` with `k > n`, which is mathematically impossible
-and returns `-inf`.
+evaluated `Binom(k; n, p)` with `k > n`, which is mathematically impossible and
+returns `-inf`.
 
 ## Background
 
@@ -59,36 +59,36 @@ log p(y, X | θ) = log p(x₀|θ) + Σ_s log p(x_s | x_{s-1}, θ) + Σ_k log p(y
 
 The transition density `log p(x_s | x_{s-1}, θ)` uses the Euler-multinomial
 decomposition: total exits from source compartment `j` are
-`Binom(n_exit; N_j, 1 - exp(-R·dt))`, then split proportionally among
-competing transitions. The constraint `n_exit ≤ N_j` is fundamental —
-binomial with `k > n` is undefined.
+`Binom(n_exit; N_j, 1 - exp(-R·dt))`, then split proportionally among competing
+transitions. The constraint `n_exit ≤ N_j` is fundamental — binomial with
+`k > n` is undefined.
 
 Spatial models have inter-patch coupling via importation terms (e.g.,
 `c_ij * I_j / N_j`). These coupling terms can create transient negative
-compartments when outflows exceed the current count in a single substep.
-The simulator handles this with "negative clamping" in `step_one`: after
-all draws, any compartment that went negative is clamped to 0.
+compartments when outflows exceed the current count in a single substep. The
+simulator handles this with "negative clamping" in `step_one`: after all draws,
+any compartment that went negative is clamped to 0.
 
 ## The bug
 
 The trajectory's `SubstepRecord` stored only the post-step compartment counts
-(after clamping). When the density evaluator needed the counts *before* a
-substep, it read `trajectory.substeps[s-1].counts` — the *previous substep's
-post-clamp* state. But `step_one` had evaluated propensities and drawn exits
-from the *pre-clamp* state of the *current* substep (which is the post-step
+(after clamping). When the density evaluator needed the counts _before_ a
+substep, it read `trajectory.substeps[s-1].counts` — the _previous substep's
+post-clamp_ state. But `step_one` had evaluated propensities and drawn exits
+from the _pre-clamp_ state of the _current_ substep (which is the post-step
 state before clamping was applied).
 
 The mismatch:
 
 1. At substep `s`, `step_one` sees compartment `I[p5] = 264` (pre-clamp)
 2. It draws `n_exit = 264` exits (all individuals leave)
-3. Negative clamping reduces `I[p5]` to 249 (because inflows from other
-   patches partially compensated, but the net was still an overcount)
+3. Negative clamping reduces `I[p5]` to 249 (because inflows from other patches
+   partially compensated, but the net was still an overcount)
 4. The trajectory stores `counts[s] = [..., 249, ...]`
 5. At substep `s+1`, the density evaluator reads
    `counts_before = trajectory.substeps[s].counts = [..., 249, ...]`
-6. It evaluates `Binom(264, 249, p)` — but `k=264 > n=249`, so the result
-   is `-inf`
+6. It evaluates `Binom(264, 249, p)` — but `k=264 > n=249`, so the result is
+   `-inf`
 
 This never affected single-patch models because clamping only triggers with
 spatial coupling (importation terms create negative transients). It also didn't
@@ -115,7 +115,7 @@ led to an incorrect hypothesis that the issue was parameter-specific.
 ### Phase 2: Model-specific vs. code-level (commits `d223f02`–`234d120`)
 
 The downstream agent provided their compiled IR and exact parameter values.
-Testing with their model at their parameters *also passed* the round-trip
+Testing with their model at their parameters _also passed_ the round-trip
 density test (100/100 seeds). This was confusing — the same model failed during
 PGAS but passed in isolation.
 
@@ -135,22 +135,22 @@ Several hypotheses were investigated:
    persisted, ruling out gamma as the sole cause.
 
 2. **Floating-point threshold divergence.** The zero-rate threshold in
-   `step_one` (originally `0.0`) differed from the density evaluator (also
-   `0.0` but with different floating-point behavior). Both were aligned to
-   `1e-15`, but this was not the root cause.
+   `step_one` (originally `0.0`) differed from the density evaluator (also `0.0`
+   but with different floating-point behavior). Both were aligned to `1e-15`,
+   but this was not the root cause.
 
 3. **Merge-same-destination optimization.** A proposal from the upstream
-   colleague suggested merging transitions with identical source AND
-   destination stoichiometry to eliminate the multinomial split for spatial
-   importation groups. This would be a correct architectural fix but was
-   deferred — the snapshot fix was simpler and more direct.
+   colleague suggested merging transitions with identical source AND destination
+   stoichiometry to eliminate the multinomial split for spatial importation
+   groups. This would be a correct architectural fix but was deferred — the
+   snapshot fix was simpler and more direct.
 
 ### Phase 4: Root cause identified (commit `f2f614a`)
 
-Enhanced diagnostics printed the exact `Binom(k, n, p)` arguments at the
-failing substep. The output showed `Binom(264, 249, p)` — `k > n`. Once this
-was visible, the cause was obvious: the density was using post-clamp counts as
-`n`, but the flows were drawn from pre-clamp counts.
+Enhanced diagnostics printed the exact `Binom(k, n, p)` arguments at the failing
+substep. The output showed `Binom(264, 249, p)` — `k > n`. Once this was
+visible, the cause was obvious: the density was using post-clamp counts as `n`,
+but the flows were drawn from pre-clamp counts.
 
 ### Phase 5: Fix attempts
 
@@ -160,24 +160,23 @@ model (capping `n` to `n_exit` gives `Binom(k; k, p) = p^k`, which is wrong).
 
 **Attempt 2 (commit `f64668f`, final fix):** Store a pre-step snapshot
 (`counts_before`) in `SubstepRecord` alongside the post-step state
-(`counts_after`). The density evaluator reads `counts_before` directly —
-the exact counts that `step_one` used when drawing exits. This is
-mathematically correct: the density evaluates the probability of the observed
-flows given the state that actually generated them.
+(`counts_after`). The density evaluator reads `counts_before` directly — the
+exact counts that `step_one` used when drawing exits. This is mathematically
+correct: the density evaluates the probability of the observed flows given the
+state that actually generated them.
 
 ### Phase 6: Second bug — CSMC reference counts_before (commit `b15cb39`)
 
-After deploying the snapshot fix, the downstream agent rebuilt and still
-got `-inf`: `Binom(677, 670, p)` at `src_comp_idx=3`. This was NOT a
-clamping issue — it was a separate bug in `csmc_as`.
+After deploying the snapshot fix, the downstream agent rebuilt and still got
+`-inf`: `Binom(677, 670, p)` at `src_comp_idx=3`. This was NOT a clamping issue
+— it was a separate bug in `csmc_as`.
 
 In CSMC-AS, each substep: (1) resamples particles, (2) saves
-`prev_counts[j] = counts[j]`, (3) propagates free particles, (4) clamps
-the reference particle to its stored trajectory. Step 2 saves
-`prev_counts[j_ref]` from the post-resample state — which after
-resampling could be *any* particle's state, not the reference's actual
-pre-step state. But the reference's flows (`ref_rec.flows`) at step 4
-were drawn from `ref_rec.counts_before`.
+`prev_counts[j] = counts[j]`, (3) propagates free particles, (4) clamps the
+reference particle to its stored trajectory. Step 2 saves `prev_counts[j_ref]`
+from the post-resample state — which after resampling could be _any_ particle's
+state, not the reference's actual pre-step state. But the reference's flows
+(`ref_rec.flows`) at step 4 were drawn from `ref_rec.counts_before`.
 
 The traceback paired `counts_before = prev_counts[j_ref]` (wrong) with
 `flows = ref_rec.flows` (drawn from a different state), producing
@@ -209,20 +208,20 @@ pub struct SubstepRecord {
 }
 ```
 
-All density evaluation paths (`complete_data_loglik`, `complete_data_loglik_grad`,
-`log_transition_density_substep`) now use `rec.counts_before` instead of
-deriving counts from the previous substep.
+All density evaluation paths (`complete_data_loglik`,
+`complete_data_loglik_grad`, `log_transition_density_substep`) now use
+`rec.counts_before` instead of deriving counts from the previous substep.
 
-All trajectory construction paths (`simulate_reference`, CSMC-AS traceback)
-now store both fields. The CSMC history tracks `history_counts_before` (the
-pre-step particle states) and `history_counts_after` (post-step states).
+All trajectory construction paths (`simulate_reference`, CSMC-AS traceback) now
+store both fields. The CSMC history tracks `history_counts_before` (the pre-step
+particle states) and `history_counts_after` (post-step states).
 
 **Files changed:** `pgas.rs`, `pgas_grad.rs`, `cli/fit/pgas.rs`,
 `tests/pgas_resume.rs`, `tests/spatial_density.rs`
 
 **Memory overhead:** One extra `Vec<i64>` per substep (n_compartments integers).
-For a 5-patch SEIR model (20 compartments) with 1000 substeps, this adds
-~160 KB per trajectory — negligible compared to the particle array.
+For a 5-patch SEIR model (20 compartments) with 1000 substeps, this adds ~160 KB
+per trajectory — negligible compared to the particle array.
 
 ### Fix 2: Reference particle counts_before in CSMC-AS
 
@@ -233,73 +232,69 @@ After clamping the reference particle (step 3 in the CSMC loop), overwrite
 prev_counts[j_ref].copy_from_slice(&ref_rec.counts_before);
 ```
 
-This ensures the history correctly pairs the reference's pre-step state
-with its flows, regardless of what resampling did to the `j_ref` slot.
+This ensures the history correctly pairs the reference's pre-step state with its
+flows, regardless of what resampling did to the `j_ref` slot.
 
 ### Fix 3: Near-zero rate/flow mismatch (iota warning)
 
 When `step_one` evaluates a spatial importation expression like
-`c_ij * I_j / N_j * S_i`, floating-point arithmetic can produce a
-near-zero but nonzero rate (e.g., `1e-16`) even when `I_j = 0`. If
-step_one draws `flow=1` from this near-zero rate, the density evaluator
-may recompute the rate as exactly zero (or below `RATE_EPSILON`) and
-reject the trajectory.
+`c_ij * I_j / N_j * S_i`, floating-point arithmetic can produce a near-zero but
+nonzero rate (e.g., `1e-16`) even when `I_j = 0`. If step_one draws `flow=1`
+from this near-zero rate, the density evaluator may recompute the rate as
+exactly zero (or below `RATE_EPSILON`) and reject the trajectory.
 
-Before this fix, any `flow > 0` with `rate ≤ RATE_EPSILON` returned
-`-inf`. After:
+Before this fix, any `flow > 0` with `rate ≤ RATE_EPSILON` returned `-inf`.
+After:
 
-- **rate == 0.0 exactly, flow > 0:** Still `-inf`, but emits a one-time
-  warning: "transition X has rate=0 but flow=N — consider adding a
-  seeding term (iota)." This catches the model specification issue where
-  infection rates vanish when a compartment empties.
+- **rate == 0.0 exactly, flow > 0:** Still `-inf`, but emits a one-time warning:
+  "transition X has rate=0 but flow=N — consider adding a seeding term (iota)."
+  This catches the model specification issue where infection rates vanish when a
+  compartment empties.
 - **0 < rate ≤ RATE_EPSILON, flow > 0:** Include the transition in the
-  multinomial with its tiny rate. The Binomial density gives a very
-  negative but finite score, correctly penalizing the unlikely event
-  without hard-rejecting the trajectory.
+  multinomial with its tiny rate. The Binomial density gives a very negative but
+  finite score, correctly penalizing the unlikely event without hard-rejecting
+  the trajectory.
 
-User-facing documentation added to `docs/inference.md` under "Spatial
-models and seeding (iota)".
+User-facing documentation added to `docs/inference.md` under "Spatial models and
+seeding (iota)".
 
 ### Fix 4: Deterministic check ordering in density (`9547ef9`)
 
-The density combined `rate <= RATE_EPSILON || is_determ[tr_idx]` in one
-branch. A deterministic transition with positive rate entered the
-near-zero handler instead of being skipped from the multinomial. This
-could inflate `n_exit` by including deterministic flows. Fixed by
-checking rate first, then deterministic — matching step_one's exact
-order.
+The density combined `rate <= RATE_EPSILON || is_determ[tr_idx]` in one branch.
+A deterministic transition with positive rate entered the near-zero handler
+instead of being skipped from the multinomial. This could inflate `n_exit` by
+including deterministic flows. Fixed by checking rate first, then deterministic
+— matching step_one's exact order.
 
 ### Fix 5: IVP density per-patch population (`c20de85`)
 
-The initial state density `Binom(S₀; N₀, s0)` used `N₀ = total_pop`
-(sum of all compartments across all patches). For a 5-patch model with
-440K total pop, `Binom(5950; 440000, 0.06)` ≈ `-inf` because the
-expected value (26,400) is far from the actual (5,950). The correct
-denominator is the per-patch population: `Binom(5950; 100000, 0.06)`,
-which gives expected value 6,000 — reasonable.
+The initial state density `Binom(S₀; N₀, s0)` used `N₀ = total_pop` (sum of all
+compartments across all patches). For a 5-patch model with 440K total pop,
+`Binom(5950; 440000, 0.06)` ≈ `-inf` because the expected value (26,400) is far
+from the actual (5,950). The correct denominator is the per-patch population:
+`Binom(5950; 100000, 0.06)`, which gives expected value 6,000 — reasonable.
 
-Fixed by detecting stratified compartments via name suffix matching:
-`S_p1` shares the `_p1` suffix with `E_p1`, `I_p1`, `R_p1`, so
-`N₀ = S_p1 + E_p1 + I_p1 + R_p1 = 100,000`. Same fix applied to the
-stochastic initial state draws in CSMC-AS, which were drawing
-`Binom(440000, 0.06) ≈ 26,400` susceptibles per patch instead of the
-correct per-patch count.
+Fixed by detecting stratified compartments via name suffix matching: `S_p1`
+shares the `_p1` suffix with `E_p1`, `I_p1`, `R_p1`, so
+`N₀ = S_p1 + E_p1 + I_p1 + R_p1 = 100,000`. Same fix applied to the stochastic
+initial state draws in CSMC-AS, which were drawing
+`Binom(440000, 0.06) ≈ 26,400` susceptibles per patch instead of the correct
+per-patch count.
 
 ### Fix 6: Multi-stream data loader column mismatch (`8a0e9f9`)
 
-**This was the final blocker.** `load_data_tsv` always read column 1
-(the first value column after time) regardless of stream name. With 5
-observation streams (`cases_p1` through `cases_p5`) all pointing at the
-same TSV file, all 5 streams received `cases_p1`'s data.
+**This was the final blocker.** `load_data_tsv` always read column 1 (the first
+value column after time) regardless of stream name. With 5 observation streams
+(`cases_p1` through `cases_p5`) all pointing at the same TSV file, all 5 streams
+received `cases_p1`'s data.
 
-Patches 2–5 compared their projected recovery incidence (often near
-zero early in an epidemic) against patch 1's observed cases (17+ per
-week) → NegBinomial `-inf`. This bug was invisible in single-stream
-models (only one value column) and in forward simulation (no observation
-density evaluation).
+Patches 2–5 compared their projected recovery incidence (often near zero early
+in an epidemic) against patch 1's observed cases (17+ per week) → NegBinomial
+`-inf`. This bug was invisible in single-stream models (only one value column)
+and in forward simulation (no observation density evaluation).
 
-Fixed by adding `load_data_tsv_column` that matches the stream name to
-TSV column headers. `cases_p2` now reads the `cases_p2` column.
+Fixed by adding `load_data_tsv_column` that matches the stream name to TSV
+column headers. `cases_p2` now reads the `cases_p2` column.
 
 ## Remaining issues
 
@@ -308,8 +303,8 @@ TSV column headers. `cases_p2` now reads the `cases_p2` column.
 The gamma multiplier density (`log Gamma(g; dt/σ², σ²/dt)`) is disabled with
 `if false {}` in `complete_data_loglik`. The gamma index tracking between
 `step_one` and the density evaluator is fragile: `step_one` only pushes to
-`gamma_used` when an overdispersed transition has positive rate, but the
-density evaluator's index advancement logic didn't perfectly mirror this.
+`gamma_used` when an overdispersed transition has positive rate, but the density
+evaluator's index advancement logic didn't perfectly mirror this.
 
 Disabling the gamma density is statistically valid for now — the transition
 density already constrains `σ²` through `p_total = 1 - exp(-R·g·dt)`, so the
@@ -323,51 +318,50 @@ An upstream colleague proposed merging transitions that share both source AND
 destination compartments. In spatial models, each patch's infection transition
 has the same stoichiometry (`S_i → I_i`) but different rate expressions (local
 vs. importation). The Euler-multinomial split assigns flows to each sub-rate,
-but only the *total* flow matters for state evolution.
+but only the _total_ flow matters for state evolution.
 
 Merging these would eliminate the multinomial split density entirely for
-importation groups, removing the source of floating-point fragility. This is
-the "right" architectural fix but requires changes to the compiler's
-transition grouping and to `step_one`'s source-group logic. Deferred to a
-future iteration.
+importation groups, removing the source of floating-point fragility. This is the
+"right" architectural fix but requires changes to the compiler's transition
+grouping and to `step_one`'s source-group logic. Deferred to a future iteration.
 
 ## Lessons learned
 
 1. **Clamping creates a simulation/density gap.** Any post-hoc state
    modification (clamping, balancing, events) that isn't reflected in the
-   density creates a mismatch. The density must evaluate against the state
-   that *generated* the draws, not the state that *resulted* from them.
+   density creates a mismatch. The density must evaluate against the state that
+   _generated_ the draws, not the state that _resulted_ from them.
 
-2. **Round-trip tests are necessary but not sufficient.** The standalone
-   density test (`simulate_reference` → `complete_data_loglik`) passed 100/100
-   seeds because it used the same trajectory object. The bug only manifested
-   when the trajectory was reconstructed from CSMC history, which stored
-   post-clamp counts. Testing density round-trips after CSMC reconstruction
-   would have caught this earlier.
+2. **Round-trip tests are necessary but not sufficient.** The standalone density
+   test (`simulate_reference` → `complete_data_loglik`) passed 100/100 seeds
+   because it used the same trajectory object. The bug only manifested when the
+   trajectory was reconstructed from CSMC history, which stored post-clamp
+   counts. Testing density round-trips after CSMC reconstruction would have
+   caught this earlier.
 
 3. **Spatial models are qualitatively different.** Single-patch models never
-   trigger negative clamping, so single-patch tests provide no coverage for
-   this class of bugs. Spatial density tests should be part of the standard
+   trigger negative clamping, so single-patch tests provide no coverage for this
+   class of bugs. Spatial density tests should be part of the standard
    regression suite.
 
-4. **Store the generating state, not the resulting state.** When a record
-   needs to support both "what happened next" (simulation) and "how likely was
-   what happened" (density), store the input state explicitly rather than
-   deriving it from adjacent records. The derivation breaks when there are
-   non-invertible transformations (like clamping) between steps.
+4. **Store the generating state, not the resulting state.** When a record needs
+   to support both "what happened next" (simulation) and "how likely was what
+   happened" (density), store the input state explicitly rather than deriving it
+   from adjacent records. The derivation breaks when there are non-invertible
+   transformations (like clamping) between steps.
 
 5. **Golden tests must exercise the full inference pipeline.** The existing
    density round-trip tests only checked transition density (empty
    `obs_streams`, empty `observations`). They never evaluated the observation
    density or the IVP density, so fixes 5 and 6 were invisible to the test
-   suite. A golden test that runs `complete_data_loglik` with actual
-   observation data would have caught the column mismatch immediately.
+   suite. A golden test that runs `complete_data_loglik` with actual observation
+   data would have caught the column mismatch immediately.
 
 6. **Layered bugs mask each other.** Six bugs produced the same symptom
    (`-inf`). Fixing one revealed the next. The investigation would have been
-   faster with component-level diagnostics from the start — separate checks
-   for IVP density, transition density, and observation density, each printing
-   when it returns `-inf`. The final diagnostic framework (added during this
+   faster with component-level diagnostics from the start — separate checks for
+   IVP density, transition density, and observation density, each printing when
+   it returns `-inf`. The final diagnostic framework (added during this
    incident) should be kept permanently.
 
 7. **Multi-stream data loading is a distinct concern from multi-stream
@@ -378,61 +372,61 @@ future iteration.
 
 ## Applicability beyond spatial models
 
-These bugs were surfaced by a 5-patch spatial SEIR model, but patches
-are just one kind of stratification. The fixes have varying applicability
-to other stratified models (age, risk group, species, etc.).
+These bugs were surfaced by a 5-patch spatial SEIR model, but patches are just
+one kind of stratification. The fixes have varying applicability to other
+stratified models (age, risk group, species, etc.).
 
 ### Fixes that affect ANY stratified model
 
-**Fix 4 (deterministic check ordering)** and **Fix 6 (data column
-mismatch)** are structural bugs independent of model type. Any
-multi-stream model — whether streams represent patches, age groups, or
-surveillance sites — would hit the data loader bug.
+**Fix 4 (deterministic check ordering)** and **Fix 6 (data column mismatch)**
+are structural bugs independent of model type. Any multi-stream model — whether
+streams represent patches, age groups, or surveillance sites — would hit the
+data loader bug.
 
-**Fix 5 (IVP per-patch population)** applies to any model where an IVP
-parameter (`s0`) controls a compartment in one stratum. An age-stratified
-model with `init { S[age1] = s0 * N_age1 }` would produce the same
-`Binom(S[age1]; total_pop_all_ages, s0)` ≈ -inf. The suffix-matching fix
-works for any dimension name, not just patches.
+**Fix 5 (IVP per-patch population)** applies to any model where an IVP parameter
+(`s0`) controls a compartment in one stratum. An age-stratified model with
+`init { S[age1] = s0 * N_age1 }` would produce the same
+`Binom(S[age1]; total_pop_all_ages, s0)` ≈ -inf. The suffix-matching fix works
+for any dimension name, not just patches.
 
 ### Fixes specific to models where clamping fires
 
-**Fixes 1–2 (counts_before snapshot, CSMC reference mismatch)** only
-matter when negative clamping occurs, which requires total outflows from a
-compartment to exceed its population in one substep. This needs either:
+**Fixes 1–2 (counts_before snapshot, CSMC reference mismatch)** only matter when
+negative clamping occurs, which requires total outflows from a compartment to
+exceed its population in one substep. This needs either:
 
-- **Multiple independent rate components** drawing from the same
-  compartment (spatial importation is the canonical case), or
+- **Multiple independent rate components** drawing from the same compartment
+  (spatial importation is the canonical case), or
 - **Very high rates** where $p_{\text{total}} \to 1$
   ($R_0 \cdot \gamma \cdot \Delta t$ large).
 
 For **age-stratified models**, the typical pattern is one outflow per
-age-compartment (aging from `age_i` to `age_{i+1}`), which doesn't
-compete with other transitions. Clamping is unlikely unless the aging rate
-is very high relative to dt.
+age-compartment (aging from `age_i` to `age_{i+1}`), which doesn't compete with
+other transitions. Clamping is unlikely unless the aging rate is very high
+relative to dt.
 
-The exception: models with both aging AND disease transitions sharing a
-source. `S[age1]` with both `infection[age1]: S[age1] → E[age1]` and
-`aging[age1]: S[age1] → S[age2]` are in the same source group. If both
-rates are high, overdraft can occur. The fix is the same: smaller dt.
+The exception: models with both aging AND disease transitions sharing a source.
+`S[age1]` with both `infection[age1]: S[age1] → E[age1]` and
+`aging[age1]: S[age1] → S[age2]` are in the same source group. If both rates are
+high, overdraft can occur. The fix is the same: smaller dt.
 
 For **demographic models**, birth/death transitions are typically Poisson
-(ungrouped, not in the multinomial). They don't compete with other
-transitions for the same source compartment, so clamping isn't a risk.
+(ungrouped, not in the multinomial). They don't compete with other transitions
+for the same source compartment, so clamping isn't a risk.
 
 ### Fix 3 (iota / zero-rate) — depends on mixing structure
 
-The zero-compartment problem (`I[j] = 0` makes rate exactly zero) is
-specific to models where force of infection depends on a stratum-specific
-infectious count that can reach zero. This includes:
+The zero-compartment problem (`I[j] = 0` makes rate exactly zero) is specific to
+models where force of infection depends on a stratum-specific infectious count
+that can reach zero. This includes:
 
-- **Spatial coupling:** importation rate ∝ `I[patch_j] / N[patch_j]` →
-  zero when `I[patch_j] = 0`
+- **Spatial coupling:** importation rate ∝ `I[patch_j] / N[patch_j]` → zero when
+  `I[patch_j] = 0`
 - **Age-structured mixing via WAIFW matrices:** FOI for age group `i` ∝
-  `Σ_j C[i,j] * I[age_j] / N[age_j]` → zero when ALL age groups in the
-  sum have `I = 0`
-- **Multi-species models:** cross-species transmission with species-
-  specific reservoirs
+  `Σ_j C[i,j] * I[age_j] / N[age_j]` → zero when ALL age groups in the sum have
+  `I = 0`
+- **Multi-species models:** cross-species transmission with species- specific
+  reservoirs
 
 Models where the infection rate depends on a TOTAL infectious count (summed
 across strata) don't need iota — `I_total = 0` means no infection anywhere,
@@ -444,10 +438,10 @@ The `seir_spatial_5_inference` golden model exercises the spatial coupling
 corner case. To catch analogous bugs in other stratification dimensions:
 
 - **Age-stratified WAIFW model** — exercises cross-age force of infection,
-  age-specific IVPs, and multi-stream age-specific surveillance data.
-  Would catch age-specific variants of fixes 3, 5, and 6.
-- **Two-species model** — exercises cross-species transmission, which has
-  the same zero-compartment structure as spatial importation.
+  age-specific IVPs, and multi-stream age-specific surveillance data. Would
+  catch age-specific variants of fixes 3, 5, and 6.
+- **Two-species model** — exercises cross-species transmission, which has the
+  same zero-compartment structure as spatial importation.
 
 ## Hardening recommendations
 
@@ -479,25 +473,25 @@ if n_high_p > 0 {
 
 ### 3. Debug assertions in step_one — DONE (`19ac52c`, `44b28d7`)
 
-`debug_assert!(n_exit <= n_src)` in `step_one`, `simulate_reference`,
-and `csmc_as` traceback.
+`debug_assert!(n_exit <= n_src)` in `step_one`, `simulate_reference`, and
+`csmc_as` traceback.
 
 ### 4. Trace-gated -inf logging in distribution functions — TODO
 
-Add `log::trace!` wrappers on `binom_logpmf`, `poisson_logpmf`, etc. that
-log when returning `-inf`. Use `--verbosity trace` to see per-term density
-values that would have identified the `k > n` binomial immediately.
+Add `log::trace!` wrappers on `binom_logpmf`, `poisson_logpmf`, etc. that log
+when returning `-inf`. Use `--verbosity trace` to see per-term density values
+that would have identified the `k > n` binomial immediately.
 
 ### 5. Clean up existing debug diagnostics — DONE (`9e3b849`)
 
-All density diagnostics use `log::debug!` / `log::warn!` via `--verbosity`
-flag. `CAMDL_VERIFY_DENSITY` removed. Gamma density disabled with TODO.
+All density diagnostics use `log::debug!` / `log::warn!` via `--verbosity` flag.
+`CAMDL_VERIFY_DENSITY` removed. Gamma density disabled with TODO.
 
 ### 6. Near-zero rate soft handling + iota warning — DONE (`faffe8f`)
 
 Near-zero rates with nonzero flow are included in the multinomial rather than
-hard-rejected. Truly zero rates emit `log::warn!` about adding iota.
-User-facing guidance added to `docs/inference.md`.
+hard-rejected. Truly zero rates emit `log::warn!` about adding iota. User-facing
+guidance added to `docs/inference.md`.
 
 ### 7. Gamma density re-enablement — TODO
 
@@ -515,7 +509,7 @@ substeps.
 
 ### 9. Golden inference test — TODO
 
-Add a golden test that runs `complete_data_loglik` with actual observation
-data (not just transition density). This would have caught fix 6 (data column
-mismatch) immediately. The `seir_spatial_5_inference` golden model is in
-place; needs a test that loads observation data and evaluates the full LL.
+Add a golden test that runs `complete_data_loglik` with actual observation data
+(not just transition density). This would have caught fix 6 (data column
+mismatch) immediately. The `seir_spatial_5_inference` golden model is in place;
+needs a test that loads observation data and evaluates the full LL.

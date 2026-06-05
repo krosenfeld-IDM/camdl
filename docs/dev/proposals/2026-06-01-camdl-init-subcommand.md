@@ -1,23 +1,22 @@
 # `camdl init` — scaffold a modeling project
 
-Status: proposed
-Target: v0.3 CLI
-Related: `2026-06-01-camdl-docs-subcommand.md` (the two compose — see "Composition with `camdl docs`")
+Status: proposed Target: v0.3 CLI Related: `2026-06-01-camdl-docs-subcommand.md`
+(the two compose — see "Composition with `camdl docs`")
 
 ## Problem
 
-There is no canonical layout for a camdl *modeling project*. `docs/project-structure.md`
-describes the camdl monorepo's own internals (ocaml/, rust/crates/, ir/golden/);
-the book's getting-started uses a deliberately flat single-file layout; and real
-projects each invent their own (one downstream project carries `model/` +
-`data/processed/` + ad-hoc preprocessing scripts + a hand-written
-`CONSTRUCTION_PLAN.md`). Users and agents alike spend their first hour deciding
-where files go, and they decide inconsistently — sometimes badly (reaching for a
-`tables {}` read to hold a scalar instead of a parameter, because no scaffold
-steered them).
+There is no canonical layout for a camdl _modeling project_.
+`docs/project-structure.md` describes the camdl monorepo's own internals
+(ocaml/, rust/crates/, ir/golden/); the book's getting-started uses a
+deliberately flat single-file layout; and real projects each invent their own
+(one downstream project carries `model/` + `data/processed/` + ad-hoc
+preprocessing scripts + a hand-written `CONSTRUCTION_PLAN.md`). Users and agents
+alike spend their first hour deciding where files go, and they decide
+inconsistently — sometimes badly (reaching for a `tables {}` read to hold a
+scalar instead of a parameter, because no scaffold steered them).
 
 It also leaves the agent-discoverability gap open. camdl's usage guidance lives
-in `AGENTS.md` *in the camdl repo* — an agent working in a user's project never
+in `AGENTS.md` _in the camdl repo_ — an agent working in a user's project never
 sees it. `camdl init` closes this at project-creation time by writing an
 `AGENTS.md` that lands **auto-loaded** in the new project.
 
@@ -36,12 +35,12 @@ camdl init --no-git
 camdl init --with-analysis
 ```
 
-| Flag | Effect |
-| --- | --- |
-| `--template <name>` | `default` (comparison), `spatial`, `minimal`. Default: `default`. |
-| `--with-analysis` | also create an `analysis/` dir with a dependency-free README |
-| `--no-git` | skip `git init` (still writes `.gitignore`) |
-| `--force` | scaffold into a non-empty directory (default: refuse, error-as-feature) |
+| Flag                | Effect                                                                  |
+| ------------------- | ----------------------------------------------------------------------- |
+| `--template <name>` | `default` (comparison), `spatial`, `minimal`. Default: `default`.       |
+| `--with-analysis`   | also create an `analysis/` dir with a dependency-free README            |
+| `--no-git`          | skip `git init` (still writes `.gitignore`)                             |
+| `--force`           | scaffold into a non-empty directory (default: refuse, error-as-feature) |
 
 `camdl init` with no `DIR` scaffolds the current directory; `camdl init foo`
 creates `foo/` and scaffolds it — exactly `git init`'s contract.
@@ -50,7 +49,7 @@ creates `foo/` and scaffolds it — exactly `git init`'s contract.
 
 Real epidemiological modeling is never "fit one structure and stop"; it becomes
 "is seasonality worth it? Poisson or NegBin? does coupling help?" So the default
-scaffolds for *comparison* — which scales **down** to one model and **up** to
+scaffolds for _comparison_ — which scales **down** to one model and **up** to
 many — rather than for the single-model starting point.
 
 ```
@@ -73,18 +72,18 @@ Design decisions baked in:
 - **`experiments/` is the single home for "things that define a run."** A
   fit.toml's `[estimate.X]` (bounds + prior) and `[fixed]` blocks **are** the
   parameter specification — so there is no separate `params/` directory. Fitted
-  values come *out* into `results/`, not in by hand. The narrower case of a
-  concrete `--params` value file (a *truth* file for synthetic-recovery / SBC, an
-  extracted MLE) lives beside its config as `experiments/<name>.values.toml`.
+  values come _out_ into `results/`, not in by hand. The narrower case of a
+  concrete `--params` value file (a _truth_ file for synthetic-recovery / SBC,
+  an extracted MLE) lives beside its config as `experiments/<name>.values.toml`.
 - **`results/` is the CAS output root** (per `camdl-run-spec.md`) and is
   gitignored: outputs are content-addressed and regenerable, so committing them
-  defeats the point and bloats the repo. Cite a fit *hash* in writeups, not the
+  defeats the point and bloats the repo. Cite a fit _hash_ in writeups, not the
   files.
 - **Two working models, not one.** The project runs end-to-end out of the box
   (`make check` / `make fit-all` succeed before the user writes anything), and
   the second model demonstrates the comparison the layout exists for.
 
-The Makefile is what makes this a *comparison project* rather than a folder of
+The Makefile is what makes this a _comparison project_ rather than a folder of
 models. Fit configs are `experiments/*.toml` excluding `*.values.toml`:
 
 ```make
@@ -136,7 +135,7 @@ philosophies.
 
 The one real design decision. If `init` writes the full briefing into the user's
 repo, that copy goes **stale** as camdl evolves — the user now owns a snapshot.
-So the scaffolded `AGENTS.md` is short and *durable* (project-specific
+So the scaffolded `AGENTS.md` is short and _durable_ (project-specific
 orientation that rarely changes) and defers all evolving detail to `camdl docs`,
 which is version-locked to the installed binary:
 
@@ -144,22 +143,22 @@ which is version-locked to the installed binary:
 # <project> — a camdl modeling project
 
 Layout:
-- models/        .camdl model files
-- experiments/   fit configs (priors/bounds/stages) + any --params value files
-- data/          observation data + tables
-- results/       fit/sim outputs — content-addressed, gitignored
 
-Workflow:  camdl check → simulate → survey → fit run → fit summary
-Compare:   fit each model in experiments/, then `make compare`
+- models/ .camdl model files
+- experiments/ fit configs (priors/bounds/stages) + any --params value files
+- data/ observation data + tables
+- results/ fit/sim outputs — content-addressed, gitignored
 
-For current, version-matched guidance, run:
-  camdl docs agents      # orientation, idioms, when to ask the human
-  camdl docs workflow    # the canonical fit workflow
-  camdl docs example <name>   # a working model to copy
+Workflow: camdl check → simulate → survey → fit run → fit summary Compare: fit
+each model in experiments/, then `make compare`
+
+For current, version-matched guidance, run: camdl docs agents # orientation,
+idioms, when to ask the human camdl docs workflow # the canonical fit workflow
+camdl docs example <name> # a working model to copy
 
 Reproducibility: outputs are content-addressed. Cite a fit hash
-(`camdl fit where experiments/<x>.toml`) in writeups; a reader with the
-source reproduces bit-for-bit.
+(`camdl fit where experiments/<x>.toml`) in writeups; a reader with the source
+reproduces bit-for-bit.
 ```
 
 Project-specific orientation stays in the file; the evolving how-to lives in
@@ -179,19 +178,19 @@ uses it), and editor/OS noise. Committed: `models/`, `experiments/`, `data/raw/`
 ## Composition with `camdl docs`
 
 The two onboarding subcommands close the discoverability gap from both ends:
-`camdl init` gives a *fresh* project an auto-loaded thin orientation; `camdl docs`
-serves the *version-locked detail* (and reaches projects not created via `init`).
-The scaffolded `AGENTS.md` is the seam — it is the auto-loaded pointer that sends
-the agent to `camdl docs`.
+`camdl init` gives a _fresh_ project an auto-loaded thin orientation;
+`camdl docs` serves the _version-locked detail_ (and reaches projects not
+created via `init`). The scaffolded `AGENTS.md` is the seam — it is the
+auto-loaded pointer that sends the agent to `camdl docs`.
 
 ## Sequencing & conflict surface
 
 `camdl init` is a new subcommand → it adds a `Command::Init` variant in
 `rust/crates/cli/src/main.rs` plus a module, the **same** conflict surface as
-`camdl docs` against the in-flight CAS run-input work. So implementation defers /
-coordinates with that merge; this proposal is the record until then.
+`camdl docs` against the in-flight CAS run-input work. So implementation defers
+/ coordinates with that merge; this proposal is the record until then.
 
-The scaffold's file *contents* (the example models, the Makefile, the AGENTS.md
+The scaffold's file _contents_ (the example models, the Makefile, the AGENTS.md
 template) are embedded via `include_str!`, the same mechanism as `camdl docs` —
 which means they are subject to the same **no-stale-command CI gate**: every
 `camdl …` line in a scaffolded Makefile/README must parse against the live CLI,

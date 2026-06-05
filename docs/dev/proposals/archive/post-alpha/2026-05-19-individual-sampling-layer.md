@@ -1,74 +1,69 @@
 # Proposal: individual sampling layer for compartmental simulation
 
-Date: 2026-05-19
-Status: Draft (RFC) — replaces `simulate_with_lineages` v1
-Branch: `feature/lineages`
-Scope: forward simulation only. Orthogonal to the inference stack —
-nothing in `pgas.rs` / `if2.rs` / `particle_filter.rs` changes.
+Date: 2026-05-19 Status: Draft (RFC) — replaces `simulate_with_lineages` v1
+Branch: `feature/lineages` Scope: forward simulation only. Orthogonal to the
+inference stack — nothing in `pgas.rs` / `if2.rs` / `particle_filter.rs`
+changes.
 
 ## Problem
 
-camdl's backends track compartment counts, not individuals. A
-transmission event decrements a susceptible count and increments an
-infected count; *which* infectious individual was the infector is
-never recorded, so a transmission tree is not a byproduct of
-count-level simulation. More generally, individual-level event
-histories — sojourn times, recovery times, cohort trajectories — are
-not recoverable from count-level state even though the model fully
-determines them in distribution.
+camdl's backends track compartment counts, not individuals. A transmission event
+decrements a susceptible count and increments an infected count; _which_
+infectious individual was the infector is never recorded, so a transmission tree
+is not a byproduct of count-level simulation. More generally, individual-level
+event histories — sojourn times, recovery times, cohort trajectories — are not
+recoverable from count-level state even though the model fully determines them
+in distribution.
 
 For benchmark generation, phylodynamic-inference validation, and
-individual-level diagnostic outputs, we need an *identity layer* on
-top of the existing simulator. This proposal adds it as a strictly
-additive feature: count-level dynamics are unchanged byte-for-byte
-when the feature is off, and the runtime cost is zero when not in use.
+individual-level diagnostic outputs, we need an _identity layer_ on top of the
+existing simulator. This proposal adds it as a strictly additive feature:
+count-level dynamics are unchanged byte-for-byte when the feature is off, and
+the runtime cost is zero when not in use.
 
 ## Key reframings
 
 Three reframings carry through the rest of the design.
 
-**1. The artifact is a line list. Trees are a projection.** The
-primary object the augmented simulator emits is a per-event line list:
-one record per identity-tracked event (infection, progression,
-recovery, death, …) with timestamp, deme/stratum, individual ID, and
-— at events with parent-child structure — the parent ID. The
-transmission *tree* is that line list filtered to `#[lineage]` events
-and pruned to sampled tips. Survival curves, sojourn distributions,
-cohort analyses are other projections. Same primary artifact, many
-consumers.
+**1. The artifact is a line list. Trees are a projection.** The primary object
+the augmented simulator emits is a per-event line list: one record per
+identity-tracked event (infection, progression, recovery, death, …) with
+timestamp, deme/stratum, individual ID, and — at events with parent-child
+structure — the parent ID. The transmission _tree_ is that line list filtered to
+`#[lineage]` events and pruned to sampled tips. Survival curves, sojourn
+distributions, cohort analyses are other projections. Same primary artifact,
+many consumers.
 
-**2. The math is a Markovian refinement of the existing CTMC, with
-uniqueness derived for linear rates.** Treat each compartment as
-carrying a multiset of distinguishable IDs. When the CTMC fires an
-event, sample the specific individual(s) involved according to the
-rate's pair-decomposition. For linear mass-action rates and their
-stratified analogues, the pair-decomposition is uniquely determined
-by the count-level rate — uniform within-pool sampling is *derived*
-from the structure of the rate, not chosen. Aggregating IDs recovers
-the original count-level CTMC by theorem. v1 restricts to linear
-rates precisely so this derivation holds without modeling assumptions;
-nonlinear rates (He alpha-mixing, log-saturation, Michaelis–Menten
-saturation in the infector) are deferred to v2, where the
-augmentation becomes a documented modeling choice rather than a
-derivation.
+**2. The math is a Markovian refinement of the existing CTMC, with uniqueness
+derived for linear rates.** Treat each compartment as carrying a multiset of
+distinguishable IDs. When the CTMC fires an event, sample the specific
+individual(s) involved according to the rate's pair-decomposition. For linear
+mass-action rates and their stratified analogues, the pair-decomposition is
+uniquely determined by the count-level rate — uniform within-pool sampling is
+_derived_ from the structure of the rate, not chosen. Aggregating IDs recovers
+the original count-level CTMC by theorem. v1 restricts to linear rates precisely
+so this derivation holds without modeling assumptions; nonlinear rates (He
+alpha-mixing, log-saturation, Michaelis–Menten saturation in the infector) are
+deferred to v2, where the augmentation becomes a documented modeling choice
+rather than a derivation.
 
-**3. The annotation is a semantic claim, not an inference target.**
-Mathematical structure `β·S·I/N` is identical across disease
-transmission, predator-prey reproduction, information diffusion, and
-chemistry. The rate AST cannot tell which interpretation applies. The
-user must declare that a transition has parent-child semantics; once
-declared, the rate AST's linear structure tells us *who the parent is*.
-The declaration is in-model; everything else follows from it.
+**3. The annotation is a semantic claim, not an inference target.** Mathematical
+structure `β·S·I/N` is identical across disease transmission, predator-prey
+reproduction, information diffusion, and chemistry. The rate AST cannot tell
+which interpretation applies. The user must declare that a transition has
+parent-child semantics; once declared, the rate AST's linear structure tells us
+_who the parent is_. The declaration is in-model; everything else follows from
+it.
 
 ## DSL change
 
-One new annotation form, one compile-time check, one lexer change.
-That is the entire surface-level addition for v1.
+One new annotation form, one compile-time check, one lexer change. That is the
+entire surface-level addition for v1.
 
 ### `#[lineage]` annotation on transitions
 
-A transition is marked as a lineage event by attaching `#[lineage]`
-above or inline:
+A transition is marked as a lineage event by attaching `#[lineage]` above or
+inline:
 
 ```camdl
 transitions {
@@ -81,11 +76,10 @@ transitions {
 }
 ```
 
-Reading the annotation: this transition represents a parent-child
-lineage event. At firing time, a parent is sampled from the parent
-pool (identified by linear-decomposition analysis on the rate AST,
-see below) and a new tracked individual is minted in the destination
-compartment.
+Reading the annotation: this transition represents a parent-child lineage event.
+At firing time, a parent is sampled from the parent pool (identified by
+linear-decomposition analysis on the rate AST, see below) and a new tracked
+individual is minted in the destination compartment.
 
 Inline form for terse cases:
 
@@ -97,53 +91,49 @@ Both forms produce identical IR.
 
 ### Linear-in-parents requirement
 
-For a `#[lineage]` transition to compile in v1, its rate expression
-must be linear in every compartment it references that is not the
-transition's source. Formally:
+For a `#[lineage]` transition to compile in v1, its rate expression must be
+linear in every compartment it references that is not the transition's source.
+Formally:
 
-> A rate expression `r` is *linear in parents* iff `r` can be written,
-> after expansion of let-bindings and forcing-function references, as
-> a sum of products `(factors_without_parents) · L`, where:
+> A rate expression `r` is _linear in parents_ iff `r` can be written, after
+> expansion of let-bindings and forcing-function references, as a sum of
+> products `(factors_without_parents) · L`, where:
 >
 > - `factors_without_parents` may reference parameters, time, source
->   compartments, and non-source compartments appearing only inside
->   normalizing denominators (e.g., `S+E+I+R` in `β·S·I/(S+E+I+R)`);
-> - `L` is either a single non-source compartment reference (e.g., `I`,
->   `I[b]`), or a sum of such single-reference terms (e.g.,
->   `β_I·I + β_A·A`), with each non-source compartment appearing at
->   most once and linearly.
+>   compartments, and non-source compartments appearing only inside normalizing
+>   denominators (e.g., `S+E+I+R` in `β·S·I/(S+E+I+R)`);
+> - `L` is either a single non-source compartment reference (e.g., `I`, `I[b]`),
+>   or a sum of such single-reference terms (e.g., `β_I·I + β_A·A`), with each
+>   non-source compartment appearing at most once and linearly.
 
-This is decidable by AST inspection. The compiler classifies every
-Pop reference in the rate as one of:
+This is decidable by AST inspection. The compiler classifies every Pop reference
+in the rate as one of:
 
 - **Source.** The transition's source compartment. Not a parent.
-- **Denominator-only.** Appears only inside `/N` or analogous
-  normalizers. Not a parent.
-- **Linear parent candidate.** Appears as a top-level multiplicative
-  factor (or summand of multiplicative factors) outside any nonlinear
-  function. Parent.
-- **Nonlinear use.** Appears inside a non-unit power, `log`, `exp`,
-  `sqrt`, `Cond`, `min`, `max`, or any other nonlinear function
-  applied to a Pop reference. *Rejected* in v1.
+- **Denominator-only.** Appears only inside `/N` or analogous normalizers. Not a
+  parent.
+- **Linear parent candidate.** Appears as a top-level multiplicative factor (or
+  summand of multiplicative factors) outside any nonlinear function. Parent.
+- **Nonlinear use.** Appears inside a non-unit power, `log`, `exp`, `sqrt`,
+  `Cond`, `min`, `max`, or any other nonlinear function applied to a Pop
+  reference. _Rejected_ in v1.
 
-**Precedence — normalizing denominators win.** A parent compartment
-may appear in *both* the numerator (as a linear parent) and a
-normalizing denominator. Division by a normalizer is formally a
-nonlinear function, so a naive classifier would bucket the
-denominator appearance as "nonlinear use" and wrongly reject
-`β·S·I/N` — frequency-dependent transmission, the *most common* form.
-The rule: **denominator/normalizer appearances are classified
-Denominator-only and are exempt from the Nonlinear-use bucket;
-the exemption is applied before the nonlinear-use check.** Linearity
-is required only of the *numerator* dependence on parent counts; a
-normalizer is a frozen coefficient at the event instant, even when it
-references the parent compartment. Thus `β·S·I/N` compiles (`I` is a
-linear parent in the numerator; its `N` appearance is a frozen
-normalizer), while `β·S·(I+ι)^α/N` does not (the power is a genuine
-nonlinear use of `I` in the numerator).
+**Precedence — normalizing denominators win.** A parent compartment may appear
+in _both_ the numerator (as a linear parent) and a normalizing denominator.
+Division by a normalizer is formally a nonlinear function, so a naive classifier
+would bucket the denominator appearance as "nonlinear use" and wrongly reject
+`β·S·I/N` — frequency-dependent transmission, the _most common_ form. The rule:
+**denominator/normalizer appearances are classified Denominator-only and are
+exempt from the Nonlinear-use bucket; the exemption is applied before the
+nonlinear-use check.** Linearity is required only of the _numerator_ dependence
+on parent counts; a normalizer is a frozen coefficient at the event instant,
+even when it references the parent compartment. Thus `β·S·I/N` compiles (`I` is
+a linear parent in the numerator; its `N` appearance is a frozen normalizer),
+while `β·S·(I+ι)^α/N` does not (the power is a genuine nonlinear use of `I` in
+the numerator).
 
-If any non-source Pop reference falls in the "nonlinear use" bucket,
-the compiler emits:
+If any non-source Pop reference falls in the "nonlinear use" bucket, the
+compiler emits:
 
 ```
 E601: lineage tracking on transition 'infection' requires linear
@@ -159,129 +149,122 @@ Options:
      rates with explicit attribution semantics.
 ```
 
-**No `infector(...)` wrapper in v1.** The wrapper was needed for
-nonlinear cases where the rate AST does not unambiguously identify
-the parent pool; v1's linearity restriction removes those cases by
-construction. The wrapper returns in Phase 4 alongside nonlinear rate
-support and its accompanying modeling-choice documentation.
+**No `infector(...)` wrapper in v1.** The wrapper was needed for nonlinear cases
+where the rate AST does not unambiguously identify the parent pool; v1's
+linearity restriction removes those cases by construction. The wrapper returns
+in Phase 4 alongside nonlinear rate support and its accompanying modeling-choice
+documentation.
 
-**`Cond` handling (deferred refinement).** The initial implementation
-classifies `Cond` (if/then/else) as a nonlinear use, so a `#[lineage]`
-rate whose parent appears inside one is rejected — including the
-common divide-by-zero guard `if N > 0 then β·S·I/N else 0`. There is a
-clean resolution, deferred to a near-term follow-up rather than
-blocking the foundation: classify each branch independently (the same
-linear-in-parents rule with denominator precedence), treat the
-predicate as a *guard* (a parent reference in `N > 0` selects a
-branch, it does not weight the rate), and extract the weight piecewise
-as `Cond{ pred; then = weight(then_); else = weight(else_) }` — a
-frozen-coefficient expression evaluated at the event instant. Under
-this rule `if N > 0 then β·S·I/N else 0` compiles (then-branch linear
-in `I`, denominator frozen; else-branch weight 0); only a *branch*
-that is itself nonlinear in the parent (e.g. `then (I+ι)^α`) is a
-genuine rejection. Until this lands, a guarded force of infection must
-be written in its unguarded form to use `#[lineage]`.
+**`Cond` handling (deferred refinement).** The initial implementation classifies
+`Cond` (if/then/else) as a nonlinear use, so a `#[lineage]` rate whose parent
+appears inside one is rejected — including the common divide-by-zero guard
+`if N > 0 then β·S·I/N else 0`. There is a clean resolution, deferred to a
+near-term follow-up rather than blocking the foundation: classify each branch
+independently (the same linear-in-parents rule with denominator precedence),
+treat the predicate as a _guard_ (a parent reference in `N > 0` selects a
+branch, it does not weight the rate), and extract the weight piecewise as
+`Cond{ pred; then = weight(then_); else = weight(else_) }` — a
+frozen-coefficient expression evaluated at the event instant. Under this rule
+`if N > 0 then β·S·I/N else 0` compiles (then-branch linear in `I`, denominator
+frozen; else-branch weight 0); only a _branch_ that is itself nonlinear in the
+parent (e.g. `then (I+ι)^α`) is a genuine rejection. Until this lands, a guarded
+force of infection must be written in its unguarded form to use `#[lineage]`.
 
 ### Lexer rule
 
-The `#` character begins a comment that extends to end of line,
-*unless* immediately followed by `[`, in which case it begins an
-attribute. To start a comment with `[`, add a space:
-`# [this is a comment]`. One-character lookahead; documented in §1.1
-of the language spec.
+The `#` character begins a comment that extends to end of line, _unless_
+immediately followed by `[`, in which case it begins an attribute. To start a
+comment with `[`, add a space: `# [this is a comment]`. One-character lookahead;
+documented in §1.1 of the language spec.
 
-Acceptance check before locking in: grep the existing codebase,
-golden files, and example models for any pre-existing `#[` patterns
-to confirm zero migration cost. Expected result: no hits (camdl uses
-`#` exclusively for line comments today). One-line CI check.
+Acceptance check before locking in: grep the existing codebase, golden files,
+and example models for any pre-existing `#[` patterns to confirm zero migration
+cost. Expected result: no hits (camdl uses `#` exclusively for line comments
+today). One-line CI check.
 
 ## Mathematical structure
 
-The augmented process is a Markovian refinement of the count-level
-CTMC. If the count-level state is `X(t) = (N_S(t), N_E(t), …)`, the
-augmented state is `X̃(t) = (𝓘_S(t), 𝓘_E(t), …)` where each `𝓘_k(t)`
-is a multiset of individual IDs with `|𝓘_k(t)| = N_k(t)`.
+The augmented process is a Markovian refinement of the count-level CTMC. If the
+count-level state is `X(t) = (N_S(t), N_E(t), …)`, the augmented state is
+`X̃(t) = (𝓘_S(t), 𝓘_E(t), …)` where each `𝓘_k(t)` is a multiset of individual IDs
+with `|𝓘_k(t)| = N_k(t)`.
 
 **Derivation of within-pool uniformity for linear rates.** For a
-linear-in-parents rate `r = (factors not involving non-source
-compartments) · L`, the linearity guarantees that `r` can be written
-as a sum over individual contributors:
+linear-in-parents rate
+`r = (factors not involving non-source
+compartments) · L`, the linearity
+guarantees that `r` can be written as a sum over individual contributors:
 
-- **Single parent**, `r = α · I` where `α` is the rate's coefficient
-  on the parent count, *evaluated at the current state* (normalizers
-  such as `1/N` are frozen at their instantaneous value, even when `N`
-  references `I` — see the denominator-precedence rule above): then
-  `r = Σ_{i ∈ I-pool} α`. Each I-individual contributes `α` to the
-  rate at that instant. When an event fires, the specific parent is
-  sampled uniformly from the I-pool — this is *forced* by the
-  instantaneous decomposition, not chosen. (For density-dependent
-  `β·S·I`, `α = β·S` is literally independent of `I`; for
-  frequency-dependent `β·S·I/N`, `α = β·S/N` is the frozen value of
-  the normalizer at the event time. Both decompose to equal
-  per-individual contributions.)
+- **Single parent**, `r = α · I` where `α` is the rate's coefficient on the
+  parent count, _evaluated at the current state_ (normalizers such as `1/N` are
+  frozen at their instantaneous value, even when `N` references `I` — see the
+  denominator-precedence rule above): then `r = Σ_{i ∈ I-pool} α`. Each
+  I-individual contributes `α` to the rate at that instant. When an event fires,
+  the specific parent is sampled uniformly from the I-pool — this is _forced_ by
+  the instantaneous decomposition, not chosen. (For density-dependent `β·S·I`,
+  `α = β·S` is literally independent of `I`; for frequency-dependent `β·S·I/N`,
+  `α = β·S/N` is the frozen value of the normalizer at the event time. Both
+  decompose to equal per-individual contributions.)
 
 - **Multi-parent**, `r = α_1 · I_1 + α_2 · I_2`: then
-  `r = Σ_{i ∈ I_1-pool} α_1 + Σ_{i ∈ I_2-pool} α_2`. The probability
-  that the parent comes from pool `k` is `α_k · I_k / r`. Within the
-  chosen pool, sampling is uniform.
+  `r = Σ_{i ∈ I_1-pool} α_1 + Σ_{i ∈ I_2-pool} α_2`. The probability that the
+  parent comes from pool `k` is `α_k · I_k / r`. Within the chosen pool,
+  sampling is uniform.
 
-- **Stratified**, `r = S · Σ_b C[a,b] · I[b] / N[b]`: same structure,
-  with per-class weights `C[a,b]/N[b]`. Class `b` is selected with
-  probability `C[a,b]·I[b]/N[b] / Σ_{b'} C[a,b']·I[b']/N[b']`; within
-  the class, uniform.
+- **Stratified**, `r = S · Σ_b C[a,b] · I[b] / N[b]`: same structure, with
+  per-class weights `C[a,b]/N[b]`. Class `b` is selected with probability
+  `C[a,b]·I[b]/N[b] / Σ_{b'} C[a,b']·I[b']/N[b']`; within the class, uniform.
 
-In all three cases, the count-level rate aggregates to `r` exactly:
-this is a theorem about the linear structure, not a modeling
-assumption. Colloquially: for linear rates, each pair really does
-contribute equally, so uniform within-pool sampling is the only
-refinement consistent with the count-level dynamics.
+In all three cases, the count-level rate aggregates to `r` exactly: this is a
+theorem about the linear structure, not a modeling assumption. Colloquially: for
+linear rates, each pair really does contribute equally, so uniform within-pool
+sampling is the only refinement consistent with the count-level dynamics.
 
 **Attribution rules** the compiler emits to the IR:
 
-| Event type | Attribution rule |
-|---|---|
-| Simple transition on identity-tracked source (no `#[lineage]`) | One ID sampled uniformly from source pool; transferred to destination pool. |
+| Event type                                                           | Attribution rule                                                                                                               |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Simple transition on identity-tracked source (no `#[lineage]`)       | One ID sampled uniformly from source pool; transferred to destination pool.                                                    |
 | Linear lineage event (`r = factors · Σ_b w_b · X_b` after expansion) | Parent pool `b` sampled with `P(b) ∝ w_b · X_b`; within pool, uniform; new child ID minted in destination, parent ID recorded. |
-| Inflow (no source, e.g., importation) | New ID minted, parent = `ImportSentinel`. |
-| Outflow (no destination, e.g., death) | One ID sampled uniformly from source; removed. |
+| Inflow (no source, e.g., importation)                                | New ID minted, parent = `ImportSentinel`.                                                                                      |
+| Outflow (no destination, e.g., death)                                | One ID sampled uniformly from source; removed.                                                                                 |
 
-These rules are *derived* from the rate AST given the `#[lineage]`
-annotation and the linearity constraint. The compiler computes the
-per-class weight expressions at compile time and emits them as
-evaluable IR sub-expressions.
+These rules are _derived_ from the rate AST given the `#[lineage]` annotation
+and the linearity constraint. The compiler computes the per-class weight
+expressions at compile time and emits them as evaluable IR sub-expressions.
 
 ## Identity-tracked subgraph (inferred)
 
 Given the set of `#[lineage]` transitions, the compiler computes the
 **identity-tracked subgraph** by forward reachability:
 
-1. Seed: destinations of `#[lineage]` events ∪ parent-pool
-   compartments of `#[lineage]` events.
-2. Close under: for every transition `c_1 → c_2`, if `c_1` is in the
-   tracked set, add `c_2`.
+1. Seed: destinations of `#[lineage]` events ∪ parent-pool compartments of
+   `#[lineage]` events.
+2. Close under: for every transition `c_1 → c_2`, if `c_1` is in the tracked
+   set, add `c_2`.
 3. Result: every compartment whose individuals should carry IDs.
 
-Every transition involving identity-tracked compartments produces a
-line list entry. Transitions purely within the untracked set produce
-nothing (no overhead).
+Every transition involving identity-tracked compartments produces a line list
+entry. Transitions purely within the untracked set produce nothing (no
+overhead).
 
 For SEIR with `#[lineage]` on `S→E`:
+
 - Seed: `{E}` (lineage destination) ∪ `{I}` (parent pool). Set: `{E, I}`.
 - Forward closure: `I → R` reachable, add `R`. Set: `{E, I, R}`.
 - Untracked: `{S, V}`.
 
-**Cyclic models and reachability cost.** Models with global cycles
-(SIRS with `R → S` waning, demographic turnover with `R → death → birth → S`)
-propagate the tracked set through the cycle: once `R` is tracked, the
-`R → S` transition pulls `S` into the tracked set, which means IDs
-must be minted for the entire initial susceptible population.
+**Cyclic models and reachability cost.** Models with global cycles (SIRS with
+`R → S` waning, demographic turnover with `R → death → birth → S`) propagate the
+tracked set through the cycle: once `R` is tracked, the `R → S` transition pulls
+`S` into the tracked set, which means IDs must be minted for the entire initial
+susceptible population.
 
-For a typical 774-LGA polio model with millions of initial
-susceptibles, this is millions of IDs minted at `t=0`. Cost is
-acceptable (IDs are `u64`, mint is a one-time O(N) operation, line
-list growth is dominated by event firings not initial state) but it
-needs to be reported by `camdl inspect --lineage` so users see the
-memory and disk footprint before running.
+For a typical 774-LGA polio model with millions of initial susceptibles, this is
+millions of IDs minted at `t=0`. Cost is acceptable (IDs are `u64`, mint is a
+one-time O(N) operation, line list growth is dominated by event firings not
+initial state) but it needs to be reported by `camdl inspect --lineage` so users
+see the memory and disk footprint before running.
 
 The full inspection output:
 
@@ -355,58 +338,59 @@ trait TransitionObserver {
 }
 ```
 
-The simulator takes `Option<&mut dyn TransitionObserver>`. `None` →
-today's behavior, byte-for-byte, zero overhead. `Some(...)` →
-identity bookkeeping runs strictly downstream of the dynamics.
+The simulator takes `Option<&mut dyn TransitionObserver>`. `None` → today's
+behavior, byte-for-byte, zero overhead. `Some(...)` → identity bookkeeping runs
+strictly downstream of the dynamics.
 
 ## RNG: separate stream is an invariant
 
-Paired-seed CRN holds only while the simulation RNG is consumed in
-the same order on both sides. If identity-attribution draws (parent
-sampling, source sampling) came from the simulation's ChaCha8 stream,
-a run with `--lineages` would diverge from the same run without it,
-breaking determinism and every paired-scenario guarantee.
+Paired-seed CRN holds only while the simulation RNG is consumed in the same
+order on both sides. If identity-attribution draws (parent sampling, source
+sampling) came from the simulation's ChaCha8 stream, a run with `--lineages`
+would diverge from the same run without it, breaking determinism and every
+paired-scenario guarantee.
 
 The identity layer owns an **independent RNG stream**, seeded
 `main_seed ⊕ fixed_offset` (reproducible, disjoint). The
-byte-identical-trajectory invariant is enforced as Tier 2a of the
-validation suite.
+byte-identical-trajectory invariant is enforced as Tier 2a of the validation
+suite.
 
 ## Backend matrix
 
-| Backend | Lineage support | Parent attribution | Bias |
-|---|---|---|---|
-| Gillespie (SSA) | exact | One firing = one event; sample at the event time using the rate decomposition. | None within the model. |
-| tau-leap | approximate | *k* firings against frozen start-of-step rates; sample from start-of-step pool. | Propensity-freezing **systematically loses parent–child edges with time difference shorter than `dt`** — intra-step events that should be sequential are collapsed against frozen state. For benchmark trees this biases the distribution of short-generation-time edges and the deepest coalescent intervals. |
-| chain-binomial | approximate | As tau-leap. | Same as tau-leap. |
-| ODE | **incompatible** | No individuals — hard error via `Capabilities::LINEAGES` not declared. | N/A. |
+| Backend         | Lineage support  | Parent attribution                                                              | Bias                                                                                                                                                                                                                                                                                                           |
+| --------------- | ---------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gillespie (SSA) | exact            | One firing = one event; sample at the event time using the rate decomposition.  | None within the model.                                                                                                                                                                                                                                                                                         |
+| tau-leap        | approximate      | _k_ firings against frozen start-of-step rates; sample from start-of-step pool. | Propensity-freezing **systematically loses parent–child edges with time difference shorter than `dt`** — intra-step events that should be sequential are collapsed against frozen state. For benchmark trees this biases the distribution of short-generation-time edges and the deepest coalescent intervals. |
+| chain-binomial  | approximate      | As tau-leap.                                                                    | Same as tau-leap.                                                                                                                                                                                                                                                                                              |
+| ODE             | **incompatible** | No individuals — hard error via `Capabilities::LINEAGES` not declared.          | N/A.                                                                                                                                                                                                                                                                                                           |
 
-Documentation must state plainly: trustworthy benchmark trees want
-Gillespie. The validation suite includes a diagnostic that measures,
-for tau-leap and chain-binomial runs, the expected fraction of
-would-be-sub-`dt` edges and reports it alongside the run.
+Documentation must state plainly: trustworthy benchmark trees want Gillespie.
+The validation suite includes a diagnostic that measures, for tau-leap and
+chain-binomial runs, the expected fraction of would-be-sub-`dt` edges and
+reports it alongside the run.
 
 ## Online vs offline
 
 **Online (during simulation):**
 
-- Mint IDs at lineage events; resolve parent via the per-class linear
-  weight decomposition at the event instant.
+- Mint IDs at lineage events; resolve parent via the per-class linear weight
+  decomposition at the event instant.
 - Maintain identity pools for tracked compartments.
-- Stream line list entries to an append-only Parquet writer; do not
-  hold the full log in RAM.
+- Stream line list entries to an append-only Parquet writer; do not hold the
+  full log in RAM.
 
 **Offline (`camdl lineage <command>` post-processing):**
 
 - Apply a sampling scheme to select observed tips/events.
-- Project: extract a tree (parent–child edges from lineage events,
-  pruned to sampled tips), compute survival statistics, or write a
-  stratified line list. All pure functions of `(line list, projection
-  spec)` — independently testable, re-runnable, cacheable.
+- Project: extract a tree (parent–child edges from lineage events, pruned to
+  sampled tips), compute survival statistics, or write a stratified line list.
+  All pure functions of `(line list, projection
+  spec)` — independently
+  testable, re-runnable, cacheable.
 
-This matches camdl's content-addressable ethos: the line list is a
-deterministic function of `(model, params, seed)`; downstream
-projections are deterministic functions of `(line list, projection
+This matches camdl's content-addressable ethos: the line list is a deterministic
+function of `(model, params, seed)`; downstream projections are deterministic
+functions of `(line list, projection
 spec)`. Two cache keys, one expensive step.
 
 ## CLI
@@ -426,150 +410,142 @@ camdl lineage sojourn  line_list.parquet --compartment I        --output sojourn
 camdl lineage cohort   line_list.parquet --event infection      --output cohort.tsv
 ```
 
-Without `--lineages`, annotations are parsed and stored in the IR
-but the runtime tracking subsystem is not activated. Models with no
-`#[lineage]` annotations run identically with or without the flag.
+Without `--lineages`, annotations are parsed and stored in the IR but the
+runtime tracking subsystem is not activated. Models with no `#[lineage]`
+annotations run identically with or without the flag.
 
-**Line list format: Parquet for production, TSV for debug.** Parquet
-is the production format: columnar, streaming-friendly, scales to
-millions of rows, native consumption by Polars / Pandas / DuckDB /
-Arrow. Adds the `parquet` Rust crate to the dependency set. TSV is
-supported via `--format tsv` for debugging small runs only; the docs
-explicitly do not recommend it for production simulations.
+**Line list format: Parquet for production, TSV for debug.** Parquet is the
+production format: columnar, streaming-friendly, scales to millions of rows,
+native consumption by Polars / Pandas / DuckDB / Arrow. Adds the `parquet` Rust
+crate to the dependency set. TSV is supported via `--format tsv` for debugging
+small runs only; the docs explicitly do not recommend it for production
+simulations.
 
 ## Validation
 
-The code is moderate; *proving the attribution is correct* is the
-load-bearing work. Tiers in increasing strength:
+The code is moderate; _proving the attribution is correct_ is the load-bearing
+work. Tiers in increasing strength:
 
-**Tier 1 — Structural invariants.** Every lineage-event child has
-exactly one parent; parent is in the named pool at child's event
-time; pruned tips equal sampled set; no unary nodes after pruning.
+**Tier 1 — Structural invariants.** Every lineage-event child has exactly one
+parent; parent is in the named pool at child's event time; pruned tips equal
+sampled set; no unary nodes after pruning.
 
-**Tier 2a — Trajectory invariance.** Count trajectory under
-`--lineages` equals count trajectory without, byte-for-byte, for the
-same seed. **Catches RNG-stream leakage. Does NOT test attribution
-correctness** — a bug in parent attribution (e.g., sampling from `S`
-instead of `I`) would still pass this test because count RNG draws
-are untouched. Tier 2a is necessary but trivial.
+**Tier 2a — Trajectory invariance.** Count trajectory under `--lineages` equals
+count trajectory without, byte-for-byte, for the same seed. **Catches RNG-stream
+leakage. Does NOT test attribution correctness** — a bug in parent attribution
+(e.g., sampling from `S` instead of `I`) would still pass this test because
+count RNG draws are untouched. Tier 2a is necessary but trivial.
 
-**Tier 2b — Empirical attribution frequencies (load-bearing).**
-Simulate `n = 10⁴` independent runs of a model with multiple parent
-classes. For each lineage event, record which class provided the
-parent. Compare observed class frequencies to the
-linear-decomposition-predicted weights
-`P(class b) = w_b · X_b / Σ w_{b'} · X_{b'}` evaluated at the event-time
-state. Assert agreement within 3σ Monte Carlo error. **This is the
-test that actually catches a wrong decomposition rule.** Tier 2a
-without Tier 2b would let a wrong-pool-sampling bug ship.
+**Tier 2b — Empirical attribution frequencies (load-bearing).** Simulate
+`n = 10⁴` independent runs of a model with multiple parent classes. For each
+lineage event, record which class provided the parent. Compare observed class
+frequencies to the linear-decomposition-predicted weights
+`P(class b) = w_b · X_b / Σ w_{b'} · X_{b'}` evaluated at the event-time state.
+Assert agreement within 3σ Monte Carlo error. **This is the test that actually
+catches a wrong decomposition rule.** Tier 2a without Tier 2b would let a
+wrong-pool-sampling bug ship.
 
-**Tier 3 — Analytic.** Linear birth–death / Yule tree statistics
-(Sackin imbalance, expected TMRCA, branch-length sums) have closed
-forms — assert against them.
+**Tier 3 — Analytic.** Linear birth–death / Yule tree statistics (Sackin
+imbalance, expected TMRCA, branch-length sums) have closed forms — assert
+against them.
 
-**Tier 4 — Large-N coalescent limit.** Under homogeneous mixing the
-SIR transmission tree converges to the structured-coalescent
-prediction (Volz 2009 / Rasmussen–Volz line). Specific testable
-statistic: the per-pair coalescence rate at time `t` is `2·f(t)/I(t)²`
-where `f(t) = β·S(t)·I(t)/N(t)` is the incidence — i.e. the
-coalescent-interval distribution at lineage-count `k` is
-`Exp(C(k,2) · 2·f/I²) = Exp(C(k,2) · 2 β S(t) / (N(t)·I(t)))`, within
-~3σ over ~10⁴ samples, **for population sizes N ≥ 10⁴** (the diffusion
-approximation has O(1/N) bias that makes the test flaky at smaller
-populations).
+**Tier 4 — Large-N coalescent limit.** Under homogeneous mixing the SIR
+transmission tree converges to the structured-coalescent prediction (Volz 2009 /
+Rasmussen–Volz line). Specific testable statistic: the per-pair coalescence rate
+at time `t` is `2·f(t)/I(t)²` where `f(t) = β·S(t)·I(t)/N(t)` is the incidence —
+i.e. the coalescent-interval distribution at lineage-count `k` is
+`Exp(C(k,2) · 2·f/I²) = Exp(C(k,2) · 2 β S(t) / (N(t)·I(t)))`, within ~3σ over
+~10⁴ samples, **for population sizes N ≥ 10⁴** (the diffusion approximation has
+O(1/N) bias that makes the test flaky at smaller populations).
 
-> **Correction (2026-05-20):** an earlier draft of this line gave the
-> rate as `2 β S I / N²`, which is wrong by a factor of `I²/N` (~1400×
-> at N≈10⁴, I≈3.7k). The correct SIR coalescent per-pair rate is
-> `2 f / I² = 2 β S / (N I)` (Volz 2009): each transmission event
-> (rate `f`) coalesces a given pair only if one lineage is the infectee
-> and the other the infector, probability `~2/I²` per event. The
-> Phase-3 Tier-4 test validates against this corrected rate and the
-> runtime — which samples infectors uniformly within `I` — reproduces
-> it empirically. The error was in the prose, not the implementation.
+> **Correction (2026-05-20):** an earlier draft of this line gave the rate as
+> `2 β S I / N²`, which is wrong by a factor of `I²/N` (~1400× at N≈10⁴,
+> I≈3.7k). The correct SIR coalescent per-pair rate is
+> `2 f / I² = 2 β S / (N I)` (Volz 2009): each transmission event (rate `f`)
+> coalesces a given pair only if one lineage is the infectee and the other the
+> infector, probability `~2/I²` per event. The Phase-3 Tier-4 test validates
+> against this corrected rate and the runtime — which samples infectors
+> uniformly within `I` — reproduces it empirically. The error was in the prose,
+> not the implementation.
 
 **Tier 5 — External oracle (PARKED — pending oracle-landscape survey).**
-Cross-validate a *stratified* scenario against an independent
-lineage-aware simulator, run as a committed-fixture CI gate (same
-offline pattern as the existing pomp / scipy / numpy oracles). Status
-as of 2026-05-20: scaffolded (generator script + placeholder fixture +
-skip-on-placeholder test on `feature/lineages`), but the *choice of
-oracle* is deliberately deferred pending a proper survey of the
-landscape.
+Cross-validate a _stratified_ scenario against an independent lineage-aware
+simulator, run as a committed-fixture CI gate (same offline pattern as the
+existing pomp / scipy / numpy oracles). Status as of 2026-05-20: scaffolded
+(generator script + placeholder fixture + skip-on-placeholder test on
+`feature/lineages`), but the _choice of oracle_ is deliberately deferred pending
+a proper survey of the landscape.
 
-Selection criterion: the oracle must be able to realize **exactly**
-camdl's frequency-dependent contact-matrix rate `β·C[a,b]/N_b` — an
-oracle that "agrees" with a different generative model proves nothing,
-and one that "disagrees" doesn't indict camdl. On that criterion:
+Selection criterion: the oracle must be able to realize **exactly** camdl's
+frequency-dependent contact-matrix rate `β·C[a,b]/N_b` — an oracle that "agrees"
+with a different generative model proves nothing, and one that "disagrees"
+doesn't indict camdl. On that criterion:
+
 - **VGsim** ([Shchur et al. 2022](https://doi.org/10.1371/journal.pcbi.1010409))
-  is *exact-forward* — an exact (hierarchical-Gillespie) event chain, then a
-  genealogy sampled backward *conditioned on that realized chain*
+  is _exact-forward_ — an exact (hierarchical-Gillespie) event chain, then a
+  genealogy sampled backward _conditioned on that realized chain_
   (exact-conditional, not a diffusion approximation), over the same
   compartmental class. So it is not "a backward coalescent on a different
-  model." Its limitation for *this* check is the **semantic match**: its
+  model." Its limitation for _this_ check is the **semantic match**: its
   population structure is migration-based, so expressing camdl's arbitrary
-  asymmetric contact matrix `β·C[a,b]/N_b` in it may be awkward. Strong at
-  scale (millions of tips).
-- **MASTER** (Vaughan & Drummond 2013, *MBE* 30(6):1480; BEAST2) lets you
+  asymmetric contact matrix `β·C[a,b]/N_b` in it may be awkward. Strong at scale
+  (millions of tips).
+- **MASTER** (Vaughan & Drummond 2013, _MBE_ 30(6):1480; BEAST2) lets you
   specify the exact stratified reactions, so the semantic match is provable —
   the cleanest oracle for the contact-matrix check. **nosoi** (Lequime et al.
-  2020, *Methods Ecol. Evol.* 11:1002; R) is forward and individual-based,
+  2020, _Methods Ecol. Evol._ 11:1002; R) is forward and individual-based,
   matching camdl's generative approach directly. Both are better-matched than
-  VGsim *for the contact-structure check specifically* — not because VGsim is
+  VGsim _for the contact-structure check specifically_ — not because VGsim is
   approximate (it isn't), but because their model parameterization matches
   camdl's contact form more directly.
 
-Note Tier 5 is a *strengthening*, not load-bearing: Tier 2b already
-validates attribution against the closed-form `C[a,b]·I[b]/Σ`
-prediction. Tier 5's only added value is catching a shared error
-between the runtime and that analytic expectation. If no cleanly
-semantics-matched oracle is readily available, leaving Tier 5
-scaffolded-and-skipped is preferable to a poorly-matched comparison
-that yields an uninterpretable number.
+Note Tier 5 is a _strengthening_, not load-bearing: Tier 2b already validates
+attribution against the closed-form `C[a,b]·I[b]/Σ` prediction. Tier 5's only
+added value is catching a shared error between the runtime and that analytic
+expectation. If no cleanly semantics-matched oracle is readily available,
+leaving Tier 5 scaffolded-and-skipped is preferable to a poorly-matched
+comparison that yields an uninterpretable number.
 
-Tier 2b on the stratified case is the real deliverable: anyone can get
-the well-mixed tree right; the value (and the silent-wrong-answer
-risk) is contact-structured, time-varying parent attribution. Tier 5
-hardens it once the right oracle is chosen.
+Tier 2b on the stratified case is the real deliverable: anyone can get the
+well-mixed tree right; the value (and the silent-wrong-answer risk) is
+contact-structured, time-varying parent attribution. Tier 5 hardens it once the
+right oracle is chosen.
 
 ## Phasing
 
 **Phases 1–3 — shipped** (on `feature/lineages`):
 
 - **Phase 1.** Observer seam + separate RNG stream + Gillespie +
-  single-population linear rates + streamed TSV/Parquet line list +
-  `#[lineage]` parsing + identity-tracked subgraph + offline tree
-  pruner + Newick + Tiers 1 / 2a / 3.
-- **Phase 2.** Stratified / spatial parent attribution + multi-class
-  linear decomposition + **Tier 2b** (contact-weighted, verified
-  >10σ from the uniform null). Tier-5 external oracle deferred (see
-  the sampling milestone and the parked oracle survey).
-- **Phase 3.** tau-leap / chain-binomial backends + sub-`dt` bias
-  diagnostic + sojourn/cohort projections + **Tier 4** (coalescent,
-  validated against the corrected `2f/I²` rate) + offspring check.
+  single-population linear rates + streamed TSV/Parquet line list + `#[lineage]`
+  parsing + identity-tracked subgraph + offline tree pruner + Newick + Tiers 1 /
+  2a / 3.
+- **Phase 2.** Stratified / spatial parent attribution + multi-class linear
+  decomposition + **Tier 2b** (contact-weighted, verified
+  > 10σ from the uniform null). Tier-5 external oracle deferred (see the
+  > sampling milestone and the parked oracle survey).
+- **Phase 3.** tau-leap / chain-binomial backends + sub-`dt` bias diagnostic +
+  sojourn/cohort projections + **Tier 4** (coalescent, validated against the
+  corrected `2f/I²` rate) + offspring check.
 
-**Sampling milestone — NEXT** (the actual benchmark-realism work, not
-a Phase-2 redo — stratified *attribution* already shipped). Delivers
-realistic sampling per Open Question 2: the
-`SamplingScheme`/`IndividualSummary` trait, sampling over *all*
-individuals with pendant tips at sampling time, the
+**Sampling milestone — NEXT** (the actual benchmark-realism work, not a Phase-2
+redo — stratified _attribution_ already shipped). Delivers realistic sampling
+per Open Question 2: the `SamplingScheme`/`IndividualSummary` trait, sampling
+over _all_ individuals with pendant tips at sampling time, the
 `lineage { sampling { } }` model block (rates as parameters), and the
-`Stratified` / `ConditionalOnRemoval` schemes. **Tier 5 (external
-oracle) is gated behind this** — MASCOT/VGsim sample all cases, so
-comparing them to a leaf-only-`Flat` tree is mismatched by
-construction.
+`Stratified` / `ConditionalOnRemoval` schemes. **Tier 5 (external oracle) is
+gated behind this** — MASCOT/VGsim sample all cases, so comparing them to a
+leaf-only-`Flat` tree is mismatched by construction.
 
 **Phase 4 — deferred.** Nonlinear-in-parents rate support: `infector(...)`
 wrapper for explicit attribution semantics, partial-derivative-based
-between-pool weighting with symbolic sign-check, documented
-modeling-choice semantics for within-pool sampling (principle of
-insufficient reason / maximum entropy among permutation-symmetric
-refinements). Until shipped, any `#[lineage]` transition with
-nonlinear parent dependence errors with `E601`.
+between-pool weighting with symbolic sign-check, documented modeling-choice
+semantics for within-pool sampling (principle of insufficient reason / maximum
+entropy among permutation-symmetric refinements). Until shipped, any
+`#[lineage]` transition with nonlinear parent dependence errors with `E601`.
 
-**Phase 5.** Environmental transmission via tagged-contribution
-semantics on real-valued compartments. Until shipped, `#[lineage]`
-whose parent pool is a real-valued compartment errors with `E602`.
+**Phase 5.** Environmental transmission via tagged-contribution semantics on
+real-valued compartments. Until shipped, `#[lineage]` whose parent pool is a
+real-valued compartment errors with `E602`.
 
 ## IR change
 
@@ -580,11 +556,10 @@ lineage: { is_lineage_event: bool,
            parent_pool_weights: [(CompId, AST)] } | null
 ```
 
-`parent_pool_weights` is the linear decomposition of the rate over
-parent pools — a list of `(compartment, weight_expression)` pairs.
-For `β·S·I/N` with parent `I`, this is `[("I", β·S/N)]`. For
-multi-class linear, it's the per-class list. For stratified
-`S[a]·Σ_b C[a,b]·I[b]/N[b]`, expanded over `a` and listing each
+`parent_pool_weights` is the linear decomposition of the rate over parent pools
+— a list of `(compartment, weight_expression)` pairs. For `β·S·I/N` with parent
+`I`, this is `[("I", β·S/N)]`. For multi-class linear, it's the per-class list.
+For stratified `S[a]·Σ_b C[a,b]·I[b]/N[b]`, expanded over `a` and listing each
 `I[b]` with its weight `C[a,b]·S[a]/N[b]`.
 
 One at the top level:
@@ -593,49 +568,46 @@ One at the top level:
 identity_tracked_compartments: [CompId]
 ```
 
-Computed from forward reachability. Cached so the runtime doesn't
-recompute. Empty when no `#[lineage]` annotations exist; in that
-case the lineage subsystem is statically inert.
+Computed from forward reachability. Cached so the runtime doesn't recompute.
+Empty when no `#[lineage]` annotations exist; in that case the lineage subsystem
+is statically inert.
 
-Atomic OCaml + Rust + golden-file update per `CLAUDE.md`'s "Changing
-the IR schema" procedure.
+Atomic OCaml + Rust + golden-file update per `CLAUDE.md`'s "Changing the IR
+schema" procedure.
 
 ## Open questions
 
 1. **Vocabulary — RESOLVED to `lineage`.** Ship `#[lineage]` only; no
    `#[transmission]` alias. The top-level `lineage { }` block, the
-   `camdl lineage` CLI namespace, the `--lineages` flag, and
-   `IndividualSummary` make "lineage" the consistent vocabulary across
-   the feature.
+   `camdl lineage` CLI namespace, the `--lineages` flag, and `IndividualSummary`
+   make "lineage" the consistent vocabulary across the feature.
 
-2. **Sampling — the next milestone (committed design).** Today's
-   `Flat` samples only forest *leaves* (transmission-chain endpoints)
-   and places tips at *infection* time — not realistic surveillance,
-   and it makes a Tier-5 external-oracle comparison meaningless
-   (MASCOT/VGsim sample all cases). The milestone:
+2. **Sampling — the next milestone (committed design).** Today's `Flat` samples
+   only forest _leaves_ (transmission-chain endpoints) and places tips at
+   _infection_ time — not realistic surveillance, and it makes a Tier-5
+   external-oracle comparison meaningless (MASCOT/VGsim sample all cases). The
+   milestone:
 
    - **`SamplingScheme` trait** —
-     `sample(&IndividualSummary, rng) -> Option<f64>`, returning the
-     sampling *time* (a pendant tip placed there; `None` excludes the
-     individual). `IndividualSummary` carries the individual's strata,
-     infection time, removal time (`None` if never removed),
-     transmission count, and final compartment — derived by replaying
-     the line list per individual. Sampling draws over **all**
-     individuals, not just leaves (fixes both current biases:
+     `sample(&IndividualSummary, rng) -> Option<f64>`, returning the sampling
+     _time_ (a pendant tip placed there; `None` excludes the individual).
+     `IndividualSummary` carries the individual's strata, infection time,
+     removal time (`None` if never removed), transmission count, and final
+     compartment — derived by replaying the line list per individual. Sampling
+     draws over **all** individuals, not just leaves (fixes both current biases:
      leaf-only candidates, and infection-time tips).
-   - **Implementations:** `Flat { rate }` over all individuals (tip at
-     removal time, or sim end if never removed); `Stratified`
-     (per-stratum rates); `ConditionalOnRemoval` (only removed
-     individuals, at removal time). `TimeVarying<S>` wraps any of them.
+   - **Implementations:** `Flat { rate }` over all individuals (tip at removal
+     time, or sim end if never removed); `Stratified` (per-stratum rates);
+     `ConditionalOnRemoval` (only removed individuals, at removal time).
+     `TimeVarying<S>` wraps any of them.
    - **Structure in the model; values as parameters.** A top-level
-     `lineage { sampling { scheme, condition, by, rate } }` block
-     declares the *structure* of the observation process — a
-     model-level claim that travels with the model and is committed to
-     `model_hash`. The sampling `rate` is an ordinary indexed
-     **parameter** (priors, bounds, jointly fittable, scenario-able,
-     supplied via `--params`), not a separate config format — which
-     preserves the `model_hash → model` invariant while letting rates
-     vary like any β/γ/ρ:
+     `lineage { sampling { scheme, condition, by, rate } }` block declares the
+     _structure_ of the observation process — a model-level claim that travels
+     with the model and is committed to `model_hash`. The sampling `rate` is an
+     ordinary indexed **parameter** (priors, bounds, jointly fittable,
+     scenario-able, supplied via `--params`), not a separate config format —
+     which preserves the `model_hash → model` invariant while letting rates vary
+     like any β/γ/ρ:
 
      ```camdl
      lineage {
@@ -651,79 +623,73 @@ the IR schema" procedure.
      }
      ```
 
-   - **Projection-time scheme override.** The model's
-     `lineage { sampling }` is the *canonical* observation process;
-     `camdl lineage tree` uses it by default but accepts an explicit
-     override for observation-process scenarios on the *same* line
-     list. The override flows into the **tree's** provenance hash,
-     never the model's — so `model_hash` stays canonical while one
-     line list re-projects under several observation designs without
-     re-simulating: `tree_hash = f(line list, effective scheme,
+   - **Projection-time scheme override.** The model's `lineage { sampling }` is
+     the _canonical_ observation process; `camdl lineage tree` uses it by
+     default but accepts an explicit override for observation-process scenarios
+     on the _same_ line list. The override flows into the **tree's** provenance
+     hash, never the model's — so `model_hash` stays canonical while one line
+     list re-projects under several observation designs without re-simulating:
+     `tree_hash = f(line list, effective scheme,
      sampling params, seed)`.
 
    - **Spec points to nail when implementing:**
-     1. `condition`: `at_removal` (tip at removal time; an individual
-        never removed by sim end is *excluded* — use `any` to include
-        sim-end), `any`, `at_event(<transition>)`.
-     2. `by` dimensions must equal the `rate` parameter's index
-        dimensions — a compile-time consistency check (own E-code).
-     3. `at_event(<transition>)` resolves a transition by name —
-        existence checked at compile time.
-     4. Sampling-only state the dynamics don't reference is
-        expressible *today* as a free stratification dimension
+     1. `condition`: `at_removal` (tip at removal time; an individual never
+        removed by sim end is _excluded_ — use `any` to include sim-end), `any`,
+        `at_event(<transition>)`.
+     2. `by` dimensions must equal the `rate` parameter's index dimensions — a
+        compile-time consistency check (own E-code).
+     3. `at_event(<transition>)` resolves a transition by name — existence
+        checked at compile time.
+     4. Sampling-only state the dynamics don't reference is expressible _today_
+        as a free stratification dimension
         (`stratify(by = detection, only = [I])`; partial-compartment
-        stratification and free-dimension summing both exist — §5 of
-        the language spec). This is the *escape hatch* for an
-        explicitly-modeled detection sub-process, **not the primary
-        mechanism**: per-deme / per-age / by-compartment /
-        conditional-on-removal sampling all read state already in the
-        line list and need no new dimension. Surface free dimensions
-        in `camdl inspect` on demand ("dimensions with no rate
+        stratification and free-dimension summing both exist — §5 of the
+        language spec). This is the _escape hatch_ for an explicitly-modeled
+        detection sub-process, **not the primary mechanism**: per-deme / per-age
+        / by-compartment / conditional-on-removal sampling all read state
+        already in the line list and need no new dimension. Surface free
+        dimensions in `camdl inspect` on demand ("dimensions with no rate
         dependence: …"), not as a compile-time diagnostic (which would
         false-positive on every legitimate sampling-only dimension).
 
-3. **Documentation discipline for the linear restriction.** v1's
-   restriction will surprise users with He et al. style models. Worth
-   a prominent doc page explaining the restriction, the Phase 4
-   roadmap, and how to linearly approximate common nonlinear models
-   in the meantime.
+3. **Documentation discipline for the linear restriction.** v1's restriction
+   will surprise users with He et al. style models. Worth a prominent doc page
+   explaining the restriction, the Phase 4 roadmap, and how to linearly
+   approximate common nonlinear models in the meantime.
 
-4. **Within-pool heterogeneity hook.** v1 assumes individuals within
-   a pool are exchangeable. Heterogeneous infectiousness (Lloyd-Smith
-   superspreading, individual-level risk) would require stratifying
-   the parent pool — the lineage feature does not provide a
-   sub-stratum weighting hook, by design, to keep the linear
-   derivation clean.
+4. **Within-pool heterogeneity hook.** v1 assumes individuals within a pool are
+   exchangeable. Heterogeneous infectiousness (Lloyd-Smith superspreading,
+   individual-level risk) would require stratifying the parent pool — the
+   lineage feature does not provide a sub-stratum weighting hook, by design, to
+   keep the linear derivation clean.
 
 ## Non-goals
 
 - No change to inference, fitting, or any existing backend dynamics.
-- **No nonlinear-in-parents rates in v1.** Hard error at compile time
-  with a clear path forward (Phase 4).
+- **No nonlinear-in-parents rates in v1.** Hard error at compile time with a
+  clear path forward (Phase 4).
 - No within-host or sequence evolution in v1.
-- No non-Markovian waiting-time distributions. The line list reports
-  realized samples honestly from whatever distribution the
-  compartmental structure implies (exponential, or Erlang via
-  sub-staging). Arbitrary distributions require a non-Markovian
-  extension to the language that is out of scope.
+- No non-Markovian waiting-time distributions. The line list reports realized
+  samples honestly from whatever distribution the compartmental structure
+  implies (exponential, or Erlang via sub-staging). Arbitrary distributions
+  require a non-Markovian extension to the language that is out of scope.
 - No environmental transmission in v1 (Phase 5).
 - No ODE lineage support (incoherent — hard error by capability).
 
 ## Future possible features
 
-Forward-looking design sketches. Not v1 scope; recorded so the v1
-architecture is built to admit them without rework.
+Forward-looking design sketches. Not v1 scope; recorded so the v1 architecture
+is built to admit them without rework.
 
 ### Nonlinear-in-parents mixing: the `infector(...)` wrapper (Phase 4)
 
-v1 rejects nonlinear parent dependence (`E601`) because uniform
-within-pool sampling can only be *derived* for linear rates. Many
-real models are nonlinear in the infector count: He et al.
-alpha-mixing `(I+ι)^α`, Michaelis–Menten / saturating infectiousness
-`I/(K+I)`, log-saturation. Phase 4 admits them through an explicit
-attribution annotation that mirrors `unchecked_dim`'s shape — the
-`reason` field is required, and the wrapper is transparent at runtime
-(identity over `expr`):
+v1 rejects nonlinear parent dependence (`E601`) because uniform within-pool
+sampling can only be _derived_ for linear rates. Many real models are nonlinear
+in the infector count: He et al. alpha-mixing `(I+ι)^α`, Michaelis–Menten /
+saturating infectiousness `I/(K+I)`, log-saturation. Phase 4 admits them through
+an explicit attribution annotation that mirrors `unchecked_dim`'s shape — the
+`reason` field is required, and the wrapper is transparent at runtime (identity
+over `expr`):
 
 ```camdl
 #[lineage]
@@ -752,84 +718,77 @@ infection[a in age] : S[a] --> E[a]  @ S[a]
   / pop(t)
 ```
 
-**Semantics.** The wrapper does two things the linear classifier
-cannot do automatically:
+**Semantics.** The wrapper does two things the linear classifier cannot do
+automatically:
 
-1. *Pool identification.* `from = I` names the parent pool when the
-   nonlinear shape prevents the classifier from reading it off the
-   AST structure.
-2. *Between-pool weighting via partial derivatives.* For a multi-pool
-   nonlinear rate, the marginal contribution of pool `k` is
-   `weight_k = (∂rate / ∂count(X_k)) · count(X_k)` — the local
-   sensitivity of the rate to that pool's size, times its size. This
-   reuses the compiler's existing symbolic differentiation
-   (`autodiff.ml`, already emitting `rate_grad` for inference
-   gradients). The compiler **sign-checks** the partial derivative:
-   if it cannot prove non-negativity over the feasible region
-   (non-monotonic infector dependence), it rejects the model rather
-   than producing ill-posed (possibly negative) weights.
+1. _Pool identification._ `from = I` names the parent pool when the nonlinear
+   shape prevents the classifier from reading it off the AST structure.
+2. _Between-pool weighting via partial derivatives._ For a multi-pool nonlinear
+   rate, the marginal contribution of pool `k` is
+   `weight_k = (∂rate / ∂count(X_k)) · count(X_k)` — the local sensitivity of
+   the rate to that pool's size, times its size. This reuses the compiler's
+   existing symbolic differentiation (`autodiff.ml`, already emitting
+   `rate_grad` for inference gradients). The compiler **sign-checks** the
+   partial derivative: if it cannot prove non-negativity over the feasible
+   region (non-monotonic infector dependence), it rejects the model rather than
+   producing ill-posed (possibly negative) weights.
 
-**The key semantic difference from v1.** Within-pool sampling is
-still uniform, but here it is an explicit *modeling choice*, not a
-derivation. A nonlinear aggregate rate like `(I+ι)^α` implies no
-per-individual contribution mechanism — `α` is phenomenological — so
-no refinement is forced by the count-level dynamics. Uniform
-within-pool is justified as the maximum-entropy / principle-of-
-insufficient-reason refinement among permutation-symmetric
-augmentations, and the required `reason` field documents the
-assumption at the call site. This is exactly the distinction the v1
-linearity restriction exists to avoid having to make silently; Phase 4
-makes it, explicitly and locally annotated.
+**The key semantic difference from v1.** Within-pool sampling is still uniform,
+but here it is an explicit _modeling choice_, not a derivation. A nonlinear
+aggregate rate like `(I+ι)^α` implies no per-individual contribution mechanism —
+`α` is phenomenological — so no refinement is forced by the count-level
+dynamics. Uniform within-pool is justified as the maximum-entropy /
+principle-of- insufficient-reason refinement among permutation-symmetric
+augmentations, and the required `reason` field documents the assumption at the
+call site. This is exactly the distinction the v1 linearity restriction exists
+to avoid having to make silently; Phase 4 makes it, explicitly and locally
+annotated.
 
-The IR `parent_pool_weights` field generalizes unchanged: in v1 each
-weight is a linear sub-expression of the rate; in Phase 4 it is the
-partial-derivative expression emitted by `autodiff.ml`. The runtime
-evaluation path (sample pool `∝ weight_k · count_k`, then uniform
-within pool) is identical, so the runtime built for v1 needs no
-change to support Phase 4 — only the compiler's weight-extraction and
-the `infector(...)` parse path are added.
+The IR `parent_pool_weights` field generalizes unchanged: in v1 each weight is a
+linear sub-expression of the rate; in Phase 4 it is the partial-derivative
+expression emitted by `autodiff.ml`. The runtime evaluation path (sample pool
+`∝ weight_k · count_k`, then uniform within pool) is identical, so the runtime
+built for v1 needs no change to support Phase 4 — only the compiler's
+weight-extraction and the `infector(...)` parse path are added.
 
 ### Other directions (flagged, not designed)
 
-- **Environmental transmission** (Phase 5): tagged-contribution
-  semantics on real-valued reservoir compartments (each shedding
-  event deposits a token tagged with the shedder ID; environmental
-  infections sample from the live token pool weighted by recency and
-  amount). Hard-errors as `E602` until shipped.
-- **Sequence-evolution layer:** mutation accumulation along tree
-  branches → simulated alignments → input to phylodynamic inference.
-  The natural layer above the line list / tree; out of scope here.
+- **Environmental transmission** (Phase 5): tagged-contribution semantics on
+  real-valued reservoir compartments (each shedding event deposits a token
+  tagged with the shedder ID; environmental infections sample from the live
+  token pool weighted by recency and amount). Hard-errors as `E602` until
+  shipped.
+- **Sequence-evolution layer:** mutation accumulation along tree branches →
+  simulated alignments → input to phylodynamic inference. The natural layer
+  above the line list / tree; out of scope here.
 
 ## Why this proposal supersedes v1
 
-The original `simulate_with_lineages` proposal framed the feature as
-"add transmission line lists and trees." This version:
+The original `simulate_with_lineages` proposal framed the feature as "add
+transmission line lists and trees." This version:
 
-- Treats identity tracking as the primary capability, with lineage
-  events as a special case carrying parent IDs.
-- Uses `#[lineage]` Rust-style attributes, visually separated from
-  rate content; the lexer change is one-character lookahead.
+- Treats identity tracking as the primary capability, with lineage events as a
+  special case carrying parent IDs.
+- Uses `#[lineage]` Rust-style attributes, visually separated from rate content;
+  the lexer change is one-character lookahead.
 - **Restricts to linear-in-parents rates in v1**, which makes the
-  Markovian-refinement guarantee a *derivation* rather than a
-  modeling choice. Nonlinear support is explicit Phase 4 territory
-  with documented attribution semantics. The colleague's critique of
-  the v2 draft — that uniform-within-pool sampling for nonlinear
-  rates is a modeling choice not a derivation — is eliminated by
-  construction.
+  Markovian-refinement guarantee a _derivation_ rather than a modeling choice.
+  Nonlinear support is explicit Phase 4 territory with documented attribution
+  semantics. The colleague's critique of the v2 draft — that uniform-within-pool
+  sampling for nonlinear rates is a modeling choice not a derivation — is
+  eliminated by construction.
 - **Splits validation into trajectory-invariance (Tier 2a) and
-  empirical-attribution-frequency (Tier 2b)** tests, the latter being
-  the actually load-bearing correctness check. The previous draft
-  presented trajectory-invariance as if it tested attribution; it
-  doesn't.
+  empirical-attribution-frequency (Tier 2b)** tests, the latter being the
+  actually load-bearing correctness check. The previous draft presented
+  trajectory-invariance as if it tested attribution; it doesn't.
 - Names tau-leap's `dt`-bias explicitly with a diagnostic.
 - Pins Parquet as the production output format.
 - Namespaces CLI projections under `camdl lineage`.
 
-**On implementation cost.** This proposal is more ambitious than v1,
-not comparable: identity-tracked-subgraph inference,
-linear-decomposition analysis with explicit error messages, multiple
-offline projections, attribute-syntax parser changes, Parquet writer,
-empirical-attribution-frequency testing, and the cyclic-model cost
-reporting all add real surface area. The additional capability — line
-list as primary artifact, derived-not-chosen attribution, multiple
+**On implementation cost.** This proposal is more ambitious than v1, not
+comparable: identity-tracked-subgraph inference, linear-decomposition analysis
+with explicit error messages, multiple offline projections, attribute-syntax
+parser changes, Parquet writer, empirical-attribution-frequency testing, and the
+cyclic-model cost reporting all add real surface area. The additional capability
+— line list as primary artifact, derived-not-chosen attribution, multiple
 projections — justifies the larger investment.

@@ -17,30 +17,31 @@ non-goals:
 ## Problem (verified)
 
 On 2026-05-29 a benchmark of the **pre-Fix-B inlined compile** of a Kano-scale
-spatial model (≈44 LGAs × 21 ages) drove the dev machine into a memory-exhaustion
-**kernel watchdog panic** (full reboot). Evidence and timeline:
+spatial model (≈44 LGAs × 21 ages) drove the dev machine into a
+memory-exhaustion **kernel watchdog panic** (full reboot). Evidence and
+timeline:
 [`docs/dev/notes/2026-05-29-oom-watchdog-crash-prebench.md`](../notes/2026-05-29-oom-watchdog-crash-prebench.md).
 
 Root mechanism: the expander materializes a **fully-inlined flat IR** — every
-transition carries its own copy of the FOI rate tree — so IR size grows
-≈ `n_transitions × (mean rate-expr node count)`. At P=44 that was 2772
-transitions and a **3.7 GB IR / 15.6 GB peak RSS** (committed
-`scaling_before_b.tsv`). Nothing in the pipeline bounds this: the compiler
-will happily try to build an IR larger than host RAM, and because macOS
-thrashes the VM compressor before jetsam can act, the *whole machine* dies
-rather than the offending process.
+transition carries its own copy of the FOI rate tree — so IR size grows ≈
+`n_transitions × (mean rate-expr node count)`. At P=44 that was 2772 transitions
+and a **3.7 GB IR / 15.6 GB peak RSS** (committed `scaling_before_b.tsv`).
+Nothing in the pipeline bounds this: the compiler will happily try to build an
+IR larger than host RAM, and because macOS thrashes the VM compressor before
+jetsam can act, the _whole machine_ dies rather than the offending process.
 
 Fix B (shared bindings, landed on `perf/ir-bindings`) cuts this ~3.5×/~5× — but
 (a) it is a constant-factor win, so a large-enough P still blows up, and (b) we
-must keep *measuring* the pre-B baseline, which is exactly the path that
+must keep _measuring_ the pre-B baseline, which is exactly the path that
 crashes. We need a safety net independent of the structural fix.
 
 This is two distinct audiences with two distinct remedies:
+
 - **Users** (the health-ministry modeler) who accidentally write a model that
-  expands huge — want a *clear compiler error before* the blowup, not a frozen
+  expands huge — want a _clear compiler error before_ the blowup, not a frozen
   laptop.
 - **Devs** benchmarking the regression baseline — want the heavy run to
-  *OOM-kill the process*, not panic the kernel.
+  _OOM-kill the process_, not panic the kernel.
 
 ## Options
 
@@ -81,14 +82,14 @@ Wrap the memory-heavy benchmark drivers so a runaway compile is OOM-killed
 rather than taking the host down. Cheapest form: in `scripts/bench_scaling.py`
 (and the pre-B baseline path), spawn each `camdlc`/`camdl` subprocess under a
 virtual-memory cap, e.g. `ulimit -v <KB>` in the child, sized to leave headroom
-(say cap at 24 GB on a 48 GB box). A killed child becomes a recorded
-"OOM at P=N" data point instead of a panic. Pure harness change, no engine risk.
+(say cap at 24 GB on a 48 GB box). A killed child becomes a recorded "OOM at
+P=N" data point instead of a panic. Pure harness change, no engine risk.
 
 ### C. Streaming / bounded IR serialization (rejected for now)
 
 Avoid holding the full IR JSON in memory at once. Largely already addressed by
 Fix E (untagged-buffering removal) and Fix D (parse cliff); the dominant cost
-now is the *materialized AST*, not the JSON string. Out of scope — does not
+now is the _materialized AST_, not the JSON string. Out of scope — does not
 address the expander-side blowup.
 
 ## Recommendation
@@ -98,6 +99,7 @@ author with one deterministic check; the harness cap (B) makes it safe to keep
 benchmarking the pre-B baseline that prompted this. C is deferred.
 
 Land order, each its own commit, tests first (TDD per CLAUDE.md):
+
 1. **B** first (lowest risk, immediately unblocks safe baseline benchmarking):
    add the `ulimit -v` wrapper + an "OOM at P" record path; manual check that a
    capped pre-B P=44 run is killed, not the machine.
@@ -110,8 +112,8 @@ Land order, each its own commit, tests first (TDD per CLAUDE.md):
 
 - **False positives.** A conservative threshold could block a legitimate large
   model on a big-RAM box. Mitigate with `--allow-huge-ir` (and/or scale the
-  default to a fraction of detected host RAM). The estimate must be an
-  *upper bound* tuned to warn, not to be exact.
+  default to a fraction of detected host RAM). The estimate must be an _upper
+  bound_ tuned to warn, not to be exact.
 - **Threshold is a policy choice**, not a fact — document it and make it
   overridable; do not hard-code a magic number without the override.
 - **B only protects the harness**, not ad-hoc `camdlc` invocations — that is

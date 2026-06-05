@@ -7,27 +7,25 @@ note: R1–R5 all landed (mostly in 35747d3). Only unbuilt item is R2's `log_pro
 
 # Inference minor cleanup
 
-Companion to `docs/dev/reviews/2026-04-20-review-rust-design.md`
-(RdM4, Rdm1–4, Rdn3). Five independent, low-risk changes that improve
-readability, eliminate magic constants, and reduce DRY violations in
-the inference layer. Any can be done in isolation.
+Companion to `docs/dev/reviews/2026-04-20-review-rust-design.md` (RdM4, Rdm1–4,
+Rdn3). Five independent, low-risk changes that improve readability, eliminate
+magic constants, and reduce DRY violations in the inference layer. Any can be
+done in isolation.
 
 ---
 
 ## R1. Decompose `log_transition_density_substep` into named stages
 
-**Problem (RdM4):** `pgas.rs:226–387` is a 162-line function that
-computes the complete-data log-transition density for one substep of
-the CSMC-AS backward pass. It is the most scientifically sensitive
-function in the codebase. Its logical structure has three stages
-(overdispersion gammas, exit density, split density) but these stages
-are not named sub-functions — they are interlocked via a shared
-`gamma_idx` counter (line 265) that must advance in exactly the same
-order as `step_one` in `chain_binomial.rs`. The ordering invariant is
-documented only in a comment, not in the type system.
+**Problem (RdM4):** `pgas.rs:226–387` is a 162-line function that computes the
+complete-data log-transition density for one substep of the CSMC-AS backward
+pass. It is the most scientifically sensitive function in the codebase. Its
+logical structure has three stages (overdispersion gammas, exit density, split
+density) but these stages are not named sub-functions — they are interlocked via
+a shared `gamma_idx` counter (line 265) that must advance in exactly the same
+order as `step_one` in `chain_binomial.rs`. The ordering invariant is documented
+only in a comment, not in the type system.
 
-**Proposed decomposition** (all within `pgas.rs` or a new private
-submodule):
+**Proposed decomposition** (all within `pgas.rs` or a new private submodule):
 
 ```rust
 pub fn log_transition_density_substep(
@@ -115,26 +113,27 @@ fn remaining_transitions_log_density(
 ) -> Result<f64, SimError> { ... }
 ```
 
-The `gamma_idx` ordering invariant becomes visible in the function
-signature: `overdispersion_log_density` takes `&mut gamma_idx` and
-must advance it before `exit_log_density` reads it. This is still not
-fully type-checked, but it concentrates the ordering concern in one
-function rather than spreading it across 160 lines.
+The `gamma_idx` ordering invariant becomes visible in the function signature:
+`overdispersion_log_density` takes `&mut gamma_idx` and must advance it before
+`exit_log_density` reads it. This is still not fully type-checked, but it
+concentrates the ordering concern in one function rather than spreading it
+across 160 lines.
 
-**Scope:** Mechanical extraction within `pgas.rs`. No change to the
-mathematical content or the external signature of
-`log_transition_density_substep`. The existing `pgas_resume.rs` and
-`pgas_tempering.rs` integration tests provide regression coverage.
+**Scope:** Mechanical extraction within `pgas.rs`. No change to the mathematical
+content or the external signature of `log_transition_density_substep`. The
+existing `pgas_resume.rs` and `pgas_tempering.rs` integration tests provide
+regression coverage.
 
 ---
 
 ## R2. Define `LOG_PROB_FLOOR` as a named constant
 
-**Problem (Rdm2):** The literal `1e-300` appears at eight or more
-sites across four files as a floor for log-probability arguments to
-avoid `−∞` log-weights. The value is not explained at any site.
+**Problem (Rdm2):** The literal `1e-300` appears at eight or more sites across
+four files as a floor for log-probability arguments to avoid `−∞` log-weights.
+The value is not explained at any site.
 
 Confirmed occurrences:
+
 - `if2.rs:68,71,125,200` — barycentric transform, log-transform clamp,
   perturbation SD floor.
 - `pgas.rs:505` — Gamma log-density floor.
@@ -168,19 +167,20 @@ fn log_prob_floor_is_finite() {
 }
 ```
 
-**Scope:** Search-and-replace of `1e-300` in the four files listed
-above after verifying each is the same semantic use (log-probability
-floor). The `correlated_pf.rs:132` use is a slightly different context
-(early-exit from a loop) — verify separately before replacing.
+**Scope:** Search-and-replace of `1e-300` in the four files listed above after
+verifying each is the same semantic use (log-probability floor). The
+`correlated_pf.rs:132` use is a slightly different context (early-exit from a
+loop) — verify separately before replacing.
 
 ---
 
 ## R3. Extract `init_particle_rngs` helper
 
-**Problem (Rdm3):** Per-particle RNG initialisation appears in three
-files with a subtle variant in IF2:
+**Problem (Rdm3):** Per-particle RNG initialisation appears in three files with
+a subtle variant in IF2:
 
 `particle_filter.rs:87–89`:
+
 ```rust
 let rngs: Vec<StatefulRng> = (0..n)
     .map(|i| StatefulRng::new_stream(seed, i as u64))
@@ -188,6 +188,7 @@ let rngs: Vec<StatefulRng> = (0..n)
 ```
 
 `if2.rs:417–420` (with per-iteration stream offset):
+
 ```rust
 let rngs: Vec<StatefulRng> = (0..n)
     .map(|i| StatefulRng::new_stream(seed, stream_base | (i as u64)))
@@ -195,15 +196,16 @@ let rngs: Vec<StatefulRng> = (0..n)
 ```
 
 `pgas.rs:657–659`:
+
 ```rust
 let rngs: Vec<StatefulRng> = (0..n_particles)
     .map(|i| StatefulRng::new_stream(seed, i as u64))
     .collect();
 ```
 
-A future algorithm author copying from PF or PGAS would silently omit
-the IF2 stream-offset pattern without knowing it exists. The variation
-is intentional and correct but opaque.
+A future algorithm author copying from PF or PGAS would silently omit the IF2
+stream-offset pattern without knowing it exists. The variation is intentional
+and correct but opaque.
 
 **Proposed addition to `inference/types.rs`:**
 
@@ -226,6 +228,7 @@ pub fn init_particle_rngs(
 ```
 
 Update call sites:
+
 - `particle_filter.rs`: `init_particle_rngs(seed, n, 0)`
 - `pgas.rs`: `init_particle_rngs(seed, n_particles, 0)`
 - `if2.rs`: `init_particle_rngs(seed, n, stream_base)`
@@ -236,26 +239,28 @@ Update call sites:
 
 ## R4. Fix `resample_rng` seeding to match the `new_stream` pattern
 
-**Problem (Rdn3):** After the IM1 fix to per-particle seeding, the
-resample RNG in both PF and PGAS still uses the old XOR-constant pattern:
+**Problem (Rdn3):** After the IM1 fix to per-particle seeding, the resample RNG
+in both PF and PGAS still uses the old XOR-constant pattern:
 
 `particle_filter.rs:123`:
+
 ```rust
 let mut resample_rng = StatefulRng::new(seed.wrapping_add(0xdeadbeef));
 ```
 
 `pgas.rs:717`:
+
 ```rust
 let mut resample_rng = StatefulRng::new(seed.wrapping_add(0xdeadbeef));
 ```
 
-The constant `0xdeadbeef` is unexplained. The `new_stream` API exists
-precisely to avoid ad-hoc seed mixing; the convention should be consistent
-throughout the inference layer.
+The constant `0xdeadbeef` is unexplained. The `new_stream` API exists precisely
+to avoid ad-hoc seed mixing; the convention should be consistent throughout the
+inference layer.
 
-**Proposed change:** Reserve a high stream index for the resample RNG —
-high enough to never collide with particle indices (which start from 0
-and go up to at most `n_particles`, typically ≤ 10_000):
+**Proposed change:** Reserve a high stream index for the resample RNG — high
+enough to never collide with particle indices (which start from 0 and go up to
+at most `n_particles`, typically ≤ 10_000):
 
 ```rust
 // In inference/types.rs:
@@ -271,21 +276,21 @@ let mut resample_rng = StatefulRng::new_stream(seed, RESAMPLE_RNG_STREAM);
 ```
 
 **Scope:** Two call sites. The `0xdeadbeef` magic constant disappears.
-Self-documenting: `RESAMPLE_RNG_STREAM` makes clear this is a
-reservation, not a random choice.
+Self-documenting: `RESAMPLE_RNG_STREAM` makes clear this is a reservation, not a
+random choice.
 
 **Test:** After the change, reproduce existing RNG-determinism tests
-(`gillespie_determinism.rs`, `particle_filter.rs` in sim/tests) to
-confirm the resample stream change does not break bit-for-bit
-reproducibility. The test output will change (different resampling RNG
-sequence), so the expected values in determinism tests need to be
-updated; that is expected and correct.
+(`gillespie_determinism.rs`, `particle_filter.rs` in sim/tests) to confirm the
+resample stream change does not break bit-for-bit reproducibility. The test
+output will change (different resampling RNG sequence), so the expected values
+in determinism tests need to be updated; that is expected and correct.
 
 ---
 
 ## R5. Remove `n_obs` and `steps_per_obs` from `PMMHConfig`
 
 **Problem (Rdm4):** `pmmh.rs:49–52`:
+
 ```rust
 /// Number of observations (for sizing PFRandomState).
 pub n_obs: usize,
@@ -293,15 +298,15 @@ pub n_obs: usize,
 pub steps_per_obs: usize,
 ```
 
-These are computed by the CLI and passed into `PMMHConfig`, but they
-are internal sizing details derivable from the observation model and
-`dt`. PGAS does not carry equivalent fields — it derives them at
-algorithm entry from `obs_model.n_observations()` and the observation
-times. The asymmetry is unintentional and adds an unnecessary coupling
-between the CLI and PMMH internals.
+These are computed by the CLI and passed into `PMMHConfig`, but they are
+internal sizing details derivable from the observation model and `dt`. PGAS does
+not carry equivalent fields — it derives them at algorithm entry from
+`obs_model.n_observations()` and the observation times. The asymmetry is
+unintentional and adds an unnecessary coupling between the CLI and PMMH
+internals.
 
-**Proposed change:** Remove the two fields from `PMMHConfig`. Compute
-them in `pmmh::run_pmmh` at the same point PGAS computes them:
+**Proposed change:** Remove the two fields from `PMMHConfig`. Compute them in
+`pmmh::run_pmmh` at the same point PGAS computes them:
 
 ```rust
 // In run_pmmh, near the top:
@@ -320,20 +325,19 @@ pub fn steps_per_obs(obs_model: &MultiStreamObsModel, dt: f64) -> usize {
 }
 ```
 
-Update the CLI launch site in `cli/src/fit/pmmh.rs` to drop the two
-fields from the config builder.
+Update the CLI launch site in `cli/src/fit/pmmh.rs` to drop the two fields from
+the config builder.
 
-**Scope:** `pmmh.rs` (remove fields, compute inline), CLI `fit/pmmh.rs`
-(remove two builder lines). Structural change only; PMMH behavior is
-unchanged.
+**Scope:** `pmmh.rs` (remove fields, compute inline), CLI `fit/pmmh.rs` (remove
+two builder lines). Structural change only; PMMH behavior is unchanged.
 
 ---
 
 ## Ordering
 
-R2 is the most mechanical (constant rename) and can be merged first.
-R3 and R4 are independent; R3 should be done before any new algorithm
-is added. R1 (decomposition) is the largest change and benefits from
-the codebase being otherwise tidy first. R5 is independent.
+R2 is the most mechanical (constant rename) and can be merged first. R3 and R4
+are independent; R3 should be done before any new algorithm is added. R1
+(decomposition) is the largest change and benefits from the codebase being
+otherwise tidy first. R5 is independent.
 
 Suggested order: R2 → R4 → R3 → R5 → R1.

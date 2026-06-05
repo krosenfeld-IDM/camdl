@@ -16,7 +16,7 @@
     "transitions": [
       {
         "name": "bite",
-        "stoichiometry": [ [ "S_h", -1 ], [ "I_h", 1 ] ],
+        "stoichiometry": [["S_h", -1], ["I_h", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -39,7 +39,7 @@
                 "right": { "pop": "I_v" }
               }
             },
-            "right": { "pop_sum": [ "S_h", "I_h" ] }
+            "right": { "pop_sum": ["S_h", "I_h"] }
           }
         },
         "metadata": {
@@ -67,14 +67,14 @@
                       "right": { "pop": "I_v" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "pop_sum": ["S_h", "I_h"] },
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               }
             }
@@ -98,14 +98,14 @@
                       "right": { "pop": "I_v" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "pop_sum": ["S_h", "I_h"] },
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               }
             }
@@ -114,7 +114,7 @@
       },
       {
         "name": "recover",
-        "stoichiometry": [ [ "I_h", -1 ], [ "S_h", 1 ] ],
+        "stoichiometry": [["I_h", -1], ["S_h", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -131,7 +131,7 @@
       },
       {
         "name": "infect_v",
-        "stoichiometry": [ [ "S_v", -1 ], [ "E_v", 1 ] ],
+        "stoichiometry": [["S_v", -1], ["E_v", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -154,7 +154,7 @@
                 "right": { "pop": "I_h" }
               }
             },
-            "right": { "pop_sum": [ "S_h", "I_h" ] }
+            "right": { "pop_sum": ["S_h", "I_h"] }
           }
         },
         "metadata": {
@@ -182,14 +182,14 @@
                       "right": { "pop": "I_h" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "pop_sum": ["S_h", "I_h"] },
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               }
             }
@@ -213,14 +213,14 @@
                       "right": { "pop": "I_h" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_h", "I_h" ] },
-                  "right": { "pop_sum": [ "S_h", "I_h" ] }
+                  "left": { "pop_sum": ["S_h", "I_h"] },
+                  "right": { "pop_sum": ["S_h", "I_h"] }
                 }
               }
             }
@@ -229,7 +229,7 @@
       },
       {
         "name": "eip",
-        "stoichiometry": [ [ "E_v", -1 ], [ "I_v", 1 ] ],
+        "stoichiometry": [["E_v", -1], ["I_v", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -246,7 +246,7 @@
       },
       {
         "name": "death_Sv",
-        "stoichiometry": [ [ "S_v", -1 ] ],
+        "stoichiometry": [["S_v", -1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -263,7 +263,7 @@
       },
       {
         "name": "death_Ev",
-        "stoichiometry": [ [ "E_v", -1 ] ],
+        "stoichiometry": [["E_v", -1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -280,7 +280,7 @@
       },
       {
         "name": "death_Iv",
-        "stoichiometry": [ [ "I_v", -1 ] ],
+        "stoichiometry": [["I_v", -1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -297,7 +297,7 @@
       },
       {
         "name": "birth_v",
-        "stoichiometry": [ [ "S_v", 1 ] ],
+        "stoichiometry": [["S_v", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -338,7 +338,7 @@
                       "bin_op": {
                         "op": "div",
                         "left": { "projected": null },
-                        "right": { "pop_sum": [ "S_h", "I_h" ] }
+                        "right": { "pop_sum": ["S_h", "I_h"] }
                       }
                     }
                   }
@@ -361,7 +361,7 @@
                           "bin_op": {
                             "op": "div",
                             "left": { "projected": null },
-                            "right": { "pop_sum": [ "S_h", "I_h" ] }
+                            "right": { "pop_sum": ["S_h", "I_h"] }
                           }
                         }
                       }
@@ -378,7 +378,7 @@
       {
         "name": "a",
         "value": null,
-        "bounds": [ 0.1, 1.0 ],
+        "bounds": [0.1, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -389,7 +389,7 @@
       {
         "name": "b_h",
         "value": null,
-        "bounds": [ 0.05, 0.8 ],
+        "bounds": [0.05, 0.8],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -400,7 +400,7 @@
       {
         "name": "b_v",
         "value": null,
-        "bounds": [ 0.05, 0.5 ],
+        "bounds": [0.05, 0.5],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -411,7 +411,7 @@
       {
         "name": "r",
         "value": null,
-        "bounds": [ 0.005, 0.5 ],
+        "bounds": [0.005, 0.5],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -422,7 +422,7 @@
       {
         "name": "sigma_v",
         "value": null,
-        "bounds": [ 0.05, 0.5 ],
+        "bounds": [0.05, 0.5],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -433,7 +433,7 @@
       {
         "name": "mu_v",
         "value": null,
-        "bounds": [ 0.01, 0.3 ],
+        "bounds": [0.01, 0.3],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -444,7 +444,7 @@
       {
         "name": "rho_sens",
         "value": null,
-        "bounds": [ 0.5, 1.0 ],
+        "bounds": [0.5, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -455,7 +455,7 @@
       {
         "name": "rho_spec",
         "value": null,
-        "bounds": [ 0.5, 1.0 ],
+        "bounds": [0.5, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -466,7 +466,7 @@
       {
         "name": "H0",
         "value": null,
-        "bounds": [ 100.0, 100000.0 ],
+        "bounds": [100.0, 100000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -477,7 +477,7 @@
       {
         "name": "M0",
         "value": null,
-        "bounds": [ 100.0, 1000000.0 ],
+        "bounds": [100.0, 1000000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -488,7 +488,7 @@
       {
         "name": "I_h0",
         "value": null,
-        "bounds": [ 1.0, 10000.0 ],
+        "bounds": [1.0, 10000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -499,7 +499,7 @@
       {
         "name": "N_tested",
         "value": null,
-        "bounds": [ 10.0, 10000.0 ],
+        "bounds": [10.0, 10000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -566,9 +566,9 @@
         "E_v": [],
         "I_v": []
       },
-      "base_compartments": [ "S_h", "I_h", "S_v", "E_v", "I_v" ],
-      "transmission_transitions": [ "bite", "infect_v" ],
-      "infectious_compartments": [ "I_v", "I_h" ]
+      "base_compartments": ["S_h", "I_h", "S_v", "E_v", "I_v"],
+      "transmission_transitions": ["bite", "infect_v"],
+      "infectious_compartments": ["I_v", "I_h"]
     }
   }
 }

@@ -1,64 +1,62 @@
 # `camdl profile` CAS Integration: Design Proposal
 
-**Status:** Proposed (implementation in-progress)
-**Author:** Vince Buffalo + Claude
-**Date:** 2026-04-24
-**Related:**
+**Status:** Proposed (implementation in-progress) **Author:** Vince Buffalo +
+Claude **Date:** 2026-04-24 **Related:**
+
 - GH #15 (original issue — streaming TSV + `--resume` proposal this supersedes)
-- `docs/dev/proposals/2026-04-19-output-tree-hardening.md` (CAS tree conventions)
-- `rust/crates/cli/src/{cas,run_meta,run_paths,browse}.rs` (existing CAS machinery)
+- `docs/dev/proposals/2026-04-19-output-tree-hardening.md` (CAS tree
+  conventions)
+- `rust/crates/cli/src/{cas,run_meta,run_paths,browse}.rs` (existing CAS
+  machinery)
 
 ---
 
 ## Thesis
 
-`camdl profile` should be wired through the existing content-addressable
-storage (CAS) system exactly the way `camdl simulate` and `camdl fit`
-already are. Each grid-point × start pair is a cacheable mini-fit. The
-aggregate `profile.tsv` becomes a *derived* artifact, regenerated from
-the per-unit CAS tree on every completion. Resume is the natural
-fall-out of cache-hit semantics — no new flag, no new streaming
-subsystem, no header-fingerprinting logic.
+`camdl profile` should be wired through the existing content-addressable storage
+(CAS) system exactly the way `camdl simulate` and `camdl fit` already are. Each
+grid-point × start pair is a cacheable mini-fit. The aggregate `profile.tsv`
+becomes a _derived_ artifact, regenerated from the per-unit CAS tree on every
+completion. Resume is the natural fall-out of cache-hit semantics — no new flag,
+no new streaming subsystem, no header-fingerprinting logic.
 
-This supersedes the architecture proposed in GH #15 (mutex-wrapped
-`BufWriter` + `--resume` flag parsing completed rows). Every capability
-GH #15 asks for — crash recovery, mid-run plotting, atomic per-unit
-writes, progress browsing — is already provided by CAS; the work is to
-lift `profile` from its ad-hoc "accumulate in `HashMap`, dump at end"
-shape into the conventions `simulate` and `fit` use today.
+This supersedes the architecture proposed in GH #15 (mutex-wrapped `BufWriter` +
+`--resume` flag parsing completed rows). Every capability GH #15 asks for —
+crash recovery, mid-run plotting, atomic per-unit writes, progress browsing — is
+already provided by CAS; the work is to lift `profile` from its ad-hoc
+"accumulate in `HashMap`, dump at end" shape into the conventions `simulate` and
+`fit` use today.
 
 ## Motivation
 
-A realistic 2D profile on a non-trivial model takes hours: a 14×14 grid
-× 3 starts × IF2 at 1000 particles × 100 iterations is ~12h wall on an
-M4 Max. In that timeframe, a transient failure (OOM, power, SIGINT,
-laptop lid, scheduler signal, cosmic ray) wipes out everything because
-the current code accumulates every grid point's result in an in-memory
-`HashMap<usize, ...>` and writes the output TSV only after *every* job
-completes (`profile.rs` lines ~270–307).
+A realistic 2D profile on a non-trivial model takes hours: a 14×14 grid × 3
+starts × IF2 at 1000 particles × 100 iterations is ~12h wall on an M4 Max. In
+that timeframe, a transient failure (OOM, power, SIGINT, laptop lid, scheduler
+signal, cosmic ray) wipes out everything because the current code accumulates
+every grid point's result in an in-memory `HashMap<usize, ...>` and writes the
+output TSV only after _every_ job completes (`profile.rs` lines ~270–307).
 
-This is the same shape of problem that `camdl fit run` handled years
-back (before per-chain directories) and that `camdl simulate` handles
-via `--cas`: **make each logical unit of work a content-hashed cached
-artifact, and the crash-resume story is automatic**. Profile is the
-last long-running subcommand without this treatment.
+This is the same shape of problem that `camdl fit run` handled years back
+(before per-chain directories) and that `camdl simulate` handles via `--cas`:
+**make each logical unit of work a content-hashed cached artifact, and the
+crash-resume story is automatic**. Profile is the last long-running subcommand
+without this treatment.
 
-A realistic crash scenario during drafting of this proposal: a running
-12h profile at ~91% complete. If it dies in the final 45 minutes, all
-~11 hours of grid-point results vanish. The CAS-integrated version
-resumes from exactly the points that had committed to disk. That
-specific recovery is the motivating case, but the architecture unlocks
-more:
+A realistic crash scenario during drafting of this proposal: a running 12h
+profile at ~91% complete. If it dies in the final 45 minutes, all ~11 hours of
+grid-point results vanish. The CAS-integrated version resumes from exactly the
+points that had committed to disk. That specific recovery is the motivating
+case, but the architecture unlocks more:
 
-- **Mid-run plotting.** The rollup TSV is current-as-of-last-completion
-  at every moment. Users see partial profiles emerging over time and
-  can catch "this isn't converging, adjust settings" hours earlier
-  than waiting for the full grid.
-- **Provenance per grid point.** Every cached unit carries its own
-  `run.json` with wall time, hash, argv, seed. Debugging "why is point
-  (14, 7) producing a suspect loglik" is `camdl show <hash>` away.
-- **Uniform browsing.** `camdl list`, `camdl show`, `camdl cat` work
-  across sim / fit / profile without per-subcommand special-casing.
+- **Mid-run plotting.** The rollup TSV is current-as-of-last-completion at every
+  moment. Users see partial profiles emerging over time and can catch "this
+  isn't converging, adjust settings" hours earlier than waiting for the full
+  grid.
+- **Provenance per grid point.** Every cached unit carries its own `run.json`
+  with wall time, hash, argv, seed. Debugging "why is point (14, 7) producing a
+  suspect loglik" is `camdl show <hash>` away.
+- **Uniform browsing.** `camdl list`, `camdl show`, `camdl cat` work across sim
+  / fit / profile without per-subcommand special-casing.
 
 ## Schema additions
 
@@ -100,17 +98,16 @@ pub struct GridAxis {
 
 ### Children reuse `RunKind::FitStage`
 
-A grid-point × start mini-fit is structurally indistinguishable from a
-fit-stage IF2 run: same config surface, same artifacts, same
-provenance shape. No new child kind needed. The per-start `run.json`'s
-`kind: fit-stage` works today and requires zero additional
-serialization paths.
+A grid-point × start mini-fit is structurally indistinguishable from a fit-stage
+IF2 run: same config surface, same artifacts, same provenance shape. No new
+child kind needed. The per-start `run.json`'s `kind: fit-stage` works today and
+requires zero additional serialization paths.
 
 The one extension: the per-start `FitStageMeta` gains a
-`parent_profile_hash: Option<String>` field so `camdl list --parent=X`
-can filter profiles the same way it would filter fit stages by their
-parent fit. `Option<String>` keeps existing fit-stage `run.json` files
-round-trip-compatible (absent field → `None`).
+`parent_profile_hash: Option<String>` field so `camdl list --parent=X` can
+filter profiles the same way it would filter fit stages by their parent fit.
+`Option<String>` keeps existing fit-stage `run.json` files round-trip-compatible
+(absent field → `None`).
 
 ## Directory layout
 
@@ -134,21 +131,20 @@ output/
 
 Design choices:
 
-- **`config_stem` prefix** (from the invocation's `--fit` config file
-  or model name) matches the `fits/` convention and makes the tree
-  human-scannable.
+- **`config_stem` prefix** (from the invocation's `--fit` config file or model
+  name) matches the `fits/` convention and makes the tree human-scannable.
 - **Flat `{point_idx:05d}`** rather than a nested `points/r0=56/gamma=0.14/`
-  scheme. Reasons: uniform sorting, short paths, no filesystem
-  nightmares from unusual values (e.g., "R0=0.0001"), and the
-  `focal.toml` file inside each point dir answers "which coord is this"
-  trivially (plus `camdl show` pretty-prints it).
-- **`start_{k}/` per grid point** preserves every start's output, not
-  just the winner. Enables richer rollups (`--rollup=all-starts` in
-  v2), per-start convergence inspection, and finer-grained resume
-  (completed starts stay even if others haven't).
-- **`focal.toml` at the point level**, not duplicated per start.
-  Orthogonal axes: point = what coordinate we're evaluating; start =
-  which of n_starts independent IF2 runs we're on.
+  scheme. Reasons: uniform sorting, short paths, no filesystem nightmares from
+  unusual values (e.g., "R0=0.0001"), and the `focal.toml` file inside each
+  point dir answers "which coord is this" trivially (plus `camdl show`
+  pretty-prints it).
+- **`start_{k}/` per grid point** preserves every start's output, not just the
+  winner. Enables richer rollups (`--rollup=all-starts` in v2), per-start
+  convergence inspection, and finer-grained resume (completed starts stay even
+  if others haven't).
+- **`focal.toml` at the point level**, not duplicated per start. Orthogonal
+  axes: point = what coordinate we're evaluating; start = which of n_starts
+  independent IF2 runs we're on.
 
 ## Hashing
 
@@ -165,11 +161,10 @@ sha256(
 )
 ```
 
-Two profiles produce the same hash iff their full config matches. Any
-change — model edit, param value, axis resolution, seed, iteration
-count — produces a new hash, a new `{profile_hash[:8]}/` subdir, and
-zero cache hits on the old tree. This is correct: changing any of
-those produces different work.
+Two profiles produce the same hash iff their full config matches. Any change —
+model edit, param value, axis resolution, seed, iteration count — produces a new
+hash, a new `{profile_hash[:8]}/` subdir, and zero cache hits on the old tree.
+This is correct: changing any of those produces different work.
 
 ### Per-start hash (cache key for mini-fits)
 
@@ -182,37 +177,38 @@ sha256(
 )
 ```
 
-**Content-addressable**, not profile-referenced. Two grid points in
-different profiles that happen to pin identical params and run at
-identical IF2 config and seed share the cache. Unlikely in practice
-but architecturally cleaner than hashing via profile_hash.
+**Content-addressable**, not profile-referenced. Two grid points in different
+profiles that happen to pin identical params and run at identical IF2 config and
+seed share the cache. Unlikely in practice but architecturally cleaner than
+hashing via profile_hash.
 
-The directory layout still names starts by `point_idx` / `start_idx`
-for readability; the hash is content-derived. In principle, the same
-content-hashed start dir could appear under two different profile
-trees (symlinked, or duplicated with consistent content). V1 duplicates
-on disk for simplicity; deduplication is a v2+ concern if storage
-ever matters.
+The directory layout still names starts by `point_idx` / `start_idx` for
+readability; the hash is content-derived. In principle, the same content-hashed
+start dir could appear under two different profile trees (symlinked, or
+duplicated with consistent content). V1 duplicates on disk for simplicity;
+deduplication is a v2+ concern if storage ever matters.
 
 ## Resume semantics
 
 ### Atomicity at two layers
 
 **Per-start** (the unit of work):
+
 - IF2 runs, produces state in memory
 - Serialize MLE + diagnostics to `start_{k}/*.tmp`
 - Write `start_{k}/run.json.tmp`
 - Rename all tmp files to their final names (atomic per inode on POSIX)
-- On crash mid-write: tmp files lie around, `run.json` doesn't exist,
-  next invocation treats the start as not-done and reruns.
+- On crash mid-write: tmp files lie around, `run.json` doesn't exist, next
+  invocation treats the start as not-done and reruns.
 
 **Rollup** (`profile.tsv`):
+
 - Scan `points/*/start_*/run.json`, collect completed units
 - Reduce to per-point winners (or other reduction — v1 ships winner)
 - Write `profile.tsv.tmp`
 - Rename to `profile.tsv`
-- On crash mid-write: either the old rollup or the new rollup is on
-  disk; never a truncated intermediate.
+- On crash mid-write: either the old rollup or the new rollup is on disk; never
+  a truncated intermediate.
 
 ### Cache-hit check (the resume mechanism)
 
@@ -232,29 +228,28 @@ if start_dir.join("run.json").exists() {
 
 Failure modes walked through:
 
-| Failure | State | Resume behavior |
-|---|---|---|
-| Crash before any start begins | Empty `points/` | Fresh run |
-| Crash mid-IF2 | No `run.json`, possibly partial tmp | Re-run that start |
-| Crash between starts | Some have `run.json`, some don't | Exactly the missing subset re-runs |
-| Crash during rollup rewrite | Old or new rollup on disk; never partial | Regenerated next completion |
-| Corrupt `run.json` (rare: bad flush) | Unparseable file | Treat as not-done; re-run (defensive parse) |
-| User edited model.camdl | Profile hash changes → new subdir | Fresh tree under new hash; old tree remains (manual cleanup) |
-| SIGKILL / power loss anywhere | Atomicity at both layers holds | Safe |
+| Failure                              | State                                    | Resume behavior                                              |
+| ------------------------------------ | ---------------------------------------- | ------------------------------------------------------------ |
+| Crash before any start begins        | Empty `points/`                          | Fresh run                                                    |
+| Crash mid-IF2                        | No `run.json`, possibly partial tmp      | Re-run that start                                            |
+| Crash between starts                 | Some have `run.json`, some don't         | Exactly the missing subset re-runs                           |
+| Crash during rollup rewrite          | Old or new rollup on disk; never partial | Regenerated next completion                                  |
+| Corrupt `run.json` (rare: bad flush) | Unparseable file                         | Treat as not-done; re-run (defensive parse)                  |
+| User edited model.camdl              | Profile hash changes → new subdir        | Fresh tree under new hash; old tree remains (manual cleanup) |
+| SIGKILL / power loss anywhere        | Atomicity at both layers holds           | Safe                                                         |
 
-The **one edge case to document explicitly**: changing IF2 config
-between invocations invalidates every cached point, because the
-per-start hash includes `if2_config_hash`. If a user sees poor
-convergence and restarts with `--iterations 200` instead of 100,
-every point re-runs from scratch. This is correct behavior
-(`iterations=100` and `iterations=200` are different content), but
-readers should not expect "add more iterations to existing points"
-semantics — that's a separate operation not covered here.
+The **one edge case to document explicitly**: changing IF2 config between
+invocations invalidates every cached point, because the per-start hash includes
+`if2_config_hash`. If a user sees poor convergence and restarts with
+`--iterations 200` instead of 100, every point re-runs from scratch. This is
+correct behavior (`iterations=100` and `iterations=200` are different content),
+but readers should not expect "add more iterations to existing points" semantics
+— that's a separate operation not covered here.
 
 ## Rollup strategy
 
-`profile.tsv` is rewritten atomically after every completed start
-(not batched). Schema:
+`profile.tsv` is rewritten atomically after every completed start (not batched).
+Schema:
 
 ```
 # camdl 0.1.0+<sha>
@@ -266,37 +261,34 @@ semantics — that's a separate operation not covered here.
 Row construction:
 
 1. Scan every `points/*/start_*/run.json`, collect completed starts.
-2. Group by `point_idx`. For each point, pick the start with max
-   `final_loglik`.
-3. Emit one row per point with: focal values (from `focal.toml`),
-   winner's loglik, winner's start_idx, winner's MLE vector, cumulative
-   wall time across all starts at this point.
-4. Sort by flat `point_idx` (= lex order over focal axes, given the
-   axis traversal order fixed by `focal_params`).
+2. Group by `point_idx`. For each point, pick the start with max `final_loglik`.
+3. Emit one row per point with: focal values (from `focal.toml`), winner's
+   loglik, winner's start_idx, winner's MLE vector, cumulative wall time across
+   all starts at this point.
+4. Sort by flat `point_idx` (= lex order over focal axes, given the axis
+   traversal order fixed by `focal_params`).
 
-**Cost**: O(grid × n_starts) reads of small `run.json` files plus
-atomic rewrite. At the motivating problem sizes (588 units):
-sub-second. Scales linearly — a 100×100 grid with 5 starts = 50k
-reads, probably a few seconds, still cheap relative to any single
-IF2 run.
+**Cost**: O(grid × n_starts) reads of small `run.json` files plus atomic
+rewrite. At the motivating problem sizes (588 units): sub-second. Scales
+linearly — a 100×100 grid with 5 starts = 50k reads, probably a few seconds,
+still cheap relative to any single IF2 run.
 
-**Throttling** is not needed in v1. If the file-size growth of
-frequent rollup rewrites ever becomes a concern (weird filesystem,
-slow disk), add a `--rollup-throttle-secs N` flag. Not needed now.
+**Throttling** is not needed in v1. If the file-size growth of frequent rollup
+rewrites ever becomes a concern (weird filesystem, slow disk), add a
+`--rollup-throttle-secs N` flag. Not needed now.
 
 ### Why rewrite the entire rollup each time?
 
 Alternatives considered:
 
-- **Append-only**: write one row at completion, never rewrite. Pro:
-  O(1) per completion. Con: need a final merge / sort / reduce step;
-  users get an unsorted TSV mid-run that's harder to plot. Rejected.
-- **Column-indexed DB**: SQLite, parquet. Pro: incremental updates,
-  rich queries. Con: introduces a query layer users don't want for a
-  file they'll `awk`/`pandas` over anyway. Rejected.
-- **Full rewrite**: chosen. Simple semantics, always usable, the
-  expensive step is actually the IF2 (minutes to hours) so rollup cost
-  is invisible.
+- **Append-only**: write one row at completion, never rewrite. Pro: O(1) per
+  completion. Con: need a final merge / sort / reduce step; users get an
+  unsorted TSV mid-run that's harder to plot. Rejected.
+- **Column-indexed DB**: SQLite, parquet. Pro: incremental updates, rich
+  queries. Con: introduces a query layer users don't want for a file they'll
+  `awk`/`pandas` over anyway. Rejected.
+- **Full rewrite**: chosen. Simple semantics, always usable, the expensive step
+  is actually the IF2 (minutes to hours) so rollup cost is invisible.
 
 ## Workflow examples
 
@@ -331,8 +323,7 @@ camdl profile fit_r0_gamma.toml --cas \
 #   original 73% already-computed results preserved bit-for-bit.
 ```
 
-No flag, no config, no re-specification. Just re-invoke with the same
-arguments.
+No flag, no config, no re-specification. Just re-invoke with the same arguments.
 
 ### Convergence-debugging workflow
 
@@ -357,12 +348,12 @@ camdl profile fit.toml --cas --iterations 200 ...
 #   different work. The old tree remains on disk as archival.
 ```
 
-If instead you only wanted to regenerate the rollup from the current
-CAS tree (no IF2 reruns), v1 doesn't ship an explicit flag for this —
-but `ls output/profiles/.../abc12345/points/*/start_*/run.json | wc -l`
-tells you how many are done, and the rollup is already up-to-date with
-the last completion event. v2 may add `camdl profile --rollup-only`
-for explicit regeneration; v1 users can work around via `camdl cat`.
+If instead you only wanted to regenerate the rollup from the current CAS tree
+(no IF2 reruns), v1 doesn't ship an explicit flag for this — but
+`ls output/profiles/.../abc12345/points/*/start_*/run.json | wc -l` tells you
+how many are done, and the rollup is already up-to-date with the last completion
+event. v2 may add `camdl profile --rollup-only` for explicit regeneration; v1
+users can work around via `camdl cat`.
 
 ### Early-stop workflow
 
@@ -379,50 +370,48 @@ SIGINT the process.
 ### v1 (in, shipping in this work)
 
 - [x] `RunKind::Profile` + `ProfileMeta` + `GridAxis` in `run_meta.rs`
-- [x] `parent_profile_hash: Option<String>` added to `FitStageMeta`
-      (optional field; existing fit-stage run.json files parse
-      unchanged)
+- [x] `parent_profile_hash: Option<String>` added to `FitStageMeta` (optional
+      field; existing fit-stage run.json files parse unchanged)
 - [x] `profiles/<config_stem>/{hash[:8]}/` top-level layout with
       `points/{idx:05d}/start_{k}/` subtree
 - [x] Per-start atomic CAS writes with tmp-then-rename
-- [x] Cache-hit check before every per-start IF2 (default when CAS
-      tree is present; `--cas` opt-in matches `simulate` convention)
-- [x] `profile.tsv` rollup rewritten atomically after every completed
-      start
+- [x] Cache-hit check before every per-start IF2 (default when CAS tree is
+      present; `--cas` opt-in matches `simulate` convention)
+- [x] `profile.tsv` rollup rewritten atomically after every completed start
 - [x] `focal.toml` written per point for human-browsability
-- [x] `camdl list --parent=<profile_hash>` filter for
-      progress-snapshot browsing
+- [x] `camdl list --parent=<profile_hash>` filter for progress-snapshot browsing
 - [x] Documentation: `tests/external/README.md`-style README under
-      `output/profiles/README.md` (optional if layout is obvious
-      enough); update `docs/dev/testing.md` L-layer table
+      `output/profiles/README.md` (optional if layout is obvious enough); update
+      `docs/dev/testing.md` L-layer table
 
 ### v2 (deferred; not shipping here)
 
-- [ ] `--rollup-only` flag — explicit no-IF2 regeneration of
-      `profile.tsv` from the current CAS tree
+- [ ] `--rollup-only` flag — explicit no-IF2 regeneration of `profile.tsv` from
+      the current CAS tree
 - [ ] `--rollup=all-starts` / `--rollup=quantile` reducer variants
-- [ ] Per-point convergence diagnostics (Rhat across starts,
-      final-iter loglik variance, divergence-rate summary) in
-      the rollup
+- [ ] Per-point convergence diagnostics (Rhat across starts, final-iter loglik
+      variance, divergence-rate summary) in the rollup
 - [ ] Concurrent-invocation lock file (`.lock` in profile dir)
-- [ ] Richer `camdl list --parent` output (per-point loglik + wall
-      time columns alongside the directory listing)
-- [ ] CAS tree deduplication when two profiles happen to share a
-      point (currently duplicates on disk)
+- [ ] Richer `camdl list --parent` output (per-point loglik + wall time columns
+      alongside the directory listing)
+- [ ] CAS tree deduplication when two profiles happen to share a point
+      (currently duplicates on disk)
 - [ ] Integration with `camdl compare` for comparing two profiles
 
 ### Explicit non-goals
 
-- **Replacing `profile.tsv` as the user-facing artifact.** The rollup
-  stays primary for plotting; the CAS tree is the underlying truth
-  but plot scripts continue to read the TSV as they do today.
-- **Changing the CLI surface.** `camdl profile --sweep NAME=V1,V2,... \
-  --starts N --iterations M ...` works exactly as before. The only
-  new flag is `--cas` (opt-in to caching, matching simulate); default
-  behavior without `--cas` preserves current no-disk-footprint mode.
-- **Profile-specific streaming logic.** No `Mutex<BufWriter>`, no
-  header fingerprinting, no TSV-parse-based resume detection.
-  Everything routes through existing CAS machinery.
+- **Replacing `profile.tsv` as the user-facing artifact.** The rollup stays
+  primary for plotting; the CAS tree is the underlying truth but plot scripts
+  continue to read the TSV as they do today.
+- **Changing the CLI surface.**
+  `camdl profile --sweep NAME=V1,V2,... \
+  --starts N --iterations M ...` works
+  exactly as before. The only new flag is `--cas` (opt-in to caching, matching
+  simulate); default behavior without `--cas` preserves current
+  no-disk-footprint mode.
+- **Profile-specific streaming logic.** No `Mutex<BufWriter>`, no header
+  fingerprinting, no TSV-parse-based resume detection. Everything routes through
+  existing CAS machinery.
 
 ## Implementation sketch
 
@@ -442,8 +431,8 @@ SIGINT the process.
 3. **`rust/crates/cli/src/profile.rs`** (~250 lines modified / added)
    - Build `ProfileMeta` from args + hash inputs
    - Compute `profile_hash` and ensure/create the profile dir
-   - Write the profile-level `run.json` (with `wall_time_seconds: 0.0`,
-     patched at end) and grid spec
+   - Write the profile-level `run.json` (with `wall_time_seconds: 0.0`, patched
+     at end) and grid spec
    - For each (grid_point, start_idx):
      - Compute per-start hash, check cache
      - On miss: run IF2, write tmp artifacts, rename, rewrite rollup
@@ -456,79 +445,74 @@ SIGINT the process.
 
 5. **Tests** (~100 lines)
    - Round-trip: run a tiny profile, check layout and rollup
-   - Resume: run a tiny profile, delete half the starts, rerun,
-     verify only missing ones re-run and rollup is complete
+   - Resume: run a tiny profile, delete half the starts, rerun, verify only
+     missing ones re-run and rollup is complete
    - Atomic rollup: inject a failure mid-rollup-write (simulate via
      fault-injection test helper), verify old rollup survives
 
-**Total estimated diff**: ~500 lines in code + ~100 lines in tests.
-Single session feasible; ~half-day including careful review of the
-cache-hit/miss paths.
+**Total estimated diff**: ~500 lines in code + ~100 lines in tests. Single
+session feasible; ~half-day including careful review of the cache-hit/miss
+paths.
 
 ### Order of commits
 
 1. Proposal doc (this file)
 2. Schema types (`run_meta.rs` + `run_paths.rs`)
-3. Profile CAS write path (no cache-hit yet — just write every unit,
-   produce correct layout)
+3. Profile CAS write path (no cache-hit yet — just write every unit, produce
+   correct layout)
 4. Cache-hit path (resume semantics)
 5. Rollup regeneration (end-of-every-completion, atomic rewrite)
 6. Browse integration (`list --parent=`, `show <profile_hash>`)
 7. Tests
 
-Each commit is independently runnable on small cases; late commits
-add functionality without breaking earlier ones.
+Each commit is independently runnable on small cases; late commits add
+functionality without breaking earlier ones.
 
 ## Open questions
 
-1. **Default-on CAS for profile, or opt-in `--cas` as with simulate?**
-   Profile runs are uniformly long (no "quick one-off" case comparable
-   to simulate). Argument for default-on: crash safety is always
-   wanted. Argument for opt-in: consistency with simulate, avoids
-   surprising users with disk footprint. **Leaning default-on for
-   profile** — the 12h risk is the motivating case, and the disk
-   footprint is modest relative to the work. Happy to invert if
+1. **Default-on CAS for profile, or opt-in `--cas` as with simulate?** Profile
+   runs are uniformly long (no "quick one-off" case comparable to simulate).
+   Argument for default-on: crash safety is always wanted. Argument for opt-in:
+   consistency with simulate, avoids surprising users with disk footprint.
+   **Leaning default-on for profile** — the 12h risk is the motivating case, and
+   the disk footprint is modest relative to the work. Happy to invert if
    consistency matters more.
 
 2. **`config_stem` derivation.** Simulate uses
-   `<scenario-slug>-<scen_hash[:8]>`; fit uses the fit-config filename
-   stem. Profile should mirror fit: derive from the `fit.toml` path,
-   fallback to `profile` if no config file. Trivial.
+   `<scenario-slug>-<scen_hash[:8]>`; fit uses the fit-config filename stem.
+   Profile should mirror fit: derive from the `fit.toml` path, fallback to
+   `profile` if no config file. Trivial.
 
-3. **`focal.toml` format.** TOML with `[focal]` section listing the
-   pinned values for display, or YAML, or a single-line
-   `params.toml`-style file? Proposed TOML for consistency with
-   `params.toml` elsewhere in the repo.
+3. **`focal.toml` format.** TOML with `[focal]` section listing the pinned
+   values for display, or YAML, or a single-line `params.toml`-style file?
+   Proposed TOML for consistency with `params.toml` elsewhere in the repo.
 
-4. **Resume across partial profiles with different `--starts`**. If
-   user runs profile with `--starts=3`, then invokes with `--starts=5`,
-   the profile-level hash changes (because n_starts is in it), so
-   everything re-runs. Alternative: decouple `n_starts` from
-   profile-hash, so only the extra starts run. Proposed: keep current
-   behavior (n_starts is part of the profile identity). Extending
-   starts is a rare enough case that the simplicity is worth it;
-   v2 can add a `--add-starts N` feature if demanded.
+4. **Resume across partial profiles with different `--starts`**. If user runs
+   profile with `--starts=3`, then invokes with `--starts=5`, the profile-level
+   hash changes (because n_starts is in it), so everything re-runs. Alternative:
+   decouple `n_starts` from profile-hash, so only the extra starts run.
+   Proposed: keep current behavior (n_starts is part of the profile identity).
+   Extending starts is a rare enough case that the simplicity is worth it; v2
+   can add a `--add-starts N` feature if demanded.
 
 ## What this proposal is not
 
 - **Not a migration from the old flat-TSV-only profile output** —
-  `--output PATH` still works; when `--cas` is active, the rollup
-  inside the CAS tree IS the output, and `--output PATH` (if given)
-  just symlinks/copies to the user's requested path. v2 may
-  consolidate.
-- **Not a retrofit of batch/fit/simulate** — their CAS integration is
-  already in good shape; no changes to those paths.
-- **Not a new universal aggregation layer** — profile is the only
-  subcommand with this "fan out + reduce" shape today, so the rollup
-  logic lives in `profile.rs`. If other subcommands grow similar
-  patterns, consider extracting a shared reducer at that point, not
-  preemptively.
+  `--output PATH` still works; when `--cas` is active, the rollup inside the CAS
+  tree IS the output, and `--output PATH` (if given) just symlinks/copies to the
+  user's requested path. v2 may consolidate.
+- **Not a retrofit of batch/fit/simulate** — their CAS integration is already in
+  good shape; no changes to those paths.
+- **Not a new universal aggregation layer** — profile is the only subcommand
+  with this "fan out + reduce" shape today, so the rollup logic lives in
+  `profile.rs`. If other subcommands grow similar patterns, consider extracting
+  a shared reducer at that point, not preemptively.
 
 ## Closing
 
 This is a ~500-line implementation that eliminates a 12-hour-single-
-point-of-failure class of bug, gives users mid-run progress for free,
-unifies `profile` with the rest of camdl's CAS tooling, and adds zero
-new user-facing concepts (CAS already exists; `camdl list` already
-exists; `--cas` already exists). The scope is tight; the v1/v2 split
-is honest about what's polish vs substance.
+point-of-failure class of bug, gives users mid-run progress for free, unifies
+`profile` with the rest of camdl's CAS tooling, and adds zero new user-facing
+concepts (CAS already exists; `camdl list` already exists; `--cas` already
+exists). The scope is tight; the v1/v2 split is honest about what's polish vs
+substance.

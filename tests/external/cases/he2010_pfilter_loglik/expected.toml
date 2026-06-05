@@ -3,8 +3,8 @@
 #   mean loglik ≈ -5827.4  sd across reps ≈ 12.7
 
 [checks.loglik]
-compare   = "mean"
-tol_abs   = 35.0
+compare = "mean"
+tol_abs = 35.0
 rationale = """
 pomp pfilter at the published London MLE, 2000 particles × 20
 replicates: mean ≈ -5827.4, per-replicate SD ≈ 12.7. MC SE of the

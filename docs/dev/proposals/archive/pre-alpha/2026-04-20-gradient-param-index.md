@@ -6,25 +6,27 @@ implemented: 2026-04-20
 
 # Gradient parameter index resolution
 
-Companion to `docs/dev/reviews/2026-04-20-review-rust-design.md`
-(RdM2). Replace name-keyed linear lookup in the hot gradient evaluation
-loop with index-keyed array access resolved once at model construction.
+Companion to `docs/dev/reviews/2026-04-20-review-rust-design.md` (RdM2). Replace
+name-keyed linear lookup in the hot gradient evaluation loop with index-keyed
+array access resolved once at model construction.
 
 ---
 
 ## Problem
 
 `compiled_model.rs:346`:
+
 ```rust
 pub rate_grads: Vec<Vec<(String, ResolvedExpr)>>,
 ```
 
 One outer `Vec` per transition; each inner `Vec` is a list of
-`(param_name, gradient_expression)` pairs emitted by the OCaml
-autodiff pass. The `String` key mirrors the OCaml representation:
-the compiler operates on names, so names are what it emits.
+`(param_name, gradient_expression)` pairs emitted by the OCaml autodiff pass.
+The `String` key mirrors the OCaml representation: the compiler operates on
+names, so names are what it emits.
 
 At evaluation time, `pgas_grad.rs:99–105`:
+
 ```rust
 let mut d_rate = vec![0.0; d];
 for (name, resolved_grad) in &model.resolved.rate_grads[tr_idx] {
@@ -34,22 +36,20 @@ for (name, resolved_grad) in &model.resolved.rate_grads[tr_idx] {
 }
 ```
 
-And again at `pgas_grad.rs:205–210`. This runs once per gradient
-term, per transition, per substep, across all particles and sweeps.
-`param_names.iter().position(...)` is O(n_params) per call. For a
-model with 8 estimated params and 20 transitions, that is up to 160
-string comparisons per substep. At 100 substeps × 500 particles ×
-2000 PGAS sweeps, the hot path executes ≈160 million string-comparison
-scans before amortisation.
+And again at `pgas_grad.rs:205–210`. This runs once per gradient term, per
+transition, per substep, across all particles and sweeps.
+`param_names.iter().position(...)` is O(n_params) per call. For a model with 8
+estimated params and 20 transitions, that is up to 160 string comparisons per
+substep. At 100 substeps × 500 particles × 2000 PGAS sweeps, the hot path
+executes ≈160 million string-comparison scans before amortisation.
 
-A second issue: the `if let Some(i)` silently drops gradient terms
-for parameters not in `param_names`. This is correct when a parameter
-is in the model but not being estimated in this run. But it is also
-silent when the OCaml compiler emits a gradient for a parameter name
-that is misspelled or renamed — the gradient is silently zero, NUTS
-sees a flat surface for that parameter, and inference degrades without
-any error. The current code has no way to distinguish "intentionally
-not estimated" from "name mismatch."
+A second issue: the `if let Some(i)` silently drops gradient terms for
+parameters not in `param_names`. This is correct when a parameter is in the
+model but not being estimated in this run. But it is also silent when the OCaml
+compiler emits a gradient for a parameter name that is misspelled or renamed —
+the gradient is silently zero, NUTS sees a flat surface for that parameter, and
+inference degrades without any error. The current code has no way to distinguish
+"intentionally not estimated" from "name mismatch."
 
 ---
 
@@ -57,8 +57,8 @@ not estimated" from "name mismatch."
 
 ### Step 1 — resolve at `CompiledModel` construction time
 
-Add a method to `CompiledModel::new` (or call it from the CLI
-model-load path, just before PGAS launches):
+Add a method to `CompiledModel::new` (or call it from the CLI model-load path,
+just before PGAS launches):
 
 ```rust
 /// Resolve rate_grads String keys to param_index offsets given
@@ -123,9 +123,9 @@ Add a field to `CompiledModel` (or to the resolved model struct):
 pub rate_grads_indexed: Option<Vec<Vec<(usize, ResolvedExpr)>>>,
 ```
 
-`Option<...>` keeps the field absent for pure simulation runs that
-never call PGAS. Alternatively, resolve to model-param indices (not
-estimated-param indices) at `CompiledModel::new` time:
+`Option<...>` keeps the field absent for pure simulation runs that never call
+PGAS. Alternatively, resolve to model-param indices (not estimated-param
+indices) at `CompiledModel::new` time:
 
 ```rust
 /// rate_grads with param positions resolved to model-parameter indices.
@@ -135,9 +135,9 @@ estimated-param indices) at `CompiledModel::new` time:
 pub rate_grads_model_indexed: Vec<Vec<(usize, ResolvedExpr)>>,
 ```
 
-This second form is cheaper to construct (no estimated set needed)
-and reduces the launch-time work to a single O(n_params × n_estimated)
-pass rather than an O(n_transitions × n_grads × n_params) loop.
+This second form is cheaper to construct (no estimated set needed) and reduces
+the launch-time work to a single O(n_params × n_estimated) pass rather than an
+O(n_transitions × n_grads × n_params) loop.
 
 ### Step 3 — update the hot loop
 
@@ -150,9 +150,9 @@ for &(param_idx, ref resolved_grad) in &rate_grads_indexed[tr_idx] {
 }
 ```
 
-No string comparison, no `Option` unwrap, no branch. The `for` loop
-body is now two operations: `eval_resolved` (the expensive one,
-unchanged) and an array store.
+No string comparison, no `Option` unwrap, no branch. The `for` loop body is now
+two operations: `eval_resolved` (the expensive one, unchanged) and an array
+store.
 
 Same update at `pgas_grad.rs:205–210`.
 
@@ -160,18 +160,19 @@ Same update at `pgas_grad.rs:205–210`.
 
 ## Correctness invariant
 
-The resolved index `param_idx` is an index into the `estimated_names`
-slice passed at resolution time. The PGAS gradient caller must pass the
-same `estimated_names` at resolution time and at evaluation time. This
-is already the case: both are derived from the same `FitConfigV2`
-parameter list in a single launch. If the estimated set ever changes
-mid-run (it doesn't today), re-resolution would be needed.
+The resolved index `param_idx` is an index into the `estimated_names` slice
+passed at resolution time. The PGAS gradient caller must pass the same
+`estimated_names` at resolution time and at evaluation time. This is already the
+case: both are derived from the same `FitConfigV2` parameter list in a single
+launch. If the estimated set ever changes mid-run (it doesn't today),
+re-resolution would be needed.
 
 ---
 
 ## Test plan
 
 **Unit test — resolution is correct:**
+
 ```rust
 #[test]
 fn gradient_indices_resolve_to_correct_positions() {
@@ -191,6 +192,7 @@ fn gradient_indices_resolve_to_correct_positions() {
 ```
 
 **Unit test — unmatched name is caught:**
+
 ```rust
 #[test]
 fn gradient_name_mismatch_is_reported() {
@@ -202,24 +204,22 @@ fn gradient_name_mismatch_is_reported() {
 }
 ```
 
-**Regression test — gradient values unchanged:**
-The existing `gradient_check.rs` test file in `sim/tests/` runs finite-
-difference gradient verification. After this change, the gradient values
-computed by `pgas_grad` must be identical to before (only the data
-structure changed). Run `cargo test --test gradient_check` before and
-after to confirm.
+**Regression test — gradient values unchanged:** The existing
+`gradient_check.rs` test file in `sim/tests/` runs finite- difference gradient
+verification. After this change, the gradient values computed by `pgas_grad`
+must be identical to before (only the data structure changed). Run
+`cargo test --test gradient_check` before and after to confirm.
 
 ---
 
 ## Scope
 
-- `compiled_model.rs`: add `rate_grads_model_indexed` field + populate
-  in `CompiledModel::new`.
+- `compiled_model.rs`: add `rate_grads_model_indexed` field + populate in
+  `CompiledModel::new`.
 - `pgas_grad.rs`: update two loop bodies (~6 lines each).
-- CLI `fit/pgas.rs`: add resolution call at launch; propagate unmatched
-  error.
+- CLI `fit/pgas.rs`: add resolution call at launch; propagate unmatched error.
 - `sim/tests/gradient_check.rs`: confirm no numeric change (regression).
 
-The original `rate_grads: Vec<Vec<(String, ResolvedExpr)>>` can be
-retained for debugging and for the OCaml-compatibility path; the indexed
-form is additive, not a replacement.
+The original `rate_grads: Vec<Vec<(String, ResolvedExpr)>>` can be retained for
+debugging and for the OCaml-compatibility path; the indexed form is additive,
+not a replacement.

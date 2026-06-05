@@ -17,7 +17,7 @@
     "transitions": [
       {
         "name": "infection_a",
-        "stoichiometry": [ [ "S_a", -1 ], [ "I_a", 1 ] ],
+        "stoichiometry": [["S_a", -1], ["I_a", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -34,7 +34,7 @@
                 "right": { "pop": "I_a" }
               }
             },
-            "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+            "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
           }
         },
         "metadata": {
@@ -56,14 +56,14 @@
                       "right": { "pop": "I_a" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+                  "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_a", "I_a", "R_a" ] },
-                  "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+                  "left": { "pop_sum": ["S_a", "I_a", "R_a"] },
+                  "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
                 }
               }
             }
@@ -84,7 +84,7 @@
                       "right": { "pop": "S_a" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+                  "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
                 }
               }
             ]
@@ -93,7 +93,7 @@
       },
       {
         "name": "infection_b",
-        "stoichiometry": [ [ "S_b", -1 ], [ "I_b", 1 ] ],
+        "stoichiometry": [["S_b", -1], ["I_b", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -110,7 +110,7 @@
                 "right": { "pop": "I_b" }
               }
             },
-            "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+            "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
           }
         },
         "metadata": {
@@ -132,14 +132,14 @@
                       "right": { "pop": "I_b" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+                  "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_b", "I_b", "R_b" ] },
-                  "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+                  "left": { "pop_sum": ["S_b", "I_b", "R_b"] },
+                  "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
                 }
               }
             }
@@ -160,7 +160,7 @@
                       "right": { "pop": "S_b" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+                  "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
                 }
               }
             ]
@@ -169,7 +169,7 @@
       },
       {
         "name": "importation_a_b",
-        "stoichiometry": [ [ "S_a", -1 ], [ "I_a", 1 ] ],
+        "stoichiometry": [["S_a", -1], ["I_a", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -186,7 +186,7 @@
                 "right": { "pop": "I_b" }
               }
             },
-            "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+            "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
           }
         },
         "metadata": {
@@ -208,14 +208,14 @@
                       "right": { "pop": "I_b" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+                  "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_b", "I_b", "R_b" ] },
-                  "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+                  "left": { "pop_sum": ["S_b", "I_b", "R_b"] },
+                  "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
                 }
               }
             }
@@ -236,7 +236,7 @@
                       "right": { "pop": "S_a" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_b", "I_b", "R_b" ] }
+                  "right": { "pop_sum": ["S_b", "I_b", "R_b"] }
                 }
               }
             ]
@@ -245,7 +245,7 @@
       },
       {
         "name": "importation_b_a",
-        "stoichiometry": [ [ "S_b", -1 ], [ "I_b", 1 ] ],
+        "stoichiometry": [["S_b", -1], ["I_b", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -262,7 +262,7 @@
                 "right": { "pop": "I_a" }
               }
             },
-            "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+            "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
           }
         },
         "metadata": {
@@ -284,14 +284,14 @@
                       "right": { "pop": "I_a" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+                  "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_a", "I_a", "R_a" ] },
-                  "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+                  "left": { "pop_sum": ["S_a", "I_a", "R_a"] },
+                  "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
                 }
               }
             }
@@ -312,7 +312,7 @@
                       "right": { "pop": "S_b" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_a", "I_a", "R_a" ] }
+                  "right": { "pop_sum": ["S_a", "I_a", "R_a"] }
                 }
               }
             ]
@@ -321,7 +321,7 @@
       },
       {
         "name": "recovery_a",
-        "stoichiometry": [ [ "I_a", -1 ], [ "R_a", 1 ] ],
+        "stoichiometry": [["I_a", -1], ["R_a", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -338,7 +338,7 @@
       },
       {
         "name": "recovery_b",
-        "stoichiometry": [ [ "I_b", -1 ], [ "R_b", 1 ] ],
+        "stoichiometry": [["I_b", -1], ["R_b", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -363,7 +363,7 @@
       {
         "name": "beta",
         "value": null,
-        "bounds": [ 0.001, 5.0 ],
+        "bounds": [0.001, 5.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -374,7 +374,7 @@
       {
         "name": "gamma",
         "value": null,
-        "bounds": [ 0.01, 1.0 ],
+        "bounds": [0.01, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -385,7 +385,7 @@
       {
         "name": "kappa",
         "value": null,
-        "bounds": [ 0.0, 1.0 ],
+        "bounds": [0.0, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -412,16 +412,16 @@
     },
     "scenarios": [],
     "model_structure": {
-      "dimensions": [ { "name": "patch", "values": [ "a", "b" ] } ],
+      "dimensions": [{ "name": "patch", "values": ["a", "b"] }],
       "compartment_dims": {
-        "S": [ "patch" ],
-        "I": [ "patch" ],
-        "R": [ "patch" ]
+        "S": ["patch"],
+        "I": ["patch"],
+        "R": ["patch"]
       },
-      "base_compartments": [ "S", "I", "R" ],
-      "transmission_transitions": [ "infection", "importation" ],
-      "infectious_compartments": [ "I" ]
+      "base_compartments": ["S", "I", "R"],
+      "transmission_transitions": ["infection", "importation"],
+      "infectious_compartments": ["I"]
     },
-    "identity_tracked_compartments": [ "I_a", "I_b", "R_a", "R_b" ]
+    "identity_tracked_compartments": ["I_a", "I_b", "R_a", "R_b"]
   }
 }

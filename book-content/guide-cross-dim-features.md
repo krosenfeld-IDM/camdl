@@ -21,7 +21,8 @@ dissects each feature in detail.
 - Age-structured within-patch transmission via a WAIFW contact matrix
 - Between-patch transmission driven by a sparse spatial adjacency table
 - Demographic turnover: aging through groups, background mortality, births
-- Two parameters `beta_local` and `beta_travel` separating local and spatial force of infection
+- Two parameters `beta_local` and `beta_travel` separating local and spatial
+  force of infection
 
 The full model source:
 
@@ -105,14 +106,14 @@ seir_cross_dim
 6 transition templates expand to 120 transitions across 48 compartments. The
 breakdown from `--count`:
 
-| Template | Index space | Expanded |
-|----------|-------------|----------|
-| `infection` | patch × age | 4 × 3 = 12 |
-| `progression` | patch × age | 12 |
-| `recovery` | patch × age | 12 |
-| `aging` | compartments × patch × consecutive(age) | 4 × 4 × 2 = 32 |
-| `death` | compartments × patch × age | 4 × 4 × 3 = 48 |
-| `birth` | patch | 4 |
+| Template      | Index space                             | Expanded       |
+| ------------- | --------------------------------------- | -------------- |
+| `infection`   | patch × age                             | 4 × 3 = 12     |
+| `progression` | patch × age                             | 12             |
+| `recovery`    | patch × age                             | 12             |
+| `aging`       | compartments × patch × consecutive(age) | 4 × 4 × 2 = 32 |
+| `death`       | compartments × patch × age              | 4 × 4 × 3 = 48 |
+| `birth`       | patch                                   | 4              |
 
 ---
 
@@ -135,8 +136,8 @@ contact (C[child,child] = 18) and weaker cross-age contact (C[child,elder] = 1).
 
 **Spatial:** `sum(q in patch, adj[p, q] * I_total[q] / N_total[q])` — the same
 susceptible also receives infectious pressure from every connected patch `q`,
-weighted by the adjacency strength. `adj[p, p] = 0` by construction (no self-loops
-in the file), so this sum contributes only from other patches.
+weighted by the adjacency strength. `adj[p, p] = 0` by construction (no
+self-loops in the file), so this sum contributes only from other patches.
 
 The `sum(b in age, ...)` and `sum(q in patch, ...)` constructs each expand at
 compile time into a chain of additions — the IR contains no loops, only flat
@@ -198,8 +199,8 @@ stratifications the expanded compartment names are `S_north_child` etc. — `c[a
 is ambiguous. Writing `c[p, a] --> c[p, a_next]` makes clear that aging moves
 within-patch: north children age into north adults, not south adults.
 
-The full expansion is 4 compartments × 4 patches × 2 age transitions = 32
-aging transitions. Each uses the compartment-specific `age_dur` value:
+The full expansion is 4 compartments × 4 patches × 2 age transitions = 32 aging
+transitions. Each uses the compartment-specific `age_dur` value:
 
 ```
 age_dur  [age]  inline
@@ -208,9 +209,9 @@ age_dur  [age]  inline
   │ elder  36500    # ~100 years (effectively never ages out)
 ```
 
-The aging rate `1 / 5475 ≈ 0.000183 per day` means a child spends on average
-15 years in the child stratum before aging to adult — demography operating on
-the same time axis as the epidemic.
+The aging rate `1 / 5475 ≈ 0.000183 per day` means a child spends on average 15
+years in the child stratum before aging to adult — demography operating on the
+same time axis as the epidemic.
 
 ---
 
@@ -222,11 +223,11 @@ let N_total[p in patch]     = sum(a in age, N[p, a])
 let I_total[p in patch]     = sum(a in age, I[p, a])
 ```
 
-`let` bindings reduce repetition and give intermediate quantities readable names.
-`N[p, a]` is the local (patch × age) population size. `N_total[p]` aggregates
-across all age groups within a patch — used to normalise both the local and
-spatial FOI. `I_total[p]` is the total infectious load per patch — the quantity
-that drives spatial importation.
+`let` bindings reduce repetition and give intermediate quantities readable
+names. `N[p, a]` is the local (patch × age) population size. `N_total[p]`
+aggregates across all age groups within a patch — used to normalise both the
+local and spatial FOI. `I_total[p]` is the total infectious load per patch — the
+quantity that drives spatial importation.
 
 The two-level structure — per-stratum `N[p,a]` and per-patch aggregate
 `N_total[p]` — is a common pattern. You can verify the expansion:
@@ -268,8 +269,8 @@ infection-free, and the spatial coupling in the FOI drives eventual spread.
 ## Transition expansion summary
 
 The 6 compact templates produce 120 transitions covering all
-compartment-patch-age combinations. The compiler's expansion is fully
-determined by the dimension declarations and table structure — add a patch to
+compartment-patch-age combinations. The compiler's expansion is fully determined
+by the dimension declarations and table structure — add a patch to
 `patch_features.tsv` and recompile to get a 150-transition model without
 touching any transition logic.
 

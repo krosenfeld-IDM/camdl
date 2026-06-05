@@ -20,11 +20,11 @@ ODE — and we burn 100×–1000× more compute than necessary.
 This proposal adds three new algorithm-explicit stage methods to fit.toml, each
 implicitly running on the ODE backend:
 
-| `algorithm`              | Backend       | Description                                                                | Phase | LOC  |
-| ------------------------ | ------------- | -------------------------------------------------------------------------- | ----- | ---- |
-| `nl-sbplx` / `nl-bobyqa` | `ode`         | Deterministic MLE via NLopt; Sbplx default, BOBYQA for smooth objectives   | 1     | ~550 |
-| `mh`                     | `ode`         | Vanilla Metropolis-Hastings on deterministic marginal likelihood           | 2     | ~300 |
-| `nuts`                   | `ode`         | Gradient-based Bayesian via NUTS + forward sensitivity ODE                 | 3     | ~600 |
+| `algorithm`              | Backend | Description                                                              | Phase | LOC  |
+| ------------------------ | ------- | ------------------------------------------------------------------------ | ----- | ---- |
+| `nl-sbplx` / `nl-bobyqa` | `ode`   | Deterministic MLE via NLopt; Sbplx default, BOBYQA for smooth objectives | 1     | ~550 |
+| `mh`                     | `ode`   | Vanilla Metropolis-Hastings on deterministic marginal likelihood         | 2     | ~300 |
+| `nuts`                   | `ode`   | Gradient-based Bayesian via NUTS + forward sensitivity ODE               | 3     | ~600 |
 
 Existing methods (`if2`, `pgas`, `pmmh`) keep their current chain_binomial PF
 semantics unchanged. The two paths coexist; users pick the algorithm that
@@ -38,12 +38,12 @@ init from gh#42, bounds resolution, symbolic autodiff for Phase 3, the existing
 **Phase 1 also fixes a latent inaccuracy in `camdl survey`.** Today
 `camdl survey --eval simulate` is implemented as a 1-particle bootstrap PF
 through `ChainBinomialProcess` — not `OdeSim`. That returns a 1-sample MC
-estimate of `p(y|θ)` under the stochastic chain-binomial process kernel, not
-the ODE deterministic skeleton likelihood. They differ by Jensen's-inequality
-bias plus single-trajectory MC noise. Phase 1 reroutes `--eval simulate`
-through the new `compute_ode_loglik` helper so its name matches its
-semantics. Documented as a behaviour change with a cache invalidation; see
-Phase 1 §"Survey integration" below.
+estimate of `p(y|θ)` under the stochastic chain-binomial process kernel, not the
+ODE deterministic skeleton likelihood. They differ by Jensen's-inequality bias
+plus single-trajectory MC noise. Phase 1 reroutes `--eval simulate` through the
+new `compute_ode_loglik` helper so its name matches its semantics. Documented as
+a behaviour change with a cache invalidation; see Phase 1 §"Survey integration"
+below.
 
 ## Motivation
 
@@ -141,41 +141,41 @@ Stage names stay user-chosen — examples below use `scout` / `refine` /
 # Existing semantics — unchanged behavior, new schema
 [stages.scout]
 algorithm = "if2"
-backend   = "chain_binomial"
-chains      = 8
-particles   = 200
-iterations  = 50
-init_method = "lhs"   # gh#42
+backend = "chain_binomial"
+chains = 8
+particles = 200
+iterations = 50
+init_method = "lhs" # gh#42
 
 # Phase 1: deterministic MLE via NLopt + Sbplx
 [stages.scout]
-algorithm = "nl-sbplx"            # default; nl-bobyqa for smooth objectives
-backend   = "ode"
-chains      = 8                    # LHS-drawn multi-start, take best
-tolerance   = 1e-6                 # xtol_rel
-max_evals   = 5000                 # per-chain budget
+algorithm = "nl-sbplx" # default; nl-bobyqa for smooth objectives
+backend = "ode"
+chains = 8 # LHS-drawn multi-start, take best
+tolerance = 1e-6 # xtol_rel
+max_evals = 5000 # per-chain budget
 init_method = "lhs"
 
 # Phase 2: deterministic Bayesian via vanilla MH
 [stages.posterior]
 algorithm = "mh"
-backend   = "ode"
-chains      = 4
-iterations  = 50000
-burn_in     = 5000
-thin        = 5
-adapt       = true
+backend = "ode"
+chains = 4
+iterations = 50000
+burn_in = 5000
+thin = 5
+adapt = true
 adapt_start = 2000
 init_method = "lhs"
 
 # Phase 3: deterministic Bayesian via NUTS (gradient-based)
 [stages.posterior]
 algorithm = "nuts"
-backend   = "ode"
-chains      = 4
-warmup      = 1000
-samples     = 1000
-dense_mass  = true
+backend = "ode"
+chains = 4
+warmup = 1000
+samples = 1000
+dense_mass = true
 max_tree_depth = 10
 init_method = "lhs"
 ```
@@ -184,28 +184,39 @@ init_method = "lhs"
 
 The matrix is sparse — algorithms structurally require a specific backend:
 
-| Algorithm    | chain_binomial | ode | Status |
-|---|---|---|---|
-| `if2`        | ✓              | ✗   | stable |
-| `pgas`       | ✓              | ✗   | stable |
-| `pmmh`       | ✓              | ✗   | experimental |
-| `nl-sbplx`   | ✗              | ✓   | beta (Phase 1) |
-| `nl-bobyqa`  | ✗              | ✓   | beta (Phase 1) |
-| `mh`         | ✗              | ✓   | beta (Phase 2) |
-| `nuts`       | ✗              | ✓   | experimental (Phase 3) |
+| Algorithm   | chain_binomial | ode | Status                 |
+| ----------- | -------------- | --- | ---------------------- |
+| `if2`       | ✓              | ✗   | stable                 |
+| `pgas`      | ✓              | ✗   | stable                 |
+| `pmmh`      | ✓              | ✗   | experimental           |
+| `nl-sbplx`  | ✗              | ✓   | beta (Phase 1)         |
+| `nl-bobyqa` | ✗              | ✓   | beta (Phase 1)         |
+| `mh`        | ✗              | ✓   | beta (Phase 2)         |
+| `nuts`      | ✗              | ✓   | experimental (Phase 3) |
 
 Why each `✗`:
 
-- `if2`/`pgas`/`pmmh` + `ode`: PF-based algorithms need stochastic process variance to compute their objectives. Under ODE all particles produce identical trajectories per θ; the algorithms collapse to noisy / degenerate variants of themselves.
-- `nl-sbplx`/`nl-bobyqa` + `chain_binomial`: deterministic optimizers operating on a stochastic objective (single-trajectory loglik) get a noisy ranking signal — IF2 is the right tool for that case.
-- `mh` + `chain_binomial`: vanilla MH on a stochastic likelihood gives biased posteriors (PF wrapping is exactly what makes PMMH unbiased).
-- `nuts` + `chain_binomial`: gradients become noisy under PF wrapping; PGAS handles this by integrating NUTS into a Gibbs sweep over trajectories, but vanilla NUTS-on-stochastic isn't a coherent algorithm.
+- `if2`/`pgas`/`pmmh` + `ode`: PF-based algorithms need stochastic process
+  variance to compute their objectives. Under ODE all particles produce
+  identical trajectories per θ; the algorithms collapse to noisy / degenerate
+  variants of themselves.
+- `nl-sbplx`/`nl-bobyqa` + `chain_binomial`: deterministic optimizers operating
+  on a stochastic objective (single-trajectory loglik) get a noisy ranking
+  signal — IF2 is the right tool for that case.
+- `mh` + `chain_binomial`: vanilla MH on a stochastic likelihood gives biased
+  posteriors (PF wrapping is exactly what makes PMMH unbiased).
+- `nuts` + `chain_binomial`: gradients become noisy under PF wrapping; PGAS
+  handles this by integrating NUTS into a Gibbs sweep over trajectories, but
+  vanilla NUTS-on-stochastic isn't a coherent algorithm.
 
-Two completely disjoint subsets — that's not coincidence, it reflects the structural truth that PF-based methods need stochasticity and gradient-/exact-likelihood methods need determinism.
+Two completely disjoint subsets — that's not coincidence, it reflects the
+structural truth that PF-based methods need stochasticity and
+gradient-/exact-likelihood methods need determinism.
 
 ### Single source of truth: `METHODS` registry
 
-The matrix lives once in code, not duplicated across the validator, error messages, `--help` output, docs:
+The matrix lives once in code, not duplicated across the validator, error
+messages, `--help` output, docs:
 
 ```rust
 // rust/crates/cli/src/fit/methods.rs (new module)
@@ -261,7 +272,9 @@ pub fn validate_combo(algo: &str, backend: &str)
 pub fn render_matrix() -> String { /* iterates METHODS, formats */ }
 ```
 
-Adding a new algorithm = one entry in `METHODS` plus its dispatcher arm. The validator, runtime status banner, error messages, and `camdl fit methods` output all read from the same list.
+Adding a new algorithm = one entry in `METHODS` plus its dispatcher arm. The
+validator, runtime status banner, error messages, and `camdl fit methods` output
+all read from the same list.
 
 ### `camdl fit methods` subcommand
 
@@ -313,7 +326,8 @@ docs/inference.md §"Two likelihoods" for guidance.
 
 ### Invalid-combination error template
 
-When `validate_combo` rejects, the error message names the structural reason and points at the right alternative:
+When `validate_combo` rejects, the error message names the structural reason and
+points at the right alternative:
 
 ```
 error: stage 'scout' has algorithm = "if2" with backend = "ode", which is not
@@ -347,7 +361,9 @@ error: stage 'scout' has algorithm = "if2" with backend = "ode", which is not
        §"Two likelihoods" for guidance.
 ```
 
-The "specific structural reason" line varies per invalid pair (5–6 distinct rejection reasons total for the 7 valid + N invalid combos), pulled from a small lookup table keyed by `(algorithm, backend)`.
+The "specific structural reason" line varies per invalid pair (5–6 distinct
+rejection reasons total for the 7 valid + N invalid combos), pulled from a small
+lookup table keyed by `(algorithm, backend)`.
 
 ### Mixed-mode pipelines
 
@@ -356,17 +372,17 @@ The "specific structural reason" line varies per invalid pair (5–6 distinct re
 ```toml
 [stages.scout]
 algorithm = "nl-sbplx"
-backend   = "ode"
+backend = "ode"
 
 [stages.refine]
-algorithm    = "if2"
-backend      = "chain_binomial"
-starts_from  = "scout"   # stochastic refinement from deterministic basin
+algorithm = "if2"
+backend = "chain_binomial"
+starts_from = "scout" # stochastic refinement from deterministic basin
 
 [stages.posterior]
-algorithm    = "pgas"
-backend      = "chain_binomial"
-starts_from  = "refine"
+algorithm = "pgas"
+backend = "chain_binomial"
+starts_from = "refine"
 ```
 
 or the reverse:
@@ -374,15 +390,17 @@ or the reverse:
 ```toml
 [stages.scout]
 algorithm = "if2"
-backend   = "chain_binomial"
+backend = "chain_binomial"
 
 [stages.refine]
-algorithm    = "nl-sbplx"
-backend      = "ode"
-starts_from  = "scout"   # deterministic polish of stochastic MLE
+algorithm = "nl-sbplx"
+backend = "ode"
+starts_from = "scout" # deterministic polish of stochastic MLE
 ```
 
-The handoff consumes prior `fit_state.toml` for `start_values`; the consumer doesn't care what algorithm/backend produced them. Composes naturally; lets users build pipelines that play to each algorithm's strengths.
+The handoff consumes prior `fit_state.toml` for `start_values`; the consumer
+doesn't care what algorithm/backend produced them. Composes naturally; lets
+users build pipelines that play to each algorithm's strengths.
 
 ### CAS / RunKind integration
 
@@ -391,10 +409,9 @@ knobs as flat fields (chains, iterations, tolerance, etc.). `MethodKind` in
 `run_meta.rs` becomes `{ algorithm: String, backend: String }` instead of a
 single tag. The existing `RunKind::FitStage` discriminator already carries the
 method tag — no new top-level RunKind variants needed. Provenance hashing
-extends naturally: the canonical `identity_payload()` includes both
-`algorithm` and `backend`, so two stages with the same algorithm but different
-backends hash to different cache keys (correct — they compute different
-likelihoods).
+extends naturally: the canonical `identity_payload()` includes both `algorithm`
+and `backend`, so two stages with the same algorithm but different backends hash
+to different cache keys (correct — they compute different likelihoods).
 
 ## Phase 1 — `nl-sbplx` and `nl-bobyqa`
 
@@ -412,8 +429,8 @@ C library). Two algorithms surfaced as `algorithm` values in v1:
 
 | `algorithm` value | NLopt name  | Use case                                                                                            |
 | ----------------- | ----------- | --------------------------------------------------------------------------------------------------- |
-| `nl-sbplx`        | `LN_SBPLX`  | Default deterministic MLE; Nelder-Mead variant robust to boundary non-smoothness                     |
-| `nl-bobyqa`       | `LN_BOBYQA` | Quadratic-trust-region; faster than Sbplx on smooth objectives, fails at parameter-bound boundaries  |
+| `nl-sbplx`        | `LN_SBPLX`  | Default deterministic MLE; Nelder-Mead variant robust to boundary non-smoothness                    |
+| `nl-bobyqa`       | `LN_BOBYQA` | Quadratic-trust-region; faster than Sbplx on smooth objectives, fails at parameter-bound boundaries |
 
 Sbplx is the default per the closed gh#40 review's correct point: compartmental
 likelihoods are smooth in the interior of the parameter box but non-smooth at
@@ -425,13 +442,13 @@ values. BOBYQA's quadratic trust region fails badly in those regions.
 - `cobyla` — constrained optimization is rare in compartmental models
 - `isres` / `crs2` — global multi-modal optimizers; `camdl survey` already
   serves the global-exploration role better (LHS coverage + pair-plot
-  diagnostics + filter-health columns). Adding global optimizers as
-  `algorithm` values would be redundant with the survey-then-NLopk-from-top-K
-  workflow we've been building.
+  diagnostics + filter-health columns). Adding global optimizers as `algorithm`
+  values would be redundant with the survey-then-NLopk-from-top-K workflow we've
+  been building.
 
-If global optimization is genuinely needed later, `nl-crs2` is a one-line addition
-(new `METHODS` entry + `nlopt::Algorithm::Crs2Lm` mapping). Two for v1 keeps the
-matrix tight and surfaces only what works.
+If global optimization is genuinely needed later, `nl-crs2` is a one-line
+addition (new `METHODS` entry + `nlopt::Algorithm::Crs2Lm` mapping). Two for v1
+keeps the matrix tight and surfaces only what works.
 
 ### Multi-start
 
@@ -491,37 +508,36 @@ Half a session of work; gates merge.
 
 ### Survey integration
 
-`compute_ode_loglik` is the first inference-side consumer of `OdeSim`. To
-avoid building two parallel deterministic-eval paths, **Phase 1 also reroutes
-`camdl survey --eval simulate` through `compute_ode_loglik`**. Today that
-flag uses a 1-particle bootstrap PF on `ChainBinomialProcess` (deceptively
-named "simulate" — it's actually 1-sample stochastic chain-binomial). After
-Phase 1 it becomes a true ODE deterministic eval, matching its name.
+`compute_ode_loglik` is the first inference-side consumer of `OdeSim`. To avoid
+building two parallel deterministic-eval paths, **Phase 1 also reroutes
+`camdl survey --eval simulate` through `compute_ode_loglik`**. Today that flag
+uses a 1-particle bootstrap PF on `ChainBinomialProcess` (deceptively named
+"simulate" — it's actually 1-sample stochastic chain-binomial). After Phase 1 it
+becomes a true ODE deterministic eval, matching its name.
 
 **Behaviour change**: existing survey runs with `--eval simulate` will produce
-slightly different `loglik` values after Phase 1 — for typhoid-class N~10⁶
-the difference is sub-nat (Jensen bias + single-trajectory MC noise both
-~10⁻⁶ relative); for small populations it's larger (PF discrete events vs
-ODE continuous trajectories). Documented loudly:
+slightly different `loglik` values after Phase 1 — for typhoid-class N~10⁶ the
+difference is sub-nat (Jensen bias + single-trajectory MC noise both ~10⁻⁶
+relative); for small populations it's larger (PF discrete events vs ODE
+continuous trajectories). Documented loudly:
 
-- `survey` CAS hash bumps an internal version tag, invalidating cached
-  landscape TSVs from prior versions
-- run-start banner names the change so users running fresh surveys know
-  what they got
-- the diagnostic experiment (Phase 1 merge gate) quantifies the
-  magnitude on the typhoid case, putting empirical bounds on "sub-nat"
-  for the docs
+- `survey` CAS hash bumps an internal version tag, invalidating cached landscape
+  TSVs from prior versions
+- run-start banner names the change so users running fresh surveys know what
+  they got
+- the diagnostic experiment (Phase 1 merge gate) quantifies the magnitude on the
+  typhoid case, putting empirical bounds on "sub-nat" for the docs
 
 Net Phase 1 LOC: ~30 LOC for the survey rewiring + ~20 LOC for cache version
 bump and run-start banner. Folded into the ~400 LOC Phase 1 estimate; the
-diagnostic experiment validates both the new `compute_ode_loglik` helper
-*and* the survey behaviour change in one pass.
+diagnostic experiment validates both the new `compute_ode_loglik` helper _and_
+the survey behaviour change in one pass.
 
 This is the cleanest place to fix the latent survey inaccuracy: same Phase 1
-diagnostic experiment proves the deterministic-eval path is correct;
-shipping it once across both consumers ensures we don't accumulate two
-deterministic-eval implementations (the survey-1-particle one already there,
-and a NLopt-side one that bypasses survey).
+diagnostic experiment proves the deterministic-eval path is correct; shipping it
+once across both consumers ensures we don't accumulate two deterministic-eval
+implementations (the survey-1-particle one already there, and a NLopt-side one
+that bypasses survey).
 
 ### DSL compatibility
 
@@ -556,9 +572,9 @@ error: stage 'scout' has algorithm = "nl-sbplx" with backend = "ode", which
 
 This is one entry in the per-`(algorithm, backend)` rejection-reason lookup
 table referenced under §"Invalid-combination error template" in Architecture.
-The OVERDISPERSION case is one of ~5 distinct rejection reasons; the table
-keys on either the invalid-pair structure or the model-capabilities mismatch
-and renders the matching reason text.
+The OVERDISPERSION case is one of ~5 distinct rejection reasons; the table keys
+on either the invalid-pair structure or the model-capabilities mismatch and
+renders the matching reason text.
 
 ### Convergence diagnostics for NLopt chains
 
@@ -621,27 +637,26 @@ camdl profile model.camdl --data X.tsv --sweep "omega=..." \
     --algorithm nl-sbplx --backend ode
 ```
 
-Per-cell `(algorithm, backend)` validates through the same `methods.rs`
-registry as fit.toml stages — invalid pairs error with the same message
-template. Multi-start per cell uses `--starts N` with LHS-drawn starts
-(existing infrastructure). Per-cell convergence diagnostics use the
-two-number gate above.
+Per-cell `(algorithm, backend)` validates through the same `methods.rs` registry
+as fit.toml stages — invalid pairs error with the same message template.
+Multi-start per cell uses `--starts N` with LHS-drawn starts (existing
+infrastructure). Per-cell convergence diagnostics use the two-number gate above.
 
 ### Implementation outline
 
 Files touched:
 
 - `rust/crates/cli/src/fit/methods.rs` (new) — `MethodStatus` enum,
-  `InferenceMethod` struct, the `METHODS` const registry covering all 7
-  valid `(algorithm, backend)` combos, `validate_combo()`, `render_matrix()`,
-  and the per-pair rejection-reason lookup table for invalid combos. ~150 LOC
-  including all 7 methods' descriptions and status notes. Single source of
-  truth for the validator, error messages, runtime status banners, and
-  `camdl fit methods` output.
+  `InferenceMethod` struct, the `METHODS` const registry covering all 7 valid
+  `(algorithm, backend)` combos, `validate_combo()`, `render_matrix()`, and the
+  per-pair rejection-reason lookup table for invalid combos. ~150 LOC including
+  all 7 methods' descriptions and status notes. Single source of truth for the
+  validator, error messages, runtime status banners, and `camdl fit methods`
+  output.
 - `rust/crates/sim/src/inference/deterministic.rs` (new) — `optimize_det()`
-  wrapping NLopt; takes the algorithm enum (`NlSbplx | NlBobyqa`), a closure
-  for the deterministic forward sim + obs likelihood scoring. Pure function,
-  no global state.
+  wrapping NLopt; takes the algorithm enum (`NlSbplx | NlBobyqa`), a closure for
+  the deterministic forward sim + obs likelihood scoring. Pure function, no
+  global state.
 - `rust/crates/cli/src/fit/config_v2.rs` — replace `method: String` with
   `algorithm: String, backend: String` in `Stage`. Validate via
   `methods::validate_combo()` at config-load time. Algorithm-specific knobs
@@ -663,37 +678,37 @@ Files touched:
   `ode.rs::to_states` rounding path. ~30 LOC for the new helper, ~10 LOC for any
   `Trajectory.snapshots_at` glue.
 - `rust/crates/cli/src/main.rs` + `args/mod.rs` — new `camdl fit methods`
-  subcommand that prints the `render_matrix()` output. ~40 LOC including
-  the clap subcommand + dispatch.
-- `rust/crates/cli/src/profile.rs` + `args/mod.rs` — add `--algorithm`
-  and `--backend` flags (mirroring the fit.toml tuple schema). Per-cell
-  dispatch validates `(algorithm, backend)` through the same
-  `methods::validate_combo()` as fit stages.
+  subcommand that prints the `render_matrix()` output. ~40 LOC including the
+  clap subcommand + dispatch.
+- `rust/crates/cli/src/profile.rs` + `args/mod.rs` — add `--algorithm` and
+  `--backend` flags (mirroring the fit.toml tuple schema). Per-cell dispatch
+  validates `(algorithm, backend)` through the same `methods::validate_combo()`
+  as fit stages.
 - `rust/crates/cli/src/survey.rs` — reroute `eval_point_simulate` through
-  `compute_ode_loglik` instead of the 1-particle bootstrap PF. ~30 LOC
-  swap. Bump `SurveyInputs.canonical_hash` version tag so prior
-  `--eval simulate` cache entries are invalidated. Update run-start banner
-  to name the change so users see what they got.
+  `compute_ode_loglik` instead of the 1-particle bootstrap PF. ~30 LOC swap.
+  Bump `SurveyInputs.canonical_hash` version tag so prior `--eval simulate`
+  cache entries are invalidated. Update run-start banner to name the change so
+  users see what they got.
 - `rust/crates/cli/src/run_meta.rs` — `MethodKind` becomes
   `MethodKind { algorithm: String, backend: String }` (was a single tag).
-- Existing fit.toml fixtures and golden files: bulk rename `method = "if2"`
-  → `algorithm = "if2"\nbackend = "chain_binomial"`. Mechanical, ~5–10
-  files, scriptable.
+- Existing fit.toml fixtures and golden files: bulk rename `method = "if2"` →
+  `algorithm = "if2"\nbackend = "chain_binomial"`. Mechanical, ~5–10 files,
+  scriptable.
 - Tests: per-stage unit tests; a typhoid integration test as the headline
   diagnostic experiment; a survey regression test that confirms
-  `--eval simulate` numbers are within the documented sub-nat bound of the
-  prior 1-particle PF values for typhoid-class N (i.e. the behaviour change
-  doesn't surprise consumers expecting "deterministic eval" — they get a
-  *more* deterministic eval, not a wildly different one); a validation test
-  that exercises every invalid `(algorithm, backend)` pair through
-  `validate_combo()` and confirms error messages name the right alternative.
+  `--eval simulate` numbers are within the documented sub-nat bound of the prior
+  1-particle PF values for typhoid-class N (i.e. the behaviour change doesn't
+  surprise consumers expecting "deterministic eval" — they get a _more_
+  deterministic eval, not a wildly different one); a validation test that
+  exercises every invalid `(algorithm, backend)` pair through `validate_combo()`
+  and confirms error messages name the right alternative.
 
 Reuse paths:
 
 - `OdeSim` — forward simulator, already in sim crate. Phase 1 is its first
   inference-side consumer.
-- `MultiStreamObsModel` + `ObservationModel` — obs likelihood scoring (works
-  on `ParticleState`, which `OdeSim` snapshots build directly via
+- `MultiStreamObsModel` + `ObservationModel` — obs likelihood scoring (works on
+  `ParticleState`, which `OdeSim` snapshots build directly via
   `ode.rs::to_states`)
 - `fit::init::build_chain_starts` — LHS multi-start
 - `fit::runner::build_if2_params_from_specs` — bounds resolution (fit.toml >
@@ -746,14 +761,14 @@ Defaults:
 
 ```toml
 [stages.posterior]
-algorithm   = "mh"
-backend     = "ode"
-chains      = 4
-iterations  = 50000
-burn_in     = 5000
-thin        = 5
-adapt       = true
-adapt_start = 2000   # iter where adaptation kicks in
+algorithm = "mh"
+backend = "ode"
+chains = 4
+iterations = 50000
+burn_in = 5000
+thin = 5
+adapt = true
+adapt_start = 2000 # iter where adaptation kicks in
 init_method = "lhs"
 ```
 
@@ -813,8 +828,8 @@ Files touched:
 - `rust/crates/sim/src/inference/mh_det.rs` (new) — vanilla MH on a
   deterministic-loglik closure, using the relocated `AdaptiveProposal`.
 - `rust/crates/cli/src/fit/config_v2.rs` — register `("mh", "ode")` in
-  `methods.rs::METHODS` plus the MH-specific knobs (chains, iterations,
-  burn_in, thin, adapt, adapt_start) on `Stage`.
+  `methods.rs::METHODS` plus the MH-specific knobs (chains, iterations, burn_in,
+  thin, adapt, adapt_start) on `Stage`.
 - `rust/crates/cli/src/fit/mh_stage.rs` (new) — per-stage runner.
 - `rust/crates/cli/src/fit/mod.rs` — dispatch arm.
 - `rust/crates/cli/src/run_meta.rs` — `MethodKind::Mh`.
@@ -1064,38 +1079,38 @@ LOC) needed to avoid NUTS divergences at integer boundaries.
 
 ## What gets reused vs built new
 
-| Component                                         | Source                  | Phase 1                                | Phase 2     | Phase 3                        |
-| ------------------------------------------------- | ----------------------- | -------------------------------------- | ----------- | ------------------------------ |
-| `OdeSim` (forward sim)                            | sim crate, existing     | reuse (first inference consumer)       | reuse       | reuse                          |
-| `MultiStreamObsModel`                             | sim crate, existing     | reuse                                  | reuse       | reuse                          |
-| `ObservationModel` trait                          | sim crate, existing     | reuse                                  | reuse       | reuse                          |
-| `compute_obs_loglik`                              | sim crate, existing     | reuse                                  | reuse       | reuse                          |
-| `fit::init::build_chain_starts` (LHS)             | gh#42, shipped          | reuse                                  | reuse       | reuse                          |
-| `build_if2_params_from_specs` (bounds resolution) | gh#42-followup, shipped | reuse                                  | reuse       | reuse                          |
-| `Capabilities` dispatch                           | sim crate, existing     | reuse                                  | reuse       | reuse                          |
-| Stage config infrastructure                       | existing                | tuple-schema migration + new fields    | extend      | extend                         |
-| `methods.rs` registry (METHODS, validate_combo)   | n/a                     | new (~150 LOC)                         | extend (1 entry) | extend (1 entry)          |
-| `camdl fit methods` subcommand                    | n/a                     | new (~40 LOC)                          | reuse       | reuse                          |
-| Provenance + CAS hashing                          | existing                | extend                                 | extend      | extend                         |
-| `TraceWriter` (streaming)                         | existing                | n/a (NLopt has no per-iter trace need) | reuse       | reuse                          |
-| Â / ESS / acceptance diagnostics                  | PMMH, existing          | new (det. variant)                     | reuse       | reuse                          |
-| `nuts.rs` engine                                  | PGAS, existing          | n/a                                    | n/a         | reuse                          |
-| Symbolic autodiff                                 | OCaml, existing         | n/a                                    | n/a         | extend (`state_grad` emission) |
-| `nlopt` crate                                     | new dep                 | new                                    | n/a         | n/a                            |
-| Sensitivity-ODE solver                            | n/a                     | n/a                                    | n/a         | new                            |
+| Component                                         | Source                  | Phase 1                                | Phase 2          | Phase 3                        |
+| ------------------------------------------------- | ----------------------- | -------------------------------------- | ---------------- | ------------------------------ |
+| `OdeSim` (forward sim)                            | sim crate, existing     | reuse (first inference consumer)       | reuse            | reuse                          |
+| `MultiStreamObsModel`                             | sim crate, existing     | reuse                                  | reuse            | reuse                          |
+| `ObservationModel` trait                          | sim crate, existing     | reuse                                  | reuse            | reuse                          |
+| `compute_obs_loglik`                              | sim crate, existing     | reuse                                  | reuse            | reuse                          |
+| `fit::init::build_chain_starts` (LHS)             | gh#42, shipped          | reuse                                  | reuse            | reuse                          |
+| `build_if2_params_from_specs` (bounds resolution) | gh#42-followup, shipped | reuse                                  | reuse            | reuse                          |
+| `Capabilities` dispatch                           | sim crate, existing     | reuse                                  | reuse            | reuse                          |
+| Stage config infrastructure                       | existing                | tuple-schema migration + new fields    | extend           | extend                         |
+| `methods.rs` registry (METHODS, validate_combo)   | n/a                     | new (~150 LOC)                         | extend (1 entry) | extend (1 entry)               |
+| `camdl fit methods` subcommand                    | n/a                     | new (~40 LOC)                          | reuse            | reuse                          |
+| Provenance + CAS hashing                          | existing                | extend                                 | extend           | extend                         |
+| `TraceWriter` (streaming)                         | existing                | n/a (NLopt has no per-iter trace need) | reuse            | reuse                          |
+| Â / ESS / acceptance diagnostics                  | PMMH, existing          | new (det. variant)                     | reuse            | reuse                          |
+| `nuts.rs` engine                                  | PGAS, existing          | n/a                                    | n/a              | reuse                          |
+| Symbolic autodiff                                 | OCaml, existing         | n/a                                    | n/a              | extend (`state_grad` emission) |
+| `nlopt` crate                                     | new dep                 | new                                    | n/a              | n/a                            |
+| Sensitivity-ODE solver                            | n/a                     | n/a                                    | n/a              | new                            |
 
-Net new infrastructure across all three phases: NLopt crate dep,
-sensitivity-ODE solver, the `methods.rs` registry (single source of truth for
-algorithm + backend combos), the `camdl fit methods` subcommand, and the
-tuple-schema migration of `Stage`. Everything else is reuse or extension.
+Net new infrastructure across all three phases: NLopt crate dep, sensitivity-ODE
+solver, the `methods.rs` registry (single source of truth for algorithm +
+backend combos), the `camdl fit methods` subcommand, and the tuple-schema
+migration of `Stage`. Everything else is reuse or extension.
 
 ## Speedup estimates (rough)
 
 Per typical workflow. **chain_binomial timings marked O are observed** (from
-typhoid SIRC vignette at docs/dev/notes/2026-05-01-typhoid-vignette-friction.md, gh#40 reproducer); deterministic
-timings marked P are projected from per-eval cost × estimated optimizer
-convergence count and have not yet been observed end-to-end (that's the
-diagnostic experiment).
+typhoid SIRC vignette at docs/dev/notes/2026-05-01-typhoid-vignette-friction.md,
+gh#40 reproducer); deterministic timings marked P are projected from per-eval
+cost × estimated optimizer convergence count and have not yet been observed
+end-to-end (that's the diagnostic experiment).
 
 | Workflow                                              | chain_binomial (O)                                | ODE deterministic (P)  | Speedup        |
 | ----------------------------------------------------- | ------------------------------------------------- | ---------------------- | -------------- |

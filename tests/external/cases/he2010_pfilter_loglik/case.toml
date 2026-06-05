@@ -22,29 +22,37 @@ across 1096 observations for this data).
 category = "pfilter"
 
 [camdl]
-model          = "model.camdl"
-params         = "params.toml"
-mode           = "batch-replicated"
+model = "model.camdl"
+params = "params.toml"
+mode = "batch-replicated"
 batch_seed_col = "seed"
 # One invocation, N replicates. @batch_out becomes the TSV path the
 # harness reads as a long-format (seed, loglik) table.
 command = [
-    "camdl", "pfilter",
-    "@model", "--params", "@params",
-    "--data", "data/he2010_london_cases.tsv",
-    "--particles", "2000",
-    "--replicates", "@n_seeds",
-    "--seed", "@seed_base",
-    "--output", "@batch_out",
+  "camdl",
+  "pfilter",
+  "@model",
+  "--params",
+  "@params",
+  "--data",
+  "data/he2010_london_cases.tsv",
+  "--particles",
+  "2000",
+  "--replicates",
+  "@n_seeds",
+  "--seed",
+  "@seed_base",
+  "--output",
+  "@batch_out",
 ]
-n_seeds   = 10
+n_seeds = 10
 seed_base = 42
 
 [reference]
-kind         = "r-pomp"
-run          = "reference/run.sh"
+kind = "r-pomp"
+run = "reference/run.sh"
 ensemble_tsv = "reference/out/pomp_pfilter_loglik.tsv"
-seed_col     = "sim"
+seed_col = "sim"
 
 # Both sides write a long-format (seed, loglik) TSV. Column rename
 # not needed — camdl's `seed` and pomp's `loglik` line up.
@@ -54,5 +62,5 @@ seed_col     = "sim"
 [summary]
 kind = "ensemble-stats"
 stats = [
-    { name = "loglik", aggregate = "mean", over = "loglik", scope = "per-seed" },
+  { name = "loglik", aggregate = "mean", over = "loglik", scope = "per-seed" },
 ]

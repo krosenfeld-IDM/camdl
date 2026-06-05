@@ -11,8 +11,8 @@ camdl exists to support decisions about people's lives — vaccination campaigns
 outbreak response, resource allocation. Getting uncertainty wrong means making
 confident-looking recommendations on shaky foundations. Prior predictive checks
 are the first line of defense: "do my stated beliefs produce data that looks
-plausible before I've seen any real data?" If the answer is no, the model or
-the priors need revision.
+plausible before I've seen any real data?" If the answer is no, the model or the
+priors need revision.
 
 Currently, priors can only be declared in fit.toml — a runtime configuration
 file separate from the model. This means:
@@ -31,8 +31,8 @@ are beliefs about parameters — they belong with the parameter declaration.**
 fit.toml can override model priors for sensitivity analysis, preserving the
 existing workflow while making the default case simpler and more honest.
 
-This aligns camdl with Stan, PyMC, and Turing.jl, all of which encode priors
-in the model definition.
+This aligns camdl with Stan, PyMC, and Turing.jl, all of which encode priors in
+the model definition.
 
 ## Syntax
 
@@ -51,23 +51,23 @@ modeling languages. It is always optional; models without priors are valid.
 
 ### Supported distributions
 
-| Distribution    | Syntax                              | Parameters (named)     |
-|-----------------|-------------------------------------|------------------------|
-| `log_normal`    | `~ log_normal(mu = M, sigma = S)`   | mu, sigma on log scale |
-| `normal`        | `~ normal(mu = M, sigma = S)`       | mean, sd               |
-| `half_normal`   | `~ half_normal(sigma = S)`          | sd of underlying normal|
-| `beta`          | `~ beta(alpha = A, beta = B)`       | shape parameters       |
-| `gamma`         | `~ gamma(shape = K, rate = R)`      | shape, rate (NOT scale)|
-| `exponential`   | `~ exponential(rate = R)`           | rate = 1/mean          |
-| `uniform`       | `~ uniform(lower = L, upper = U)`   | bounds                 |
+| Distribution  | Syntax                            | Parameters (named)      |
+| ------------- | --------------------------------- | ----------------------- |
+| `log_normal`  | `~ log_normal(mu = M, sigma = S)` | mu, sigma on log scale  |
+| `normal`      | `~ normal(mu = M, sigma = S)`     | mean, sd                |
+| `half_normal` | `~ half_normal(sigma = S)`        | sd of underlying normal |
+| `beta`        | `~ beta(alpha = A, beta = B)`     | shape parameters        |
+| `gamma`       | `~ gamma(shape = K, rate = R)`    | shape, rate (NOT scale) |
+| `exponential` | `~ exponential(rate = R)`         | rate = 1/mean           |
+| `uniform`     | `~ uniform(lower = L, upper = U)` | bounds                  |
 
 All arguments are keyword (named), never positional. All must be compile-time
 constants (arithmetic of literals is fine: `mu = log(0.3)`).
 
 ### Parameterization conventions
 
-These are load-bearing choices. Documenting them precisely avoids the bugs
-that come from mu/sigma vs median/geometric_sd confusion:
+These are load-bearing choices. Documenting them precisely avoids the bugs that
+come from mu/sigma vs median/geometric_sd confusion:
 
 **`log_normal(mu, sigma)`**: mu and sigma are on the **log scale**.
 `log(X) ~ Normal(mu, sigma)`. The median of X is `exp(mu)`. Example:
@@ -90,13 +90,13 @@ Stan and avoids the R/numpy disagreement. `E[X] = shape/rate`.
 
 - Not a default value. `beta : rate ~ log_normal(...)` does not set beta's
   value. Values come from `--params` or inference.
-- Not required. Parameters without `~` are valid — they just can't be used
-  with `--draws prior` unless a prior is supplied externally.
+- Not required. Parameters without `~` are valid — they just can't be used with
+  `--draws prior` unless a prior is supplied externally.
 
 The `fixed` pseudo-distribution from the IR is NOT exposed as DSL syntax. A
 fixed parameter is one without a prior, supplied via `--params` or set in
-fit.toml's `[fixed]` section. The syntax for "this parameter has a known
-value" is already `--params baseline.toml`.
+fit.toml's `[fixed]` section. The syntax for "this parameter has a known value"
+is already `--params baseline.toml`.
 
 ## Prior precedence chain
 
@@ -112,8 +112,8 @@ Flat (improper uniform)               (default for inference)
 Error                                 (must have a prior to sample from)
 ```
 
-fit.toml overrides preserve the existing workflow: "I want to test what
-happens with a wider prior on beta" without editing the model file.
+fit.toml overrides preserve the existing workflow: "I want to test what happens
+with a wider prior on beta" without editing the model file.
 
 ## Implementation
 
@@ -135,9 +135,9 @@ argument parsing. Append to all 4 `param_decl` alternatives.
 
 **4. Expander** (`expander.ml`): Add `resolve_prior_spec` helper mapping AST
 `prior_spec` → `Ir.prior_dist`. Prior kwargs must be compile-time constants —
-use `eval_const_expr` (not `resolve_float_expr`, which silently returns 0.0
-for non-constant expressions). Error via `Diagnostics.error` with code `E230`
-if a kwarg is not a constant. Update `expand_parameters` to call it, replacing
+use `eval_const_expr` (not `resolve_float_expr`, which silently returns 0.0 for
+non-constant expressions). Error via `Diagnostics.error` with code `E230` if a
+kwarg is not a constant. Update `expand_parameters` to call it, replacing
 `Ir.prior = None` with `Ir.prior = Option.map (resolve_prior_spec ctx) pprior`.
 
 ### Rust runtime
@@ -146,24 +146,23 @@ if a kwarg is not a constant. Update `expand_parameters` to call it, replacing
 Extract `Prior` enum from `pmmh.rs` into new shared module `inference/prior.rs`.
 Add `HalfNormal`, `Gamma`, `Exponential` variants. Add
 `Prior::from_ir(pd: &ir::PriorDist) -> Self` conversion. Add `log_density`
-implementations for new variants. Update `pgas.rs` and `pmmh.rs` to import
-from the shared module.
+implementations for new variants. Update `pgas.rs` and `pmmh.rs` to import from
+the shared module.
 
-**6. Fit runners** (`pgas.rs`, `pmmh.rs`): Change prior resolution to:
-IR prior → fit.toml override → Flat. Extract shared `resolve_prior` to
-`runner.rs`.
+**6. Fit runners** (`pgas.rs`, `pmmh.rs`): Change prior resolution to: IR prior
+→ fit.toml override → Flat. Extract shared `resolve_prior` to `runner.rs`.
 
 **7. `--draws prior`** (`main.rs`): When `--fit` is not provided, read priors
-from the compiled model's IR. Error if any parameter lacks both a prior and
-a default value, with actionable message.
+from the compiled model's IR. Error if any parameter lacks both a prior and a
+default value, with actionable message.
 
 ### Documentation
 
 **8. Run spec §12**: Rewrite to reflect model-embedded priors as primary,
 fit.toml as override.
 
-**9. Language spec**: Add `~` syntax to parameter declaration section.
-Remove the `priors.toml (v0.2+)` section.
+**9. Language spec**: Add `~` syntax to parameter declaration section. Remove
+the `priors.toml (v0.2+)` section.
 
 ### Tests
 
@@ -188,8 +187,8 @@ Remove the `priors.toml (v0.2+)` section.
   model. Precedence: fit.toml → `--priors` → model IR → error.
 
 - **Indexed heterogeneous priors**: `R0[p in patch] ~ log_normal(mu = f(p))`
-  where the prior varies per index value. Current design applies the same
-  prior to all expanded instances.
+  where the prior varies per index value. Current design applies the same prior
+  to all expanded instances.
 
 - **`camdl sample-prior` command**: A dedicated top-level command for drawing
   from the prior without running dynamics. Conceptually cleaner than

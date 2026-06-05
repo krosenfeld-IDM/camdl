@@ -10,32 +10,32 @@ path = "src/main.rs"
 [dependencies]
 axum = "0.7"
 bincode = "1"
+clap = { version = "4", features = ["derive", "env"] }
+# Table formatting for `camdl list` — automatic width/wrapping, preserves
+# ANSI styling. Single TTY-detection dep (crossterm) — no big tree.
+comfy-table = "7"
 csv = "1"
+env_logger = "0.11"
 hex = "0.4"
 indexmap = { version = "2", features = ["serde"] }
 indicatif = "0.17"
 io = { path = "../io" }
 ir = { path = "../ir" }
-runid = { path = "../runid" }
-rand = "0.8"
-rand_distr = "0.4"
-rayon = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-sim = { path = "../sim", default-features = false }
 log = "0.4"
-env_logger = "0.11"
 # Terminal colors for `camdl list/show/cat` output. Zero-dep, zero-alloc,
 # respects NO_COLOR when the `supports-colors` feature is enabled on the
 # call site via `.if_supports_color(...)`.
 owo-colors = { version = "4", features = ["supports-colors"] }
-# Table formatting for `camdl list` — automatic width/wrapping, preserves
-# ANSI styling. Single TTY-detection dep (crossterm) — no big tree.
-comfy-table = "7"
+rand = "0.8"
+rand_distr = "0.4"
+rayon = "1"
+runid = { path = "../runid" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sim = { path = "../sim", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 toml = { version = "0.8", features = ["parse"] }
-clap = { version = "4", features = ["derive", "env"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 
 [features]

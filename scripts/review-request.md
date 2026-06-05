@@ -1,13 +1,12 @@
 # Review-request template
 
-Paste-ready prompt for handing a subsystem zip (from
-`scripts/review-zip.sh`) to an external code-review agent. Also
-records the recommended staging order and what to do between stages.
+Paste-ready prompt for handing a subsystem zip (from `scripts/review-zip.sh`) to
+an external code-review agent. Also records the recommended staging order and
+what to do between stages.
 
-Edit `<SUBSYSTEM>` in the prompt to match the zip you're sending.
-The prompt is subsystem-agnostic — it reads CLAUDE.md for scope
-and applies the same review criteria regardless of which subsystem
-you're handing over.
+Edit `<SUBSYSTEM>` in the prompt to match the zip you're sending. The prompt is
+subsystem-agnostic — it reads CLAUDE.md for scope and applies the same review
+criteria regardless of which subsystem you're handing over.
 
 ---
 
@@ -15,22 +14,20 @@ you're handing over.
 
 **`docs` → `compiler` → `engine` → `inference`**
 
-Top-down. Each stage builds context the next relies on: specs
-describe the claimed semantics, compiler defines the IR data
-contract, engine implements forward simulation against that
-contract, inference drives the forward model many times to
-estimate parameters. Carrying shared mental model across sessions
+Top-down. Each stage builds context the next relies on: specs describe the
+claimed semantics, compiler defines the IR data contract, engine implements
+forward simulation against that contract, inference drives the forward model
+many times to estimate parameters. Carrying shared mental model across sessions
 beats handing stages in arbitrary order.
 
-If the reviewer can only handle one zip, hand them **`inference`**.
-It's the most substantive code, includes the CLI plumbing, and is
-where most correctness-critical review signal concentrates.
+If the reviewer can only handle one zip, hand them **`inference`**. It's the
+most substantive code, includes the CLI plumbing, and is where most
+correctness-critical review signal concentrates.
 
-Between stages: ask the reviewer to summarise findings from the
-previous zip and note what mental model they're carrying forward.
-This keeps their context coherent across sessions and lets you
-triage findings as they come in rather than waiting for the whole
-review to finish.
+Between stages: ask the reviewer to summarise findings from the previous zip and
+note what mental model they're carrying forward. This keeps their context
+coherent across sessions and lets you triage findings as they come in rather
+than waiting for the whole review to finish.
 
 ---
 
@@ -117,8 +114,8 @@ things I got wrong.
 
 ## Between-stages check-in (optional)
 
-If the reviewer is running multiple sessions, paste this after
-their first response and before handing the next zip:
+If the reviewer is running multiple sessions, paste this after their first
+response and before handing the next zip:
 
 ```
 Good. Before the next zip: in 3-5 sentences, what's the mental
@@ -126,16 +123,16 @@ model you're carrying forward? Things I should know you're
 assuming about the subsystem I'm about to hand you.
 ```
 
-This catches misunderstandings cheaply — a reviewer working from a
-wrong mental model produces noisier findings in the next subsystem.
+This catches misunderstandings cheaply — a reviewer working from a wrong mental
+model produces noisier findings in the next subsystem.
 
 ---
 
 ## After all stages
 
-Ask the reviewer to produce a consolidated findings list ranked by
-severity across all four subsystems. This is the artifact you work
-from; individual per-subsystem lists are easy to drop on the floor.
+Ask the reviewer to produce a consolidated findings list ranked by severity
+across all four subsystems. This is the artifact you work from; individual
+per-subsystem lists are easy to drop on the floor.
 
 ```
 Consolidate everything across the four subsystems into one ranked

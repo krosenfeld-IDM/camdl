@@ -1,82 +1,1368 @@
-{"ir_version":"0.9","validated_by":"ocaml-compiler-v0.9","model":{"name":"sparse_P8","version":"0.3","time_unit":"days","description":null,"compartments":[
-{"name":"S_p0_a0","kind":"integer"},
-{"name":"S_p1_a0","kind":"integer"},
-{"name":"S_p2_a0","kind":"integer"},
-{"name":"S_p3_a0","kind":"integer"},
-{"name":"S_p4_a0","kind":"integer"},
-{"name":"S_p5_a0","kind":"integer"},
-{"name":"S_p6_a0","kind":"integer"},
-{"name":"S_p7_a0","kind":"integer"},
-{"name":"E_p0_a0","kind":"integer"},
-{"name":"E_p1_a0","kind":"integer"},
-{"name":"E_p2_a0","kind":"integer"},
-{"name":"E_p3_a0","kind":"integer"},
-{"name":"E_p4_a0","kind":"integer"},
-{"name":"E_p5_a0","kind":"integer"},
-{"name":"E_p6_a0","kind":"integer"},
-{"name":"E_p7_a0","kind":"integer"},
-{"name":"I_p0_a0","kind":"integer"},
-{"name":"I_p1_a0","kind":"integer"},
-{"name":"I_p2_a0","kind":"integer"},
-{"name":"I_p3_a0","kind":"integer"},
-{"name":"I_p4_a0","kind":"integer"},
-{"name":"I_p5_a0","kind":"integer"},
-{"name":"I_p6_a0","kind":"integer"},
-{"name":"I_p7_a0","kind":"integer"},
-{"name":"R_p0_a0","kind":"integer"},
-{"name":"R_p1_a0","kind":"integer"},
-{"name":"R_p2_a0","kind":"integer"},
-{"name":"R_p3_a0","kind":"integer"},
-{"name":"R_p4_a0","kind":"integer"},
-{"name":"R_p5_a0","kind":"integer"},
-{"name":"R_p6_a0","kind":"integer"},
-{"name":"R_p7_a0","kind":"integer"}
-],"transitions":[
-{"name":"infection_p0_a0","stoichiometry":[["S_p0_a0",-1],["E_p0_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p0_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p0"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p0"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p1"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p1"},"right":{"binding_ref":"N_p1"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p7"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p7"},"right":{"binding_ref":"N_p7"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p0_a0","dest_compartment":"E_p0_a0"}},
-{"name":"infection_p1_a0","stoichiometry":[["S_p1_a0",-1],["E_p1_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p1_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p1"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p1"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p0"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p0"},"right":{"binding_ref":"N_p0"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p2"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p2"},"right":{"binding_ref":"N_p2"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p1_a0","dest_compartment":"E_p1_a0"}},
-{"name":"infection_p2_a0","stoichiometry":[["S_p2_a0",-1],["E_p2_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p2_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p2"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p2"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p1"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p1"},"right":{"binding_ref":"N_p1"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p3"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p3"},"right":{"binding_ref":"N_p3"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p2_a0","dest_compartment":"E_p2_a0"}},
-{"name":"infection_p3_a0","stoichiometry":[["S_p3_a0",-1],["E_p3_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p3_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p3"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p3"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p2"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p2"},"right":{"binding_ref":"N_p2"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p4"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p4"},"right":{"binding_ref":"N_p4"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p3_a0","dest_compartment":"E_p3_a0"}},
-{"name":"infection_p4_a0","stoichiometry":[["S_p4_a0",-1],["E_p4_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p4_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p4"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p4"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p3"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p3"},"right":{"binding_ref":"N_p3"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p5"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p5"},"right":{"binding_ref":"N_p5"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p4_a0","dest_compartment":"E_p4_a0"}},
-{"name":"infection_p5_a0","stoichiometry":[["S_p5_a0",-1],["E_p5_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p5_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p5"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p5"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p4"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p4"},"right":{"binding_ref":"N_p4"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p6"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p6"},"right":{"binding_ref":"N_p6"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p5_a0","dest_compartment":"E_p5_a0"}},
-{"name":"infection_p6_a0","stoichiometry":[["S_p6_a0",-1],["E_p6_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p6_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p6"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p6"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p5"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p5"},"right":{"binding_ref":"N_p5"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p7"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p7"},"right":{"binding_ref":"N_p7"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p6_a0","dest_compartment":"E_p6_a0"}},
-{"name":"infection_p7_a0","stoichiometry":[["S_p7_a0",-1],["E_p7_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"bin_op":{"op":"mul","left":{"binding_ref":"beta"},"right":{"binding_ref":"seas"}}},"right":{"pop":"S_p7_a0"}}},"right":{"bin_op":{"op":"add","left":{"bin_op":{"op":"div","left":{"bin_op":{"op":"add","left":{"binding_ref":"I_agg_p7"},"right":{"const":1e-07}}},"right":{"binding_ref":"N_p7"}}},"right":{"bin_op":{"op":"mul","left":{"const":0.05},"right":{"reduce":[{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p0"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p0"},"right":{"binding_ref":"N_p0"}}},"else":{"const":0.0}}}}},{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"cond":{"pred":{"bin_op":{"op":"gt","left":{"binding_ref":"N_p6"},"right":{"const":0.0}}},"then":{"bin_op":{"op":"div","left":{"binding_ref":"I_agg_p6"},"right":{"binding_ref":"N_p6"}}},"else":{"const":0.0}}}}}]}}}}}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"S_p7_a0","dest_compartment":"E_p7_a0"}},
-{"name":"progression_p0_a0","stoichiometry":[["E_p0_a0",-1],["I_p0_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p0_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p0_a0","dest_compartment":"I_p0_a0"}},
-{"name":"progression_p1_a0","stoichiometry":[["E_p1_a0",-1],["I_p1_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p1_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p1_a0","dest_compartment":"I_p1_a0"}},
-{"name":"progression_p2_a0","stoichiometry":[["E_p2_a0",-1],["I_p2_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p2_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p2_a0","dest_compartment":"I_p2_a0"}},
-{"name":"progression_p3_a0","stoichiometry":[["E_p3_a0",-1],["I_p3_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p3_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p3_a0","dest_compartment":"I_p3_a0"}},
-{"name":"progression_p4_a0","stoichiometry":[["E_p4_a0",-1],["I_p4_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p4_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p4_a0","dest_compartment":"I_p4_a0"}},
-{"name":"progression_p5_a0","stoichiometry":[["E_p5_a0",-1],["I_p5_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p5_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p5_a0","dest_compartment":"I_p5_a0"}},
-{"name":"progression_p6_a0","stoichiometry":[["E_p6_a0",-1],["I_p6_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p6_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p6_a0","dest_compartment":"I_p6_a0"}},
-{"name":"progression_p7_a0","stoichiometry":[["E_p7_a0",-1],["I_p7_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.125},"right":{"pop":"E_p7_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"E_p7_a0","dest_compartment":"I_p7_a0"}},
-{"name":"recovery_p0_a0","stoichiometry":[["I_p0_a0",-1],["R_p0_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p0_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p0_a0","dest_compartment":"R_p0_a0"}},
-{"name":"recovery_p1_a0","stoichiometry":[["I_p1_a0",-1],["R_p1_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p1_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p1_a0","dest_compartment":"R_p1_a0"}},
-{"name":"recovery_p2_a0","stoichiometry":[["I_p2_a0",-1],["R_p2_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p2_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p2_a0","dest_compartment":"R_p2_a0"}},
-{"name":"recovery_p3_a0","stoichiometry":[["I_p3_a0",-1],["R_p3_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p3_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p3_a0","dest_compartment":"R_p3_a0"}},
-{"name":"recovery_p4_a0","stoichiometry":[["I_p4_a0",-1],["R_p4_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p4_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p4_a0","dest_compartment":"R_p4_a0"}},
-{"name":"recovery_p5_a0","stoichiometry":[["I_p5_a0",-1],["R_p5_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p5_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p5_a0","dest_compartment":"R_p5_a0"}},
-{"name":"recovery_p6_a0","stoichiometry":[["I_p6_a0",-1],["R_p6_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p6_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p6_a0","dest_compartment":"R_p6_a0"}},
-{"name":"recovery_p7_a0","stoichiometry":[["I_p7_a0",-1],["R_p7_a0",1]],"rate":{"bin_op":{"op":"mul","left":{"const":0.143},"right":{"pop":"I_p7_a0"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"I_p7_a0","dest_compartment":"R_p7_a0"}}
-],"ode_equations":[],"time_functions":[
-{"name":"school","kind":{"periodic":{"period":{"unchecked_dim":{"inner":{"const":365.25},"dim":[0,1],"reason":"unit literal 'days"}},"values":[{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":1.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0}]}},"dim":[0,0]}
-],"tables":[
-{"name":"W","values":[{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.5},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.0},{"const":0.5},{"const":0.5},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.0},{"const":0.5},{"const":0.0}],"out_of_bounds":"error"}
-],"interventions":[],"observations":[],"parameters":[],"initial_conditions":{"explicit":{"S_p0_a0":900.0,"S_p1_a0":900.0,"S_p2_a0":900.0,"S_p3_a0":900.0,"S_p4_a0":900.0,"S_p5_a0":900.0,"S_p6_a0":900.0,"S_p7_a0":900.0,"E_p0_a0":10.0,"E_p1_a0":10.0,"E_p2_a0":10.0,"E_p3_a0":10.0,"E_p4_a0":10.0,"E_p5_a0":10.0,"E_p6_a0":10.0,"E_p7_a0":10.0,"I_p0_a0":10.0,"I_p1_a0":10.0,"I_p2_a0":10.0,"I_p3_a0":10.0,"I_p4_a0":10.0,"I_p5_a0":10.0,"I_p6_a0":10.0,"I_p7_a0":10.0,"R_p0_a0":80.0,"R_p1_a0":80.0,"R_p2_a0":80.0,"R_p3_a0":80.0,"R_p4_a0":80.0,"R_p5_a0":80.0,"R_p6_a0":80.0,"R_p7_a0":80.0}},"output":{"times":{"regular":{"start":0.0,"step":1.0,"end":365.0}},"format":"tsv","trajectory":true,"observations":true},"simulation":{"t_start":0.0,"t_end":365.0,"time_semantics":"continuous","dt":null,"rng_seed":null},"scenarios":[],"model_structure":{"dimensions":[{"name":"patch","values":["p0","p1","p2","p3","p4","p5","p6","p7"]},{"name":"age","values":["a0"]}],"compartment_dims":{"S":["patch","age"],"E":["patch","age"],"I":["patch","age"],"R":["patch","age"]},"base_compartments":["S","E","I","R"],"transmission_transitions":[],"infectious_compartments":[]},"bindings":[
-{"name":"beta","expr":{"const":2.145}},
-{"name":"seas","expr":{"bin_op":{"op":"add","left":{"const":0.75},"right":{"bin_op":{"op":"mul","left":{"const":0.5},"right":{"time_func":{"name":"school"}}}}}}},
-{"name":"I_agg_p0","expr":{"pop":"I_p0_a0"}},
-{"name":"N_p0","expr":{"pop_sum":["S_p0_a0","E_p0_a0","I_p0_a0","R_p0_a0"]}},
-{"name":"I_agg_p1","expr":{"pop":"I_p1_a0"}},
-{"name":"N_p1","expr":{"pop_sum":["S_p1_a0","E_p1_a0","I_p1_a0","R_p1_a0"]}},
-{"name":"I_agg_p2","expr":{"pop":"I_p2_a0"}},
-{"name":"N_p2","expr":{"pop_sum":["S_p2_a0","E_p2_a0","I_p2_a0","R_p2_a0"]}},
-{"name":"I_agg_p3","expr":{"pop":"I_p3_a0"}},
-{"name":"N_p3","expr":{"pop_sum":["S_p3_a0","E_p3_a0","I_p3_a0","R_p3_a0"]}},
-{"name":"I_agg_p4","expr":{"pop":"I_p4_a0"}},
-{"name":"N_p4","expr":{"pop_sum":["S_p4_a0","E_p4_a0","I_p4_a0","R_p4_a0"]}},
-{"name":"I_agg_p5","expr":{"pop":"I_p5_a0"}},
-{"name":"N_p5","expr":{"pop_sum":["S_p5_a0","E_p5_a0","I_p5_a0","R_p5_a0"]}},
-{"name":"I_agg_p6","expr":{"pop":"I_p6_a0"}},
-{"name":"N_p6","expr":{"pop_sum":["S_p6_a0","E_p6_a0","I_p6_a0","R_p6_a0"]}},
-{"name":"I_agg_p7","expr":{"pop":"I_p7_a0"}},
-{"name":"N_p7","expr":{"pop_sum":["S_p7_a0","E_p7_a0","I_p7_a0","R_p7_a0"]}}
-]}}
+{
+  "ir_version": "0.9",
+  "validated_by": "ocaml-compiler-v0.9",
+  "model": {
+    "name": "sparse_P8",
+    "version": "0.3",
+    "time_unit": "days",
+    "description": null,
+    "compartments": [
+      { "name": "S_p0_a0", "kind": "integer" },
+      { "name": "S_p1_a0", "kind": "integer" },
+      { "name": "S_p2_a0", "kind": "integer" },
+      { "name": "S_p3_a0", "kind": "integer" },
+      { "name": "S_p4_a0", "kind": "integer" },
+      { "name": "S_p5_a0", "kind": "integer" },
+      { "name": "S_p6_a0", "kind": "integer" },
+      { "name": "S_p7_a0", "kind": "integer" },
+      { "name": "E_p0_a0", "kind": "integer" },
+      { "name": "E_p1_a0", "kind": "integer" },
+      { "name": "E_p2_a0", "kind": "integer" },
+      { "name": "E_p3_a0", "kind": "integer" },
+      { "name": "E_p4_a0", "kind": "integer" },
+      { "name": "E_p5_a0", "kind": "integer" },
+      { "name": "E_p6_a0", "kind": "integer" },
+      { "name": "E_p7_a0", "kind": "integer" },
+      { "name": "I_p0_a0", "kind": "integer" },
+      { "name": "I_p1_a0", "kind": "integer" },
+      { "name": "I_p2_a0", "kind": "integer" },
+      { "name": "I_p3_a0", "kind": "integer" },
+      { "name": "I_p4_a0", "kind": "integer" },
+      { "name": "I_p5_a0", "kind": "integer" },
+      { "name": "I_p6_a0", "kind": "integer" },
+      { "name": "I_p7_a0", "kind": "integer" },
+      { "name": "R_p0_a0", "kind": "integer" },
+      { "name": "R_p1_a0", "kind": "integer" },
+      { "name": "R_p2_a0", "kind": "integer" },
+      { "name": "R_p3_a0", "kind": "integer" },
+      { "name": "R_p4_a0", "kind": "integer" },
+      { "name": "R_p5_a0", "kind": "integer" },
+      { "name": "R_p6_a0", "kind": "integer" },
+      { "name": "R_p7_a0", "kind": "integer" }
+    ],
+    "transitions": [
+      {
+        "name": "infection_p0_a0",
+        "stoichiometry": [["S_p0_a0", -1], ["E_p0_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p0_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p0" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p0" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p1" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p1" },
+                                    "right": { "binding_ref": "N_p1" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p7" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p7" },
+                                    "right": { "binding_ref": "N_p7" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p0_a0", "dest_compartment": "E_p0_a0" }
+      },
+      {
+        "name": "infection_p1_a0",
+        "stoichiometry": [["S_p1_a0", -1], ["E_p1_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p1_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p1" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p1" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p0" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p0" },
+                                    "right": { "binding_ref": "N_p0" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p2" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p2" },
+                                    "right": { "binding_ref": "N_p2" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p1_a0", "dest_compartment": "E_p1_a0" }
+      },
+      {
+        "name": "infection_p2_a0",
+        "stoichiometry": [["S_p2_a0", -1], ["E_p2_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p2_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p2" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p2" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p1" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p1" },
+                                    "right": { "binding_ref": "N_p1" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p3" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p3" },
+                                    "right": { "binding_ref": "N_p3" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p2_a0", "dest_compartment": "E_p2_a0" }
+      },
+      {
+        "name": "infection_p3_a0",
+        "stoichiometry": [["S_p3_a0", -1], ["E_p3_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p3_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p3" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p3" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p2" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p2" },
+                                    "right": { "binding_ref": "N_p2" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p4" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p4" },
+                                    "right": { "binding_ref": "N_p4" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p3_a0", "dest_compartment": "E_p3_a0" }
+      },
+      {
+        "name": "infection_p4_a0",
+        "stoichiometry": [["S_p4_a0", -1], ["E_p4_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p4_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p4" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p4" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p3" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p3" },
+                                    "right": { "binding_ref": "N_p3" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p5" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p5" },
+                                    "right": { "binding_ref": "N_p5" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p4_a0", "dest_compartment": "E_p4_a0" }
+      },
+      {
+        "name": "infection_p5_a0",
+        "stoichiometry": [["S_p5_a0", -1], ["E_p5_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p5_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p5" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p5" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p4" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p4" },
+                                    "right": { "binding_ref": "N_p4" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p6" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p6" },
+                                    "right": { "binding_ref": "N_p6" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p5_a0", "dest_compartment": "E_p5_a0" }
+      },
+      {
+        "name": "infection_p6_a0",
+        "stoichiometry": [["S_p6_a0", -1], ["E_p6_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p6_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p6" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p6" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p5" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p5" },
+                                    "right": { "binding_ref": "N_p5" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p7" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p7" },
+                                    "right": { "binding_ref": "N_p7" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p6_a0", "dest_compartment": "E_p6_a0" }
+      },
+      {
+        "name": "infection_p7_a0",
+        "stoichiometry": [["S_p7_a0", -1], ["E_p7_a0", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": {
+                  "bin_op": { "op": "mul", "left": { "binding_ref": "beta" }, "right": { "binding_ref": "seas" } }
+                },
+                "right": { "pop": "S_p7_a0" }
+              }
+            },
+            "right": {
+              "bin_op": {
+                "op": "add",
+                "left": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": {
+                      "bin_op": { "op": "add", "left": { "binding_ref": "I_agg_p7" }, "right": { "const": 1e-07 } }
+                    },
+                    "right": { "binding_ref": "N_p7" }
+                  }
+                },
+                "right": {
+                  "bin_op": {
+                    "op": "mul",
+                    "left": { "const": 0.05 },
+                    "right": {
+                      "reduce": [
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p0" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p0" },
+                                    "right": { "binding_ref": "N_p0" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "bin_op": {
+                            "op": "mul",
+                            "left": { "const": 0.5 },
+                            "right": {
+                              "cond": {
+                                "pred": {
+                                  "bin_op": { "op": "gt", "left": { "binding_ref": "N_p6" }, "right": { "const": 0.0 } }
+                                },
+                                "then": {
+                                  "bin_op": {
+                                    "op": "div",
+                                    "left": { "binding_ref": "I_agg_p6" },
+                                    "right": { "binding_ref": "N_p6" }
+                                  }
+                                },
+                                "else": { "const": 0.0 }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "S_p7_a0", "dest_compartment": "E_p7_a0" }
+      },
+      {
+        "name": "progression_p0_a0",
+        "stoichiometry": [["E_p0_a0", -1], ["I_p0_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p0_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p0_a0", "dest_compartment": "I_p0_a0" }
+      },
+      {
+        "name": "progression_p1_a0",
+        "stoichiometry": [["E_p1_a0", -1], ["I_p1_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p1_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p1_a0", "dest_compartment": "I_p1_a0" }
+      },
+      {
+        "name": "progression_p2_a0",
+        "stoichiometry": [["E_p2_a0", -1], ["I_p2_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p2_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p2_a0", "dest_compartment": "I_p2_a0" }
+      },
+      {
+        "name": "progression_p3_a0",
+        "stoichiometry": [["E_p3_a0", -1], ["I_p3_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p3_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p3_a0", "dest_compartment": "I_p3_a0" }
+      },
+      {
+        "name": "progression_p4_a0",
+        "stoichiometry": [["E_p4_a0", -1], ["I_p4_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p4_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p4_a0", "dest_compartment": "I_p4_a0" }
+      },
+      {
+        "name": "progression_p5_a0",
+        "stoichiometry": [["E_p5_a0", -1], ["I_p5_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p5_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p5_a0", "dest_compartment": "I_p5_a0" }
+      },
+      {
+        "name": "progression_p6_a0",
+        "stoichiometry": [["E_p6_a0", -1], ["I_p6_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p6_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p6_a0", "dest_compartment": "I_p6_a0" }
+      },
+      {
+        "name": "progression_p7_a0",
+        "stoichiometry": [["E_p7_a0", -1], ["I_p7_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.125 }, "right": { "pop": "E_p7_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "E_p7_a0", "dest_compartment": "I_p7_a0" }
+      },
+      {
+        "name": "recovery_p0_a0",
+        "stoichiometry": [["I_p0_a0", -1], ["R_p0_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p0_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p0_a0", "dest_compartment": "R_p0_a0" }
+      },
+      {
+        "name": "recovery_p1_a0",
+        "stoichiometry": [["I_p1_a0", -1], ["R_p1_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p1_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p1_a0", "dest_compartment": "R_p1_a0" }
+      },
+      {
+        "name": "recovery_p2_a0",
+        "stoichiometry": [["I_p2_a0", -1], ["R_p2_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p2_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p2_a0", "dest_compartment": "R_p2_a0" }
+      },
+      {
+        "name": "recovery_p3_a0",
+        "stoichiometry": [["I_p3_a0", -1], ["R_p3_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p3_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p3_a0", "dest_compartment": "R_p3_a0" }
+      },
+      {
+        "name": "recovery_p4_a0",
+        "stoichiometry": [["I_p4_a0", -1], ["R_p4_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p4_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p4_a0", "dest_compartment": "R_p4_a0" }
+      },
+      {
+        "name": "recovery_p5_a0",
+        "stoichiometry": [["I_p5_a0", -1], ["R_p5_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p5_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p5_a0", "dest_compartment": "R_p5_a0" }
+      },
+      {
+        "name": "recovery_p6_a0",
+        "stoichiometry": [["I_p6_a0", -1], ["R_p6_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p6_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p6_a0", "dest_compartment": "R_p6_a0" }
+      },
+      {
+        "name": "recovery_p7_a0",
+        "stoichiometry": [["I_p7_a0", -1], ["R_p7_a0", 1]],
+        "rate": { "bin_op": { "op": "mul", "left": { "const": 0.143 }, "right": { "pop": "I_p7_a0" } } },
+        "metadata": { "origin_kind": "intrinsic", "source_compartment": "I_p7_a0", "dest_compartment": "R_p7_a0" }
+      }
+    ],
+    "ode_equations": [],
+    "time_functions": [
+      {
+        "name": "school",
+        "kind": {
+          "periodic": {
+            "period": {
+              "unchecked_dim": { "inner": { "const": 365.25 }, "dim": [0, 1], "reason": "unit literal 'days" }
+            },
+            "values": [
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 1.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 },
+              { "const": 0.0 }
+            ]
+          }
+        },
+        "dim": [0, 0]
+      }
+    ],
+    "tables": [
+      {
+        "name": "W",
+        "values": [
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.5 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.0 },
+          { "const": 0.5 },
+          { "const": 0.0 }
+        ],
+        "out_of_bounds": "error"
+      }
+    ],
+    "interventions": [],
+    "observations": [],
+    "parameters": [],
+    "initial_conditions": {
+      "explicit": {
+        "S_p0_a0": 900.0,
+        "S_p1_a0": 900.0,
+        "S_p2_a0": 900.0,
+        "S_p3_a0": 900.0,
+        "S_p4_a0": 900.0,
+        "S_p5_a0": 900.0,
+        "S_p6_a0": 900.0,
+        "S_p7_a0": 900.0,
+        "E_p0_a0": 10.0,
+        "E_p1_a0": 10.0,
+        "E_p2_a0": 10.0,
+        "E_p3_a0": 10.0,
+        "E_p4_a0": 10.0,
+        "E_p5_a0": 10.0,
+        "E_p6_a0": 10.0,
+        "E_p7_a0": 10.0,
+        "I_p0_a0": 10.0,
+        "I_p1_a0": 10.0,
+        "I_p2_a0": 10.0,
+        "I_p3_a0": 10.0,
+        "I_p4_a0": 10.0,
+        "I_p5_a0": 10.0,
+        "I_p6_a0": 10.0,
+        "I_p7_a0": 10.0,
+        "R_p0_a0": 80.0,
+        "R_p1_a0": 80.0,
+        "R_p2_a0": 80.0,
+        "R_p3_a0": 80.0,
+        "R_p4_a0": 80.0,
+        "R_p5_a0": 80.0,
+        "R_p6_a0": 80.0,
+        "R_p7_a0": 80.0
+      }
+    },
+    "output": {
+      "times": { "regular": { "start": 0.0, "step": 1.0, "end": 365.0 } },
+      "format": "tsv",
+      "trajectory": true,
+      "observations": true
+    },
+    "simulation": { "t_start": 0.0, "t_end": 365.0, "time_semantics": "continuous", "dt": null, "rng_seed": null },
+    "scenarios": [],
+    "model_structure": {
+      "dimensions": [
+        { "name": "patch", "values": ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"] },
+        { "name": "age", "values": ["a0"] }
+      ],
+      "compartment_dims": {
+        "S": ["patch", "age"],
+        "E": ["patch", "age"],
+        "I": ["patch", "age"],
+        "R": ["patch", "age"]
+      },
+      "base_compartments": ["S", "E", "I", "R"],
+      "transmission_transitions": [],
+      "infectious_compartments": []
+    },
+    "bindings": [
+      { "name": "beta", "expr": { "const": 2.145 } },
+      {
+        "name": "seas",
+        "expr": {
+          "bin_op": {
+            "op": "add",
+            "left": { "const": 0.75 },
+            "right": {
+              "bin_op": { "op": "mul", "left": { "const": 0.5 }, "right": { "time_func": { "name": "school" } } }
+            }
+          }
+        }
+      },
+      { "name": "I_agg_p0", "expr": { "pop": "I_p0_a0" } },
+      { "name": "N_p0", "expr": { "pop_sum": ["S_p0_a0", "E_p0_a0", "I_p0_a0", "R_p0_a0"] } },
+      { "name": "I_agg_p1", "expr": { "pop": "I_p1_a0" } },
+      { "name": "N_p1", "expr": { "pop_sum": ["S_p1_a0", "E_p1_a0", "I_p1_a0", "R_p1_a0"] } },
+      { "name": "I_agg_p2", "expr": { "pop": "I_p2_a0" } },
+      { "name": "N_p2", "expr": { "pop_sum": ["S_p2_a0", "E_p2_a0", "I_p2_a0", "R_p2_a0"] } },
+      { "name": "I_agg_p3", "expr": { "pop": "I_p3_a0" } },
+      { "name": "N_p3", "expr": { "pop_sum": ["S_p3_a0", "E_p3_a0", "I_p3_a0", "R_p3_a0"] } },
+      { "name": "I_agg_p4", "expr": { "pop": "I_p4_a0" } },
+      { "name": "N_p4", "expr": { "pop_sum": ["S_p4_a0", "E_p4_a0", "I_p4_a0", "R_p4_a0"] } },
+      { "name": "I_agg_p5", "expr": { "pop": "I_p5_a0" } },
+      { "name": "N_p5", "expr": { "pop_sum": ["S_p5_a0", "E_p5_a0", "I_p5_a0", "R_p5_a0"] } },
+      { "name": "I_agg_p6", "expr": { "pop": "I_p6_a0" } },
+      { "name": "N_p6", "expr": { "pop_sum": ["S_p6_a0", "E_p6_a0", "I_p6_a0", "R_p6_a0"] } },
+      { "name": "I_agg_p7", "expr": { "pop": "I_p7_a0" } },
+      { "name": "N_p7", "expr": { "pop_sum": ["S_p7_a0", "E_p7_a0", "I_p7_a0", "R_p7_a0"] } }
+    ]
+  }
+}

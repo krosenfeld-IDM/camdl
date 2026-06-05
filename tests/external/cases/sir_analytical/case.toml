@@ -3,28 +3,36 @@ description = "Bare SIR at R0=3, chain_binomial backend, compared to closed-form
 category = "analytical"
 
 [camdl]
-model     = "model.camdl"
-params    = "params.toml"
+model = "model.camdl"
+params = "params.toml"
 # `@seed` is replaced per-run; `@obs_out` goes to seeds/<seed>/obs.tsv.
-command   = [
-    "camdl", "simulate",
-    "@model", "--params", "@params",
-    "--backend", "chain_binomial", "--dt", "1.0",
-    "--seed", "@seed",
-    "--obs-only", "@obs_out",
+command = [
+  "camdl",
+  "simulate",
+  "@model",
+  "--params",
+  "@params",
+  "--backend",
+  "chain_binomial",
+  "--dt",
+  "1.0",
+  "--seed",
+  "@seed",
+  "--obs-only",
+  "@obs_out",
 ]
-n_seeds   = 20
+n_seeds = 20
 seed_base = 42
 
 [reference]
-kind       = "analytical"
+kind = "analytical"
 derivation = "reference/derivation.md"
 
 [summary]
 kind = "ensemble-stats"
 stats = [
-    # Total I→R recoveries over 365 days, per seed. Column name in the
-    # per-day observation TSV is the observation-block name
-    # "recoveries".
-    { name = "final_R", aggregate = "sum", over = "recoveries", scope = "per-seed" },
+  # Total I→R recoveries over 365 days, per seed. Column name in the
+  # per-day observation TSV is the observation-block name
+  # "recoveries".
+  { name = "final_R", aggregate = "sum", over = "recoveries", scope = "per-seed" },
 ]

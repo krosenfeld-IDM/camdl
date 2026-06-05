@@ -8,46 +8,43 @@ date: 2026-04-20
 ## Motivation
 
 The CLI currently parses arguments with a hand-rolled
-`while i < args.len() { match args[i] { ... } i += 1; }` loop,
-duplicated across 7+ entry points. This buys us nothing:
+`while i < args.len() { match args[i] { ... } i += 1; }` loop, duplicated across
+7+ entry points. This buys us nothing:
 
-- No bounds-checked value reads (an off-by-one or missing value is
-  a panic or wrong-token read, not an error message).
-- `--help` text is maintained separately from the flag definitions
-  and can drift.
+- No bounds-checked value reads (an off-by-one or missing value is a panic or
+  wrong-token read, not an error message).
+- `--help` text is maintained separately from the flag definitions and can
+  drift.
 - No shell completions.
-- No type coercion — everything is strings, parsed manually at call
-  sites with varying error quality.
-- Mutual exclusions (`--scenario` vs `--enable`/`--disable`,
-  `--seeds` vs `--replicates`, etc.) are silently accepted and
-  only fail at runtime.
+- No type coercion — everything is strings, parsed manually at call sites with
+  varying error quality.
+- Mutual exclusions (`--scenario` vs `--enable`/`--disable`, `--seeds` vs
+  `--replicates`, etc.) are silently accepted and only fail at runtime.
 
-`clap` with `#[derive(Parser)]` addresses all of these. The derives
-are self-documenting: the flag definition and its help text live
-together, the types enforce the parse, and `--help` is generated
-for free.
+`clap` with `#[derive(Parser)]` addresses all of these. The derives are
+self-documenting: the flag definition and its help text live together, the types
+enforce the parse, and `--help` is generated for free.
 
 ## On TOML / serde consolidation
 
-Short answer: **no**. The existing `FitConfigV2` / `FitToml` structs
-use `serde + toml` for structured configuration files. That is the
-right tool for that job. The CLI layer is a separate surface — it
-passes short arguments that direct the runtime; the TOML layer
-encodes a complete experiment description. Merging them (e.g.,
-`--config FILE` that clap overlays on top of its own args) would add
-complexity with no gain. Keep the seam: clap parses argv, serde
-parses `.toml`.
+Short answer: **no**. The existing `FitConfigV2` / `FitToml` structs use
+`serde + toml` for structured configuration files. That is the right tool for
+that job. The CLI layer is a separate surface — it passes short arguments that
+direct the runtime; the TOML layer encodes a complete experiment description.
+Merging them (e.g., `--config FILE` that clap overlays on top of its own args)
+would add complexity with no gain. Keep the seam: clap parses argv, serde parses
+`.toml`.
 
 ## Command hierarchy
 
-`simulate` takes a positional `MODEL` argument, which means clap
-cannot also give it subcommands — a command is either positional-arg
-or subcommand-parent, not both. The fix is to promote `batch` and
-`batch status` to top-level commands. This also makes semantic sense:
-batch is a distinct execution mode, not a simulation variant.
+`simulate` takes a positional `MODEL` argument, which means clap cannot also
+give it subcommands — a command is either positional-arg or subcommand-parent,
+not both. The fix is to promote `batch` and `batch status` to top-level
+commands. This also makes semantic sense: batch is a distinct execution mode,
+not a simulation variant.
 
-Gated commands (`serve`, `voi`) are omitted entirely; they re-enter
-when promoted.
+Gated commands (`serve`, `voi`) are omitted entirely; they re-enter when
+promoted.
 
 ```
 camdl
@@ -74,8 +71,8 @@ camdl
 
 ## Custom value types
 
-These types need `impl FromStr` (for clap) and carry the parse
-error into clap's error path, so the user sees a structured message.
+These types need `impl FromStr` (for clap) and carry the parse error into clap's
+error path, so the user sees a structured message.
 
 ```rust
 // --param R0=2.5  →  ParamOverride { name: "R0", value: 2.5 }
@@ -108,9 +105,8 @@ Place all of these in `cli/src/args/types.rs`.
 
 ## Shared `Args` flat structs (`#[command(flatten)]`)
 
-These capture groups of flags that appear in multiple commands.
-Each is `#[derive(Args, Clone)]`. Commands include them via
-`#[command(flatten)]`.
+These capture groups of flags that appear in multiple commands. Each is
+`#[derive(Args, Clone)]`. Commands include them via `#[command(flatten)]`.
 
 ### `ModelOverrides` — parameter loading, used by 6+ commands
 
@@ -589,10 +585,9 @@ pub struct CatArgs {
 ## Binary rename and bash wrapper removal
 
 `camdl` is currently a bash script (`bin/camdl`) that routes
-`compile`/`check`/`inspect` to `camdlc` and everything else to the
-`camdl-sim` Rust binary. The Rust binary already replicates this
-routing internally via `util::find_camdlc()` / `delegate_to_camdlc()`
-with a full discovery chain:
+`compile`/`check`/`inspect` to `camdlc` and everything else to the `camdl-sim`
+Rust binary. The Rust binary already replicates this routing internally via
+`util::find_camdlc()` / `delegate_to_camdlc()` with a full discovery chain:
 
 1. Sibling binary (same dir as running executable — release layout)
 2. `CAMDLC_PATH` env var override
@@ -603,47 +598,46 @@ The bash script is therefore redundant. As part of Phase 1:
 - Rename the Cargo binary target from `camdl-sim` → `camdl`
   (`rust/crates/cli/Cargo.toml` `[[bin]]` name field).
 - Delete `bin/camdl`.
-- Update `Makefile`: `CAMDL_SIM` → `CAMDL`, install target,
-  uninstall target, `sim` target, integration test invocation.
+- Update `Makefile`: `CAMDL_SIM` → `CAMDL`, install target, uninstall target,
+  `sim` target, integration test invocation.
 - Update stale comments in `examples/` that reference `camdl-sim`.
 
 The delegated commands (`compile`, `check`, `inspect`) use
-`#[arg(trailing_var_arg = true, allow_hyphen_values = true)]` to
-collect all remaining argv tokens and pass them to
-`delegate_to_camdlc`. `CAMDLC_PATH` is the single documented env var
-for overriding the OCaml binary location; add it to the `--help` text
-for these commands via `#[arg(env = "CAMDLC_PATH")]` on a hidden arg
-or a note in the long_about.
+`#[arg(trailing_var_arg = true, allow_hyphen_values = true)]` to collect all
+remaining argv tokens and pass them to `delegate_to_camdlc`. `CAMDLC_PATH` is
+the single documented env var for overriding the OCaml binary location; add it
+to the `--help` text for these commands via `#[arg(env = "CAMDLC_PATH")]` on a
+hidden arg or a note in the long_about.
 
 ## Migration plan
 
-The codebase is unreleased so there is no backwards-compatibility
-constraint on the argv surface. Do it in three phases.
+The codebase is unreleased so there is no backwards-compatibility constraint on
+the argv surface. Do it in three phases.
 
 ### Phase 1 — Add clap, rename binary, define type system
 
-1. Add `clap = { version = "4", features = ["derive"] }` to
-   `cli/Cargo.toml`. Rename binary target `camdl-sim` → `camdl`.
+1. Add `clap = { version = "4", features = ["derive"] }` to `cli/Cargo.toml`.
+   Rename binary target `camdl-sim` → `camdl`.
 2. Delete `bin/camdl`. Update `Makefile` references.
 3. Run integration tests (`make test-golden`, `cas_integration`,
-   `synthetic_fit_grid`) — they must pass before any handler changes.
-   This is the baseline gate for Phase 2.
-4. Create `cli/src/args/types.rs`: `ParamOverride`, `TableSpec`,
-   `Backend`, `SeedSpec`, `SweepSpec`, `RwSd`, `ListDuration` — all
-   with `impl FromStr`. `RwSd::Map` uses `HashMap<String, f64>`.
-5. Create `cli/src/args/mod.rs`: all flat `Args` structs and the
-   top-level `Cli` / `Command` enum.
+   `synthetic_fit_grid`) — they must pass before any handler changes. This is
+   the baseline gate for Phase 2.
+4. Create `cli/src/args/types.rs`: `ParamOverride`, `TableSpec`, `Backend`,
+   `SeedSpec`, `SweepSpec`, `RwSd`, `ListDuration` — all with `impl FromStr`.
+   `RwSd::Map` uses `HashMap<String, f64>`.
+5. Create `cli/src/args/mod.rs`: all flat `Args` structs and the top-level `Cli`
+   / `Command` enum.
 6. Wire `Cli::parse()` at the top of `main()`. Replace the manual
    `match all_args[0]` dispatcher entirely — clap is the dispatcher.
 7. Remove the `print_*_help()` family.
 
 ### Phase 2 — Migrate handlers
 
-Each step: replace the arg-parsing loop in the handler with the
-typed `Args` struct, run `make test`, fix any broken integration tests
-before moving on.
+Each step: replace the arg-parsing loop in the handler with the typed `Args`
+struct, run `make test`, fix any broken integration tests before moving on.
 
 Order (easiest first):
+
 1. `data split`, `cat`, `show`, `list`
 2. `eval`, `compile`/`check`/`inspect`
 3. `simulate`
@@ -652,46 +646,44 @@ Order (easiest first):
 6. `if2`, `profile`
 7. `fit run`, `fit status`, `fit diff`, `fit new`, `fit where`
 
-After step 7: review pass to confirm `InferenceCore`, `ModelOverrides`,
-and `FlowProjection` still fit all their consumers. Refactor the
-shared structs if needed before declaring Phase 2 complete.
+After step 7: review pass to confirm `InferenceCore`, `ModelOverrides`, and
+`FlowProjection` still fit all their consumers. Refactor the shared structs if
+needed before declaring Phase 2 complete.
 
-`serve` and `voi` are gated. When promoted, add their `Args` structs,
-wire dispatch, and slot into the order: `serve` after step 1,
-`voi run` after step 7.
+`serve` and `voi` are gated. When promoted, add their `Args` structs, wire
+dispatch, and slot into the order: `serve` after step 1, `voi run` after step 7.
 
 ### Phase 3 — Polish
 
 - Add `#[arg(env = "CAMDL_OUTPUT_DIR")]`, `#[arg(env = "CAMDL_PARALLEL")]`,
-  `#[arg(env = "CAMDL_BACKEND")]` to the relevant fields. CLI flag
-  overrides env var overrides default — document this precedence
-  explicitly in the affected `--help` strings.
-- Add a hidden `completions` subcommand that emits shell completion
-  scripts (fish, bash, zsh) via `clap_complete`.
-- Error handling consolidation (`die()`/`or_die()`) is a **separate PR**
-  after clap lands — do not bundle.
+  `#[arg(env = "CAMDL_BACKEND")]` to the relevant fields. CLI flag overrides env
+  var overrides default — document this precedence explicitly in the affected
+  `--help` strings.
+- Add a hidden `completions` subcommand that emits shell completion scripts
+  (fish, bash, zsh) via `clap_complete`.
+- Error handling consolidation (`die()`/`or_die()`) is a **separate PR** after
+  clap lands — do not bundle.
 
 ## What to watch for
 
-**`--param NAME=VALUE` with `=` in the value.** clap's default
-`value_parser` for `Vec<T>` with a custom `FromStr` passes the full
-token after the flag to `from_str`. `"R0=2.5"` parses correctly.
-`"--param=R0=2.5"` (flag+value joined with `=`) also works because
-clap splits on the first `=`. No problem here.
+**`--param NAME=VALUE` with `=` in the value.** clap's default `value_parser`
+for `Vec<T>` with a custom `FromStr` passes the full token after the flag to
+`from_str`. `"R0=2.5"` parses correctly. `"--param=R0=2.5"` (flag+value joined
+with `=`) also works because clap splits on the first `=`. No problem here.
 
-**`--saves-paths N PATH` (two positional args after the flag).**
-Use `#[arg(long, num_args = 2)]` — clap supports this natively.
+**`--saves-paths N PATH` (two positional args after the flag).** Use
+`#[arg(long, num_args = 2)]` — clap supports this natively.
 
 **`--sweep NAME=V1,V2,...` — commas inside the value.** Do NOT use
-`value_delimiter = ','` here; the values themselves contain commas.
-Parse `Vec<String>` and split manually inside the handler.
+`value_delimiter = ','` here; the values themselves contain commas. Parse
+`Vec<String>` and split manually inside the handler.
 
-**The delegated commands (`compile`, `check`, `inspect`).** These
-pass all remaining args to a subprocess. Use `#[arg(trailing_var_arg = true)]`
-to collect them into `Vec<String>` without clap trying to parse them.
+**The delegated commands (`compile`, `check`, `inspect`).** These pass all
+remaining args to a subprocess. Use `#[arg(trailing_var_arg = true)]` to collect
+them into `Vec<String>` without clap trying to parse them.
 
 **`--verbosity` default.** The current `env_logger` integration reads
-`RUST_LOG`. Clap can expose `--verbosity` as a flag that sets the
-filter; the `RUST_LOG` fallback can remain via `env_logger`'s
-`try_init()`. Don't fight the existing log setup — just add the
-`--verbosity` arg and call `env_logger::Builder::from_env(...).parse_filters(verbosity).init()`.
+`RUST_LOG`. Clap can expose `--verbosity` as a flag that sets the filter; the
+`RUST_LOG` fallback can remain via `env_logger`'s `try_init()`. Don't fight the
+existing log setup — just add the `--verbosity` arg and call
+`env_logger::Builder::from_env(...).parse_filters(verbosity).init()`.

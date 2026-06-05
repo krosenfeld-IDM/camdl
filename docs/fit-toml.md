@@ -1,10 +1,10 @@
 # The `fit.toml` reference
 
 A `fit.toml` is the runtime config for `camdl fit run` — it names the model, the
-data, what to estimate, what to fix, and the inference stages. It is **not** part
-of the model language: the `.camdl` file declares parameter names, bounds, and
-priors; the `fit.toml` selects which parameters to estimate and how. Every field
-below is verified against the parser (`config_v2.rs`).
+data, what to estimate, what to fix, and the inference stages. It is **not**
+part of the model language: the `.camdl` file declares parameter names, bounds,
+and priors; the `fit.toml` selects which parameters to estimate and how. Every
+field below is verified against the parser (`config_v2.rs`).
 
 For the workflow these configs drive, see `camdl docs workflow`.
 
@@ -51,22 +51,22 @@ init_mle  = "scout"               # take this stage's base point from the scout 
 
 **`[model]`** — `camdl = "path/to/model.camdl"`.
 
-**`[data.observations]`** — one key per observation stream declared in the model,
-each mapped to a TSV path. For out-of-sample validation, add `[holdout]` (same
-shape) or `holdout_after = <time>`.
+**`[data.observations]`** — one key per observation stream declared in the
+model, each mapped to a TSV path. For out-of-sample validation, add `[holdout]`
+(same shape) or `holdout_after = <time>`.
 
 **`[estimate]`** — the parameters to infer. Each value is an inline table:
 
-| key | meaning |
-| --- | --- |
-| `bounds = [lo, hi]` | search range. *Optional* — defaults to the model's `parameters { p : rate in [lo,hi] }` range; a `fit.toml` `bounds` may only **narrow** it, never loosen. |
-| `start = X` | starting value. Optional — random from bounds (scout) or inherited from an upstream stage. |
-| `prior = { … }` | prior distribution. **Required** for a `pgas`/`pmmh` stage; `if2` ignores it. See "Priors" below. |
-| `transform = "log" \| "logit" \| "identity"` | inference-scale transform. Optional — inferred from the parameter's declared type if omitted. |
-| `ivp = true` | initial-value parameter (e.g. `s0`, `i0`) — perturbed only at t=0. |
-| `rw_sd = X` | IF2 per-parameter random-walk SD. Optional — auto-scaled from bounds. |
+| key                                          | meaning                                                                                                                                                    |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bounds = [lo, hi]`                          | search range. _Optional_ — defaults to the model's `parameters { p : rate in [lo,hi] }` range; a `fit.toml` `bounds` may only **narrow** it, never loosen. |
+| `start = X`                                  | starting value. Optional — random from bounds (scout) or inherited from an upstream stage.                                                                 |
+| `prior = { … }`                              | prior distribution. **Required** for a `pgas`/`pmmh` stage; `if2` ignores it. See "Priors" below.                                                          |
+| `transform = "log" \| "logit" \| "identity"` | inference-scale transform. Optional — inferred from the parameter's declared type if omitted.                                                              |
+| `ivp = true`                                 | initial-value parameter (e.g. `s0`, `i0`) — perturbed only at t=0.                                                                                         |
+| `rw_sd = X`                                  | IF2 per-parameter random-walk SD. Optional — auto-scaled from bounds.                                                                                      |
 
-**`[fixed]`** — `param = value` for every model parameter you are *not*
+**`[fixed]`** — `param = value` for every model parameter you are _not_
 estimating. camdl requires every declared parameter to be either estimated or
 fixed.
 
@@ -82,42 +82,44 @@ care about lives here; a `dt` written at the top level of the file is a typo,
 not a setting.
 
 > **Unknown keys are rejected.** A misplaced or misspelled key is a hard error
-> naming the offending key — `fit.toml` is parsed strictly. A top-level `dt`
-> (it belongs in `[config]`) or `particle` (it is `particles`, under a stage)
-> fails at load rather than being silently dropped, so a sweep that varies a
-> typo'd knob can't quietly produce identical fits.
+> naming the offending key — `fit.toml` is parsed strictly. A top-level `dt` (it
+> belongs in `[config]`) or `particle` (it is `particles`, under a stage) fails
+> at load rather than being silently dropped, so a sweep that varies a typo'd
+> knob can't quietly produce identical fits.
 
 ## Priors
 
 Externally-tagged inline tables (the wire format matches the IR emission):
 
 ```toml
-prior = { log_normal  = { mu = 0.0, sigma = 1.0 } }
-prior = { normal      = { mean = 0.0, sd = 1.0 } }
-prior = { beta        = { alpha = 2.0, beta = 5.0 } }
-prior = { uniform     = { } }       # uniform over bounds
+prior = { log_normal = { mu = 0.0, sigma = 1.0 } }
+prior = { normal = { mean = 0.0, sd = 1.0 } }
+prior = { beta = { alpha = 2.0, beta = 5.0 } }
+prior = { uniform = {} } # uniform over bounds
 prior = { half_normal = { sigma = 1.0 } }
-prior = { flat        = { } }       # explicit "flat on purpose" — only valid in fit.toml
+prior = { flat = {} } # explicit "flat on purpose" — only valid in fit.toml
 ```
 
 **Precedence:** a `fit.toml` `[estimate].prior` overrides the model's `~`
 declaration; if neither is present, a Bayesian stage falls back to flat **with a
-warning** — camdl refuses *silent* implicit-flat priors, because the prior shows
+warning** — camdl refuses _silent_ implicit-flat priors, because the prior shows
 up in the posterior. The explicit `{ flat = {} }` is how you say "flat here, on
 purpose" without the warning.
 
 ## Stage algorithms
 
-| `algorithm` | role | key fields |
-| --- | --- | --- |
-| `if2` | iterated filtering → MLE | `chains`, `particles`, `iterations`, `cooling` (+ `cooling_target_iters`, default 50) |
-| `pgas` | particle Gibbs + NUTS → posterior | `chains`, `particles`, `sweeps` (+ `burn_in`, `thin`, `tempering`, `max_tree_depth`) |
-| `pmmh` | particle marginal MH → posterior (experimental) | `chains`, `particles`, `iterations` |
-| `pfilter` | particle filter at fixed θ → log-likelihood + ESS | `particles`, `replicates` |
+| `algorithm` | role                                              | key fields                                                                            |
+| ----------- | ------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `if2`       | iterated filtering → MLE                          | `chains`, `particles`, `iterations`, `cooling` (+ `cooling_target_iters`, default 50) |
+| `pgas`      | particle Gibbs + NUTS → posterior                 | `chains`, `particles`, `sweeps` (+ `burn_in`, `thin`, `tempering`, `max_tree_depth`)  |
+| `pmmh`      | particle marginal MH → posterior (experimental)   | `chains`, `particles`, `iterations`                                                   |
+| `pfilter`   | particle filter at fixed θ → log-likelihood + ESS | `particles`, `replicates`                                                             |
 
 Common to every stage:
 
-- `init = "lhs"` (default, scale-aware Latin-hypercube) `| "single" | "uniform" | "survey_top_k"` — how per-chain starting points are drawn.
+- `init = "lhs"` (default, scale-aware Latin-hypercube)
+  `| "single" | "uniform" | "survey_top_k"` — how per-chain starting points are
+  drawn.
 - `init_mle = "<upstream-stage>"` — where this stage's base point comes from.
 
 ### Seeding chains from a survey
@@ -126,8 +128,8 @@ The survey → fit handoff (workflow step 3 → 4):
 
 ```toml
 [stages.scout]
-algorithm   = "if2"
-init        = "survey_top_k"            # draw chain starts from a survey landscape
+algorithm = "if2"
+init = "survey_top_k" # draw chain starts from a survey landscape
 survey_path = "results/surveys/<survey-run-dir>"
 # survey_top_k_n defaults to `chains`
 ```
@@ -135,7 +137,12 @@ survey_path = "results/surveys/<survey-run-dir>"
 ### Tempering (PGAS)
 
 ```toml
-tempering = [1.0, 0.7, 0.4, 0.15]   # first entry MUST be 1.0 (cold chain); only the cold rung samples
+tempering = [
+  1.0,
+  0.7,
+  0.4,
+  0.15,
+] # first entry MUST be 1.0 (cold chain); only the cold rung samples
 ```
 
 Add intermediate β values when the tempering swap rate is low (see the
@@ -143,7 +150,7 @@ diagnostics table in `camdl docs workflow`).
 
 ## How `fit.toml` relates to the model
 
-The model file is the source of truth for what *can* be estimated; the
+The model file is the source of truth for what _can_ be estimated; the
 `fit.toml` chooses and configures. Specifically:
 
 - **Bounds** default to the model's declared range; `fit.toml` can only narrow.

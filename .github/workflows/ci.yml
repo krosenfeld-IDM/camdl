@@ -12,21 +12,21 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
-      - 'examples/**'
-      - 'README.md'
-      - '**/*.md'
-      - '.gitignore'
-      - 'LICENSE'
+      - "docs/**"
+      - "examples/**"
+      - "README.md"
+      - "**/*.md"
+      - ".gitignore"
+      - "LICENSE"
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
-      - 'examples/**'
-      - 'README.md'
-      - '**/*.md'
-      - '.gitignore'
-      - 'LICENSE'
+      - "docs/**"
+      - "examples/**"
+      - "README.md"
+      - "**/*.md"
+      - ".gitignore"
+      - "LICENSE"
 
 jobs:
   test:

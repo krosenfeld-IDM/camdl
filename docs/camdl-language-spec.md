@@ -22,41 +22,40 @@ auto-localization, no implicit scope rules. Every rate expression is a total
 propensity — the compiler never silently multiplies by a population count. If a
 rate is per-capita, the user writes the `* Pop` factor explicitly.
 
-**Model + layered configuration.** A `.camdl` file is structurally stable
-across all analyses — forward simulation, calibration, scenario comparison,
-and forecasting all use the same file with different layered configuration on
-top. Two shapes are both first-class:
+**Model + layered configuration.** A `.camdl` file is structurally stable across
+all analyses — forward simulation, calibration, scenario comparison, and
+forecasting all use the same file with different layered configuration on top.
+Two shapes are both first-class:
 
-- A **structural skeleton** that declares parameter names, kinds, and
-  dimensions only; values are supplied externally via TOML, CLI flags, or
-  inference engines. Useful for "model under inference" / library-style work.
+- A **structural skeleton** that declares parameter names, kinds, and dimensions
+  only; values are supplied externally via TOML, CLI flags, or inference
+  engines. Useful for "model under inference" / library-style work.
 - A **self-contained reproducible model** that declares parameters and their
-  default values, default priors, a `baseline` scenario, even an `init`
-  block — so the file can be handed to a colleague (or shipped in a paper
-  supplement) and run end-to-end with no auxiliary inputs. This is the
-  preferred form for distribution and for the canonical examples shipped
-  with camdl.
+  default values, default priors, a `baseline` scenario, even an `init` block —
+  so the file can be handed to a colleague (or shipped in a paper supplement)
+  and run end-to-end with no auxiliary inputs. This is the preferred form for
+  distribution and for the canonical examples shipped with camdl.
 
 Both shapes coexist because external configuration always overrides values
-declared inside the file. The precedence chain is fixed (see
-`docs/inference.md` for the full ordering on the inference side and
-`camdl-run-spec.md` for forward simulation): `fit.toml` / `--param` / CLI
-arguments take precedence over `params.toml` (loaded at compile time), which
-takes precedence over `set = { ... }` inside scenarios, which takes
-precedence over defaults declared in `parameters { ... }`, `let`, or
-`init { ... }`. The seed is always a CLI argument.
+declared inside the file. The precedence chain is fixed (see `docs/inference.md`
+for the full ordering on the inference side and `camdl-run-spec.md` for forward
+simulation): `fit.toml` / `--param` / CLI arguments take precedence over
+`params.toml` (loaded at compile time), which takes precedence over
+`set = { ... }` inside scenarios, which takes precedence over defaults declared
+in `parameters { ... }`, `let`, or `init { ... }`. The seed is always a CLI
+argument.
 
 What this design preserves — and what the IR's hash discipline enforces — is
-that *structural* model identity (compartments, transitions, observation
+that _structural_ model identity (compartments, transitions, observation
 projections, intervention semantics) is captured by `model_hash`, while
-*value-bearing* content (base params, backend, dt) lives in `sim_hash`, the
-scenario delta in `scen_hash`, and inference inputs (priors, transforms,
-data, fit config) in `fit_hash`. So two analyses that share a structural
-model have the same `model_hash` even if one bakes in calibrated values and
-the other supplies them externally; changing a value is visible in
-`sim_hash` even when the underlying structure didn't change. The reviewer
-trying to tell "is this a structural change or a parameter sweep" reads the
-hash provenance, not the file shape.
+_value-bearing_ content (base params, backend, dt) lives in `sim_hash`, the
+scenario delta in `scen_hash`, and inference inputs (priors, transforms, data,
+fit config) in `fit_hash`. So two analyses that share a structural model have
+the same `model_hash` even if one bakes in calibrated values and the other
+supplies them externally; changing a value is visible in `sim_hash` even when
+the underlying structure didn't change. The reviewer trying to tell "is this a
+structural change or a parameter sweep" reads the hash provenance, not the file
+shape.
 
 **Typed and checked.** Index dimensions, table shapes, compartment arities,
 parameter domains, and unit dimensions are compiler-checked with clear error
@@ -111,51 +110,49 @@ Unit literals are distinguished from identifiers by the `'` prefix:
 ```
 
 Supported units: `'days`, `'weeks`, `'months`, `'years`, `'per_day`,
-`'per_week`, `'per_month`, `'per_year`, `'count`, `'ratio`.
-`'count` carries dimension P (population); `'ratio` is dimensionless.
-Both are used on table cells (§2.5) and on parameter declarations
-(§4.1.1) where the dim checker needs a tier-3 hint that doesn't fit
-the time-or-rate axis.
+`'per_week`, `'per_month`, `'per_year`, `'count`, `'ratio`. `'count` carries
+dimension P (population); `'ratio` is dimensionless. Both are used on table
+cells (§2.5) and on parameter declarations (§4.1.1) where the dim checker needs
+a tier-3 hint that doesn't fit the time-or-rate axis.
 
 Conversions: 1 'week = 7 'days, 1 'month = 365.2425/12 'days ≈ 30.4369, 1 'year
 = 365.2425 'days. Proleptic-Gregorian throughout; matches `rata_die` and
-`rust/crates/ir/src/caltime.rs::days_per_unit` (the shared conversion authority).
+`rust/crates/ir/src/caltime.rs::days_per_unit` (the shared conversion
+authority).
 
 #### Exact vs Calendar duration kinds
 
-Duration unit literals split into two kinds, distinguished by whether
-their magnitude is a constant or an affine average over the calendar:
+Duration unit literals split into two kinds, distinguished by whether their
+magnitude is a constant or an affine average over the calendar:
 
-| Unit literal       | Kind      | Why                                          |
-| ------------------ | --------- | -------------------------------------------- |
-| `'days`, `'weeks`  | Exact     | constant day count (1, 7) — invertible       |
-| `'months`, `'years`| Calendar  | average-length (≈ 30.4369, ≈ 365.2425) — affine |
+| Unit literal        | Kind     | Why                                             |
+| ------------------- | -------- | ----------------------------------------------- |
+| `'days`, `'weeks`   | Exact    | constant day count (1, 7) — invertible          |
+| `'months`, `'years` | Calendar | average-length (≈ 30.4369, ≈ 365.2425) — affine |
 
-The dimensional checker tracks this as a **one-bit refinement on
-`[T]`** (`Exact <: Calendar` on the subtype lattice). The refinement
-propagates through arithmetic by least upper bound — `Exact ± Exact`
-stays Exact; any expression touching a `'months`/`'years` literal
-becomes Calendar.
+The dimensional checker tracks this as a **one-bit refinement on `[T]`**
+(`Exact <: Calendar` on the subtype lattice). The refinement propagates through
+arithmetic by least upper bound — `Exact ± Exact` stays Exact; any expression
+touching a `'months`/`'years` literal becomes Calendar.
 
 The refinement is load-bearing in **anchored mode** (when `origin =
-date(...)` is declared): a `Calendar`-classified duration cannot be
-added to or subtracted from an `Instant` (**E321**), because calendar
-months/years are non-invertible relative to a date. Use
-`add_calendar_months` / `add_calendar_years` (§2.3) for
-calendar-exact stepping, or an explicit `'days` literal for an affine
-offset.
+date(...)`
+is declared): a `Calendar`-classified duration cannot be added to or subtracted
+from an `Instant` (**E321**), because calendar months/years are non-invertible
+relative to a date. Use `add_calendar_months` / `add_calendar_years` (§2.3) for
+calendar-exact stepping, or an explicit `'days` literal for an affine offset.
 
-In **unanchored mode** (no `origin`) the refinement is inactive: no
-calendar reference exists, so `5 'months` as an affine span is fine,
-including in rate expressions, table values, and parameter bounds.
-The dacca SIRS configuration (`time_unit = 'months`, `beta : rate
-'per_month`, `6 'months` durations) is entirely composed of
-calendar-named *affine* constructs and works unchanged.
+In **unanchored mode** (no `origin`) the refinement is inactive: no calendar
+reference exists, so `5 'months` as an affine span is fine, including in rate
+expressions, table values, and parameter bounds. The dacca SIRS configuration
+(`time_unit = 'months`, `beta : rate
+'per_month`, `6 'months` durations) is
+entirely composed of calendar-named _affine_ constructs and works unchanged.
 
 See [`docs/dates.md`](dates.md) and the typed-time proposal
 ([`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md))
-§3 for the full statement of the rule, the LUB propagation table, and
-the classifier-from-leaves invariant.
+§3 for the full statement of the rule, the LUB propagation table, and the
+classifier-from-leaves invariant.
 
 ### 2.2 Dimensional Type System
 
@@ -189,10 +186,11 @@ Dimensionless zero (`0.0`) is compatible with any unit context.
 ### 2.2.1 Transition Rate Dimensional Analysis
 
 The compiler checks that every transition rate expression has dimension
-**P·T⁻¹** (population per unit time). This catches the most common modeling
-bug: writing a per-capita rate where a total propensity is needed.
+**P·T⁻¹** (population per unit time). This catches the most common modeling bug:
+writing a per-capita rate where a total propensity is needed.
 
 The checker infers dimensions from:
+
 - Compartment references (`Pop`, `PopSum`) → dimension **P**
 - `Time` → dimension **T**
 - Parameter types: `rate` → **T⁻¹**, `probability` → **1**, `count` → **P**
@@ -210,12 +208,13 @@ infection : S --> I @ beta * I / N
 #     got:      T⁻¹ (per-capita rate)
 ```
 
-Parameters with `kind = positive` or `kind = real` have unknown dimension —
-the checker infers it from context. If inference is ambiguous, use a `[dim]`
+Parameters with `kind = positive` or `kind = real` have unknown dimension — the
+checker infers it from context. If inference is ambiguous, use a `[dim]`
 annotation (see §4.1.1). If a parameter is used inconsistently across
 transitions, the compiler emits E303.
 
 Additional checks:
+
 - **E301**: argument to `exp()` / `log()` must be dimensionless
 - **E302**: addition/subtraction of mismatched dimensions
 - **E304**: `sqrt()` of odd-exponent dimension
@@ -223,21 +222,20 @@ Additional checks:
 - **E306**: ODE derivative must have dimension P·T⁻¹
 - **E308**: overdispersion σ² must be dimensionless
 
-Disable with `--no-dim-check` if a false positive is encountered (and file
-a bug).
+Disable with `--no-dim-check` if a false positive is encountered (and file a
+bug).
 
 ### 2.2.2 Phenomenological dimensional escape: `unchecked_dim`
 
-Some formulations intentionally break dimensional homogeneity. The
-canonical case is the He et al. (2010) α-mixing term `(I + ι)^α`
-with non-integer `α`: `P^0.976` has no well-defined dimension, but
-the formulation is empirically validated and widely used. These are
-legitimate modelling choices, not bugs.
+Some formulations intentionally break dimensional homogeneity. The canonical
+case is the He et al. (2010) α-mixing term `(I + ι)^α` with non-integer `α`:
+`P^0.976` has no well-defined dimension, but the formulation is empirically
+validated and widely used. These are legitimate modelling choices, not bugs.
 
-`unchecked_dim(expr, dim = NAME, reason = "…")` asserts that the
-wrapped expression has the named dimension without the dim-checker
-verifying the assertion. Surrounding rate expressions continue to
-dim-check normally — the escape is narrow and visible.
+`unchecked_dim(expr, dim = NAME, reason = "…")` asserts that the wrapped
+expression has the named dimension without the dim-checker verifying the
+assertion. Surrounding rate expressions continue to dim-check normally — the
+escape is narrow and visible.
 
 ```camdl
 transitions {
@@ -250,29 +248,27 @@ transitions {
 ```
 
 Valid `dim` names: `dimensionless`, `population`, `time`, `rate`,
-`population_rate`, `per_population`. `reason` is required — a string
-documenting the assertion's legitimacy. The wrapper compiles to
-`Ir::UncheckedDim` and is transparent at runtime (identity over
-`inner`).
+`population_rate`, `per_population`. `reason` is required — a string documenting
+the assertion's legitimacy. The wrapper compiles to `Ir::UncheckedDim` and is
+transparent at runtime (identity over `inner`).
 
-**Choosing the asserted dimension.** The assertion must make the
-*surrounding* expression typecheck. For the He case above:
-`β(t)` is rate (T⁻¹), `S / pop(t)` is dimensionless, so
-`unchecked_dim(…)` must absorb the population-exponent for the full
-rate to be P·T⁻¹. Hence `dim = population`. A common mistake is
-asserting `dimensionless`, which leaves the full rate at T⁻¹ and
-triggers downstream dim errors.
+**Choosing the asserted dimension.** The assertion must make the _surrounding_
+expression typecheck. For the He case above: `β(t)` is rate (T⁻¹), `S / pop(t)`
+is dimensionless, so `unchecked_dim(…)` must absorb the population-exponent for
+the full rate to be P·T⁻¹. Hence `dim = population`. A common mistake is
+asserting `dimensionless`, which leaves the full rate at T⁻¹ and triggers
+downstream dim errors.
 
-Use sparingly — `unchecked_dim` should feel like an escape hatch,
-not a normal tool. When a build has `unchecked_dim` sites, each
-should be reviewed in code review for legitimacy.
+Use sparingly — `unchecked_dim` should feel like an escape hatch, not a normal
+tool. When a build has `unchecked_dim` sites, each should be reviewed in code
+review for legitimacy.
 
 References for the canonical case:
 
-- He, Ionides, & King (2010). *J. R. Soc. Interface* 7(43): 271–283.
+- He, Ionides, & King (2010). _J. R. Soc. Interface_ 7(43): 271–283.
   doi:10.1098/rsif.2009.0151.
-- Bretó, He, Ionides, & King (2009). *Annals of Applied Statistics*
-  3(1): 319–348. doi:10.1214/08-AOAS201.
+- Bretó, He, Ionides, & King (2009). _Annals of Applied Statistics_ 3(1):
+  319–348. doi:10.1214/08-AOAS201.
 
 ### 2.3 Date Literals
 
@@ -306,113 +302,108 @@ affect simulation dynamics — it is purely a coordinate reference for convertin
 calendar dates to simulation time.
 
 Calendar support extends beyond `date()` literals: **observation data may use an
-ISO-date time column** (auto-converted via `origin` + `time_unit`), output can be
-rendered back as dates (`simulate --dates`, and `instant`-kind estimands in `fit
-summary`), and the **`instant` / `duration` parameter kinds** carry dimension
-`[T]`. **See [`docs/dates.md`](dates.md) for the complete, canonical treatment**
-of dates across the DSL, data loading, and output.
+ISO-date time column** (auto-converted via `origin` + `time_unit`), output can
+be rendered back as dates (`simulate --dates`, and `instant`-kind estimands in
+`fit
+summary`), and the **`instant` / `duration` parameter kinds** carry
+dimension `[T]`. **See [`docs/dates.md`](dates.md) for the complete, canonical
+treatment** of dates across the DSL, data loading, and output.
 
 #### Calendar-arithmetic primitives and `origin` as a referenceable Instant
 
-In **anchored mode** (when `origin` is declared), two compile-time
-primitives step a date by calendar months or years, available in DSL
-constant positions only:
+In **anchored mode** (when `origin` is declared), two compile-time primitives
+step a date by calendar months or years, available in DSL constant positions
+only:
 
 ```camdl
 add_calendar_months(d, n)   # Instant × Int → Instant
 add_calendar_years(d, n)    # Instant × Int → Instant
 ```
 
-`d` is any compile-time-constant Instant — a `date(...)` literal,
-the reserved `origin` identifier, or a nested `add_calendar_*`
-call. `n` is a compile-time integer. The algorithm is
-proleptic-Gregorian `(year, month, day)` arithmetic with **month-end
-clamping**:
+`d` is any compile-time-constant Instant — a `date(...)` literal, the reserved
+`origin` identifier, or a nested `add_calendar_*` call. `n` is a compile-time
+integer. The algorithm is proleptic-Gregorian `(year, month, day)` arithmetic
+with **month-end clamping**:
 `add_calendar_months(date("2020-01-31"), 1) = date("2020-02-29")` (leap),
-`add_calendar_months(date("2021-01-31"), 1) = date("2021-02-28")`.
-These functions never touch the `30.4369` average-month factor —
-they're the only correct way to step a date by calendar months/years.
-In unanchored mode, a call to either primitive is **E327**.
+`add_calendar_months(date("2021-01-31"), 1) = date("2021-02-28")`. These
+functions never touch the `30.4369` average-month factor — they're the only
+correct way to step a date by calendar months/years. In unanchored mode, a call
+to either primitive is **E327**.
 
-`origin` is **reserved in anchored mode as a referenceable
-compile-time-constant `Instant`**, usable wherever a constant Instant
-is accepted — `simulate { from = origin }`, `at [origin, ...]`
-schedules, `add_calendar_months(origin, 6)`, `origin + 90 'days`,
-`let landmark = origin + 90 'days`. Not usable inside rate
-expressions or any compartment-state context (it's a compile-time
-constant, not a runtime value). In unanchored mode, a reference to
-`origin` is **E327**.
+`origin` is **reserved in anchored mode as a referenceable compile-time-constant
+`Instant`**, usable wherever a constant Instant is accepted —
+`simulate { from = origin }`, `at [origin, ...]` schedules,
+`add_calendar_months(origin, 6)`, `origin + 90 'days`,
+`let landmark = origin + 90 'days`. Not usable inside rate expressions or any
+compartment-state context (it's a compile-time constant, not a runtime value).
+In unanchored mode, a reference to `origin` is **E327**.
 
-A `date_range(...)` compile-time generator produces a list of
-Instants from a start, an end-or-count, and a cadence — see
-[`docs/dates.md`](dates.md) for the surface and
+A `date_range(...)` compile-time generator produces a list of Instants from a
+start, an end-or-count, and a cadence — see [`docs/dates.md`](dates.md) for the
+surface and
 [`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
 §4 for the full signature and diagnostics.
 
 ### 2.4 Three tiers of dimensional information
 
 Dimensional information in a model can be declared at three levels of
-specificity. Each tier carries strictly more information than the
-next, and each is the right tool for a distinct class of declaration.
-Understanding the hierarchy makes the rest of §2 and §4–7 fit together.
+specificity. Each tier carries strictly more information than the next, and each
+is the right tool for a distinct class of declaration. Understanding the
+hierarchy makes the rest of §2 and §4–7 fit together.
 
-| Tier                    | Syntax                                               | Carries                        | Use when                                                         |
-|-------------------------|------------------------------------------------------|--------------------------------|------------------------------------------------------------------|
-| 1. **Kind keyword**     | `rate`, `probability`, `count`, `positive`, `real`, `instant`, `duration` | Dimension (inferred from kind) | Common parameter cases (the 99% case). `instant`/`duration` are time-typed (`[T]`) — see [`dates.md`](dates.md). |
-| 2. **Bracket annotation** | `[T]`, `[T^-1]`, `[P]`, `[P/T]`, `[1]`               | Dimension only                 | Kind keyword is under-determined (`real`, `positive`).           |
-| 3. **Unit literal**     | `'days`, `'years`, `'per_day`, `'per_year`, `'count`, `'ratio` | Dimension **+ scale**          | Concrete numeric data with a known real-world scale.             |
+| Tier                      | Syntax                                                                    | Carries                        | Use when                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| 1. **Kind keyword**       | `rate`, `probability`, `count`, `positive`, `real`, `instant`, `duration` | Dimension (inferred from kind) | Common parameter cases (the 99% case). `instant`/`duration` are time-typed (`[T]`) — see [`dates.md`](dates.md). |
+| 2. **Bracket annotation** | `[T]`, `[T^-1]`, `[P]`, `[P/T]`, `[1]`                                    | Dimension only                 | Kind keyword is under-determined (`real`, `positive`).                                                           |
+| 3. **Unit literal**       | `'days`, `'years`, `'per_day`, `'per_year`, `'count`, `'ratio`            | Dimension **+ scale**          | Concrete numeric data with a known real-world scale.                                                             |
 
-**The tiers are complementary, not redundant.** They answer different
-questions about a value:
+**The tiers are complementary, not redundant.** They answer different questions
+about a value:
 
-- **Bracket annotations** answer *"what dimension does this parameter
-  have?"* — for values supplied later (at fit time via `--params`,
-  from priors, from inference). The compiler type-checks dimensions
-  without knowing scales. Scale is implicit: everything is in the
-  model's `time_unit`.
+- **Bracket annotations** answer _"what dimension does this parameter have?"_ —
+  for values supplied later (at fit time via `--params`, from priors, from
+  inference). The compiler type-checks dimensions without knowing scales. Scale
+  is implicit: everything is in the model's `time_unit`.
 
-- **Unit literals** answer *"what dimension AND what real-world scale
-  does this value have?"* — for concrete data (`time_unit`
-  declaration, duration literals like `5 'years`, table entries,
-  data loaded via `read()`). The compiler type-checks dimensions
-  AND normalises scale to the model's `time_unit`.
+- **Unit literals** answer _"what dimension AND what real-world scale does this
+  value have?"_ — for concrete data (`time_unit` declaration, duration literals
+  like `5 'years`, table entries, data loaded via `read()`). The compiler
+  type-checks dimensions AND normalises scale to the model's `time_unit`.
 
-You can't collapse tiers 2 and 3 into one syntax. Brackets can't
-carry scale: `[T]` says "time-dimension," not "days" vs. "years." A
-user supplying `beta = 0.3` via `--params` has agreed to provide it
-in model time units — the compiler doesn't need to convert. Unit
-literals can't be applied to unknowns: you can't write `beta :
-positive 'per_day` when `beta`'s value will be drawn from a prior,
-because the prior samples directly in model time units.
+You can't collapse tiers 2 and 3 into one syntax. Brackets can't carry scale:
+`[T]` says "time-dimension," not "days" vs. "years." A user supplying
+`beta = 0.3` via `--params` has agreed to provide it in model time units — the
+compiler doesn't need to convert. Unit literals can't be applied to unknowns:
+you can't write `beta :
+positive 'per_day` when `beta`'s value will be drawn
+from a prior, because the prior samples directly in model time units.
 
-**Subtyping.** Every unit literal decomposes to (dimension, scale).
-The dimension half plays the same type-checking role as a bracket;
-the scale half drives scale normalisation. A unit literal is
-strictly more informative than a bracket of the same dimension:
+**Subtyping.** Every unit literal decomposes to (dimension, scale). The
+dimension half plays the same type-checking role as a bracket; the scale half
+drives scale normalisation. A unit literal is strictly more informative than a
+bracket of the same dimension:
 
 ```
 'years       ⊂    [T]     ⊂   (any time-dimensioned value)
 (dim+scale)       (dim)         (unconstrained)
 ```
 
-**Kind keywords are a fourth, convenience layer on top** of the
-three tiers. They name common dimension patterns (`rate` ≡ `[T^-1]`,
-`probability` ≡ `[1]` with `[0,1]` domain, `count` ≡ `[P]`) so 99%
-of parameter declarations avoid bracket notation entirely. Use
-brackets only when the kind keyword is under-determined (`real`,
-`positive`); use unit literals only where concrete numeric values
-are attached. This section (§2.4, §6.1) shows tier-3 use on table
-values; §4.1.1 shows tier 2 on parameter declarations; §7 (Forcing)
-requires tier 3 on every forcing declaration.
+**Kind keywords are a fourth, convenience layer on top** of the three tiers.
+They name common dimension patterns (`rate` ≡ `[T^-1]`, `probability` ≡ `[1]`
+with `[0,1]` domain, `count` ≡ `[P]`) so 99% of parameter declarations avoid
+bracket notation entirely. Use brackets only when the kind keyword is
+under-determined (`real`, `positive`); use unit literals only where concrete
+numeric values are attached. This section (§2.4, §6.1) shows tier-3 use on table
+values; §4.1.1 shows tier 2 on parameter declarations; §7 (Forcing) requires
+tier 3 on every forcing declaration.
 
-**`'ratio` vs `probability`**: both are dimensionless, but they're
-not synonyms. `'ratio` (tier 3) is the **unbounded** dimensionless
-case — a multiplier that could be 0.7, 1.3, 50, used for seasonal
-forcings, school-term indicators, reporting multipliers. `probability`
-(tier 1, parameter kind) is the **bounded** dimensionless case —
-values constrained to [0, 1] with an automatic logit transform for
-inference. Reach for `'ratio` when you want an arbitrary multiplier;
-reach for `probability` when you want a bounded probability
+**`'ratio` vs `probability`**: both are dimensionless, but they're not synonyms.
+`'ratio` (tier 3) is the **unbounded** dimensionless case — a multiplier that
+could be 0.7, 1.3, 50, used for seasonal forcings, school-term indicators,
+reporting multipliers. `probability` (tier 1, parameter kind) is the **bounded**
+dimensionless case — values constrained to [0, 1] with an automatic logit
+transform for inference. Reach for `'ratio` when you want an arbitrary
+multiplier; reach for `probability` when you want a bounded probability
 parameter.
 
 ### 2.5 Table Unit Annotations
@@ -488,29 +479,28 @@ ivp         : initial-value parameter (PGAS draws stochastic initial
               states; see §15).
 ```
 
-Types enable: validation of supplied values, default inference transforms,
-and dimensional analysis of rate expressions.
+Types enable: validation of supplied values, default inference transforms, and
+dimensional analysis of rate expressions.
 
-**On `instant` vs `duration` in dimensional checking.** Both carry
-dimension `[T]`. In **anchored mode** (top-level `origin` declared),
-`instant` is the Instant side of the typed-time torsor: it can be
-added to / subtracted from an `Exact` duration (§2.1), and an
-`Instant − Instant` is itself an Exact duration. In **unanchored
-mode** the torsor refinement is inactive — both kinds behave as
+**On `instant` vs `duration` in dimensional checking.** Both carry dimension
+`[T]`. In **anchored mode** (top-level `origin` declared), `instant` is the
+Instant side of the typed-time torsor: it can be added to / subtracted from an
+`Exact` duration (§2.1), and an `Instant − Instant` is itself an Exact duration.
+In **unanchored mode** the torsor refinement is inactive — both kinds behave as
 plain `[T]`-dimensioned scalars and are interchangeable in expression
-arithmetic. See the typed-time proposal §1.1 for the formal
-"classification synthesised per occurrence from its leaves" invariant:
-a **reference** to a `duration`-kind parameter is always classified
-`Exact`, even when the parameter's *bound* is spelled in `'months`
-(e.g. `delay : duration in [1 'months, 6 'months]`). The bound's
-month-spelling is a compile-time-evaluable length, not a step-from-a-
-date, and never leaks `Calendar` to uses of the parameter.
+arithmetic. See the typed-time proposal §1.1 for the formal "classification
+synthesised per occurrence from its leaves" invariant: a **reference** to a
+`duration`-kind parameter is always classified `Exact`, even when the
+parameter's _bound_ is spelled in `'months` (e.g.
+`delay : duration in [1 'months, 6 'months]`). The bound's month-spelling is a
+compile-time-evaluable length, not a step-from-a- date, and never leaks
+`Calendar` to uses of the parameter.
 
 ### 4.1.1 Dimension Annotations
 
-When a parameter's type doesn't fully determine its dimension (e.g.,
-`positive` could be a rate, a count, or dimensionless), you can add an
-explicit dimension annotation:
+When a parameter's type doesn't fully determine its dimension (e.g., `positive`
+could be a rate, a count, or dimensionless), you can add an explicit dimension
+annotation:
 
 ```camdl
 parameters {
@@ -523,26 +513,26 @@ parameters {
 }
 ```
 
-The annotation goes in square brackets after the type, before optional
-bounds. Supported dimension literals:
+The annotation goes in square brackets after the type, before optional bounds.
+Supported dimension literals:
 
-| Annotation  | Dimension              | Domain name              |
-| ----------- | ---------------------- | ------------------------ |
-| `[1]`       | dimensionless          | probability, ratio, R₀   |
-| `[P]`       | population             | count                    |
-| `[T]`       | time                   | duration                 |
-| `[1/T]`     | T⁻¹                   | per-capita rate          |
-| `[T^-1]`    | T⁻¹ (alternate)       | per-capita rate          |
-| `[P/T]`     | P·T⁻¹                 | population-level rate    |
-| `[P*T^-1]`  | P·T⁻¹ (alternate)     | population-level rate    |
+| Annotation | Dimension         | Domain name            |
+| ---------- | ----------------- | ---------------------- |
+| `[1]`      | dimensionless     | probability, ratio, R₀ |
+| `[P]`      | population        | count                  |
+| `[T]`      | time              | duration               |
+| `[1/T]`    | T⁻¹               | per-capita rate        |
+| `[T^-1]`   | T⁻¹ (alternate)   | per-capita rate        |
+| `[P/T]`    | P·T⁻¹             | population-level rate  |
+| `[P*T^-1]` | P·T⁻¹ (alternate) | population-level rate  |
 
-When present, the annotation overrides type-based inference. If the
-annotation conflicts with how the parameter is used in rate expressions,
-the compiler emits a dimension error.
+When present, the annotation overrides type-based inference. If the annotation
+conflicts with how the parameter is used in rate expressions, the compiler emits
+a dimension error.
 
-Annotations are optional. The compiler infers dimensions from context for
-most models — annotations are only needed when inference is ambiguous
-(reported as info I300).
+Annotations are optional. The compiler infers dimensions from context for most
+models — annotations are only needed when inference is ambiguous (reported as
+info I300).
 
 ### 4.2 External parameter values
 
@@ -687,11 +677,11 @@ stratify(by = immunity, only = [R])
 
 After this, S/E/I have dimensions `[age, sex]` but R has `[age, sex, immunity]`.
 
-> **See also:** for sequential transitions across dimension levels (aging
-> across age bins, Erlang sub-stages of a compartment), use the
-> `consecutive(dim)` index binding documented in §9.4. Don't enumerate
-> level-by-level transitions by hand — `[(a, a_next) in consecutive(age)]`
-> generates them all from one declaration.
+> **See also:** for sequential transitions across dimension levels (aging across
+> age bins, Erlang sub-stages of a compartment), use the `consecutive(dim)`
+> index binding documented in §9.4. Don't enumerate level-by-level transitions
+> by hand — `[(a, a_next) in consecutive(age)]` generates them all from one
+> declaration.
 
 ### 5.1 Indexing Rules
 
@@ -798,13 +788,12 @@ tables {
 ```
 
 **Tables are indexed data — they require at least one dimension.** Every table
-above is keyed by `age`, `patch`, etc. There is no 0-dimensional (scalar)
-table: `read()` loads an indexed array, not a single value. A scalar input —
-even one computed by preprocessing (a crude birth rate, an all-age mortality
-rate) — is a **parameter**, not a table. Declare it in `parameters {}` and
-supply its value via `--params` (§4.2); your preprocessing pipeline can emit
-that TOML, keeping a single source of truth without resorting to a dummy
-1-element dimension.
+above is keyed by `age`, `patch`, etc. There is no 0-dimensional (scalar) table:
+`read()` loads an indexed array, not a single value. A scalar input — even one
+computed by preprocessing (a crude birth rate, an all-age mortality rate) — is a
+**parameter**, not a table. Declare it in `parameters {}` and supply its value
+via `--params` (§4.2); your preprocessing pipeline can emit that TOML, keeping a
+single source of truth without resorting to a dummy 1-element dimension.
 
 ### 6.1 Dimension and Unit Annotations
 
@@ -848,9 +837,9 @@ signature.
 
 **Extension determines separator:** `.tsv` → tab, `.csv` → comma, anything else
 → compile error. The first non-comment row is the required header. Lines that
-begin with `#` (and blank lines) are skipped wherever they appear, so a file
-may carry leading provenance comments (source URL, fetch date) above the
-header — the usual convention for committed reference data.
+begin with `#` (and blank lines) are skipped wherever they appear, so a file may
+carry leading provenance comments (source URL, fetch date) above the header —
+the usual convention for committed reference data.
 
 **Sparse tables** use `default = value` to fill index combinations missing from
 the file:
@@ -1005,10 +994,9 @@ forcing {
 }
 ```
 
-The shape is `NAME : KIND 'unit { … }` for every forcing — the
-colon-and-block form is the only one the parser accepts. The tier-3
-unit literal is mandatory (`'ratio`, `'count`, `'per_day`, etc.); see
-"Required unit literal" below.
+The shape is `NAME : KIND 'unit { … }` for every forcing — the colon-and-block
+form is the only one the parser accepts. The tier-3 unit literal is mandatory
+(`'ratio`, `'count`, `'per_day`, etc.); see "Required unit literal" below.
 
 Forcing functions compile to `TimeFunc` nodes in the IR. Their arguments can
 reference parameters (e.g., `amplitude = alpha`), enabling inference over
@@ -1021,13 +1009,12 @@ The `periodic` type supports two forms:
 - **Range form:** `step = 1 'days` + `on = [7:100, 115:199]` — binary on/off
   with range literals. The compiler generates the values array. Use for
   calendars with known active periods (school terms, work weeks, campaign
-  windows). **In anchored mode** (top-level `origin` declared),
-  bare-numeric entries inside `on=[...]` are **E323** — anchored periodic
-  schedules must use `date(...)` entries (or, for the rare legitimate
-  "day-offset from origin" case, the `--time-format internal-days` opt-in
-  on the data boundary). See
-  [`docs/dates.md`](dates.md) and the typed-time proposal §3
-  (Rule 2 / bare-numeric subsection).
+  windows). **In anchored mode** (top-level `origin` declared), bare-numeric
+  entries inside `on=[...]` are **E323** — anchored periodic schedules must use
+  `date(...)` entries (or, for the rare legitimate "day-offset from origin"
+  case, the `--time-format internal-days` opt-in on the data boundary). See
+  [`docs/dates.md`](dates.md) and the typed-time proposal §3 (Rule 2 /
+  bare-numeric subsection).
 
 Forcing functions are used in rate expressions by name or with explicit `(t)`:
 
@@ -1076,11 +1063,10 @@ correctly.
 
 ### Required unit literal (tier-3)
 
-**Every forcing declaration must carry a tier-3 unit literal** between
-the kind keyword and the block. The literal states both the scale
-(values are normalised to the model `time_unit` at expand time) and
-the dimension (used by the dim-checker as authoritative — no
-value-based inference fallback). GH #8.
+**Every forcing declaration must carry a tier-3 unit literal** between the kind
+keyword and the block. The literal states both the scale (values are normalised
+to the model `time_unit` at expand time) and the dimension (used by the
+dim-checker as authoritative — no value-based inference fallback). GH #8.
 
 ```camdl
 forcing {
@@ -1092,26 +1078,24 @@ forcing {
 }
 ```
 
-Omitting the literal is a syntax error (E001). Previously the parser
-accepted forcings without annotations and fell back on value-based
-dimensional inference, which silently went wrong for `interpolated`
-(data-file values are always literal constants → dimensionless) and
-caused E300 dim-check failures on correct models. The required-literal
-design eliminates that class of bug at parse time.
+Omitting the literal is a syntax error (E001). Previously the parser accepted
+forcings without annotations and fell back on value-based dimensional inference,
+which silently went wrong for `interpolated` (data-file values are always
+literal constants → dimensionless) and caused E300 dim-check failures on correct
+models. The required-literal design eliminates that class of bug at parse time.
 
 Unit-literal choices for forcings in practice:
 
-- **`'ratio`** — dimensionless multiplier around 1.0. Most seasonal
-  forcings (sinusoidal with `baseline = 1.0`), day-of-week
-  reporting factors, school-term indicators.
-- **`'per_day` / `'per_week` / `'per_month` / `'per_year`** — rate
-  forcings. The value is in the named per-unit; the expander
-  rescales it to the model `time_unit` (e.g. `'per_year` with
-  `time_unit = 'days` multiplies all stored values by 1/365.2425).
-- **`'count`** — raw population count. For `pop(t)` and similar
-  demographic covariates.
-- **`'days` / `'years`** — duration-valued forcings. Rare in
-  practice.
+- **`'ratio`** — dimensionless multiplier around 1.0. Most seasonal forcings
+  (sinusoidal with `baseline = 1.0`), day-of-week reporting factors, school-term
+  indicators.
+- **`'per_day` / `'per_week` / `'per_month` / `'per_year`** — rate forcings. The
+  value is in the named per-unit; the expander rescales it to the model
+  `time_unit` (e.g. `'per_year` with `time_unit = 'days` multiplies all stored
+  values by 1/365.2425).
+- **`'count`** — raw population count. For `pop(t)` and similar demographic
+  covariates.
+- **`'days` / `'years`** — duration-valued forcings. Rare in practice.
 
 ---
 
@@ -1269,14 +1253,14 @@ importation[a in age, p in patch] : --> I[a, p]
 
 ### 9.1.1 Multi-source transitions (`A + B --> …`)
 
-Either side of `-->` accepts a `+`-separated list of compartments. Each
-source contributes `-1` and each destination contributes `+1` to the
-transition's net stoichiometry. This exposes the IR's already-general
-`stoichiometry: Vec<(name, int)>` shape to the DSL — the same
-construct the Rust runtime has always consumed.
+Either side of `-->` accepts a `+`-separated list of compartments. Each source
+contributes `-1` and each destination contributes `+1` to the transition's net
+stoichiometry. This exposes the IR's already-general
+`stoichiometry: Vec<(name, int)>` shape to the DSL — the same construct the Rust
+runtime has always consumed.
 
-**Bimolecular mass-action** (vector-host transmission, pair formation,
-cell-cell interactions):
+**Bimolecular mass-action** (vector-host transmission, pair formation, cell-cell
+interactions):
 
 ```camdl
 # Host infection from an infectious mosquito bite.
@@ -1289,31 +1273,29 @@ infect_v : S_v + I_h --> E_v + I_h   @ a * b_v * S_v * I_h / H
 react    : A + B --> C               @ k * A * B
 ```
 
-Atomic firing: a single Gillespie / tau-leap / chain-binomial step
-applies the *vector* of deltas at once. For `bite`, `S_h`
-decrements and `I_h` increments together — no intermediate state.
+Atomic firing: a single Gillespie / tau-leap / chain-binomial step applies the
+_vector_ of deltas at once. For `bite`, `S_h` decrements and `I_h` increments
+together — no intermediate state.
 
-**Catalyst collapse.** A compartment appearing on both sides of the
-arrow contributes `−1` and `+1`, which sum to `0`. Zero-delta
-entries are dropped from the stoichiometry because (a) they produce
-no net state change, and (b) the IR validator rejects `delta == 0`.
-The rate expression's reference to the catalyst is preserved, so
-the propensity dependency graph still wires it in.
+**Catalyst collapse.** A compartment appearing on both sides of the arrow
+contributes `−1` and `+1`, which sum to `0`. Zero-delta entries are dropped from
+the stoichiometry because (a) they produce no net state change, and (b) the IR
+validator rejects `delta == 0`. The rate expression's reference to the catalyst
+is preserved, so the propensity dependency graph still wires it in.
 
-- `bite : S_h + I_v --> I_h + I_v @ …`  →  stoichiometry `{S_h: -1, I_h: +1}`.
-- `react : A + B --> C @ …`             →  stoichiometry `{A: -1, B: -1, C: +1}`.
+- `bite : S_h + I_v --> I_h + I_v @ …` → stoichiometry `{S_h: -1, I_h: +1}`.
+- `react : A + B --> C @ …` → stoichiometry `{A: -1, B: -1, C: +1}`.
 
-**No-net-effect error (E310).** A transition where every delta
-collapses to zero (all compartments are pure catalysts) emits
-`E310`: "transition 'X' has no net effect: sources and destinations
-cancel". Almost always a model error; the hint suggests removing
-catalysts or adding a non-trivial destination.
+**No-net-effect error (E310).** A transition where every delta collapses to zero
+(all compartments are pure catalysts) emits `E310`: "transition 'X' has no net
+effect: sources and destinations cancel". Almost always a model error; the hint
+suggests removing catalysts or adding a non-trivial destination.
 
 **When to use it.** Multi-source is the canonical encoding for any
-two-population mass-action event — transmission that depends on two
-pop classes (S × I), predator-prey-style interactions, chemistry.
-Single-source with the catalyst referenced only in the rate is
-equivalent in the IR but hides the biological structure:
+two-population mass-action event — transmission that depends on two pop classes
+(S × I), predator-prey-style interactions, chemistry. Single-source with the
+catalyst referenced only in the rate is equivalent in the IR but hides the
+biological structure:
 
 ```camdl
 # Clear (reads like the biology).
@@ -1323,16 +1305,16 @@ bite : S_h + I_v --> I_h + I_v  @ a * b_h * S_h * I_v / H
 bite : S_h --> I_h              @ a * b_h * S_h * I_v / H
 ```
 
-Both produce the same stoichiometry `{S_h:-1, I_h:+1}` and the same
-rate expression. Prefer the multi-source form when two compartments
-jointly determine the event — the `+` makes the dependency explicit.
+Both produce the same stoichiometry `{S_h:-1, I_h:+1}` and the same rate
+expression. Prefer the multi-source form when two compartments jointly determine
+the event — the `+` makes the dependency explicit.
 
 ### 9.1.2 Probabilistic branching (`X --> { A : p, B : 1-p }`)
 
-When a single event has multiple possible destination compartments
-chosen probabilistically — symptomatic vs asymptomatic infection,
-mild vs severe vs fatal progression, detected vs missed case —
-write the destinations as a weighted set:
+When a single event has multiple possible destination compartments chosen
+probabilistically — symptomatic vs asymptomatic infection, mild vs severe vs
+fatal progression, detected vs missed case — write the destinations as a
+weighted set:
 
 ```camdl
 # An infection event produces a symptomatic case with probability
@@ -1345,50 +1327,48 @@ bite[a in age] : X[a] --> { Y_symp[a] : p_symp[a], Y_asym[a] : 1 - p_symp[a] }
   @ h_eff * X[a]
 ```
 
-**Semantics.** Pure compile-time sugar. Each branch expands to its
-own IR transition with rate `weight_i × original_rate` and
-stoichiometry `{source: -1, dest_i: +1}`. The existing source-
-grouping machinery in every stochastic backend (Gillespie, tau-leap,
-chain-binomial) correctly groups transitions sharing a source and
-performs a **single multinomial split** at firing time — *not* two
-independent draws, which would double-consume the source at high
-incidence. See `sim/src/chain_binomial.rs` §Euler-multinomial for
-the algorithm (matches pomp's `reulermultinom`).
+**Semantics.** Pure compile-time sugar. Each branch expands to its own IR
+transition with rate `weight_i × original_rate` and stoichiometry
+`{source: -1, dest_i: +1}`. The existing source- grouping machinery in every
+stochastic backend (Gillespie, tau-leap, chain-binomial) correctly groups
+transitions sharing a source and performs a **single multinomial split** at
+firing time — _not_ two independent draws, which would double-consume the source
+at high incidence. See `sim/src/chain_binomial.rs` §Euler-multinomial for the
+algorithm (matches pomp's `reulermultinom`).
 
 For the example above, `S --> { I_symp : p_symp, I_asym : 1 - p_symp }
-@ r` produces two IR transitions:
+@ r`
+produces two IR transitions:
 
-| Name              | Stoich            | Rate                  |
-|-------------------|-------------------|-----------------------|
-| `infection_I_symp` | `{S:-1, I_symp:+1}` | `p_symp * r`         |
-| `infection_I_asym` | `{S:-1, I_asym:+1}` | `(1 - p_symp) * r`   |
+| Name               | Stoich              | Rate               |
+| ------------------ | ------------------- | ------------------ |
+| `infection_I_symp` | `{S:-1, I_symp:+1}` | `p_symp * r`       |
+| `infection_I_asym` | `{S:-1, I_asym:+1}` | `(1 - p_symp) * r` |
 
-The total exit rate from `S` is `p_symp * r + (1 - p_symp) * r = r`,
-so the overall depletion rate is unchanged; only the destination
-distribution is refined.
+The total exit rate from `S` is `p_symp * r + (1 - p_symp) * r = r`, so the
+overall depletion rate is unchanged; only the destination distribution is
+refined.
 
-**Branch naming.** The compiler appends the destination compartment
-name to the transition's base name to disambiguate. Indexed
-transitions combine the index suffix and branch suffix:
-`bite[a in age] : X[a] --> { Y_symp[a] : …, Y_asym[a] : … } @ …`
-produces `bite_child_Y_symp`, `bite_child_Y_asym`,
-`bite_adult_Y_symp`, `bite_adult_Y_asym`.
+**Branch naming.** The compiler appends the destination compartment name to the
+transition's base name to disambiguate. Indexed transitions combine the index
+suffix and branch suffix:
+`bite[a in age] : X[a] --> { Y_symp[a] : …, Y_asym[a] : … } @ …` produces
+`bite_child_Y_symp`, `bite_child_Y_asym`, `bite_adult_Y_symp`,
+`bite_adult_Y_asym`.
 
-**When to use it.** When the biology is "one event, multiple
-outcomes chosen stochastically at the moment of the event." When the
-biology is "two separate ongoing processes from the same compartment
-with different rates" (e.g., death and recovery from I), use two
-plain transitions — the runtime treats them identically under
-source-grouping, but the DSL intent differs and two transitions
-reads more naturally.
+**When to use it.** When the biology is "one event, multiple outcomes chosen
+stochastically at the moment of the event." When the biology is "two separate
+ongoing processes from the same compartment with different rates" (e.g., death
+and recovery from I), use two plain transitions — the runtime treats them
+identically under source-grouping, but the DSL intent differs and two
+transitions reads more naturally.
 
-**Weights.** The weight of each branch is any scalar expression with
-dimension `probability` (dimensionless, domain `[0, 1]`). The
-compiler does not enforce that weights sum to 1 — users can write
-rate-weighted branches where the sum differs from 1 (e.g., for a
-fraction of events going to an "other" compartment that's implicit).
-Most users will write `{A : p, B : 1 - p}` for binary branching or
-an explicit last entry `1 - sum-of-others` for n-way branching.
+**Weights.** The weight of each branch is any scalar expression with dimension
+`probability` (dimensionless, domain `[0, 1]`). The compiler does not enforce
+that weights sum to 1 — users can write rate-weighted branches where the sum
+differs from 1 (e.g., for a fraction of events going to an "other" compartment
+that's implicit). Most users will write `{A : p, B : 1 - p}` for binary
+branching or an explicit last entry `1 - sum-of-others` for n-way branching.
 
 ### 9.2 Indexed Transitions
 
@@ -1479,10 +1459,11 @@ producing a more peaked distribution — closer to real disease progression.
 
 #### 9.4.1 Aging across a stratified model (canonical use case)
 
-`consecutive(dim)` is also the right primitive for **demographic aging
-across age bins** in any stratified model. Combined with `c in
-compartments` and an outer `[s in setting]` binding, one declaration
-covers all compartment families and all outer strata:
+`consecutive(dim)` is also the right primitive for **demographic aging across
+age bins** in any stratified model. Combined with `c in
+compartments` and an
+outer `[s in setting]` binding, one declaration covers all compartment families
+and all outer strata:
 
 ```camdl
 dimensions {
@@ -1505,11 +1486,11 @@ transitions {
 }
 ```
 
-For 3 settings × 3 compartments × 4 age boundaries this expands to 36
-IR transitions — from one DSL declaration. Without `consecutive(dim)`
-the same pattern needs 36 hand-written lines (one per
-compartment/setting/boundary), all structurally identical, and a new
-boundary requires editing every compartment family.
+For 3 settings × 3 compartments × 4 age boundaries this expands to 36 IR
+transitions — from one DSL declaration. Without `consecutive(dim)` the same
+pattern needs 36 hand-written lines (one per compartment/setting/boundary), all
+structurally identical, and a new boundary requires editing every compartment
+family.
 
 If you find yourself writing `age_S_02`, `age_S_25`, `age_S_5`, ...
 hand-enumerated transitions, you want this primitive.
@@ -1605,21 +1586,21 @@ index := expr                             # positional: S[child]
        | IDENT '=' expr                   # named: S[age = child]
 ```
 
-Comparison operators are available for `where` guards.
-`sum` is a keyword, not a user-definable function.
+Comparison operators are available for `where` guards. `sum` is a keyword, not a
+user-definable function.
 
 **Built-in math functions.** These are recognized by the compiler as
 function-call syntax and produce IR expression nodes (not forcing functions):
 
-| Function | Arity | Result |
-|----------|-------|--------|
-| `exp(x)` | 1 | e^x |
-| `log(x)` | 1 | Natural logarithm (ln). Returns -∞ for x ≤ 0. |
-| `sqrt(x)` | 1 | Square root. Returns 0 for x < 0. |
-| `abs(x)` | 1 | Absolute value |
-| `floor(x)` | 1 | Floor (round toward -∞) |
-| `ceil(x)` | 1 | Ceiling (round toward +∞) |
-| `mod(a, b)` | 2 | Euclidean remainder (always non-negative). Returns 0 for b = 0. |
+| Function    | Arity | Result                                                          |
+| ----------- | ----- | --------------------------------------------------------------- |
+| `exp(x)`    | 1     | e^x                                                             |
+| `log(x)`    | 1     | Natural logarithm (ln). Returns -∞ for x ≤ 0.                   |
+| `sqrt(x)`   | 1     | Square root. Returns 0 for x < 0.                               |
+| `abs(x)`    | 1     | Absolute value                                                  |
+| `floor(x)`  | 1     | Floor (round toward -∞)                                         |
+| `ceil(x)`   | 1     | Ceiling (round toward +∞)                                       |
+| `mod(a, b)` | 2     | Euclidean remainder (always non-negative). Returns 0 for b = 0. |
 
 Example:
 
@@ -1629,19 +1610,18 @@ let pop_decay = N0 * exp(-mu * t)
 let is_pulse = (day_of_year > 250.0) * (day_of_year < 252.0)
 ```
 
-**Rate wrappers.** Two compiler-recognized forms modify how event counts
-are drawn for a transition. They are NOT general-purpose functions — they
-wrap the entire rate expression and are extracted by the compiler during
-expansion.
+**Rate wrappers.** Two compiler-recognized forms modify how event counts are
+drawn for a transition. They are NOT general-purpose functions — they wrap the
+entire rate expression and are extracted by the compiler during expansion.
 
-| Wrapper | Syntax | Effect |
-|---------|--------|--------|
+| Wrapper                   | Syntax                                        | Effect                                                       |
+| ------------------------- | --------------------------------------------- | ------------------------------------------------------------ |
 | `overdispersed(rate, σ²)` | `@ overdispersed(beta * S * I / N, sigma_se)` | Gamma-Poisson (NegBinomial) draws. Var = mean + mean²·σ²/dt. |
-| `deterministic(rate)` | `@ deterministic(mu * N)` | Rounded integer: nearbyint(rate × dt). No stochastic noise. |
+| `deterministic(rate)`     | `@ deterministic(mu * N)`                     | Rounded integer: nearbyint(rate × dt). No stochastic noise.  |
 
-These are documented in §9.8 (overdispersion) and are compatible with
-tau-leap and chain-binomial backends. Gillespie and ODE reject models
-with `overdispersed()` transitions.
+These are documented in §9.8 (overdispersion) and are compatible with tau-leap
+and chain-binomial backends. Gillespie and ODE reject models with
+`overdispersed()` transitions.
 
 **Compile-time vs runtime `if/else`.** The `if/then/else` expression has two
 evaluation modes depending on context:
@@ -1921,11 +1901,10 @@ prevalence(compartment)                  current population
 prevalence(compartment[age = child])     named index on compartment
 ```
 
-**Arithmetic projections** (the general form). Beyond `incidence()`
-and `prevalence()` sugar, `projected` accepts any expression over
-compartment state, parameters, and time. Pooled-group prevalence,
-prevalence-as-proportion, and arbitrary derived observables compose
-naturally:
+**Arithmetic projections** (the general form). Beyond `incidence()` and
+`prevalence()` sugar, `projected` accepts any expression over compartment state,
+parameters, and time. Pooled-group prevalence, prevalence-as-proportion, and
+arbitrary derived observables compose naturally:
 
 ```camdl
 observations {
@@ -1950,31 +1929,28 @@ observations {
 
 Arithmetic projections emit `Ir::Projection::DerivedExpr`. Both the
 forward-simulation emission path (`camdl simulate --obs`) and the
-likelihood-scoring path (pfilter / PGAS / IF2) share a single
-evaluator (`sim::inference::multi_stream_obs::eval_stream_projection`),
-so they agree on semantics by construction. If you find yourself
-wanting a "multi-compartment prevalence" shortcut, write the sum
-directly: `projected = x + y` is the general form; `prevalence(x)`
-is kept as sugar only for the single-compartment case where the
-named function clarifies intent.
+likelihood-scoring path (pfilter / PGAS / IF2) share a single evaluator
+(`sim::inference::multi_stream_obs::eval_stream_projection`), so they agree on
+semantics by construction. If you find yourself wanting a "multi-compartment
+prevalence" shortcut, write the sum directly: `projected = x + y` is the general
+form; `prevalence(x)` is kept as sugar only for the single-compartment case
+where the named function clarifies intent.
 
+**Both indexed forms sum over unspecified dimensions.** The only difference is
+how the index is matched:
 
-**Both indexed forms sum over unspecified dimensions.** The only difference
-is how the index is matched:
-
-- **Positional** (`infection[north]`) binds to dimensions in declaration
-  order. In a model with `dimensions { patch, age }` and
+- **Positional** (`infection[north]`) binds to dimensions in declaration order.
+  In a model with `dimensions { patch, age }` and
   `stratify(by = patch); stratify(by = age)`, `infection[north]` pins the
   `patch` dimension to `north` and sums over `age`. If you later reorder
   declarations to `{ age, patch }`, the same expression would try to match
   `north` as an `age` stratum — a silent re-interpretation.
-- **Named** (`infection[patch = north]`) binds the `patch` dimension to
-  `north` regardless of declaration order, and sums over every other
-  dimension (§5.1). Order-independent and robust to dimension-reordering
-  edits.
+- **Named** (`infection[patch = north]`) binds the `patch` dimension to `north`
+  regardless of declaration order, and sums over every other dimension (§5.1).
+  Order-independent and robust to dimension-reordering edits.
 
-Use named indexing in any model with more than one dimension — it prevents
-the positional-binding failure mode above.
+Use named indexing in any model with more than one dimension — it prevents the
+positional-binding failure mode above.
 
 Inside a likelihood expression, the keyword `projected` refers to the evaluated
 projection value for that observation.
@@ -1992,10 +1968,10 @@ bernoulli(p = EXPR)                            binary outcome
 
 ### 12.2.1 Diagnostic-test likelihood sugar
 
-Surveillance data is almost never perfectly observed — slide
-microscopy, RDTs, and PCR all have sensitivity < 1 and specificity
-< 1. The `diagnostic_test` sugar absorbs the measurement-model
-correction so the DSL reads like the biology:
+Surveillance data is almost never perfectly observed — slide microscopy, RDTs,
+and PCR all have sensitivity < 1 and specificity < 1. The `diagnostic_test`
+sugar absorbs the measurement-model correction so the DSL reads like the
+biology:
 
 ```camdl
 observations {
@@ -2011,17 +1987,17 @@ observations {
 }
 ```
 
-**Semantics.** Pure compile-time rewrite. If true positive fraction
-is π, the probability of a positive test outcome is
+**Semantics.** Pure compile-time rewrite. If true positive fraction is π, the
+probability of a positive test outcome is
 
 ```
 p_observed  =  sens · π  +  (1 − spec) · (1 − π)
 ```
 
-— the first term is a true-positive (infected and detected), the
-second is a false-positive (uninfected but mistakenly positive). The
-compiler rewrites the inner likelihood's `p = π` to this expression,
-producing IR byte-identical to a hand-inlined
+— the first term is a true-positive (infected and detected), the second is a
+false-positive (uninfected but mistakenly positive). The compiler rewrites the
+inner likelihood's `p = π` to this expression, producing IR byte-identical to a
+hand-inlined
 
 ```camdl
 likelihood = binomial(
@@ -2035,22 +2011,20 @@ likelihood = binomial(
 - `binomial(n = …, p = …)` — survey of `n` individuals, count positives.
 - `bernoulli(p = …)` — single test per individual, 0/1 outcome.
 
-Other likelihood families (`poisson`, `neg_binomial`, `normal`,
-`beta_binomial`) aren't meaningful as diagnostic-test bases
-(sens/spec correct a probability, not a count-mean or variance) and
-produce `E253` when used.
+Other likelihood families (`poisson`, `neg_binomial`, `normal`, `beta_binomial`)
+aren't meaningful as diagnostic-test bases (sens/spec correct a probability, not
+a count-mean or variance) and produce `E253` when used.
 
-**Parameters.** `sens` and `spec` can be anything in `[0, 1]`: fixed
-constants, parameters with priors (for joint estimation of test
-characteristics with the transmission model), or expressions.
-Dimensional type is `probability`; the compiler checks domain.
+**Parameters.** `sens` and `spec` can be anything in `[0, 1]`: fixed constants,
+parameters with priors (for joint estimation of test characteristics with the
+transmission model), or expressions. Dimensional type is `probability`; the
+compiler checks domain.
 
 **Diagnostics.**
 
-- `E253` — base must be `binomial(...)` or `bernoulli(...)`; other
-  likelihood families rejected.
-- `E254` — missing one of the required keyword arguments `base`,
-  `sens`, `spec`.
+- `E253` — base must be `binomial(...)` or `bernoulli(...)`; other likelihood
+  families rejected.
+- `E254` — missing one of the required keyword arguments `base`, `sens`, `spec`.
 
 ### 12.3 Indexed Observations
 
@@ -2070,21 +2044,19 @@ Generates one observation stream per patch.
 
 The `observations {}` block is evaluated at runtime in both directions.
 
-- **Forward simulation** (`camdl simulate`): the runtime evaluates each
-  stream's projection on the schedule (`every = ...`) and **samples** from
-  the declared likelihood family to produce synthetic observations.
-  Synthetic-observation files are written when `--obs`,
-  `--obs-dir`, or `--obs-only` is passed (see §21); no observation file is
-  emitted by default. Trajectories are written independently via
-  `--output` / stdout.
-- **Inference** (`camdl fit` and friends): the runtime **scores** observed
-  data against the same likelihood family, producing log p(y | θ).
-  PGAS, IF2, particle filtering, and PMMH all consume the
-  `observations {}` declarations via the compiled `dmeasure` / `rmeasure`
-  paths. When fitting with `--data`, the data file's time column supplies
-  the observation times and the declared schedule (`every` / `at`) is not
-  consulted; the schedule is used only for forward synthetic-data generation
-  under `simulate`.
+- **Forward simulation** (`camdl simulate`): the runtime evaluates each stream's
+  projection on the schedule (`every = ...`) and **samples** from the declared
+  likelihood family to produce synthetic observations. Synthetic-observation
+  files are written when `--obs`, `--obs-dir`, or `--obs-only` is passed (see
+  §21); no observation file is emitted by default. Trajectories are written
+  independently via `--output` / stdout.
+- **Inference** (`camdl fit` and friends): the runtime **scores** observed data
+  against the same likelihood family, producing log p(y | θ). PGAS, IF2,
+  particle filtering, and PMMH all consume the `observations {}` declarations
+  via the compiled `dmeasure` / `rmeasure` paths. When fitting with `--data`,
+  the data file's time column supplies the observation times and the declared
+  schedule (`every` / `at`) is not consulted; the schedule is used only for
+  forward synthetic-data generation under `simulate`.
 
 Monthly incidence can be obtained natively by setting `every = 30 'days` (or
 `every = 1 'months` once time-unit arithmetic is implemented).
@@ -2146,13 +2118,13 @@ NAME : ACTION {
 }
 ```
 
-**In anchored mode**, `every`, `from`, and `until` must be classified
-`Exact` (§2.1) — a `Calendar`-classified duration (e.g. `every = 1
-'months`) is **E322**, with a hint pointing at `every = 30 'days` for
-an affine ~monthly recurrence or at an explicit calendar-listed
-`at [date(...), date(...), ...]` schedule for true month-aligned
-recurrence. In unanchored mode the classifier is inactive and
-`every = 1 'months` is fine.
+**In anchored mode**, `every`, `from`, and `until` must be classified `Exact`
+(§2.1) — a `Calendar`-classified duration (e.g. `every = 1
+'months`) is
+**E322**, with a hint pointing at `every = 30 'days` for an affine ~monthly
+recurrence or at an explicit calendar-listed `at [date(...), date(...), ...]`
+schedule for true month-aligned recurrence. In unanchored mode the classifier is
+inactive and `every = 1 'months` is fine.
 
 ### 13.3 Indexed Interventions
 
@@ -2207,13 +2179,13 @@ camdl simulate model.camdl --enable sia_round_1 --seed 42
 
 ### 13.5 Events
 
-Events are always-active scheduled state modifications. They share the
-same action grammar and scheduling as interventions but fire
-unconditionally — they cannot be disabled via scenarios.
+Events are always-active scheduled state modifications. They share the same
+action grammar and scheduling as interventions but fire unconditionally — they
+cannot be disabled via scenarios.
 
 Use events for structural demographic processes (cohort entry, seasonal
-migration, importation seeding). Use interventions for policy choices
-(SIA campaigns, school closures).
+migration, importation seeding). Use interventions for policy choices (SIA
+campaigns, school closures).
 
 ```camdl
 events {
@@ -2224,8 +2196,8 @@ events {
 }
 ```
 
-Events support the same features as interventions: indexed events,
-`where` guards, recurring schedules, and all action types.
+Events support the same features as interventions: indexed events, `where`
+guards, recurring schedules, and all action types.
 
 ### 13.6 The `add` Action
 
@@ -2234,39 +2206,37 @@ add(COMPARTMENT, EXPR)
 ```
 
 Adds `round(EXPR)` individuals to COMPARTMENT. Accepts negative values
-(outflow). If the result makes the compartment negative, a warning is
-emitted but the simulation continues — in a particle filter, the
-particle gets a bad trajectory and is resampled away.
+(outflow). If the result makes the compartment negative, a warning is emitted
+but the simulation continues — in a particle filter, the particle gets a bad
+trajectory and is resampled away.
 
 ### 13.7 The `at_day` Schedule
 
-For events and interventions that recur on a specific day within each
-period:
+For events and interventions that recur on a specific day within each period:
 
 ```camdl
 NAME : ACTION every PERIOD at_day DAY
 ```
 
-`at_day` is the absolute phase within the period, measured from `t = 0`.
-Fire times are `at_day + k * period` for the smallest `k` where
-`target >= t_start`. The engine fires on the single timestep where
-`|t - target| < 0.5 * dt`, guaranteeing exactly one fire per period
-regardless of `dt` or fractional-period drift.
+`at_day` is the absolute phase within the period, measured from `t = 0`. Fire
+times are `at_day + k * period` for the smallest `k` where `target >= t_start`.
+The engine fires on the single timestep where `|t - target| < 0.5 * dt`,
+guaranteeing exactly one fire per period regardless of `dt` or fractional-period
+drift.
 
-Example: `every 365.25 'days at_day 251` fires on day 251 of each year.
-If simulation starts at `t = 100`, the first fire is at `t = 251` (not
-`t = 351`).
+Example: `every 365.25 'days at_day 251` fires on day 251 of each year. If
+simulation starts at `t = 100`, the first fire is at `t = 251` (not `t = 351`).
 
-This replaces manual `mod(t, period)` arithmetic, which silently
-double-fires when `dt` does not evenly divide the period.
+This replaces manual `mod(t, period)` arithmetic, which silently double-fires
+when `dt` does not evenly divide the period.
 
 ---
 
 ### 13.8 Balance Constraint
 
-Forces one compartment to satisfy a population conservation constraint
-at every substep. After all transitions, clamps, events, and
-interventions apply, the target compartment is overwritten:
+Forces one compartment to satisfy a population conservation constraint at every
+substep. After all transitions, clamps, events, and interventions apply, the
+target compartment is overwritten:
 
 ```camdl
 balance {
@@ -2274,14 +2244,14 @@ balance {
 }
 ```
 
-This matches pomp's `R = nearbyint(pop) - S - E - I` pattern for models
-where the population trajectory is externally specified and the birth/death
-rates don't exactly reproduce it. The balance target is excluded from
-the non-negativity clamp — a negative value signals a broken model.
+This matches pomp's `R = nearbyint(pop) - S - E - I` pattern for models where
+the population trajectory is externally specified and the birth/death rates
+don't exactly reproduce it. The balance target is excluded from the
+non-negativity clamp — a negative value signals a broken model.
 
-Events that inject people without a source (e.g., `add(S, 20000)`) will
-increase the compartment total. The balance compartment absorbs this by
-decreasing to maintain the constraint.
+Events that inject people without a source (e.g., `add(S, 20000)`) will increase
+the compartment total. The balance compartment absorbs this by decreasing to
+maintain the constraint.
 
 ---
 
@@ -2399,8 +2369,8 @@ init {
 }
 ```
 
-**Indexed parameter references** work in init RHS expressions. If `N0[patch]`
-is an indexed parameter, both the mangled form and the indexed form are accepted:
+**Indexed parameter references** work in init RHS expressions. If `N0[patch]` is
+an indexed parameter, both the mangled form and the indexed form are accepted:
 
 ```camdl
 init {
@@ -2475,8 +2445,8 @@ output {
 
 The schedule mirrors the observation surface: use **either** `every = E` for a
 regular cadence **or** `at = [t1, t2, ...]` for an explicit list of output times
-— the two are mutually exclusive (specifying both is an error). `format`
-selects the on-disk format.
+— the two are mutually exclusive (specifying both is an error). `format` selects
+the on-disk format.
 
 ```camdl
 output { trajectories { at = [0, 30, 60, 90] } }   # snapshot only at these times
@@ -2574,8 +2544,8 @@ error** — the user must handle clamping explicitly via `set` with an
 
 A scenario can inherit from another via `extends = <parent_name>`, which is
 **compile-time sugar**: the child is resolved as the parent with the child's
-fields layered on top. The IR keeps its flat preset shape — downstream
-consumers see no trace of inheritance.
+fields layered on top. The IR keeps its flat preset shape — downstream consumers
+see no trace of inheritance.
 
 ```camdl
 scenarios {
@@ -2597,30 +2567,29 @@ scenarios {
 
 **Merge rules (per field):**
 
-| Field                     | Behavior                                                   |
-|---------------------------|-------------------------------------------------------------|
-| `set`, `scale`            | Child keys override parent keys on collision; union otherwise. |
-| `enable`, `disable`, `compose` | Parent + child, deduped preserving first-seen order.  |
-| `label`, `simulate.to`    | Child overrides parent when present.                       |
+| Field                          | Behavior                                                       |
+| ------------------------------ | -------------------------------------------------------------- |
+| `set`, `scale`                 | Child keys override parent keys on collision; union otherwise. |
+| `enable`, `disable`, `compose` | Parent + child, deduped preserving first-seen order.           |
+| `label`, `simulate.to`         | Child overrides parent when present.                           |
 
-**Expression scope.** Child `set` expressions are evaluated *after* parent's
+**Expression scope.** Child `set` expressions are evaluated _after_ parent's
 `set` is resolved — so `set = { beta = beta * 1.5 }` in a child reads the
-parent's resolved `beta`. There's no default-at-declaration path in camdl;
-the name must resolve to a concrete upstream value or the compiler errors.
+parent's resolved `beta`. There's no default-at-declaration path in camdl; the
+name must resolve to a concrete upstream value or the compiler errors.
 
-::: {.callout-warning}
-**`enable`/`disable`/`compose` append parent's list to the child's.** A
-child writing `enable = [masking]` under a parent with `enable = [vaccination]`
-gets `[vaccination, masking]`, **not** just `[masking]`. To remove a parent's
-intervention in a child, use `disable`. The compiler emits **W310** whenever
-this merge actually changes the child's declared list, so the surprise is
-observable rather than silent.
-:::
+::: {.callout-warning} **`enable`/`disable`/`compose` append parent's list to
+the child's.** A child writing `enable = [masking]` under a parent with
+`enable = [vaccination]` gets `[vaccination, masking]`, **not** just
+`[masking]`. To remove a parent's intervention in a child, use `disable`. The
+compiler emits **W310** whenever this merge actually changes the child's
+declared list, so the surprise is observable rather than silent. :::
 
 **Diagnostics:**
 
 - **E25x** — cycle in `extends` chain (includes the full chain in the message).
-- **E25y** — unknown parent scenario (suggests the closest name by edit distance).
+- **E25y** — unknown parent scenario (suggests the closest name by edit
+  distance).
 - **E25z** — chain depth > 5; treat as a code smell and factor common ancestors,
   or request multi-parent composition as a future feature.
 - **W310** — append-dedup of parent's enable/disable/compose changed the
@@ -2650,16 +2619,16 @@ simulate {
 }
 ```
 
-The `simulate {}` block sets the time window (`from`, `to`) and, optionally,
-the discretization step `dt`. All three are unit-aware like any time literal:
-`dt = 0.05 'months` is one month-scaled step (affine 30.44-day months), the
-same convention `from`/`to` use.
+The `simulate {}` block sets the time window (`from`, `to`) and, optionally, the
+discretization step `dt`. All three are unit-aware like any time literal:
+`dt = 0.05 'months` is one month-scaled step (affine 30.44-day months), the same
+convention `from`/`to` use.
 
 `dt` is a **model knob**. A stochastic compartmental model's behaviour is
 genuinely sensitive to the step — discretization error shrinks as `dt → 0`, and
 Richardson-extrapolation diagnostics deliberately vary it — so the chosen step
-is part of the model, declared next to the dynamics it discretizes. (`dt` is
-the per-substep length the tau-leap, chain-binomial, and ODE backends integrate
+is part of the model, declared next to the dynamics it discretizes. (`dt` is the
+per-substep length the tau-leap, chain-binomial, and ODE backends integrate
 with; the exact-event Gillespie backend ignores it.)
 
 The CLI `--dt` flag is the **override**: it wins over the model's `dt` for a
@@ -2704,12 +2673,11 @@ runs/3a7f2c1d/baseline-00000000/seed_1/   ← untouched, cached
 runs/cc8b1a90/baseline-00000000/seed_1/
 ```
 
-The `00000000` prefix for an empty-delta scenario is a **special-case
-display value** assigned by the path builder when the scenario has no
+The `00000000` prefix for an empty-delta scenario is a **special-case display
+value** assigned by the path builder when the scenario has no
 overrides/enables/disables — it is not the hash of an empty input
-(`sha256("") = e3b0c442...`). The intent is a visually-distinct
-"identity scenario" marker; the actual `scen_hash` field in
-`run.json` is unset for these.
+(`sha256("") = e3b0c442...`). The intent is a visually-distinct "identity
+scenario" marker; the actual `scen_hash` field in `run.json` is unset for these.
 
 ### 19.1 Hash Computation
 
@@ -2801,8 +2769,8 @@ I0 = 10
 
 ### 20.2 Priors
 
-Priors are declared with `~` syntax directly on parameters in the `.camdl`
-file — they are beliefs about parameters and belong with the declaration:
+Priors are declared with `~` syntax directly on parameters in the `.camdl` file
+— they are beliefs about parameters and belong with the declaration:
 
 ```camdl
 parameters {
@@ -2814,20 +2782,20 @@ parameters {
 }
 ```
 
-The `~` reads "distributed as" and is always optional. Parameters without
-a prior can still be fixed at a known value via `--params` files.
+The `~` reads "distributed as" and is always optional. Parameters without a
+prior can still be fixed at a known value via `--params` files.
 
 **Supported distributions**:
 
-| Distribution    | Syntax                                    | Parameters            |
-|-----------------|-------------------------------------------|-----------------------|
-| `uniform`       | `~ uniform(lower = L, upper = U)`         | bounds                |
-| `normal`        | `~ normal(mu = M, sigma = S)`             | mean, sd (natural)    |
-| `log_normal`    | `~ log_normal(mu = M, sigma = S)`         | log-scale mu, sigma   |
-| `half_normal`   | `~ half_normal(sigma = S)`                | sd of underlying normal|
-| `beta`          | `~ beta(alpha = A, beta = B)`             | shape parameters      |
-| `gamma`         | `~ gamma(shape = K, rate = R)`            | shape, rate (NOT scale) |
-| `exponential`   | `~ exponential(rate = R)`                 | rate = 1/mean         |
+| Distribution  | Syntax                            | Parameters              |
+| ------------- | --------------------------------- | ----------------------- |
+| `uniform`     | `~ uniform(lower = L, upper = U)` | bounds                  |
+| `normal`      | `~ normal(mu = M, sigma = S)`     | mean, sd (natural)      |
+| `log_normal`  | `~ log_normal(mu = M, sigma = S)` | log-scale mu, sigma     |
+| `half_normal` | `~ half_normal(sigma = S)`        | sd of underlying normal |
+| `beta`        | `~ beta(alpha = A, beta = B)`     | shape parameters        |
+| `gamma`       | `~ gamma(shape = K, rate = R)`    | shape, rate (NOT scale) |
+| `exponential` | `~ exponential(rate = R)`         | rate = 1/mean           |
 
 All arguments are keyword (named), never positional. All arguments must be
 compile-time constants.
@@ -2954,11 +2922,10 @@ camdl show  <short-hash>
 camdl cat   <short-hash> [--stream NAME]
 ```
 
-Batch parameter sweeps, scenario comparisons, and posterior-predictive
-checks. Sensitivity analysis (Sobol indices) is out of scope for the
-CLI; compute it with R's `sensitivity` package or Python's `SALib` on
-the batch output. See the Run Specification (`camdl-run-spec.md` §5)
-for details.
+Batch parameter sweeps, scenario comparisons, and posterior-predictive checks.
+Sensitivity analysis (Sobol indices) is out of scope for the CLI; compute it
+with R's `sensitivity` package or Python's `SALib` on the batch output. See the
+Run Specification (`camdl-run-spec.md` §5) for details.
 
 ### 21.5 Inference
 
@@ -3007,73 +2974,70 @@ camdl profile MODEL --focal alpha,gamma \
     --grid-alpha "0.85,0.90,0.95" --grid-gamma "0.06,0.08,0.10" ...
 ```
 
-The projection and likelihood for each data stream come from the
-model's `observations { ... }` block (§12); inference commands do not
-take `--flow` / `--obs-model` flags. To score a specific stream when
-the model declares more than one, pass `--stream NAME` to select.
-The legacy `--flow` / `--obs-model` flags were removed in the
-2026-05-25 CLI UX revision.
+The projection and likelihood for each data stream come from the model's
+`observations { ... }` block (§12); inference commands do not take `--flow` /
+`--obs-model` flags. To score a specific stream when the model declares more
+than one, pass `--stream NAME` to select. The legacy `--flow` / `--obs-model`
+flags were removed in the 2026-05-25 CLI UX revision.
 
 **`--rw-sd`** (`camdl profile`): Perturbation scale per parameter. Three modes:
-- Explicit: `--rw-sd "R0=5,sigma=0.01"` — the list IS the partition.
-  Parameters not listed are held fixed. No `--fixed` needed.
-- Auto: `--rw-sd auto` — heuristic from parameter bounds (`(hi-lo)/6`
-  on transformed scale). Use `--fixed NAME=VALUE` (repeatable) or
-  `--fixed-file <toml>` to exclude and value-pin specific params.
-- Mixed: `--rw-sd "R0=5,sigma=auto"` — explicit where you know, auto
-  where you don't.
 
-In a fit, an `algorithm = "if2"` stage derives its perturbation scale from
-each parameter's declared `bounds` — there is no per-parameter `rw_sd` knob
-on the stage. Cooling is pomp's cf50 convention (halfway-SD fraction); see
+- Explicit: `--rw-sd "R0=5,sigma=0.01"` — the list IS the partition. Parameters
+  not listed are held fixed. No `--fixed` needed.
+- Auto: `--rw-sd auto` — heuristic from parameter bounds (`(hi-lo)/6` on
+  transformed scale). Use `--fixed NAME=VALUE` (repeatable) or
+  `--fixed-file <toml>` to exclude and value-pin specific params.
+- Mixed: `--rw-sd "R0=5,sigma=auto"` — explicit where you know, auto where you
+  don't.
+
+In a fit, an `algorithm = "if2"` stage derives its perturbation scale from each
+parameter's declared `bounds` — there is no per-parameter `rw_sd` knob on the
+stage. Cooling is pomp's cf50 convention (halfway-SD fraction); see
 `docs/methods/cooling.md`.
 
-**Regimes (scout / refine / validate)**: the scout → refine → validate
-ladder is a sequence of `[stages.X] algorithm = "if2"` blocks in a
-`fit.toml`, not a CLI preset. A scout is a fast, mildly-cooled stage for
-basin exploration (e.g. `chains = 8`, `particles = 500`, `iterations = 30`,
-`cooling = 0.70`); a refine sharpens onto the scout's mode with more
-particles and aggressive cooling (e.g. `chains = 4`, `particles = 1000`,
-`iterations = 50`, `cooling = 0.05`, `init_mle = "scout"`); a validate stage
-is a final high-particle polish. Each stage sets these knobs explicitly; a
-later stage warm-starts from an earlier one's MLE via `init_mle = "<stage>"`.
-A scout-convergence gate (`docs/methods/cooling.md`) guards the transition.
+**Regimes (scout / refine / validate)**: the scout → refine → validate ladder is
+a sequence of `[stages.X] algorithm = "if2"` blocks in a `fit.toml`, not a CLI
+preset. A scout is a fast, mildly-cooled stage for basin exploration (e.g.
+`chains = 8`, `particles = 500`, `iterations = 30`, `cooling = 0.70`); a refine
+sharpens onto the scout's mode with more particles and aggressive cooling (e.g.
+`chains = 4`, `particles = 1000`, `iterations = 50`, `cooling = 0.05`,
+`init_mle = "scout"`); a validate stage is a final high-particle polish. Each
+stage sets these knobs explicitly; a later stage warm-starts from an earlier
+one's MLE via `init_mle = "<stage>"`. A scout-convergence gate
+(`docs/methods/cooling.md`) guards the transition.
 
-**Initial value parameters (IVP)**: parameters that set the initial
-compartment state (e.g. `S0`, `I0`) are declared on the model and estimated
-like any other parameter — list them under `[estimate]` in the `fit.toml`.
-The fit perturbs / draws their initial values as part of the inference; there
-is no separate CLI flag to nominate them.
+**Initial value parameters (IVP)**: parameters that set the initial compartment
+state (e.g. `S0`, `I0`) are declared on the model and estimated like any other
+parameter — list them under `[estimate]` in the `fit.toml`. The fit perturbs /
+draws their initial values as part of the inference; there is no separate CLI
+flag to nominate them.
 
-**`--fixed NAME=VALUE`**: Pin `NAME` at `VALUE` (repeatable) and remove
-it from the inference `[estimate]` set if present. The universal
-value-setter, available on `camdl profile` and `camdl survey`; in a
-`fit.toml` the equivalent is the `[fixed] NAME = VALUE` block read by
-`camdl fit run`.
+**`--fixed NAME=VALUE`**: Pin `NAME` at `VALUE` (repeatable) and remove it from
+the inference `[estimate]` set if present. The universal value-setter, available
+on `camdl profile` and `camdl survey`; in a `fit.toml` the equivalent is the
+`[fixed] NAME = VALUE` block read by `camdl fit run`.
 
 **Pinning many params (the replacement for the removed name-only `--fixed`).**
 
-The pre-2026-05-25 surface accepted a name-only comma list:
-`--fixed "N0,mu,k"` meaning "freeze these three at their model
-defaults." That form is **removed**. The two replacements are:
+The pre-2026-05-25 surface accepted a name-only comma list: `--fixed "N0,mu,k"`
+meaning "freeze these three at their model defaults." That form is **removed**.
+The two replacements are:
 
-- `--fixed NAME=VALUE` (repeated): explicit values, one per flag.
-  Preferred for the small case (≤ 3 names).
-- `--fixed-file <toml>`: a flat params TOML — top-level keys are
-  parameter names, values are the pin values; repeatable, later
-  files override earlier ones. Preferred for many-params vignettes
-  (extract the values once, commit the TOML, point the
-  invocation at it).
-- For the original "pin at the model default" intent — i.e. when
-  the user didn't want to type any values at all — the equivalent
-  under the new surface is to simply **not list the parameter in
-  `--fixed`/`--fixed-file`**. The model default flows through the
-  precedence chain unchanged. The previous spelling expressed
-  "freeze at default" as an explicit gesture; the new spelling
-  expresses it as the absence of one. See
-  `docs/camdl-run-spec.md §1.3` for the full precedence chain and
-  `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`
-  §"`--fixed` semantics, defined once" for the rationale.
+- `--fixed NAME=VALUE` (repeated): explicit values, one per flag. Preferred for
+  the small case (≤ 3 names).
+- `--fixed-file <toml>`: a flat params TOML — top-level keys are parameter
+  names, values are the pin values; repeatable, later files override earlier
+  ones. Preferred for many-params vignettes (extract the values once, commit the
+  TOML, point the invocation at it).
+- For the original "pin at the model default" intent — i.e. when the user didn't
+  want to type any values at all — the equivalent under the new surface is to
+  simply **not list the parameter in `--fixed`/`--fixed-file`**. The model
+  default flows through the precedence chain unchanged. The previous spelling
+  expressed "freeze at default" as an explicit gesture; the new spelling
+  expresses it as the absence of one. See `docs/camdl-run-spec.md §1.3` for the
+  full precedence chain and
+  `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md` §"`--fixed`
+  semantics, defined once" for the rationale.
 
 ### 21.6 Fit Workflow
 
@@ -3083,13 +3047,12 @@ camdl fit summary results/fits/<dir>/
 camdl fit table   results/fits/
 ```
 
-Driven by `fit.toml` with `[estimate]`, `[fixed]`, `[data]`, and
-one or more `[stages.NAME]` blocks. Stages are named by the user
-(by convention `scout`, `refine`, `validate`) and chain via the
-`init = "from_mle"` + `init_mle = "<prior-stage>"` pair on each
-stage. `--stage NAME` runs a single stage; `--sweep` takes a
-Cartesian product over parameter grids and, when a cell fails the
-convergence gate, records the failure in `sweep_failures.tsv` and
+Driven by `fit.toml` with `[estimate]`, `[fixed]`, `[data]`, and one or more
+`[stages.NAME]` blocks. Stages are named by the user (by convention `scout`,
+`refine`, `validate`) and chain via the `init = "from_mle"` +
+`init_mle = "<prior-stage>"` pair on each stage. `--stage NAME` runs a single
+stage; `--sweep` takes a Cartesian product over parameter grids and, when a cell
+fails the convergence gate, records the failure in `sweep_failures.tsv` and
 continues rather than halting. See `docs/camdl-inference-spec.md`.
 
 **Pfilter replicates:**
@@ -3107,9 +3070,10 @@ Runs N independent particle filters, outputs `seed\tloglik` TSV.
 camdl pfilter MODEL --params P.toml --data d.tsv --trace diag.tsv
 ```
 
-Columns: `time ll_increment ESS obs_mean obs_q05 obs_q50 obs_q95
-state_mean state_q05 state_q50 state_q95 observed`. `obs_*` includes
-observation noise; `state_*` is process uncertainty only.
+Columns:
+`time ll_increment ESS obs_mean obs_q05 obs_q50 obs_q95
+state_mean state_q05 state_q50 state_q95 observed`.
+`obs_*` includes observation noise; `state_*` is process uncertainty only.
 
 ### 21.7 Data Utilities
 
@@ -3250,7 +3214,8 @@ transitions {
 }
 ```
 
-**Coupling sugar form** (not yet implemented — identical IR output when available):
+**Coupling sugar form** (not yet implemented — identical IR output when
+available):
 
 ```camdl
 time_unit = 'days
@@ -3938,7 +3903,7 @@ Diagnostics carry a numeric code for programmatic consumption (e.g.,
 | E202 | Error   | Wrong number of indices for compartment                                                         |
 | E203 | Error   | Index belongs to wrong dimension (e.g., `C_age[i, s]` where `s : sex`)                          |
 | E204 | Error   | Partial-stratification stoichiometry: destination compartment dimensions incompletely specified |
-| W002 | Warning | Zero-firing transition (emitted at simulation time by `camdl`)                              |
+| W002 | Warning | Zero-firing transition (emitted at simulation time by `camdl`)                                  |
 | W103 | Warning | Let binding name shadows a stratum value in some dimension                                      |
 
 Diagnostics can be emitted as structured JSON by passing `--json-errors` to

@@ -64,15 +64,15 @@ models.
 **The types differ because the domain objects differ — and that is the design
 principle, not an accident.** There are two genuinely distinct objects here:
 
-- A **sampling schedule** (observations, output): "at which times do I *read*
+- A **sampling schedule** (observations, output): "at which times do I _read_
   the state — observe or snapshot?" Its natural shape is a bare cadence
   (`every = E` over the run window) or an explicit list (`at = [...]`). That is
   exactly `schedule_core`, and it is why obs + output collapse cleanly (A).
 - A **firing schedule** (interventions, events): "at which times does this
-  recurring *action* fire and mutate state?" Its natural shape carries a
+  recurring _action_ fire and mutate state?" Its natural shape carries a
   **window** (`from`/`to` — a campaign recurs only within a period), a **phase**
-  (`at_day` — fire on day 90 of each year), and **parametric** times (gh#69 —
-  a fire time you are inferring). None of that is meaningful for a read.
+  (`at_day` — fire on day 90 of each year), and **parametric** times (gh#69 — a
+  fire time you are inferring). None of that is meaningful for a read.
 
 Forcing them into one type is bad consolidation: it either drops the
 window/phase (information loss) or makes obs/output carry always-`None`
@@ -82,7 +82,7 @@ things distinct. The lone genuine overlap is the explicit-times arm
 (`at = [...]`), which is one grammar line — not worth coupling two domain
 objects over.
 
-(Note the inference *join* this enables: under `--data`, each observation block
+(Note the inference _join_ this enables: under `--data`, each observation block
 binds to a data stream by **name**, and the data's **time column** supplies the
 observation times — the declared sampling schedule is used only for forward
 synthetic-data generation, not consulted when fitting. The schedule is a

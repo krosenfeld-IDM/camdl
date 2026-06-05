@@ -1,12 +1,14 @@
 # Proposal: three-layer lineage architecture — resampling, tree likelihood, and the inference boundary
 
-Date: 2026-05-20
-Status: archived 2026-05-31 — Layers 1–2 (lineage resampling + tree realization, three backends, projections, validation) implemented. Layer 3 (sampled-tree / coalescent likelihood + the native joint-tree-inference path, §4c/§7) split to `2026-05-31-lineage-tree-likelihood.md`.
-Branch: `feature/lineages` (refactor of the shipped two-layer design)
-Supersedes the *architecture* of `2026-05-19-individual-sampling-layer.md`;
-that document's implementation (count-level lineage tracking, stratified
-attribution, three backends, projections, validation) is the foundation this
-refactors, not work to discard.
+Date: 2026-05-20 Status: archived 2026-05-31 — Layers 1–2 (lineage resampling +
+tree realization, three backends, projections, validation) implemented. Layer 3
+(sampled-tree / coalescent likelihood + the native joint-tree-inference path,
+§4c/§7) split to `2026-05-31-lineage-tree-likelihood.md`. Branch:
+`feature/lineages` (refactor of the shipped two-layer design) Supersedes the
+_architecture_ of `2026-05-19-individual-sampling-layer.md`; that document's
+implementation (count-level lineage tracking, stratified attribution, three
+backends, projections, validation) is the foundation this refactors, not work to
+discard.
 
 > Citations verified against primary sources (2026-05-20); volume/page pinned
 > inline.
@@ -15,7 +17,7 @@ refactors, not work to discard.
 
 ## 1. The insight: a line list is a conditional sample, not a realization
 
-The shipped design produces one line list per simulation and treats it as *the*
+The shipped design produces one line list per simulation and treats it as _the_
 genealogy. That is a category error. The augmented process factorizes:
 
 $$P(\text{augmented trajectory}) = P(\text{count trajectory}) \times P(\text{identity attribution} \mid \text{count trajectory}).$$
@@ -23,32 +25,32 @@ $$P(\text{augmented trajectory}) = P(\text{count trajectory}) \times P(\text{ide
 The compartmental simulation draws the **first** factor: it fixes the ordered
 event sequence — at $t_1$ a transmission fired, at $t_2$ a recovery fired, … —
 and the counts evolve deterministically given those events. It does **not** fix
-the second factor. Given that event sequence, *which specific individual* was
-the infector at each transmission, and *which* individual underwent each
+the second factor. Given that event sequence, _which specific individual_ was
+the infector at each transmission, and _which_ individual underwent each
 recovery, are a separate stochastic layer: many identity attributions are
 equally consistent with the same count trajectory.
 
 So a single compartmental run defines a **distribution over line lists**, not
 one line list. For benchmark generation this is decisive: the phylodynamic
-method under validation (MASCOT, BASTA, BDMM) assumes the observed tree is *one
-draw* from $P(\text{tree} \mid \text{trajectory})$. Validating it requires the
-*ensemble* of trees consistent with an epidemic, not a single tree.
+method under validation (MASCOT, BASTA, BDMM) assumes the observed tree is _one
+draw_ from $P(\text{tree} \mid \text{trajectory})$. Validating it requires the
+_ensemble_ of trees consistent with an epidemic, not a single tree.
 
-The shipped code already half-embodies this: identity randomness is drawn from
-a **separate RNG stream** from the count dynamics (the verified byte-identity
+The shipped code already half-embodies this: identity randomness is drawn from a
+**separate RNG stream** from the count dynamics (the verified byte-identity
 invariant). That separation is the empirical proof of the factorization. This
-refactor makes the factorization *structural*: persist the first factor once,
+refactor makes the factorization _structural_: persist the first factor once,
 resample the second cheaply.
 
 ---
 
 ## 2. Three layers, three artifacts, three cache keys
 
-| Layer | Map | Cost | Cache key |
-|---|---|---|---|
-| **1. Event log** | $(\text{model}, \text{params}, \text{seed}) \to$ event log | expensive (one epidemic) | `f(model, params, dynamics_seed)` |
-| **2. Line list** | $(\text{event log}, \text{identity\_seed}) \to$ line list | cheap (replay) | `f(event_log, identity_seed)` |
-| **3. Tree** | $(\text{line list}, \text{scheme}, \text{sample\_seed}) \to$ tree | cheap (prune) | `f(line_list, scheme, sample_seed)` |
+| Layer            | Map                                                               | Cost                     | Cache key                           |
+| ---------------- | ----------------------------------------------------------------- | ------------------------ | ----------------------------------- |
+| **1. Event log** | $(\text{model}, \text{params}, \text{seed}) \to$ event log        | expensive (one epidemic) | `f(model, params, dynamics_seed)`   |
+| **2. Line list** | $(\text{event log}, \text{identity\_seed}) \to$ line list         | cheap (replay)           | `f(event_log, identity_seed)`       |
+| **3. Tree**      | $(\text{line list}, \text{scheme}, \text{sample\_seed}) \to$ tree | cheap (prune)            | `f(line_list, scheme, sample_seed)` |
 
 One expensive epidemic → many cheap identity realizations → many cheap trees. A
 Monte Carlo benchmark sweeps all three independently (`dynamics_seed`,
@@ -56,7 +58,7 @@ Monte Carlo benchmark sweeps all three independently (`dynamics_seed`,
 the identity seed never re-runs the epidemic.
 
 The count **dynamics** become lineage-free: the simulation draws no identities.
-(The event *recorder* still evaluates the per-pool weights at lineage events —
+(The event _recorder_ still evaluates the per-pool weights at lineage events —
 the rate and state are available there — but it records them rather than
 sampling a parent.) The byte-identity invariant becomes trivially true: the
 simulation is literally unchanged; `--event-log` records what it already
@@ -82,18 +84,17 @@ No single-realization shortcut that tempts treating a line list as canonical.
 
 Minimal sufficient statistic for resampling: **initial state + ordered
 $(\text{time}, \text{transition\_id})$**, plus `multiplicity` for batched
-(tau-leap / chain-binomial) steps. From that, the model, and the parameters,
-one can replay the counts and recompute the per-pool weights at every lineage
-event.
+(tau-leap / chain-binomial) steps. From that, the model, and the parameters, one
+can replay the counts and recompute the per-pool weights at every lineage event.
 
-We additionally record the **evaluated per-pool FOI weights**
-$\{(b, w_b X_b)\}$ at each `#[lineage]` event, so the event log is
-**self-contained**: Layer-2 replay needs only the event log, not the model or
-the rate AST. Size cost is modest (weights only at lineage events). The event
-log is **identity-free** — IDs are minted during replay; the log is the
-epidemic, not the genealogy. It is finer-grained than the existing `flows`
-output (cumulative counts at output times): the event log is the raw event
-sequence. New output type, gated by `--event-log`.
+We additionally record the **evaluated per-pool FOI weights** $\{(b, w_b X_b)\}$
+at each `#[lineage]` event, so the event log is **self-contained**: Layer-2
+replay needs only the event log, not the model or the rate AST. Size cost is
+modest (weights only at lineage events). The event log is **identity-free** —
+IDs are minted during replay; the log is the epidemic, not the genealogy. It is
+finer-grained than the existing `flows` output (cumulative counts at output
+times): the event log is the raw event sequence. New output type, gated by
+`--event-log`.
 
 ---
 
@@ -109,16 +110,17 @@ $\Lambda = \sum_{b'} w_{b'} X_{b'}$.
 
 ### 4a. Line-list likelihood — exact, cheap, a clean product
 
-The line list specifies **every** attribution (transmission parents *and*
+The line list specifies **every** attribution (transmission parents _and_
 recovery/progression identities). Given the event log, the attributions are
 conditionally independent across events (Markov), so
 
 $$\log P(\text{line list} \mid \text{event log}) = \sum_{\text{events}} \log P(\text{attribution at that event}).$$
 
 Per event:
+
 - **Transmission**, parent = individual $i$ in pool $b$:
-  $P = \frac{w_b X_b}{\Lambda} \cdot \frac{1}{X_b} = \frac{w_b}{\Lambda}$
-  (pool choice × within-pool uniform; the $X_b$ cancels).
+  $P = \frac{w_b X_b}{\Lambda} \cdot \frac{1}{X_b} = \frac{w_b}{\Lambda}$ (pool
+  choice × within-pool uniform; the $X_b$ cancels).
 - **Recovery / removal**: uniform within the **relevant pool** — $1/|I_b|$ for
   the deme/stratum $b$ the removal fires in ($1/|I|$ in the unstratified case).
 
@@ -131,16 +133,16 @@ the architecture provides.**
 A natural-looking but **incorrect** claim is that the full labeled tree
 likelihood is the product over transmission events of the parent-assignment
 probabilities, with recovery identities "summing to 1." This is wrong: recovery
-attributions are **not** independent of the tree. They determine *which
-specific individuals remain in the infectious pool*, which constrains who can be
-a parent at later transmission events.
+attributions are **not** independent of the tree. They determine _which specific
+individuals remain in the infectious pool_, which constrains who can be a parent
+at later transmission events.
 
-**Counterexample.** SIR. Event log: (t₁) transmission, pool `{A}` (seed),
-mints child `B`, pool → `{A,B}`; (t₂) recovery, one of `{A,B}` leaves, each
-w.p. ½; (t₃) transmission, pool size now 1, mints child `C`. Two labeled trees
-are possible: `{A→B, A→C}` and `{A→B, B→C}`, each with true probability ½ (the
-½ comes from *which* individual recovered at t₂). The naive product gives, at
-t₁ `P=1` (pool size 1) and at t₃ `w_b/Λ = 1/1 = 1` (recorded count `I=1`), so
+**Counterexample.** SIR. Event log: (t₁) transmission, pool `{A}` (seed), mints
+child `B`, pool → `{A,B}`; (t₂) recovery, one of `{A,B}` leaves, each w.p. ½;
+(t₃) transmission, pool size now 1, mints child `C`. Two labeled trees are
+possible: `{A→B, A→C}` and `{A→B, B→C}`, each with true probability ½ (the ½
+comes from _which_ individual recovered at t₂). The naive product gives, at t₁
+`P=1` (pool size 1) and at t₃ `w_b/Λ = 1/1 = 1` (recorded count `I=1`), so
 `1·1 = 1` for **both** trees — summing to 2, not 1. The per-event term
 `1/pool_size` conditions on pool membership, and pool membership is set by the
 recovery attribution the naive formula drops.
@@ -151,8 +153,8 @@ non-tree-determining attributions (recovery/progression identities), which
 couple to the transmission structure through pool membership and is therefore
 **not** a per-event product. Do not implement a `--full-tree` likelihood as a
 transmission-event product; it returns plausible-looking numbers that are
-systematically wrong and fail normalization. (Keep this counterexample as a
-code comment / test so the trap stays documented.)
+systematically wrong and fail normalization. (Keep this counterexample as a code
+comment / test so the trap stays documented.)
 
 ### 4c. Sampled-tree likelihood — intractable in general
 
@@ -163,28 +165,28 @@ $$P(\text{sampled tree} \mid \text{event log}) = \sum_{\substack{\text{line list
 
 This sum is combinatorial. **The structured coalescent is exactly the analytic
 approximation to this quantity in the large-$N$ diffusion limit** (Volz et al.
-2009, *Genetics* 183(4):1421; structured-coalescent approximation theory:
-Müller, Rasmussen & Stadler 2017, *MBE* 34(11):2970; its marginal
-implementation MASCOT: Müller, Rasmussen & Stadler 2018, *Bioinformatics*
-34(22):3843). A forward Monte Carlo
-estimator ("resample line lists, count the fraction consistent with the sampled
-tree") is exact in expectation but has **catastrophic variance**: the consistent
-set is an exponentially small fraction of identity realizations, so the hit rate
-is ≈ 0 for any non-trivial tree. This is precisely why phylodynamics uses
-analytic approximations rather than forward MC.
+2009, _Genetics_ 183(4):1421; structured-coalescent approximation theory:
+Müller, Rasmussen & Stadler 2017, _MBE_ 34(11):2970; its marginal implementation
+MASCOT: Müller, Rasmussen & Stadler 2018, _Bioinformatics_ 34(22):3843). A
+forward Monte Carlo estimator ("resample line lists, count the fraction
+consistent with the sampled tree") is exact in expectation but has
+**catastrophic variance**: the consistent set is an exponentially small fraction
+of identity realizations, so the hit rate is ≈ 0 for any non-trivial tree. This
+is precisely why phylodynamics uses analytic approximations rather than forward
+MC.
 
 **Honest scope:** the forward-MC sampled-tree likelihood is tractable only for
 **small trees** (few tips — direct enumeration or importance-sampled MC). In
-that regime it is a genuinely novel tool: an *exact reference* against which to
-measure where the coalescent approximation deviates, for a *specific dynamical
-regime*. It does **not** provide an exact likelihood for arbitrary large trees.
+that regime it is a genuinely novel tool: an _exact reference_ against which to
+measure where the coalescent approximation deviates, for a _specific dynamical
+regime_. It does **not** provide an exact likelihood for arbitrary large trees.
 
 ---
 
 ## 5. The type architecture
 
-This is the part to get exactly right; it is the "deep architecture" the rest
-of the system hangs on. Types are Rust (the simulation/inference backend).
+This is the part to get exactly right; it is the "deep architecture" the rest of
+the system hangs on. Types are Rust (the simulation/inference backend).
 
 ### 5.1 Forward path — types in sequence
 
@@ -263,7 +265,7 @@ impl Tree {
 observer can see: topology, branch lengths/times, tip demes, tip times, opaque
 labels. It carries **no** internal-lineage demes, **no** individual back-map,
 **no** true infection times. The inference path takes `&Tree` (or `TreeData`,
-§7) and therefore *structurally cannot* read ground truth. This is enforced by
+§7) and therefore _structurally cannot_ read ground truth. This is enforced by
 the type, not by reviewer discipline.
 
 ### 5.3 The synthetic tree: `Tree` + ground truth (composition)
@@ -288,18 +290,17 @@ code lives once, on `Tree`, and `SyntheticTree` reuses it through `.observe()`.
 around a truth-bearing tree:** putting `Option<true_deme>` on a single `Tree`
 encodes a sum type (synthetic | observed) as a product type with optionals
 ("always Some here, always None there") — a code smell — and worse, leaves the
-truth *reachable from inside inference code*, so the no-cheating guarantee
-degrades to discipline. A newtype around a `Tree` that *has* truth fields has
+truth _reachable from inside inference code_, so the no-cheating guarantee
+degrades to discipline. A newtype around a `Tree` that _has_ truth fields has
 the same defect (truth reachable through the wrapper). Composition puts truth
 **only** on the wrapper and keeps it **absent** from the embedded `Tree`, so the
 guarantee is structural. Direction matters: wrap-and-add-truth is safe;
 wrap-a-truth-bearing-tree is not.
 
-**Three tree-ish types, one morphism chain:**
-`TransmissionForest` (full, all individuals, many roots) → *sample + prune +
-pendant tips* → `Tree` (sampled, observable). `SyntheticTree` = `Tree` + the
-truth recorded during that morphism. The sample-and-prune step is the explicit
-observation model.
+**Three tree-ish types, one morphism chain:** `TransmissionForest` (full, all
+individuals, many roots) → _sample + prune + pendant tips_ → `Tree` (sampled,
+observable). `SyntheticTree` = `Tree` + the truth recorded during that morphism.
+The sample-and-prune step is the explicit observation model.
 
 ---
 
@@ -352,10 +353,10 @@ PGAS/PMMH stack — the Rasmussen–Volz–Koelle approach.
 The types and the per-interval formula below are **illustrative of what the
 `Tree` boundary must permit — not settled inference design.** The
 marginalize-vs-sample fork (open question 4) and the channel's exact shape are
-deferred; the per-interval expression shows only the *coalescent* term — the
+deferred; the per-interval expression shows only the _coalescent_ term — the
 migration / structured contribution to the structured-coalescent likelihood is
-omitted for brevity. Do not read §7 as committed; the load-bearing commitment
-is the `Tree` boundary (§5.2), not these internal types.
+omitted for brevity. Do not read §7 as committed; the load-bearing commitment is
+the `Tree` boundary (§5.2), not these internal types.
 
 ```rust
 enum TreeData {
@@ -377,18 +378,18 @@ enum CoalescentEvent {
 ```
 
 The structured-coalescent likelihood per interval, given a particle's trajectory
-$\{I_k(t), f_k(t)\}$ per deme $k$ (force of infection $f_k = \beta_k S_k I_k / N_k$,
-pairwise coalescence rate $\lambda_k = 2 f_k / I_k^2$, $k_k$ lineages currently
-in deme $k$):
+$\{I_k(t), f_k(t)\}$ per deme $k$ (force of infection
+$f_k = \beta_k S_k I_k / N_k$, pairwise coalescence rate
+$\lambda_k = 2 f_k / I_k^2$, $k_k$ lineages currently in deme $k$):
 
 $$\log P(\text{interval}) = -\int_{t_{\text{start}}}^{t_{\text{end}}} \sum_k \binom{k_k}{2}\, \lambda_k(t)\, dt \;+\; \mathbb{1}[\text{coalescence in deme } k]\,\log \lambda_k(t_{\text{end}}).$$
 
 Lineage demes are latent → **marginalize** (MASCOT-style ODEs on per-lineage
 deme probabilities) or **sample** (PGAS lineage-deme paths as additional
-particle state). The marginalize-vs-sample fork is itself a future decision;
-the architecture must permit both. The contribution is *additive* in the
-particle log-weight, alongside the case-data likelihood, which is exactly how
-joint case + tree inference composes.
+particle state). The marginalize-vs-sample fork is itself a future decision; the
+architecture must permit both. The contribution is _additive_ in the particle
+log-weight, alongside the case-data likelihood, which is exactly how joint
+case + tree inference composes.
 
 **Scope of the first inference cut (when built):** condition on a fixed
 point-estimate phylogeny (`TreeData::Fixed`), not integrating over phylogenetic
@@ -399,7 +400,7 @@ with no rework of the fixed-tree path.
 path is **native** camdl work (extends the existing inference stack). General
 likelihood-free inference engines (synthetic likelihood, BSL, ABC; §8) are
 **external** downstream consumers — but `Tree::summaries()` lives on the shared
-type so a *future* native SL consumer is not blocked either.
+type so a _future_ native SL consumer is not blocked either.
 
 ---
 
@@ -410,27 +411,28 @@ likelihood is a composite / synthetic likelihood over tree summary statistics.
 Pick $S(\text{tree}) \in \mathbb{R}^d$ via `Tree::summaries()`. At parameter
 $\theta$, the cheap forward ensemble (one event log → many identity draws → many
 sampled trees) yields $\{S^{(1)}, \dots, S^{(M)}\}$. Under the synthetic-
-likelihood normality assumption (Wood 2010, *Nature* 466(7310):1102):
+likelihood normality assumption (Wood 2010, _Nature_ 466(7310):1102):
 
 $$\hat\mu(\theta) = \tfrac{1}{M}\sum_m S^{(m)},\quad \hat\Sigma(\theta) = \widehat{\mathrm{Cov}}(S),\quad \ell_{\mathrm{SL}}(\theta; S_{\mathrm{obs}}) = \log \mathcal{N}\!\big(S_{\mathrm{obs}};\, \hat\mu(\theta),\, \hat\Sigma(\theta)\big).$$
 
-BSL (Price, Drovandi, Lee & Nott 2018, *JCGS* 27(1):1) is the Bayesian variant;
+BSL (Price, Drovandi, Lee & Nott 2018, _JCGS_ 27(1):1) is the Bayesian variant;
 ABC the simulation-only alternative.
 
 **Scope decision:** camdl **emits the ensemble and computes the summaries**
 (`Tree::summaries()`); the SL/BSL/ABC **fit** is a downstream consumer
-(notebook), *for now*. Because `summaries()` is a method on the shared `Tree`
+(notebook), _for now_. Because `summaries()` is a method on the shared `Tree`
 type, promoting the SL fit to native later requires no retrofit — only a new
 internal consumer. This keeps the "orthogonal to the inference stack" claim
 honest while reserving the room you flagged.
 
 **Candidate summaries** (selection is the central open scientific choice, §11):
+
 - **Offspring dispersion** — NB dispersion $k$ of the per-infector offspring
-  distribution (Lloyd-Smith et al. 2005, *Nature* 438:355); *already partly
-  computed* by the shipped offspring check.
+  distribution (Lloyd-Smith et al. 2005, _Nature_ 438:355); _already partly
+  computed_ by the shipped offspring check.
 - **Imbalance** — Sackin / Colless.
 - **Temporal** — LTT-curve features; the $\gamma$ statistic (Pybus & Harvey
-  2000, *Proc. R. Soc. B* 267:2267).
+  2000, _Proc. R. Soc. B_ 267:2267).
 - **Structured** — tip-stratum proportions; cross-stratum transition counts.
 
 **Normality caveat:** several of these (Sackin especially) are strongly skewed;
@@ -467,8 +469,9 @@ contact-weighting, Tier-2b validated), the three backends, the projections
 (`tree`/`sojourn`/`cohort`), the corrected coalescent diagnostic.
 
 Changes:
-1. **Event-log writer** (`--event-log`): the current observer becomes an *event
-   recorder* — evaluates per-pool weights at lineage events but **records** them
+
+1. **Event-log writer** (`--event-log`): the current observer becomes an _event
+   recorder_ — evaluates per-pool weights at lineage events but **records** them
    rather than sampling a parent. Count dynamics no longer draw identities.
 2. **`camdl lineage realize`** (Layer 2): event log → line list, with
    `--identity-seed`; samples pool-then-individual from recorded weights;
@@ -491,8 +494,8 @@ replay; the logic is identical, only its location changes.
 ### Validation tiers
 
 - **Tier 1 — Structural invariants.** Single parent per lineage child; parent in
-  pool at child's event time; pruned tips = sampled set; no unary nodes;
-  pendant tips at sampling time.
+  pool at child's event time; pruned tips = sampled set; no unary nodes; pendant
+  tips at sampling time.
 - **Tier 2a — Trajectory invariance.** Count trajectory with/without
   `--event-log` byte-identical for the same seed. Catches RNG-stream leakage;
   does **not** test attribution.
@@ -502,22 +505,22 @@ replay; the logic is identical, only its location changes.
 - **Tier 3 — Analytic.** Yule / linear-BD tree statistics against closed forms.
 - **Tier 4 — Large-N coalescent limit.** Coalescent-interval distribution at $t$
   matches $\mathrm{Exp}\!\big(\binom{k}{2}\,\lambda(t)\big)$ with the per-pair
-  coalescent rate $\lambda = 2f/I^2 = 2\beta S(t)/(N(t)\,I(t))$ **as defined once
-  in §7** (single source of truth — *not* $2\beta S I/N^2$, a stale form off by
-  $I^2/N$ that earlier drafts carried; cf. correction in `5d8e2c0`), within 2σ
-  over 10⁴ replicates, **for $N \ge 10^4$** (O(1/N) diffusion bias makes smaller
-  N flaky).
+  coalescent rate $\lambda = 2f/I^2 = 2\beta S(t)/(N(t)\,I(t))$ **as defined
+  once in §7** (single source of truth — _not_ $2\beta S I/N^2$, a stale form
+  off by $I^2/N$ that earlier drafts carried; cf. correction in `5d8e2c0`),
+  within 2σ over 10⁴ replicates, **for $N \ge 10^4$** (O(1/N) diffusion bias
+  makes smaller N flaky).
 - **Tier 5 — External oracle (validates the simulator).** Cross-validate a
   stratified scenario against an independent **exact-forward** lineage-aware
-  simulator. **MASTER** (Vaughan & Drummond 2013, *MBE* 30(6):1480; exact
-  Gillespie for compartmental models — VGsim itself validates against it) is
-  the primary, best-matched oracle: you specify the exact stratified reactions,
-  so the contact-matrix semantic match is provable. **VGsim** (Shchur et al.
-  2022) is also exact-forward — it runs an exact (hierarchical-Gillespie) event
-  chain and samples the genealogy *backward conditioned on that realized chain*
+  simulator. **MASTER** (Vaughan & Drummond 2013, _MBE_ 30(6):1480; exact
+  Gillespie for compartmental models — VGsim itself validates against it) is the
+  primary, best-matched oracle: you specify the exact stratified reactions, so
+  the contact-matrix semantic match is provable. **VGsim** (Shchur et al. 2022)
+  is also exact-forward — it runs an exact (hierarchical-Gillespie) event chain
+  and samples the genealogy _backward conditioned on that realized chain_
   (exact-conditional, **not** the structured-coalescent diffusion approximation,
   which replaces the stochastic trajectory with a deterministic ODE — something
-  VGsim does not do) — so it too tests the *forward model*, keeping Tier 5
+  VGsim does not do) — so it too tests the _forward model_, keeping Tier 5
   distinct from Tier 6. VGsim's advantage is scale (millions of tips); its
   limitation for this check is that its migration-based population structure may
   not express camdl's arbitrary asymmetric contact matrix cleanly. Gated behind
@@ -527,11 +530,11 @@ replay; the logic is identical, only its location changes.
 - **Tier 6 — Forward reference vs analytic approximation (validates the
   approximation).** On small trees (4c exact regime) or via summaries (§8),
   compare the forward reference against the structured-coalescent analytic
-  likelihood (MASCOT). Reports regime-dependent divergence.
-  **Tier 6 builds on Tier 5, it does not replace it:** Tier 5 establishes the
-  forward model is correct; Tier 6 then measures the approximation against the
-  now-trusted forward model. A buggy forward model would make Tier 6
-  meaningless. Both, in order.
+  likelihood (MASCOT). Reports regime-dependent divergence. **Tier 6 builds on
+  Tier 5, it does not replace it:** Tier 5 establishes the forward model is
+  correct; Tier 6 then measures the approximation against the now-trusted
+  forward model. A buggy forward model would make Tier 6 meaningless. Both, in
+  order.
 
 ---
 

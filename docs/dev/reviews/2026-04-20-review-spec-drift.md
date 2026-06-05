@@ -7,22 +7,22 @@ reviewer: internal
 
 ## Resolution status
 
-| Finding | Status | Notes |
-|---------|--------|-------|
-| Sd1 — §11 example: wrong expression JSON format | ✅ Resolved | Replaced §11 with three correct examples from golden files (2026-04-20) |
-| Sd2 — §11 example: compartments as string array | ✅ Resolved | Fixed in §11 replacement (2026-04-20) |
-| Sd3 — §11 example: time_functions flat/float format | ✅ Resolved | Fixed in §11 replacement (2026-04-20) |
-| Sd4 — §11 example: table values as raw floats | ✅ Resolved | Fixed in §11 replacement (2026-04-20) |
-| Sd5 — §3.1: Mod and comparison ops absent from grammar | ✅ Resolved | Added Mod + Eq/Neq/Lt/Gt/Le/Ge to §3.1 op definition (2026-04-20) |
-| Sd6 — §3.3: time_func_kind uses float literals, not expr | ✅ Resolved | Changed float → expr in §3.3 time_func_kind (2026-04-20) |
-| Sd7 — §3.4: tables has phantom `shape` field | ✅ Resolved | Removed shape; added note on implicit dimensionality (2026-04-20) |
-| Sd8 — §6.1: parameter missing bounds/param_kind/param_dim | ✅ Resolved | Added three fields to §6.1 parameter schema (2026-04-20) |
-| Sd9 — §8: transition missing draw_method/rate_grad | ✅ Resolved | Added draw_method and rate_grad to §8 transition schema (2026-04-20) |
-| Sd10 — §8: model schema missing 5 top-level fields | ✅ Resolved | Added time_unit, origin, scenarios, model_structure, balance to §8 (2026-04-20) |
-| Sd11 — §2.3: interventions missing base_name/always_active/AddAction | ✅ Resolved | Added all three to §2.3 intervention schema (2026-04-20) |
-| Sd12 — §4.2: Bernoulli likelihood absent | ✅ Resolved | Added Bernoulli to §4.2 likelihood variants (2026-04-20) |
-| Sd13 — §6.1: parameter value typed float not float option | ✅ Resolved | Changed value: float → float \| null in §6.1 (2026-04-20) |
-| Sd14 — §4.3: observation_schedule variant name mismatch | ✅ Resolved | Updated §4.3 variant names to ObsAtTimes/ObsRegular/ObsFromData (2026-04-20) |
+| Finding                                                              | Status      | Notes                                                                           |
+| -------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------- |
+| Sd1 — §11 example: wrong expression JSON format                      | ✅ Resolved | Replaced §11 with three correct examples from golden files (2026-04-20)         |
+| Sd2 — §11 example: compartments as string array                      | ✅ Resolved | Fixed in §11 replacement (2026-04-20)                                           |
+| Sd3 — §11 example: time_functions flat/float format                  | ✅ Resolved | Fixed in §11 replacement (2026-04-20)                                           |
+| Sd4 — §11 example: table values as raw floats                        | ✅ Resolved | Fixed in §11 replacement (2026-04-20)                                           |
+| Sd5 — §3.1: Mod and comparison ops absent from grammar               | ✅ Resolved | Added Mod + Eq/Neq/Lt/Gt/Le/Ge to §3.1 op definition (2026-04-20)               |
+| Sd6 — §3.3: time_func_kind uses float literals, not expr             | ✅ Resolved | Changed float → expr in §3.3 time_func_kind (2026-04-20)                        |
+| Sd7 — §3.4: tables has phantom `shape` field                         | ✅ Resolved | Removed shape; added note on implicit dimensionality (2026-04-20)               |
+| Sd8 — §6.1: parameter missing bounds/param_kind/param_dim            | ✅ Resolved | Added three fields to §6.1 parameter schema (2026-04-20)                        |
+| Sd9 — §8: transition missing draw_method/rate_grad                   | ✅ Resolved | Added draw_method and rate_grad to §8 transition schema (2026-04-20)            |
+| Sd10 — §8: model schema missing 5 top-level fields                   | ✅ Resolved | Added time_unit, origin, scenarios, model_structure, balance to §8 (2026-04-20) |
+| Sd11 — §2.3: interventions missing base_name/always_active/AddAction | ✅ Resolved | Added all three to §2.3 intervention schema (2026-04-20)                        |
+| Sd12 — §4.2: Bernoulli likelihood absent                             | ✅ Resolved | Added Bernoulli to §4.2 likelihood variants (2026-04-20)                        |
+| Sd13 — §6.1: parameter value typed float not float option            | ✅ Resolved | Changed value: float → float \| null in §6.1 (2026-04-20)                       |
+| Sd14 — §4.3: observation_schedule variant name mismatch              | ✅ Resolved | Updated §4.3 variant names to ObsAtTimes/ObsRegular/ObsFromData (2026-04-20)    |
 
 ---
 
@@ -45,8 +45,8 @@ needs a separate pass against `ocaml/lib/compiler/{parser.mly,expander.ml}`.
 ## Critical — §11 Example JSON is Wrong
 
 The full example in §11 uses a wire format that the OCaml serializer and Rust
-deserializer have never implemented. **§11 is not a valid IR JSON document**
-and would be rejected by `serde.ml`'s `expr_of_json`.
+deserializer have never implemented. **§11 is not a valid IR JSON document** and
+would be rejected by `serde.ml`'s `expr_of_json`.
 
 **Sd1. Expression nodes use `{"op": ..., "args": [...]}` — actual format is
 `{"bin_op": {"op": ..., "left": ..., "right": ...}}`.**
@@ -60,7 +60,13 @@ and would be rejected by `serde.ml`'s `expr_of_json`.
 Actual wire format (`serde.ml:113–118`):
 
 ```json
-{ "bin_op": { "op": "mul", "left": { "param": "beta" }, "right": { "pop": "S_child" } } }
+{
+  "bin_op": {
+    "op": "mul",
+    "left": { "param": "beta" },
+    "right": { "pop": "S_child" }
+  }
+}
 ```
 
 This affects every `BinOp` node in §11 — all `"mul"`, `"add"`, `"div"` calls.
@@ -70,19 +76,19 @@ IR JSON or build a third-party parser will get a `DeserError`.
 
 The correct expression tags are:
 
-| Node type   | JSON key       | Fields               |
-|-------------|----------------|----------------------|
-| `BinOp`     | `"bin_op"`     | `op`, `left`, `right`|
-| `UnOp`      | `"un_op"`      | `op`, `arg`          |
-| `Cond`      | `"cond"`       | `pred`, `then`, `else` |
-| `Const`     | `"const"`      | (float value)        |
-| `Param`     | `"param"`      | (string value)       |
-| `Pop`       | `"pop"`        | (string value)       |
-| `PopSum`    | `"pop_sum"`    | (string array)       |
-| `Time`      | `"time"`       | `null`               |
-| `Projected` | `"projected"`  | `null`               |
-| `TimeFunc`  | `"time_func"`  | `{ "name": ... }`    |
-| `TableLookup`| `"table_lookup"` | `table`, `indices` |
+| Node type     | JSON key         | Fields                 |
+| ------------- | ---------------- | ---------------------- |
+| `BinOp`       | `"bin_op"`       | `op`, `left`, `right`  |
+| `UnOp`        | `"un_op"`        | `op`, `arg`            |
+| `Cond`        | `"cond"`         | `pred`, `then`, `else` |
+| `Const`       | `"const"`        | (float value)          |
+| `Param`       | `"param"`        | (string value)         |
+| `Pop`         | `"pop"`          | (string value)         |
+| `PopSum`      | `"pop_sum"`      | (string array)         |
+| `Time`        | `"time"`         | `null`                 |
+| `Projected`   | `"projected"`    | `null`                 |
+| `TimeFunc`    | `"time_func"`    | `{ "name": ... }`      |
+| `TableLookup` | `"table_lookup"` | `table`, `indices`     |
 
 **Sd2. Compartments serialized as string array — actual format is object
 array.**
@@ -126,9 +132,9 @@ Actual wire (`serde.ml:292–312`):
   "kind": {
     "sinusoidal": {
       "amplitude": { "const": 0.2 },
-      "period":    { "const": 365.25 },
-      "phase":     { "const": 0.0 },
-      "baseline":  { "const": 1.0 }
+      "period": { "const": 365.25 },
+      "phase": { "const": 0.0 },
+      "baseline": { "const": 1.0 }
     }
   }
 }
@@ -153,7 +159,10 @@ Actual wire (`serde.ml:366–375`):
 {
   "name": "C_age",
   "values": [
-    { "const": 12.0 }, { "const": 4.0 }, { "const": 4.0 }, { "const": 8.0 }
+    { "const": 12.0 },
+    { "const": 4.0 },
+    { "const": 4.0 },
+    { "const": 8.0 }
   ],
   "out_of_bounds": "error"
 }
@@ -166,8 +175,8 @@ appear — there is no `shape` field in the actual table type (see Sd7 below).
 
 ## Major — Type and Field Gaps
 
-**Sd5. §3.1 grammar omits `Mod` and six comparison operators present in
-the implementation.**
+**Sd5. §3.1 grammar omits `Mod` and six comparison operators present in the
+implementation.**
 
 `ir.ml:6`:
 
@@ -334,29 +343,29 @@ type draw_method =
 ```
 
 Serializes (`serde.ml:236–240`): `DrawPoisson` omits the field (default);
-`DrawDeterministic` → `"draw_method": "deterministic"`; `DrawOverdispersed e`
-→ `"draw_method": {"overdispersed": <expr>}`. Used by overdispersed transitions
+`DrawDeterministic` → `"draw_method": "deterministic"`; `DrawOverdispersed e` →
+`"draw_method": {"overdispersed": <expr>}`. Used by overdispersed transitions
 (DSL `overdispersed(rate, sigma2)` syntax), which require the chain-binomial or
 tau-leap backend. The `Capabilities` bitflag `OVERDISPERSION` is set by its
 presence.
 
 **`rate_grad`** is the per-parameter partial derivative array emitted by the
 autodiff pass (`autodiff.ml:differentiate_rate`). Serializes as a JSON object
-`{"param_name": <expr>, ...}`. Empty when not computed (forward simulation only).
-Consumed by `pgas_grad.rs` for gradient-based proposals in NUTS. This field is
-central to inference correctness.
+`{"param_name": <expr>, ...}`. Empty when not computed (forward simulation
+only). Consumed by `pgas_grad.rs` for gradient-based proposals in NUTS. This
+field is central to inference correctness.
 
 **Sd10. §8 top-level model schema missing five fields.**
 
 `ir.ml:268–288` model type has fields not in §8:
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `time_unit` | `string` | declared time unit ("days") |
-| `origin` | `string option` | ISO date for calendar offset (§2.3 language spec) |
-| `presets` | `preset list` | named parameter sets for web UI / CLI |
-| `model_structure` | `model_structure option` | dimension/stratification metadata for UI |
-| `balance` | `balance_spec option` | population conservation constraint |
+| Field             | Type                     | Purpose                                           |
+| ----------------- | ------------------------ | ------------------------------------------------- |
+| `time_unit`       | `string`                 | declared time unit ("days")                       |
+| `origin`          | `string option`          | ISO date for calendar offset (§2.3 language spec) |
+| `presets`         | `preset list`            | named parameter sets for web UI / CLI             |
+| `model_structure` | `model_structure option` | dimension/stratification metadata for UI          |
+| `balance`         | `balance_spec option`    | population conservation constraint                |
 
 `time_unit` and `origin` affect how calendar dates in interventions and
 observations are interpreted — relevant to the IR contract. The rest are
@@ -406,9 +415,9 @@ type add_action = { add_compartment: string; add_count: expr }
 ```
 
 Serializes as `{"add": {"compartment": ..., "count": ...}}`. Semantically
-distinct from `AbsoluteTransfer` (which moves count from src to dst); `AddAction`
-adds count to a compartment unconditionally, modeling importation or birth events
-attached to an intervention schedule.
+distinct from `AbsoluteTransfer` (which moves count from src to dst);
+`AddAction` adds count to a compartment unconditionally, modeling importation or
+birth events attached to an intervention schedule.
 
 **Sd12. §4.2 missing `Bernoulli` likelihood.**
 
@@ -434,10 +443,10 @@ streams (e.g., seropositivity surveys).
 value: float option;  (* None = must be supplied at runtime via --params / --set *)
 ```
 
-The spec shows `value: float`. `None` is a valid state — the runtime
-then requires the value to be supplied via `--param` or `--params`. This is
-the primary mechanism for "value-free" model files committed to version control.
-A parameter with `value: null` in the JSON that is not supplied at runtime
+The spec shows `value: float`. `None` is a valid state — the runtime then
+requires the value to be supplied via `--param` or `--params`. This is the
+primary mechanism for "value-free" model files committed to version control. A
+parameter with `value: null` in the JSON that is not supplied at runtime
 produces a clear runtime error.
 
 **Sd14. §4.3 observation schedule variant `Regular` serializes as
@@ -445,7 +454,8 @@ produces a clear runtime error.
 
 §4.3: `Regular(start: float, step: float, end: float)`
 
-`serde.ml` (by tag pattern): `"obs_regular"`, `"obs_at_times"`, `"obs_from_data"`.
+`serde.ml` (by tag pattern): `"obs_regular"`, `"obs_at_times"`,
+`"obs_from_data"`.
 
 The `Obs` prefix is present on all three variants in the tag strings. The spec
 drops the prefix. Not a correctness issue (spec is pseudocode, not JSON), but

@@ -4,8 +4,8 @@
 #   peak_infections   mean ≈ 151  sd ≈ 9   (cross-seed CV ≈ 6.2%)
 
 [checks.total_infections]
-compare   = "mean"
-tol_rel   = 0.02
+compare = "mean"
+tol_rel = 0.02
 rationale = """
 At n=20 camdl seeds the MC SE of the mean is approximately
 sd/sqrt(n) ≈ 6.4/sqrt(20) ≈ 1.4, or ~0.2% of the reference mean
@@ -24,8 +24,8 @@ comfortably below the 5% he2010 bar.
 """
 
 [checks.peak_infections]
-compare   = "mean"
-tol_rel   = 0.08
+compare = "mean"
+tol_rel = 0.08
 rationale = """
 pomp's 200-seed ensemble shows peak daily infections mean ≈ 151
 with cross-seed SD ≈ 9 (CV ≈ 6.2%). At n=20 camdl seeds the MC SE

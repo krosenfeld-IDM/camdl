@@ -1,10 +1,11 @@
 # Dimensions, Tables, and External Data
 
 camdl's dimension and table system is designed around one idea: **population
-structure should be declared once, and the compiler does the combinatorial work**.
-This chapter walks through the full design — from a two-age-group contact matrix
-to a joint patch × age demographic table — and shows how `camdl inspect` lets you
-verify that the compiler expanded and loaded exactly what you intended.
+structure should be declared once, and the compiler does the combinatorial
+work**. This chapter walks through the full design — from a two-age-group
+contact matrix to a joint patch × age demographic table — and shows how
+`camdl inspect` lets you verify that the compiler expanded and loaded exactly
+what you intended.
 
 ---
 
@@ -20,16 +21,16 @@ dimensions {
 ```
 
 Stratifying a compartment model by `age` makes the compiler generate every
-age-specific compartment and transition automatically — you write the model once,
-not once per stratum.
+age-specific compartment and transition automatically — you write the model
+once, not once per stratum.
 
 ```camdl
 stratify(by = age)
 ```
 
 After this, every bare compartment name (`S`, `E`, `I`, `R`) expands to one
-instance per age level. **Bare names are always sums across strata** — `S`
-means `S_child + S_adult`, never a single stratum silently chosen. The compiler
+instance per age level. **Bare names are always sums across strata** — `S` means
+`S_child + S_adult`, never a single stratum silently chosen. The compiler
 enforces this; there is no implicit localization.
 
 ---
@@ -46,6 +47,7 @@ dimensions {
 ```
 
 `data/patch_features.tsv`:
+
 ```
 patch   pop     area_km2  density
 north   120000  4500.0    26.7
@@ -54,10 +56,11 @@ east    45000   800.0     56.3
 west    200000  6200.0    32.3
 ```
 
-The compiler reads the unique values from the `patch` column — in first-occurrence
-order — and uses them as the dimension levels. The model never hard-codes `[north,
-south, east, west]`; add a row to the TSV and the next compilation produces a
-larger expanded model automatically.
+The compiler reads the unique values from the `patch` column — in
+first-occurrence order — and uses them as the dimension levels. The model never
+hard-codes `[north,
+south, east, west]`; add a row to the TSV and the next
+compilation produces a larger expanded model automatically.
 
 ---
 
@@ -89,9 +92,9 @@ pop      [patch]  loaded: data/patch_features.tsv
   │ west   200000
 ```
 
-The source annotation (`loaded: data/patch_features.tsv`) tells you it came
-from a file rather than an inline literal, which matters for debugging data
-pipeline issues.
+The source annotation (`loaded: data/patch_features.tsv`) tells you it came from
+a file rather than an inline literal, which matters for debugging data pipeline
+issues.
 
 ---
 
@@ -107,6 +110,7 @@ tables {
 ```
 
 `data/patch_features.tsv` (same file, three value columns):
+
 ```
 patch   pop     area_km2  density
 north   120000  4500.0    26.7
@@ -150,8 +154,8 @@ transitions {
 }
 ```
 
-`density[p]` is a `TableLookup` expression — the compiler resolves the index
-at IR build time, and the Rust backend evaluates it at each simulation step.
+`density[p]` is a `TableLookup` expression — the compiler resolves the index at
+IR build time, and the Rust backend evaluates it at each simulation step.
 
 ---
 
@@ -178,8 +182,8 @@ transitions {
 }
 ```
 
-The `sum(b in age, ...)` expands the force of infection: for each susceptible age
-group `a`, the rate sums over all infectious age groups `b`, weighted by the
+The `sum(b in age, ...)` expands the force of infection: for each susceptible
+age group `a`, the rate sums over all infectious age groups `b`, weighted by the
 contact rate `C[a, b]` and the prevalence `I[b] / N[b]`. The compiler generates
 this sum explicitly in the IR — there is no implicit matrix multiplication.
 
@@ -192,7 +196,8 @@ C  [age × age]  inline
   │  adult      3      8
 ```
 
-The `inline` annotation confirms the values came from the DSL source, not a file.
+The `inline` annotation confirms the values came from the DSL source, not a
+file.
 
 ---
 
@@ -203,6 +208,7 @@ data or similar, use `read()` with two index dimensions. The file must be in
 **long format** — one row per index combination, not a 2D grid:
 
 `data/age_contact.tsv`:
+
 ```
 age     age     rate
 child   child   12.0
@@ -231,8 +237,8 @@ C  [age × age]  loaded: data/age_contact.tsv
 ```
 
 `--tables` renders the loaded matrix in 2D regardless of whether it came from an
-inline literal or a file. This is the primary way to verify that a POLYMOD contact
-matrix parsed correctly before running inference.
+inline literal or a file. This is the primary way to verify that a POLYMOD
+contact matrix parsed correctly before running inference.
 
 ---
 
@@ -243,6 +249,7 @@ For network-structured models, most patch pairs have no connection. The
 zero rather than triggering E211 (missing entry):
 
 `data/spatial_adj.tsv`:
+
 ```
 patch   patch   rate
 north   south   0.008
@@ -306,6 +313,7 @@ demographic table lets you initialize each stratum with real population counts
 and makes patch-specific age structure available to rate expressions:
 
 `data/patch_age_pop.tsv`:
+
 ```
 patch   age     pop
 north   child   28000
@@ -362,9 +370,9 @@ seir_patch_age
   dimensions     patch = [north, south, east, west], age = [child, adult]
 ```
 
-4 compartments × 4 patches × 2 age groups = 32 expanded compartments. 3 transition
-templates × 4 patches × 2 age groups = 24 expanded transitions. The compiler
-generates all of this from the three-transition model source.
+4 compartments × 4 patches × 2 age groups = 32 expanded compartments. 3
+transition templates × 4 patches × 2 age groups = 24 expanded transitions. The
+compiler generates all of this from the three-transition model source.
 
 ---
 
@@ -373,19 +381,19 @@ generates all of this from the three-transition model source.
 All external tables use **long format**: one row per index combination, index
 columns first, value columns last. This holds for any dimensionality.
 
-| Dimensions | Index columns | Value columns |
-|------------|---------------|---------------|
-| `patch` | `patch` | 1+ values |
-| `age × age` | `age`, `age` | 1+ values |
-| `patch × age` | `patch`, `age` | 1+ values |
+| Dimensions    | Index columns  | Value columns |
+| ------------- | -------------- | ------------- |
+| `patch`       | `patch`        | 1+ values     |
+| `age × age`   | `age`, `age`   | 1+ values     |
+| `patch × age` | `patch`, `age` | 1+ values     |
 
 Column header names must match the dimension names declared in the model. The
 compiler checks this and emits W201 for mismatches. Order matters: the compiler
 maps columns to dimensions positionally (E216 if they are reordered relative to
 the declaration).
 
-Dense tables (no `default`) require every combination to appear — E211 fires
-for any missing row. Sparse tables (`default = 0.0`) allow gaps; missing
+Dense tables (no `default`) require every combination to appear — E211 fires for
+any missing row. Sparse tables (`default = 0.0`) allow gaps; missing
 combinations get the default value.
 
 ---
@@ -400,27 +408,27 @@ the time the IR reaches the Rust simulator, every table is a flat array of
 - `camdl inspect --tables` shows exactly what the simulator will see
 - Changing a TSV requires recompiling the model
 
-The `external()` function declares a table whose values are supplied at
-runtime via `--table name=file` — a different use case for models where
-parameter tables change between runs without recompilation.
+The `external()` function declares a table whose values are supplied at runtime
+via `--table name=file` — a different use case for models where parameter tables
+change between runs without recompilation.
 
 ---
 
 ## Design Summary
 
-| Need | Syntax |
-|------|--------|
-| Small structural matrix | `C : age × age = [[...]]` inline |
-| 1D lookup from file | `cfr : age = read("cfr.tsv")` |
-| Multiple lookups, one file | `pop, area, density : patch = read("f.tsv")` |
-| Contact matrix from file | `C : age × age = read("contact.tsv")` |
+| Need                       | Syntax                                                 |
+| -------------------------- | ------------------------------------------------------ |
+| Small structural matrix    | `C : age × age = [[...]]` inline                       |
+| 1D lookup from file        | `cfr : age = read("cfr.tsv")`                          |
+| Multiple lookups, one file | `pop, area, density : patch = read("f.tsv")`           |
+| Contact matrix from file   | `C : age × age = read("contact.tsv")`                  |
 | Spatial adjacency (sparse) | `adj : patch × patch = read("adj.tsv", default = 0.0)` |
-| Joint demographic table | `pop : patch × age = read("demography.tsv")` |
-| Dimension levels from file | `patch = read("patches.tsv", column = "patch")` |
-| Runtime-supplied table | `C : age × age = external("contact")` |
+| Joint demographic table    | `pop : patch × age = read("demography.tsv")`           |
+| Dimension levels from file | `patch = read("patches.tsv", column = "patch")`        |
+| Runtime-supplied table     | `C : age × age = external("contact")`                  |
 
 The type signature on every table is enforced by the dimension checker. A
 `rate × count` dimensional mismatch in a rate expression — for example,
 multiplying a contact rate by a population in a context that expects
-dimensionless prevalence — produces a compile-time error, not a silently
-wrong simulation.
+dimensionless prevalence — produces a compile-time error, not a silently wrong
+simulation.

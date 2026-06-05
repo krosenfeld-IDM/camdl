@@ -14,7 +14,7 @@
     "transitions": [
       {
         "name": "infection_I_symp",
-        "stoichiometry": [ [ "S", -1 ], [ "I_symp", 1 ] ],
+        "stoichiometry": [["S", -1], ["I_symp", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -32,10 +32,10 @@
                         "right": { "pop": "S" }
                       }
                     },
-                    "right": { "pop_sum": [ "I_symp", "I_asym" ] }
+                    "right": { "pop_sum": ["I_symp", "I_asym"] }
                   }
                 },
-                "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
               }
             }
           }
@@ -60,17 +60,17 @@
                         "bin_op": {
                           "op": "mul",
                           "left": { "pop": "S" },
-                          "right": { "pop_sum": [ "I_symp", "I_asym" ] }
+                          "right": { "pop_sum": ["I_symp", "I_asym"] }
                         }
                       },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S", "I_symp", "I_asym" ] },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "left": { "pop_sum": ["S", "I_symp", "I_asym"] },
+                      "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
                     }
                   }
                 }
@@ -90,17 +90,17 @@
                       "right": { "pop": "S" }
                     }
                   },
-                  "right": { "pop_sum": [ "I_symp", "I_asym" ] }
+                  "right": { "pop_sum": ["I_symp", "I_asym"] }
                 }
               },
-              "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+              "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
             }
           }
         }
       },
       {
         "name": "infection_I_asym",
-        "stoichiometry": [ [ "S", -1 ], [ "I_asym", 1 ] ],
+        "stoichiometry": [["S", -1], ["I_asym", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -124,10 +124,10 @@
                         "right": { "pop": "S" }
                       }
                     },
-                    "right": { "pop_sum": [ "I_symp", "I_asym" ] }
+                    "right": { "pop_sum": ["I_symp", "I_asym"] }
                   }
                 },
-                "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
               }
             }
           }
@@ -158,17 +158,17 @@
                         "bin_op": {
                           "op": "mul",
                           "left": { "pop": "S" },
-                          "right": { "pop_sum": [ "I_symp", "I_asym" ] }
+                          "right": { "pop_sum": ["I_symp", "I_asym"] }
                         }
                       },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "mul",
-                      "left": { "pop_sum": [ "S", "I_symp", "I_asym" ] },
-                      "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                      "left": { "pop_sum": ["S", "I_symp", "I_asym"] },
+                      "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
                     }
                   }
                 }
@@ -192,10 +192,10 @@
                           "right": { "pop": "S" }
                         }
                       },
-                      "right": { "pop_sum": [ "I_symp", "I_asym" ] }
+                      "right": { "pop_sum": ["I_symp", "I_asym"] }
                     }
                   },
-                  "right": { "pop_sum": [ "S", "I_symp", "I_asym" ] }
+                  "right": { "pop_sum": ["S", "I_symp", "I_asym"] }
                 }
               }
             }
@@ -212,7 +212,7 @@
       {
         "name": "beta",
         "value": null,
-        "bounds": [ 0.01, 10.0 ],
+        "bounds": [0.01, 10.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -223,7 +223,7 @@
       {
         "name": "p_symp",
         "value": null,
-        "bounds": [ 0.01, 0.99 ],
+        "bounds": [0.01, 0.99],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -234,7 +234,7 @@
       {
         "name": "N0",
         "value": null,
-        "bounds": [ 100.0, 10000.0 ],
+        "bounds": [100.0, 10000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -245,7 +245,7 @@
       {
         "name": "I0",
         "value": null,
-        "bounds": [ 1.0, 1000.0 ],
+        "bounds": [1.0, 1000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -292,9 +292,9 @@
     "model_structure": {
       "dimensions": [],
       "compartment_dims": { "S": [], "I_symp": [], "I_asym": [] },
-      "base_compartments": [ "S", "I_symp", "I_asym" ],
-      "transmission_transitions": [ "infection" ],
-      "infectious_compartments": [ "I_symp", "I_asym" ]
+      "base_compartments": ["S", "I_symp", "I_asym"],
+      "transmission_transitions": ["infection"],
+      "infectious_compartments": ["I_symp", "I_asym"]
     }
   }
 }

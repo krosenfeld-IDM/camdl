@@ -16,7 +16,7 @@
     "transitions": [
       {
         "name": "infection",
-        "stoichiometry": [ [ "S", -1 ], [ "I", 1 ] ],
+        "stoichiometry": [["S", -1], ["I", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -33,7 +33,7 @@
                 "right": { "pop": "I" }
               }
             },
-            "right": { "pop_sum": [ "S", "I", "R" ] }
+            "right": { "pop_sum": ["S", "I", "R"] }
           }
         },
         "metadata": {
@@ -55,14 +55,14 @@
                       "right": { "pop": "I" }
                     }
                   },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "right": { "pop_sum": ["S", "I", "R"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S", "I", "R" ] },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "left": { "pop_sum": ["S", "I", "R"] },
+                  "right": { "pop_sum": ["S", "I", "R"] }
                 }
               }
             }
@@ -83,7 +83,7 @@
                       "right": { "pop": "S" }
                     }
                   },
-                  "right": { "pop_sum": [ "S", "I", "R" ] }
+                  "right": { "pop_sum": ["S", "I", "R"] }
                 }
               }
             ]
@@ -92,7 +92,7 @@
       },
       {
         "name": "recovery",
-        "stoichiometry": [ [ "I", -1 ], [ "R", 1 ] ],
+        "stoichiometry": [["I", -1], ["R", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -109,7 +109,7 @@
       },
       {
         "name": "seed",
-        "stoichiometry": [ [ "I", 1 ] ],
+        "stoichiometry": [["I", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -536,7 +536,7 @@
       {
         "name": "beta",
         "value": null,
-        "bounds": [ 0.001, 5.0 ],
+        "bounds": [0.001, 5.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -547,7 +547,7 @@
       {
         "name": "gamma",
         "value": null,
-        "bounds": [ 0.01, 1.0 ],
+        "bounds": [0.01, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -558,7 +558,7 @@
       {
         "name": "tau",
         "value": null,
-        "bounds": [ 0.0, 120.0 ],
+        "bounds": [0.0, 120.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -569,7 +569,7 @@
       {
         "name": "lambda",
         "value": null,
-        "bounds": [ 0.0, 100.0 ],
+        "bounds": [0.0, 100.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -580,7 +580,7 @@
       {
         "name": "w",
         "value": null,
-        "bounds": [ 0.1, 20.0 ],
+        "bounds": [0.1, 20.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -591,7 +591,7 @@
       {
         "name": "N0",
         "value": null,
-        "bounds": [ 100.0, 1000000.0 ],
+        "bounds": [100.0, 1000000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -602,7 +602,7 @@
       {
         "name": "rho",
         "value": null,
-        "bounds": [ 0.01, 1.0 ],
+        "bounds": [0.01, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -613,7 +613,7 @@
       {
         "name": "k",
         "value": null,
-        "bounds": [ 0.1, 1000.0 ],
+        "bounds": [0.1, 1000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -642,10 +642,10 @@
     "model_structure": {
       "dimensions": [],
       "compartment_dims": { "S": [], "I": [], "R": [] },
-      "base_compartments": [ "S", "I", "R" ],
-      "transmission_transitions": [ "infection" ],
-      "infectious_compartments": [ "I" ]
+      "base_compartments": ["S", "I", "R"],
+      "transmission_transitions": ["infection"],
+      "infectious_compartments": ["I"]
     },
-    "identity_tracked_compartments": [ "I", "R" ]
+    "identity_tracked_compartments": ["I", "R"]
   }
 }

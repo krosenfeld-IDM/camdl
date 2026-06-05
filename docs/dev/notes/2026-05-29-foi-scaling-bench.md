@@ -1,8 +1,7 @@
 # FOI scaling bench: the flat-inlined spatial sum is an O(P²) IR blowup
 
-Date: 2026-05-29
-Project: camdl
-Tags: performance, force-of-infection, scaling, ir, chain-binomial, benchmarks
+Date: 2026-05-29 Project: camdl Tags: performance, force-of-infection, scaling,
+ir, chain-binomial, benchmarks
 
 ## Context / question
 
@@ -11,9 +10,9 @@ The `kano_lga_seirv` measles model (44 Kano LGAs × 21 age groups, SEIRV) in
 memory-heavy enough to be painful for the fit workflow it exists to teach. The
 goal here is not to fix it yet, but to **characterize the scaling** across model
 size with a controlled toy, isolate the root cause(s), and produce a
-prioritized, reproduction-backed fix list aimed at ~10×. A prior `profile-review.md`
-flagged "fully expanded spatial models" qualitatively; this note replaces that
-with measurements.
+prioritized, reproduction-backed fix list aimed at ~10×. A prior
+`profile-review.md` flagged "fully expanded spatial models" qualitatively; this
+note replaces that with measurements.
 
 ## Method
 
@@ -22,21 +21,21 @@ Three reproducible artifacts (all committed under `scripts/` + `make` targets):
 - **Toy generator** `scripts/gen_scaling_models.py` — emits a stripped spatial
   age-structured SEIR `.camdl` parametrized by `P` (patches), `A` (ages),
   `coupling ∈ {on,off}`, `grad ∈ {minimal,full}`. It faithfully reproduces the
-  Kano FOI *shape*: the per-patch aggregates `N[l]`, `I_agg[l]` and the spatial
+  Kano FOI _shape_: the per-patch aggregates `N[l]`, `I_agg[l]` and the spatial
   coupling **sum inside the infection rate**:
-  `kappa * sum(q in patch, W[l,q]*I_agg[q]/N[q])`.
-  `coupling=off` drops the spatial term (control); `grad=minimal` bakes the FOI
-  constants as literals so no parameter is free → no `rate_grad` (control).
-  All compiles use `--no-dim-check` (synthetic model; dimcheck does not change
-  the emitted `rate`/`rate_grad` trees).
+  `kappa * sum(q in patch, W[l,q]*I_agg[q]/N[q])`. `coupling=off` drops the
+  spatial term (control); `grad=minimal` bakes the FOI constants as literals so
+  no parameter is free → no `rate_grad` (control). All compiles use
+  `--no-dim-check` (synthetic model; dimcheck does not change the emitted
+  `rate`/`rate_grad` trees).
 - **Macro sweep** `scripts/bench_scaling.py` (`make bench-scaling`) — full
-  `camdl compile` → `camdl simulate` pipeline under `/usr/bin/time -l`, recording
-  `ir_bytes, compile_s, sim_s, peak_rss_mb` per scale point →
+  `camdl compile` → `camdl simulate` pipeline under `/usr/bin/time -l`,
+  recording `ir_bytes, compile_s, sim_s, peak_rss_mb` per scale point →
   `docs/dev/notes/assets/scaling/scaling.tsv` + `scaling_curves.png`.
 - **Micro bench** `rust/crates/sim/benches/scaling.rs` (`make bench-micro`) —
   criterion benches for `eval_propensities`, `step_one`, and load
-  (`ir::from_str` + `CompiledModel::new`) across a P×A grid, isolating *per-step*
-  compute from the parse cost.
+  (`ir::from_str` + `CompiledModel::new`) across a P×A grid, isolating
+  _per-step_ compute from the parse cost.
 
 A matched `camdlc`/`camdl` pair built from HEAD (`make build`) is required; the
 runtime finds the compiler via `CAMDLC=<abs path to camdlc.exe>`.
@@ -52,23 +51,23 @@ byte-identical. Comparison figures:
 [`assets/scaling/d_reduce_ir_cliff.png`](assets/scaling/d_reduce_ir_cliff.png)
 (Fix D IR-size + cliff).
 
-| fix | change | before → after | correctness gate | status |
-| --- | --- | --- | --- | --- |
-| **E** | `Expr` deserialize: drop `#[serde(untagged)]` buffering | model load **3.4–5.8× faster** (grows with size); anchor `simulate`-from-IR **9.32 s → ~4.7 s (2.0×)** | golden round-trip equality | landed on `main` |
-| **D** | `sum(…)` → flat n-ary `Reduce` node | IR size **1.3×→2.3× smaller** (grows with P); **parse cliff removed** — P>50 now parses (P=64/88 were hard `recursion limit` failures) | 88-baseline trajectory gate byte-identical, all backends | landed on `main` |
-| **B1** | hoist the per-coordinate pop-sum aggregates (`N[l]`,`I_agg[l]`) into `model.bindings`, referenced by `BindingRef` | Kano P=44: IR **3.5×** smaller (3708→1070 MB), peak RSS **5.2×** (15.6→3.0 GB), one-shot `simulate` **6.9×** (17.7→2.6 s). Constant-factor (slope ≈2 before/after), parse/load-dominated — **not** asymptotic; per-step eval unchanged (bindings recomputed on-demand); `F[l]` not hoisted | 4-backend trajectory gate byte-identical | landed on `perf/ir-bindings` |
-| **B2** | emitted shared binding-gradients | asymptotic gradient IR | gradient round-trip vs FD | deferred (state-only bindings ⇒ d/dp ≡ 0; buys nothing now) |
+| fix    | change                                                                                                            | before → after                                                                                                                                                                                                                                                                             | correctness gate                                         | status                                                      |
+| ------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------- |
+| **E**  | `Expr` deserialize: drop `#[serde(untagged)]` buffering                                                           | model load **3.4–5.8× faster** (grows with size); anchor `simulate`-from-IR **9.32 s → ~4.7 s (2.0×)**                                                                                                                                                                                     | golden round-trip equality                               | landed on `main`                                            |
+| **D**  | `sum(…)` → flat n-ary `Reduce` node                                                                               | IR size **1.3×→2.3× smaller** (grows with P); **parse cliff removed** — P>50 now parses (P=64/88 were hard `recursion limit` failures)                                                                                                                                                     | 88-baseline trajectory gate byte-identical, all backends | landed on `main`                                            |
+| **B1** | hoist the per-coordinate pop-sum aggregates (`N[l]`,`I_agg[l]`) into `model.bindings`, referenced by `BindingRef` | Kano P=44: IR **3.5×** smaller (3708→1070 MB), peak RSS **5.2×** (15.6→3.0 GB), one-shot `simulate` **6.9×** (17.7→2.6 s). Constant-factor (slope ≈2 before/after), parse/load-dominated — **not** asymptotic; per-step eval unchanged (bindings recomputed on-demand); `F[l]` not hoisted | 4-backend trajectory gate byte-identical                 | landed on `perf/ir-bindings`                                |
+| **B2** | emitted shared binding-gradients                                                                                  | asymptotic gradient IR                                                                                                                                                                                                                                                                     | gradient round-trip vs FD                                | deferred (state-only bindings ⇒ d/dp ≡ 0; buys nothing now) |
 
 ![Fix D — IR size + cliff](assets/scaling/d_reduce_ir_cliff.png)
 
-| P (A=1, on) | IR before (Add-chain) | IR after (Reduce) | factor |
-| --- | --- | --- | --- |
-| 8  | 142,779 B | 106,159 B | 1.3× |
-| 16 | 627,538 B | 334,918 B | 1.9× |
-| 32 | 2,674,220 B | 1,204,678 B | 2.2× |
-| 44 | 5,148,038 B | 2,217,406 B | 2.3× |
-| 64 | **parse failure** (serde recursion limit) | 4,590,730 B | — |
-| 88 | **parse failure** | 8,569,702 B | — |
+| P (A=1, on) | IR before (Add-chain)                     | IR after (Reduce) | factor |
+| ----------- | ----------------------------------------- | ----------------- | ------ |
+| 8           | 142,779 B                                 | 106,159 B         | 1.3×   |
+| 16          | 627,538 B                                 | 334,918 B         | 1.9×   |
+| 32          | 2,674,220 B                               | 1,204,678 B       | 2.2×   |
+| 44          | 5,148,038 B                               | 2,217,406 B       | 2.3×   |
+| 64          | **parse failure** (serde recursion limit) | 4,590,730 B       | —      |
+| 88          | **parse failure**                         | 8,569,702 B       | —      |
 
 Honest framing: **D is a constant-factor + cliff fix, not asymptotic** — the
 spatial sum still has P terms, just stored flat instead of as a P-deep `Add`
@@ -76,17 +75,16 @@ chain.
 
 **B1 (landed) is also constant-factor, not asymptotic** — and not a per-step
 compute win, despite the original framing here. It hoists the per-coordinate
-pop-sum aggregates (`N[l]`, `I_agg[l]`) so they are *serialized* once instead
-of inlined at all P·A use sites: a large IR/RAM/parse shrink (figure below).
-But the bindings are recomputed **on-demand** at each reference, not cached
-once per step, so the per-step inner loop (`eval_propensities`/`step_one`) is
-unchanged; and the spatial force `F[l]` (which references other bindings) is
-**not** hoisted, so the O(P²) term is untouched. Consequently the 6.9×
-`simulate` win is parse/load-dominated (one-shot `simulate` from IR), not a
-per-step speedup — inference, which parses once and steps millions of times,
-benefits far less. The genuine asymptotic shrink (sharing `F[l]` so the
-774-patch national model is *tractable*, not merely *parseable*) remains
-future work.
+pop-sum aggregates (`N[l]`, `I_agg[l]`) so they are _serialized_ once instead of
+inlined at all P·A use sites: a large IR/RAM/parse shrink (figure below). But
+the bindings are recomputed **on-demand** at each reference, not cached once per
+step, so the per-step inner loop (`eval_propensities`/`step_one`) is unchanged;
+and the spatial force `F[l]` (which references other bindings) is **not**
+hoisted, so the O(P²) term is untouched. Consequently the 6.9× `simulate` win is
+parse/load-dominated (one-shot `simulate` from IR), not a per-step speedup —
+inference, which parses once and steps millions of times, benefits far less. The
+genuine asymptotic shrink (sharing `F[l]` so the 774-patch national model is
+_tractable_, not merely _parseable_) remains future work.
 
 ![Fix B — IR/RSS/simulate before vs after](assets/scaling/fix_b_before_after.png)
 
@@ -95,14 +93,14 @@ future work.
 `camdl simulate kano_lga_seirv.camdl --backend chain_binomial --scenario baseline`
 (4,620 compartments, 11,836 transitions, 4,388 daily steps):
 
-| metric | value |
-| --- | --- |
-| wall time | ~45 s (38.5 s user) |
-| peak RSS | 8.2 GB |
-| compiled IR JSON | 2.6 GB |
-| one `infection` transition object | 2.94 MB = 587 KB `rate` + 2.35 MB `rate_grad` |
-| ×924 infection transitions | ≈ the whole 2.6 GB |
-| time split | ~16.5 s camdlc compile + ~26.6 s rust (parse + sim) |
+| metric                            | value                                               |
+| --------------------------------- | --------------------------------------------------- |
+| wall time                         | ~45 s (38.5 s user)                                 |
+| peak RSS                          | 8.2 GB                                              |
+| compiled IR JSON                  | 2.6 GB                                              |
+| one `infection` transition object | 2.94 MB = 587 KB `rate` + 2.35 MB `rate_grad`       |
+| ×924 infection transitions        | ≈ the whole 2.6 GB                                  |
+| time split                        | ~16.5 s camdlc compile + ~26.6 s rust (parse + sim) |
 
 Verified by streaming the compiled IR (`/tmp/kano.ir.json`):
 
@@ -117,14 +115,14 @@ first infection transition object bytes: 2,939,947
 
 The FOI `let N[l]`, `let I_agg[l]` and the spatial `sum(q in patch, …)` are
 **flat-inlined into every `(patch,age)` infection rate tree, and again into each
-free parameter's gradient tree**. `N[q]` is a 105-element `PopSum` (5 comps ×
-21 ages) re-expanded `P=44`× inside each of `P·A=924` infection transitions,
-then ×~5 again for the gradients. There is no cross-transition
-common-subexpression elimination at eval time either — `eval_resolved`
+free parameter's gradient tree**. `N[q]` is a 105-element `PopSum` (5 comps × 21
+ages) re-expanded `P=44`× inside each of `P·A=924` infection transitions, then
+×~5 again for the gradients. There is no cross-transition common-subexpression
+elimination at eval time either — `eval_resolved`
 (`rust/crates/sim/src/resolved_expr.rs`) walks each tree fresh, recomputing
-`N[q]`/`I_agg[q]` for every `(l,a)`. So the representation is
-**O(P²·A²) in IR size** and a step is **O(P²·A)** in eval, where it should be
-O(P·A) size and O(P·A + P²) eval.
+`N[q]`/`I_agg[q]` for every `(l,a)`. So the representation is **O(P²·A²) in IR
+size** and a step is **O(P²·A)** in eval, where it should be O(P·A) size and
+O(P·A + P²) eval.
 
 Additionally, `sum(...)` is lowered to a left-nested `BinOp::Add` chain rather
 than a single reduction node, which (a) makes the trees deep and (b) trips a
@@ -134,13 +132,13 @@ hard parse limit (below).
 
 ### H1 — IR size: O(P²) coupling-on vs O(P) off (slope slice, A=1, grad=minimal)
 
-| P | IR bytes (on) | IR bytes (off) |
-| --- | --- | --- |
-| 8  | 142,779   | 35,949 |
-| 16 | 627,538   | 59,004 |
-| 32 | 2,674,220 | 105,348 |
-| 44 | 5,148,038 | 140,100 |
-| 64 | — (parse cliff) | 198,024 |
+| P  | IR bytes (on)   | IR bytes (off) |
+| -- | --------------- | -------------- |
+| 8  | 142,779         | 35,949         |
+| 16 | 627,538         | 59,004         |
+| 32 | 2,674,220       | 105,348        |
+| 44 | 5,148,038       | 140,100        |
+| 64 | — (parse cliff) | 198,024        |
 
 `on` grows quadratically (32→44 = 1.93× for a 1.375× P, i.e. exponent ≈ 2.0);
 `off` grows linearly (~3 KB/patch). The single `kappa*sum(q…)` term is the
@@ -152,19 +150,19 @@ The cleanest proof is the realism slice at `P=44, A=21`: `grad=minimal` and
 `grad=full` simulate **identical dynamics** (forward `simulate` never evaluates
 `rate_grad`), yet:
 
-| variant | IR | compile_s | sim_s | RSS |
-| --- | --- | --- | --- | --- |
-| P44 A21 minimal | 412 MB | 3.43 | **2.85** | 1.16 GB |
-| P44 A21 full    | 2060 MB | 11.79 | **9.32** | 5.64 GB |
+| variant         | IR      | compile_s | sim_s    | RSS     |
+| --------------- | ------- | --------- | -------- | ------- |
+| P44 A21 minimal | 412 MB  | 3.43      | **2.85** | 1.16 GB |
+| P44 A21 full    | 2060 MB | 11.79     | **9.32** | 5.64 GB |
 
-The 6.5 s sim-time delta is *entirely* parsing the 5× larger `rate_grad` trees
+The 6.5 s sim-time delta is _entirely_ parsing the 5× larger `rate_grad` trees
 that forward simulation never reads. Across all points `sim_s ≈ 4.4 ms/MB · IR`.
 
 ### H4 — peak RSS ≈ 2.7× IR bytes
 
 The boxed in-memory `Expr`/`ResolvedExpr` tree is ~2.7× the JSON byte size
-(P44A21full: 5639/2060 = 2.7×; P32A21full: 2995/1056 = 2.8×). Memory and IR
-size are the same lever.
+(P44A21full: 5639/2060 = 2.7×; P32A21full: 2995/1056 = 2.8×). Memory and IR size
+are the same lever.
 
 ### The gradient multiplier ≈ 5.0× (grad slice, A=7, coupling=on)
 
@@ -196,25 +194,26 @@ not merely a performance one.
 The parse-bound macro `sim_s` can't show per-step compute scaling; the criterion
 benches (`make bench-micro`) isolate it. `eval_propensities` per call (ns), A=1:
 
-| P | coupling=on | coupling=off | on/off |
-| --- | --- | --- | --- |
-| 4  | 365    | 157  | 2.3× |
-| 8  | 1,145  | 317  | 3.6× |
-| 16 | 4,090  | 645  | 6.3× |
-| 32 | 18,863 | 1,299 | 14.5× |
+| P  | coupling=on | coupling=off | on/off |
+| -- | ----------- | ------------ | ------ |
+| 4  | 365         | 157          | 2.3×   |
+| 8  | 1,145       | 317          | 3.6×   |
+| 16 | 4,090       | 645          | 6.3×   |
+| 32 | 18,863      | 1,299        | 14.5×  |
 
 Coupling-on doubles → ~4× (O(P²)); coupling-off doubles → ~2× (O(P)). At P=32
-the spatial sum already makes a step **14.5× slower**, and the gap widens with P.
-At A=7 the same pattern holds (on: P8=15.6 µs → P32=179 µs ≈ ×4 per doubling;
+the spatial sum already makes a step **14.5× slower**, and the gap widens with
+P. At A=7 the same pattern holds (on: P8=15.6 µs → P32=179 µs ≈ ×4 per doubling;
 off: 2.46 → 11.0 µs ≈ ×2). `step_one` (full draw + bookkeeping) tracks
-`eval_propensities` for coupling-on (eval dominates the step): A=1 on
-760 ns → 21.6 µs across P4→P32; off 683 ns → 4.0 µs.
+`eval_propensities` for coupling-on (eval dominates the step): A=1 on 760 ns →
+21.6 µs across P4→P32; off 683 ns → 4.0 µs.
 
 `load_parse_compile` (`ir::from_str` + `CompiledModel::new`) holds a steady
-**~230 MiB/s regardless of P/A** — parse+compile is linear in IR *bytes* at a
+**~230 MiB/s regardless of P/A** — parse+compile is linear in IR _bytes_ at a
 fixed rate (the 2.06 GB anchor ≈ 9 s, matching the macro `sim_s`). So the two
-costs compose as: forward-sim wall ≈ (IR bytes / 230 MiB/s) + N_steps × per-step,
-and at Kano scale the first term dominates — confirming H2 from the compute side.
+costs compose as: forward-sim wall ≈ (IR bytes / 230 MiB/s) + N_steps ×
+per-step, and at Kano scale the first term dominates — confirming H2 from the
+compute side.
 
 ## Flamegraph attribution (verified — and a new cheap fix falls out)
 
@@ -231,18 +230,19 @@ hot fn `sim::resolved_expr::eval_resolved` is only **879 (~12%)**.
 
 **Self-time (leaf) top of stack — the parse is dominated by serde:**
 
-| self samples | % | symbol |
-| --- | --- | --- |
-| 1,286 | 17% | `serde::private::de::content::content_clone` |
-| 879 | 12% | `sim::resolved_expr::eval_resolved` (← actual stepping) |
-| 861 | 12% | `drop_in_place<serde…content::Content>` |
-| 710 | 9% | `_xzm_free` (malloc) |
-| 568 | 8% | serde `SeqAccess::next_element_seed` |
-| ~400 | 5% | `_xzm_xzone_malloc` + memmove |
+| self samples | %   | symbol                                                  |
+| ------------ | --- | ------------------------------------------------------- |
+| 1,286        | 17% | `serde::private::de::content::content_clone`            |
+| 879          | 12% | `sim::resolved_expr::eval_resolved` (← actual stepping) |
+| 861          | 12% | `drop_in_place<serde…content::Content>`                 |
+| 710          | 9%  | `_xzm_free` (malloc)                                    |
+| 568          | 8%  | serde `SeqAccess::next_element_seed`                    |
+| ~400         | 5%  | `_xzm_xzone_malloc` + memmove                           |
 
-So **~50%+ of the simulate is serde *content-buffering*** — cloning each IR node
+So **~50%+ of the simulate is serde _content-buffering_** — cloning each IR node
 into an owned `Content` value and dropping it — not parsing per se. Root cause,
-verified in code: `ir::expr::Expr` is `#[serde(untagged)]` (`rust/crates/ir/src/expr.rs:179`):
+verified in code: `ir::expr::Expr` is `#[serde(untagged)]`
+(`rust/crates/ir/src/expr.rs:179`):
 
 ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -252,66 +252,72 @@ pub enum Expr { Const(ConstExpr), Param(ParamExpr), Pop(PopExpr), … }
 
 `untagged` makes serde buffer every node into a heap-allocated `Content`, then
 trial-deserialize each variant from the buffer (clone + drop on backtrack). For
-a multi-million-node recursive tree this is pathological — and it is *orthogonal*
-to the FOI blowup: it taxes **every** model's load time, spatial or not.
+a multi-million-node recursive tree this is pathological — and it is
+_orthogonal_ to the FOI blowup: it taxes **every** model's load time, spatial or
+not.
 
 ## Prioritized fix list (candidates — to be designed behind a proposal)
 
 Ordered by leverage ÷ risk. **E** is the cheapest broad win (do first); **B** is
 the real 10× for the spatial/fit workload (proposal-gated).
 
-1. **E — drop `#[serde(untagged)]` on `Expr` (LANDED, branch `perf/ir-expr-deser`).**
-   The profile showed ~50%+ of `simulate` is serde `Content` clone/drop/malloc
-   from the untagged-enum path (above). Each `Expr` node is already a single-key
-   object whose key names the variant, so the fix is a hand-written `Deserialize`
-   (`rust/crates/ir/src/expr.rs`) that reads that one key and dispatches in a
-   single streaming pass — no buffering. `Serialize` is unchanged (`untagged`
-   kept), so the emitted JSON is byte-identical; the `golden_deser` round-trip
-   suite is the equivalence proof, plus new `Expr` round-trip / malformed-rejection
-   unit tests. _Risk: low (deserialization path only)._
+1. **E — drop `#[serde(untagged)]` on `Expr` (LANDED, branch
+   `perf/ir-expr-deser`).** The profile showed ~50%+ of `simulate` is serde
+   `Content` clone/drop/malloc from the untagged-enum path (above). Each `Expr`
+   node is already a single-key object whose key names the variant, so the fix
+   is a hand-written `Deserialize` (`rust/crates/ir/src/expr.rs`) that reads
+   that one key and dispatches in a single streaming pass — no buffering.
+   `Serialize` is unchanged (`untagged` kept), so the emitted JSON is
+   byte-identical; the `golden_deser` round-trip suite is the equivalence proof,
+   plus new `Expr` round-trip / malformed-rejection unit tests. _Risk: low
+   (deserialization path only)._
 
    **Measured (criterion, `make bench-micro`; before = derived untagged):**
 
-   | model | load before | load after | speedup |
-   | --- | --- | --- | --- |
-   | P16_A1_on | 2.44 ms | 0.64 ms | 3.4× |
-   | P32_A1_on | 12.1 ms | 2.09 ms | 5.8× |
-   | P16_A7_on | 25.8 ms | 9.11 ms | 2.8× |
-   | P32_A7_on (34 MB IR) | 128 ms | 35.8 ms | 3.6× |
+   | model                | load before | load after | speedup |
+   | -------------------- | ----------- | ---------- | ------- |
+   | P16_A1_on            | 2.44 ms     | 0.64 ms    | 3.4×    |
+   | P32_A1_on            | 12.1 ms     | 2.09 ms    | 5.8×    |
+   | P16_A7_on            | 25.8 ms     | 9.11 ms    | 2.8×    |
+   | P32_A7_on (34 MB IR) | 128 ms      | 35.8 ms    | 3.6×    |
 
    The win **grows with tree size** (untagged buffering scales with depth), all
-   `p < 0.05` — see [`assets/scaling/deser_load_before_after.png`](assets/scaling/deser_load_before_after.png).
-   End-to-end on the ~2 GB anchor (`P44_A21_on_full`),
-   `simulate`-from-IR: **9.32 s → ~4.7 s (~2.0×)** — parse was ~65% of the run and
-   drops ~3.5×, leaving stepping + resolve as the new floor (which is where B
-   comes in). This is per-process load cost paid by *every* model and *every*
-   run, spatial or not.
+   `p < 0.05` — see
+   [`assets/scaling/deser_load_before_after.png`](assets/scaling/deser_load_before_after.png).
+   End-to-end on the ~2 GB anchor (`P44_A21_on_full`), `simulate`-from-IR:
+   **9.32 s → ~4.7 s (~2.0×)** — parse was ~65% of the run and drops ~3.5×,
+   leaving stepping + resolve as the new floor (which is where B comes in). This
+   is per-process load cost paid by _every_ model and _every_ run, spatial or
+   not.
 
 2. **B — CSE / per-coordinate let-binding execution (the real 10× fix).**
    Compute `N[l]`, `I_agg[l]` once per step (O(P·A·C)), the spatial force
-   `F[l] = sum_q W[l,q]·I_agg[q]/N[q]` once per step (O(P²)), into scratch slots;
-   each infection rate then reads `beta·seas·S[l,a]·((I_agg[l]+iota)/N[l] +
-   kappa·F[l])` — O(1) per transition. Shrinks IR from O(P²·A²) → O(P·A), cuts a
-   step from O(P²·A) → O(P·A + P²), shrinks `rate_grad` proportionally, **and
-   removes the parse cliff** (no deep nesting). Requires an IR + evaluator change
-   (a "load shared binding slot" node + a per-step preamble in evaluation order)
-   and a compiler change to emit the bindings. _Risk: high (touches IR schema +
-   eval + compiler); design behind a proposal._ Expected: order-of-magnitude on
+   `F[l] = sum_q W[l,q]·I_agg[q]/N[q]` once per step (O(P²)), into scratch
+   slots; each infection rate then reads
+   `beta·seas·S[l,a]·((I_agg[l]+iota)/N[l] +
+   kappa·F[l])` — O(1) per
+   transition. Shrinks IR from O(P²·A²) → O(P·A), cuts a step from O(P²·A) →
+   O(P·A + P²), shrinks `rate_grad` proportionally, **and removes the parse
+   cliff** (no deep nesting). Requires an IR + evaluator change (a "load shared
+   binding slot" node + a per-step preamble in evaluation order) and a compiler
+   change to emit the bindings. _Risk: high (touches IR schema + eval +
+   compiler); design behind a proposal._ Expected: order-of-magnitude on
    IR/compile/parse/RSS at Kano scale, and the dominant eval win.
 
-2. **A — don't carry `rate_grad` on the forward-sim path (quick, simulate-only).**
-   `rate_grad` is ~80% of the IR (the 5× multiplier) and is never read by
-   `simulate`. Either let camdlc emit a grad-free IR for forward runs, or have
-   the loader skip `rate_grad` when the consumer is forward simulation. ~5× on
-   IR/compile/parse/RSS for `simulate`; **no help for inference** (PGAS needs the
-   gradients). _Risk: low._ Good stopgap; subsumed by B for the fit path.
+3. **A — don't carry `rate_grad` on the forward-sim path (quick,
+   simulate-only).** `rate_grad` is ~80% of the IR (the 5× multiplier) and is
+   never read by `simulate`. Either let camdlc emit a grad-free IR for forward
+   runs, or have the loader skip `rate_grad` when the consumer is forward
+   simulation. ~5× on IR/compile/parse/RSS for `simulate`; **no help for
+   inference** (PGAS needs the gradients). _Risk: low._ Good stopgap; subsumed
+   by B for the fit path.
 
-3. **D — lower `sum(...)` to a first-class reduction node, not an Add-chain.**
-   A `Reduce`/weighted-`PopSum` node over an index set removes the deep nesting
+4. **D — lower `sum(...)` to a first-class reduction node, not an Add-chain.** A
+   `Reduce`/weighted-`PopSum` node over an index set removes the deep nesting
    (kills the parse cliff on its own) and shrinks the tree. Complementary to B,
    smaller in scope. _Risk: medium (IR schema + eval + compiler, but local)._
 
-4. **C — raise/replace the serde recursion limit.** A band-aid that lets deep
+5. **C — raise/replace the serde recursion limit.** A band-aid that lets deep
    trees parse but does nothing for size/memory/time. Only worth it if B/D are
    deferred. _Risk: low; not recommended as a standalone fix._
 

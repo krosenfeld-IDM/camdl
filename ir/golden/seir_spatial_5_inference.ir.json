@@ -31,7 +31,7 @@
     "transitions": [
       {
         "name": "infection_p1",
-        "stoichiometry": [ [ "S_p1", -1 ], [ "E_p1", 1 ] ],
+        "stoichiometry": [["S_p1", -1], ["E_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -92,7 +92,7 @@
                 }
               }
             },
-            "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+            "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
           }
         },
         "metadata": {
@@ -159,14 +159,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -228,14 +228,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -291,14 +291,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -354,14 +354,14 @@
                       "right": { "pop": "S_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -370,7 +370,7 @@
       },
       {
         "name": "infection_p2",
-        "stoichiometry": [ [ "S_p2", -1 ], [ "E_p2", 1 ] ],
+        "stoichiometry": [["S_p2", -1], ["E_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -431,7 +431,7 @@
                 }
               }
             },
-            "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+            "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
           }
         },
         "metadata": {
@@ -498,14 +498,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -567,14 +567,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -630,14 +630,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -693,14 +693,14 @@
                       "right": { "pop": "S_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -709,7 +709,7 @@
       },
       {
         "name": "infection_p3",
-        "stoichiometry": [ [ "S_p3", -1 ], [ "E_p3", 1 ] ],
+        "stoichiometry": [["S_p3", -1], ["E_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -770,7 +770,7 @@
                 }
               }
             },
-            "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+            "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
           }
         },
         "metadata": {
@@ -837,14 +837,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -906,14 +906,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -969,14 +969,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -1032,14 +1032,14 @@
                       "right": { "pop": "S_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -1048,7 +1048,7 @@
       },
       {
         "name": "infection_p4",
-        "stoichiometry": [ [ "S_p4", -1 ], [ "E_p4", 1 ] ],
+        "stoichiometry": [["S_p4", -1], ["E_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -1109,7 +1109,7 @@
                 }
               }
             },
-            "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+            "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
           }
         },
         "metadata": {
@@ -1176,14 +1176,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -1245,14 +1245,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -1308,14 +1308,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -1371,14 +1371,14 @@
                       "right": { "pop": "S_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -1387,7 +1387,7 @@
       },
       {
         "name": "infection_p5",
-        "stoichiometry": [ [ "S_p5", -1 ], [ "E_p5", 1 ] ],
+        "stoichiometry": [["S_p5", -1], ["E_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -1448,7 +1448,7 @@
                 }
               }
             },
-            "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+            "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
           }
         },
         "metadata": {
@@ -1515,14 +1515,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -1584,14 +1584,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -1647,14 +1647,14 @@
                       }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -1710,14 +1710,14 @@
                       "right": { "pop": "S_p5" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -1726,7 +1726,7 @@
       },
       {
         "name": "importation_p1_p2",
-        "stoichiometry": [ [ "S_p1", -1 ], [ "E_p1", 1 ] ],
+        "stoichiometry": [["S_p1", -1], ["E_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -1743,7 +1743,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 1.0 } ]
+                            "indices": [{ "const": 1.0 }]
                           }
                         }
                       }
@@ -1754,7 +1754,7 @@
                 "right": { "pop": "I_p2" }
               }
             },
-            "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+            "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
           }
         },
         "metadata": {
@@ -1778,7 +1778,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 1.0 } ]
+                              "indices": [{ "const": 1.0 }]
                             }
                           },
                           "right": { "pop": "S_p1" }
@@ -1787,14 +1787,14 @@
                       "right": { "pop": "I_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -1803,7 +1803,7 @@
       },
       {
         "name": "importation_p1_p3",
-        "stoichiometry": [ [ "S_p1", -1 ], [ "E_p1", 1 ] ],
+        "stoichiometry": [["S_p1", -1], ["E_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -1820,7 +1820,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 2.0 } ]
+                            "indices": [{ "const": 2.0 }]
                           }
                         }
                       }
@@ -1831,7 +1831,7 @@
                 "right": { "pop": "I_p3" }
               }
             },
-            "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+            "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
           }
         },
         "metadata": {
@@ -1855,7 +1855,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 2.0 } ]
+                              "indices": [{ "const": 2.0 }]
                             }
                           },
                           "right": { "pop": "S_p1" }
@@ -1864,14 +1864,14 @@
                       "right": { "pop": "I_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -1880,7 +1880,7 @@
       },
       {
         "name": "importation_p1_p4",
-        "stoichiometry": [ [ "S_p1", -1 ], [ "E_p1", 1 ] ],
+        "stoichiometry": [["S_p1", -1], ["E_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -1897,7 +1897,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 3.0 } ]
+                            "indices": [{ "const": 3.0 }]
                           }
                         }
                       }
@@ -1908,7 +1908,7 @@
                 "right": { "pop": "I_p4" }
               }
             },
-            "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+            "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
           }
         },
         "metadata": {
@@ -1932,7 +1932,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 3.0 } ]
+                              "indices": [{ "const": 3.0 }]
                             }
                           },
                           "right": { "pop": "S_p1" }
@@ -1941,14 +1941,14 @@
                       "right": { "pop": "I_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -1957,7 +1957,7 @@
       },
       {
         "name": "importation_p1_p5",
-        "stoichiometry": [ [ "S_p1", -1 ], [ "E_p1", 1 ] ],
+        "stoichiometry": [["S_p1", -1], ["E_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -1974,7 +1974,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 4.0 } ]
+                            "indices": [{ "const": 4.0 }]
                           }
                         }
                       }
@@ -1985,7 +1985,7 @@
                 "right": { "pop": "I_p5" }
               }
             },
-            "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+            "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
           }
         },
         "metadata": {
@@ -2009,7 +2009,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 4.0 } ]
+                              "indices": [{ "const": 4.0 }]
                             }
                           },
                           "right": { "pop": "S_p1" }
@@ -2018,14 +2018,14 @@
                       "right": { "pop": "I_p5" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -2034,7 +2034,7 @@
       },
       {
         "name": "importation_p2_p1",
-        "stoichiometry": [ [ "S_p2", -1 ], [ "E_p2", 1 ] ],
+        "stoichiometry": [["S_p2", -1], ["E_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2051,7 +2051,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 5.0 } ]
+                            "indices": [{ "const": 5.0 }]
                           }
                         }
                       }
@@ -2062,7 +2062,7 @@
                 "right": { "pop": "I_p1" }
               }
             },
-            "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+            "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
           }
         },
         "metadata": {
@@ -2086,7 +2086,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 5.0 } ]
+                              "indices": [{ "const": 5.0 }]
                             }
                           },
                           "right": { "pop": "S_p2" }
@@ -2095,14 +2095,14 @@
                       "right": { "pop": "I_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -2111,7 +2111,7 @@
       },
       {
         "name": "importation_p2_p3",
-        "stoichiometry": [ [ "S_p2", -1 ], [ "E_p2", 1 ] ],
+        "stoichiometry": [["S_p2", -1], ["E_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2128,7 +2128,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 7.0 } ]
+                            "indices": [{ "const": 7.0 }]
                           }
                         }
                       }
@@ -2139,7 +2139,7 @@
                 "right": { "pop": "I_p3" }
               }
             },
-            "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+            "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
           }
         },
         "metadata": {
@@ -2163,7 +2163,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 7.0 } ]
+                              "indices": [{ "const": 7.0 }]
                             }
                           },
                           "right": { "pop": "S_p2" }
@@ -2172,14 +2172,14 @@
                       "right": { "pop": "I_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -2188,7 +2188,7 @@
       },
       {
         "name": "importation_p2_p4",
-        "stoichiometry": [ [ "S_p2", -1 ], [ "E_p2", 1 ] ],
+        "stoichiometry": [["S_p2", -1], ["E_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2205,7 +2205,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 8.0 } ]
+                            "indices": [{ "const": 8.0 }]
                           }
                         }
                       }
@@ -2216,7 +2216,7 @@
                 "right": { "pop": "I_p4" }
               }
             },
-            "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+            "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
           }
         },
         "metadata": {
@@ -2240,7 +2240,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 8.0 } ]
+                              "indices": [{ "const": 8.0 }]
                             }
                           },
                           "right": { "pop": "S_p2" }
@@ -2249,14 +2249,14 @@
                       "right": { "pop": "I_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -2265,7 +2265,7 @@
       },
       {
         "name": "importation_p2_p5",
-        "stoichiometry": [ [ "S_p2", -1 ], [ "E_p2", 1 ] ],
+        "stoichiometry": [["S_p2", -1], ["E_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2282,7 +2282,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 9.0 } ]
+                            "indices": [{ "const": 9.0 }]
                           }
                         }
                       }
@@ -2293,7 +2293,7 @@
                 "right": { "pop": "I_p5" }
               }
             },
-            "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+            "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
           }
         },
         "metadata": {
@@ -2317,7 +2317,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 9.0 } ]
+                              "indices": [{ "const": 9.0 }]
                             }
                           },
                           "right": { "pop": "S_p2" }
@@ -2326,14 +2326,14 @@
                       "right": { "pop": "I_p5" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -2342,7 +2342,7 @@
       },
       {
         "name": "importation_p3_p1",
-        "stoichiometry": [ [ "S_p3", -1 ], [ "E_p3", 1 ] ],
+        "stoichiometry": [["S_p3", -1], ["E_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2359,7 +2359,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 10.0 } ]
+                            "indices": [{ "const": 10.0 }]
                           }
                         }
                       }
@@ -2370,7 +2370,7 @@
                 "right": { "pop": "I_p1" }
               }
             },
-            "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+            "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
           }
         },
         "metadata": {
@@ -2394,7 +2394,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 10.0 } ]
+                              "indices": [{ "const": 10.0 }]
                             }
                           },
                           "right": { "pop": "S_p3" }
@@ -2403,14 +2403,14 @@
                       "right": { "pop": "I_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -2419,7 +2419,7 @@
       },
       {
         "name": "importation_p3_p2",
-        "stoichiometry": [ [ "S_p3", -1 ], [ "E_p3", 1 ] ],
+        "stoichiometry": [["S_p3", -1], ["E_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2436,7 +2436,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 11.0 } ]
+                            "indices": [{ "const": 11.0 }]
                           }
                         }
                       }
@@ -2447,7 +2447,7 @@
                 "right": { "pop": "I_p2" }
               }
             },
-            "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+            "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
           }
         },
         "metadata": {
@@ -2471,7 +2471,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 11.0 } ]
+                              "indices": [{ "const": 11.0 }]
                             }
                           },
                           "right": { "pop": "S_p3" }
@@ -2480,14 +2480,14 @@
                       "right": { "pop": "I_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -2496,7 +2496,7 @@
       },
       {
         "name": "importation_p3_p4",
-        "stoichiometry": [ [ "S_p3", -1 ], [ "E_p3", 1 ] ],
+        "stoichiometry": [["S_p3", -1], ["E_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2513,7 +2513,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 13.0 } ]
+                            "indices": [{ "const": 13.0 }]
                           }
                         }
                       }
@@ -2524,7 +2524,7 @@
                 "right": { "pop": "I_p4" }
               }
             },
-            "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+            "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
           }
         },
         "metadata": {
@@ -2548,7 +2548,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 13.0 } ]
+                              "indices": [{ "const": 13.0 }]
                             }
                           },
                           "right": { "pop": "S_p3" }
@@ -2557,14 +2557,14 @@
                       "right": { "pop": "I_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -2573,7 +2573,7 @@
       },
       {
         "name": "importation_p3_p5",
-        "stoichiometry": [ [ "S_p3", -1 ], [ "E_p3", 1 ] ],
+        "stoichiometry": [["S_p3", -1], ["E_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2590,7 +2590,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 14.0 } ]
+                            "indices": [{ "const": 14.0 }]
                           }
                         }
                       }
@@ -2601,7 +2601,7 @@
                 "right": { "pop": "I_p5" }
               }
             },
-            "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+            "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
           }
         },
         "metadata": {
@@ -2625,7 +2625,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 14.0 } ]
+                              "indices": [{ "const": 14.0 }]
                             }
                           },
                           "right": { "pop": "S_p3" }
@@ -2634,14 +2634,14 @@
                       "right": { "pop": "I_p5" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -2650,7 +2650,7 @@
       },
       {
         "name": "importation_p4_p1",
-        "stoichiometry": [ [ "S_p4", -1 ], [ "E_p4", 1 ] ],
+        "stoichiometry": [["S_p4", -1], ["E_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2667,7 +2667,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 15.0 } ]
+                            "indices": [{ "const": 15.0 }]
                           }
                         }
                       }
@@ -2678,7 +2678,7 @@
                 "right": { "pop": "I_p1" }
               }
             },
-            "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+            "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
           }
         },
         "metadata": {
@@ -2702,7 +2702,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 15.0 } ]
+                              "indices": [{ "const": 15.0 }]
                             }
                           },
                           "right": { "pop": "S_p4" }
@@ -2711,14 +2711,14 @@
                       "right": { "pop": "I_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -2727,7 +2727,7 @@
       },
       {
         "name": "importation_p4_p2",
-        "stoichiometry": [ [ "S_p4", -1 ], [ "E_p4", 1 ] ],
+        "stoichiometry": [["S_p4", -1], ["E_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2744,7 +2744,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 16.0 } ]
+                            "indices": [{ "const": 16.0 }]
                           }
                         }
                       }
@@ -2755,7 +2755,7 @@
                 "right": { "pop": "I_p2" }
               }
             },
-            "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+            "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
           }
         },
         "metadata": {
@@ -2779,7 +2779,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 16.0 } ]
+                              "indices": [{ "const": 16.0 }]
                             }
                           },
                           "right": { "pop": "S_p4" }
@@ -2788,14 +2788,14 @@
                       "right": { "pop": "I_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -2804,7 +2804,7 @@
       },
       {
         "name": "importation_p4_p3",
-        "stoichiometry": [ [ "S_p4", -1 ], [ "E_p4", 1 ] ],
+        "stoichiometry": [["S_p4", -1], ["E_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2821,7 +2821,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 17.0 } ]
+                            "indices": [{ "const": 17.0 }]
                           }
                         }
                       }
@@ -2832,7 +2832,7 @@
                 "right": { "pop": "I_p3" }
               }
             },
-            "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+            "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
           }
         },
         "metadata": {
@@ -2856,7 +2856,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 17.0 } ]
+                              "indices": [{ "const": 17.0 }]
                             }
                           },
                           "right": { "pop": "S_p4" }
@@ -2865,14 +2865,14 @@
                       "right": { "pop": "I_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -2881,7 +2881,7 @@
       },
       {
         "name": "importation_p4_p5",
-        "stoichiometry": [ [ "S_p4", -1 ], [ "E_p4", 1 ] ],
+        "stoichiometry": [["S_p4", -1], ["E_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2898,7 +2898,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 19.0 } ]
+                            "indices": [{ "const": 19.0 }]
                           }
                         }
                       }
@@ -2909,7 +2909,7 @@
                 "right": { "pop": "I_p5" }
               }
             },
-            "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+            "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
           }
         },
         "metadata": {
@@ -2933,7 +2933,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 19.0 } ]
+                              "indices": [{ "const": 19.0 }]
                             }
                           },
                           "right": { "pop": "S_p4" }
@@ -2942,14 +2942,14 @@
                       "right": { "pop": "I_p5" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] },
-                  "right": { "pop_sum": [ "S_p5", "E_p5", "I_p5", "R_p5" ] }
+                  "left": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] },
+                  "right": { "pop_sum": ["S_p5", "E_p5", "I_p5", "R_p5"] }
                 }
               }
             }
@@ -2958,7 +2958,7 @@
       },
       {
         "name": "importation_p5_p1",
-        "stoichiometry": [ [ "S_p5", -1 ], [ "E_p5", 1 ] ],
+        "stoichiometry": [["S_p5", -1], ["E_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -2975,7 +2975,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 20.0 } ]
+                            "indices": [{ "const": 20.0 }]
                           }
                         }
                       }
@@ -2986,7 +2986,7 @@
                 "right": { "pop": "I_p1" }
               }
             },
-            "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+            "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
           }
         },
         "metadata": {
@@ -3010,7 +3010,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 20.0 } ]
+                              "indices": [{ "const": 20.0 }]
                             }
                           },
                           "right": { "pop": "S_p5" }
@@ -3019,14 +3019,14 @@
                       "right": { "pop": "I_p1" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] },
-                  "right": { "pop_sum": [ "S_p1", "E_p1", "I_p1", "R_p1" ] }
+                  "left": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] },
+                  "right": { "pop_sum": ["S_p1", "E_p1", "I_p1", "R_p1"] }
                 }
               }
             }
@@ -3035,7 +3035,7 @@
       },
       {
         "name": "importation_p5_p2",
-        "stoichiometry": [ [ "S_p5", -1 ], [ "E_p5", 1 ] ],
+        "stoichiometry": [["S_p5", -1], ["E_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -3052,7 +3052,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 21.0 } ]
+                            "indices": [{ "const": 21.0 }]
                           }
                         }
                       }
@@ -3063,7 +3063,7 @@
                 "right": { "pop": "I_p2" }
               }
             },
-            "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+            "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
           }
         },
         "metadata": {
@@ -3087,7 +3087,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 21.0 } ]
+                              "indices": [{ "const": 21.0 }]
                             }
                           },
                           "right": { "pop": "S_p5" }
@@ -3096,14 +3096,14 @@
                       "right": { "pop": "I_p2" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] },
-                  "right": { "pop_sum": [ "S_p2", "E_p2", "I_p2", "R_p2" ] }
+                  "left": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] },
+                  "right": { "pop_sum": ["S_p2", "E_p2", "I_p2", "R_p2"] }
                 }
               }
             }
@@ -3112,7 +3112,7 @@
       },
       {
         "name": "importation_p5_p3",
-        "stoichiometry": [ [ "S_p5", -1 ], [ "E_p5", 1 ] ],
+        "stoichiometry": [["S_p5", -1], ["E_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -3129,7 +3129,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 22.0 } ]
+                            "indices": [{ "const": 22.0 }]
                           }
                         }
                       }
@@ -3140,7 +3140,7 @@
                 "right": { "pop": "I_p3" }
               }
             },
-            "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+            "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
           }
         },
         "metadata": {
@@ -3164,7 +3164,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 22.0 } ]
+                              "indices": [{ "const": 22.0 }]
                             }
                           },
                           "right": { "pop": "S_p5" }
@@ -3173,14 +3173,14 @@
                       "right": { "pop": "I_p3" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] },
-                  "right": { "pop_sum": [ "S_p3", "E_p3", "I_p3", "R_p3" ] }
+                  "left": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] },
+                  "right": { "pop_sum": ["S_p3", "E_p3", "I_p3", "R_p3"] }
                 }
               }
             }
@@ -3189,7 +3189,7 @@
       },
       {
         "name": "importation_p5_p4",
-        "stoichiometry": [ [ "S_p5", -1 ], [ "E_p5", 1 ] ],
+        "stoichiometry": [["S_p5", -1], ["E_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "div",
@@ -3206,7 +3206,7 @@
                         "right": {
                           "table_lookup": {
                             "table": "W",
-                            "indices": [ { "const": 23.0 } ]
+                            "indices": [{ "const": 23.0 }]
                           }
                         }
                       }
@@ -3217,7 +3217,7 @@
                 "right": { "pop": "I_p4" }
               }
             },
-            "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+            "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
           }
         },
         "metadata": {
@@ -3241,7 +3241,7 @@
                           "left": {
                             "table_lookup": {
                               "table": "W",
-                              "indices": [ { "const": 23.0 } ]
+                              "indices": [{ "const": 23.0 }]
                             }
                           },
                           "right": { "pop": "S_p5" }
@@ -3250,14 +3250,14 @@
                       "right": { "pop": "I_p4" }
                     }
                   },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               },
               "right": {
                 "bin_op": {
                   "op": "mul",
-                  "left": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] },
-                  "right": { "pop_sum": [ "S_p4", "E_p4", "I_p4", "R_p4" ] }
+                  "left": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] },
+                  "right": { "pop_sum": ["S_p4", "E_p4", "I_p4", "R_p4"] }
                 }
               }
             }
@@ -3266,7 +3266,7 @@
       },
       {
         "name": "progression_p1",
-        "stoichiometry": [ [ "E_p1", -1 ], [ "I_p1", 1 ] ],
+        "stoichiometry": [["E_p1", -1], ["I_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3283,7 +3283,7 @@
       },
       {
         "name": "progression_p2",
-        "stoichiometry": [ [ "E_p2", -1 ], [ "I_p2", 1 ] ],
+        "stoichiometry": [["E_p2", -1], ["I_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3300,7 +3300,7 @@
       },
       {
         "name": "progression_p3",
-        "stoichiometry": [ [ "E_p3", -1 ], [ "I_p3", 1 ] ],
+        "stoichiometry": [["E_p3", -1], ["I_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3317,7 +3317,7 @@
       },
       {
         "name": "progression_p4",
-        "stoichiometry": [ [ "E_p4", -1 ], [ "I_p4", 1 ] ],
+        "stoichiometry": [["E_p4", -1], ["I_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3334,7 +3334,7 @@
       },
       {
         "name": "progression_p5",
-        "stoichiometry": [ [ "E_p5", -1 ], [ "I_p5", 1 ] ],
+        "stoichiometry": [["E_p5", -1], ["I_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3351,7 +3351,7 @@
       },
       {
         "name": "recovery_p1",
-        "stoichiometry": [ [ "I_p1", -1 ], [ "R_p1", 1 ] ],
+        "stoichiometry": [["I_p1", -1], ["R_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3368,7 +3368,7 @@
       },
       {
         "name": "recovery_p2",
-        "stoichiometry": [ [ "I_p2", -1 ], [ "R_p2", 1 ] ],
+        "stoichiometry": [["I_p2", -1], ["R_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3385,7 +3385,7 @@
       },
       {
         "name": "recovery_p3",
-        "stoichiometry": [ [ "I_p3", -1 ], [ "R_p3", 1 ] ],
+        "stoichiometry": [["I_p3", -1], ["R_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3402,7 +3402,7 @@
       },
       {
         "name": "recovery_p4",
-        "stoichiometry": [ [ "I_p4", -1 ], [ "R_p4", 1 ] ],
+        "stoichiometry": [["I_p4", -1], ["R_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3419,7 +3419,7 @@
       },
       {
         "name": "recovery_p5",
-        "stoichiometry": [ [ "I_p5", -1 ], [ "R_p5", 1 ] ],
+        "stoichiometry": [["I_p5", -1], ["R_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3436,7 +3436,7 @@
       },
       {
         "name": "waning_p1",
-        "stoichiometry": [ [ "R_p1", -1 ], [ "S_p1", 1 ] ],
+        "stoichiometry": [["R_p1", -1], ["S_p1", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3458,7 +3458,7 @@
       },
       {
         "name": "waning_p2",
-        "stoichiometry": [ [ "R_p2", -1 ], [ "S_p2", 1 ] ],
+        "stoichiometry": [["R_p2", -1], ["S_p2", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3480,7 +3480,7 @@
       },
       {
         "name": "waning_p3",
-        "stoichiometry": [ [ "R_p3", -1 ], [ "S_p3", 1 ] ],
+        "stoichiometry": [["R_p3", -1], ["S_p3", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3502,7 +3502,7 @@
       },
       {
         "name": "waning_p4",
-        "stoichiometry": [ [ "R_p4", -1 ], [ "S_p4", 1 ] ],
+        "stoichiometry": [["R_p4", -1], ["S_p4", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3524,7 +3524,7 @@
       },
       {
         "name": "waning_p5",
-        "stoichiometry": [ [ "R_p5", -1 ], [ "S_p5", 1 ] ],
+        "stoichiometry": [["R_p5", -1], ["S_p5", 1]],
         "rate": {
           "bin_op": {
             "op": "mul",
@@ -3554,7 +3554,7 @@
             "period": {
               "unchecked_dim": {
                 "inner": { "const": 365.25 },
-                "dim": [ 0, 1 ],
+                "dim": [0, 1],
                 "reason": "unit literal 'days"
               }
             },
@@ -3927,7 +3927,7 @@
             ]
           }
         },
-        "dim": [ 0, 0 ]
+        "dim": [0, 0]
       }
     ],
     "tables": [
@@ -4065,7 +4065,7 @@
       {
         "name": "R0",
         "value": null,
-        "bounds": [ 5.0, 80.0 ],
+        "bounds": [5.0, 80.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4076,7 +4076,7 @@
       {
         "name": "sigma",
         "value": null,
-        "bounds": [ 0.01, 0.3 ],
+        "bounds": [0.01, 0.3],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4087,7 +4087,7 @@
       {
         "name": "gamma",
         "value": null,
-        "bounds": [ 0.01, 0.3 ],
+        "bounds": [0.01, 0.3],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4098,7 +4098,7 @@
       {
         "name": "kappa",
         "value": null,
-        "bounds": [ 0.001, 0.5 ],
+        "bounds": [0.001, 0.5],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4109,7 +4109,7 @@
       {
         "name": "amplitude",
         "value": null,
-        "bounds": [ 0.05, 0.7 ],
+        "bounds": [0.05, 0.7],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4120,7 +4120,7 @@
       {
         "name": "iota",
         "value": null,
-        "bounds": [ 1e-08, 0.01 ],
+        "bounds": [1e-08, 0.01],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4131,7 +4131,7 @@
       {
         "name": "rho",
         "value": null,
-        "bounds": [ 0.1, 0.9 ],
+        "bounds": [0.1, 0.9],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4142,7 +4142,7 @@
       {
         "name": "sigma_se",
         "value": null,
-        "bounds": [ 0.001, 1.0 ],
+        "bounds": [0.001, 1.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4153,7 +4153,7 @@
       {
         "name": "N0_p1",
         "value": null,
-        "bounds": [ 1000.0, 500000.0 ],
+        "bounds": [1000.0, 500000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4164,7 +4164,7 @@
       {
         "name": "N0_p2",
         "value": null,
-        "bounds": [ 1000.0, 500000.0 ],
+        "bounds": [1000.0, 500000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4175,7 +4175,7 @@
       {
         "name": "N0_p3",
         "value": null,
-        "bounds": [ 1000.0, 500000.0 ],
+        "bounds": [1000.0, 500000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4186,7 +4186,7 @@
       {
         "name": "N0_p4",
         "value": null,
-        "bounds": [ 1000.0, 500000.0 ],
+        "bounds": [1000.0, 500000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4197,7 +4197,7 @@
       {
         "name": "N0_p5",
         "value": null,
-        "bounds": [ 1000.0, 500000.0 ],
+        "bounds": [1000.0, 500000.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4208,7 +4208,7 @@
       {
         "name": "k",
         "value": null,
-        "bounds": [ 1.0, 100.0 ],
+        "bounds": [1.0, 100.0],
         "prior": null,
         "hierarchical": null,
         "transform": null,
@@ -4368,17 +4368,17 @@
     ],
     "model_structure": {
       "dimensions": [
-        { "name": "patch", "values": [ "p1", "p2", "p3", "p4", "p5" ] }
+        { "name": "patch", "values": ["p1", "p2", "p3", "p4", "p5"] }
       ],
       "compartment_dims": {
-        "S": [ "patch" ],
-        "E": [ "patch" ],
-        "I": [ "patch" ],
-        "R": [ "patch" ]
+        "S": ["patch"],
+        "E": ["patch"],
+        "I": ["patch"],
+        "R": ["patch"]
       },
-      "base_compartments": [ "S", "E", "I", "R" ],
-      "transmission_transitions": [ "infection", "importation" ],
-      "infectious_compartments": [ "I" ]
+      "base_compartments": ["S", "E", "I", "R"],
+      "transmission_transitions": ["infection", "importation"],
+      "infectious_compartments": ["I"]
     }
   }
 }

@@ -1,13 +1,13 @@
 # Synthetic-data parameter-recovery harness
 
 Self-contained recovery cases: **plant θ, simulate, fit, recover.** A case
-declares ground-truth parameters, simulates observation streams at those
-values, then fits with IF2 / PGAS / PMMH so you can compare θ̂ against the
-planted truth. The comparison is manual today (see Status below) — the harness
-runs the fits and stores the results; it does not yet assert recovery.
+declares ground-truth parameters, simulates observation streams at those values,
+then fits with IF2 / PGAS / PMMH so you can compare θ̂ against the planted truth.
+The comparison is manual today (see Status below) — the harness runs the fits
+and stores the results; it does not yet assert recovery.
 
 Sibling to [`tests/external/`](../external/README.md). The external harness
-compares camdl against *external* references (pomp, Stan, NumPyro, analytical);
+compares camdl against _external_ references (pomp, Stan, NumPyro, analytical);
 this one needs no external tooling — the ground truth is camdl's own synthetic
 data. The two are complementary slices of "is the inference right."
 
@@ -74,5 +74,6 @@ observations.
 ## Adding a case
 
 Create `cases/<name>/` with `model.camdl`, `truth.toml`, and a fit config per
-algorithm you want to exercise, then run `make -f tests/recovery/Makefile
+algorithm you want to exercise, then run
+`make -f tests/recovery/Makefile
 CASE=tests/recovery/cases/<name> all`.

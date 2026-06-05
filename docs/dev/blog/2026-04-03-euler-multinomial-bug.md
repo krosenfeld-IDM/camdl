@@ -80,9 +80,11 @@ plausible:
 - **Gamma noise unit conversion (sigma_se).** pomp's `sigmaSE = 0.0878` is a
   standard deviation in per-sqrt-year units. camdl's engine takes variance in
   daily units. The conversion `sigma_se = sigmaSE^2 * 365.25 = 2.816` was
-  correct in the params file. The Gamma shape `dt / sigma_sq = 1.0 / 2.816 =
-  0.355` matches pomp's `rgammawn(0.0878, 1/365.25)`. An easy mistake to make
-  -- but it wasn't made here.
+  correct in the params file. The Gamma shape
+  `dt / sigma_sq = 1.0 / 2.816 =
+  0.355` matches pomp's
+  `rgammawn(0.0878, 1/365.25)`. An easy mistake to make -- but it wasn't made
+  here.
 
 - **Observation model: continuous vs. discretized normal.** He et al. use a
   discretized normal: `P(y) = Phi((y+0.5-mu)/sigma) - Phi((y-0.5-mu)/sigma)`,
@@ -90,8 +92,8 @@ plausible:
   `dnorm` instead, that would produce a per-observation offset. We confirmed
   camdl uses the discretized form with the same variance formula.
 
-Both of these would produce a _constant_ per-observation bias. The _growing_
-gap pointed elsewhere.
+Both of these would produce a _constant_ per-observation bias. The _growing_ gap
+pointed elsewhere.
 
 ## The math
 
@@ -190,48 +192,46 @@ to the total, not independently to each channel.
 
 ## The second bug: an undocumented convention
 
-Fixing the Euler-multinomial closed 247 of the 2128 nats. Most of the
-gap remained. The next culprit turned out to be a modeling convention
-buried in pomp's procedural code that no one had ever documented.
+Fixing the Euler-multinomial closed 247 of the 2128 nats. Most of the gap
+remained. The next culprit turned out to be a modeling convention buried in
+pomp's procedural code that no one had ever documented.
 
-In the He et al. model, the population trajectory `pop(t)` is an
-externally interpolated census time series. The model's birth and death
-rates don't exactly reproduce this trajectory — births are too low
-relative to deaths, so the compartment total `S+E+I+R` drifts below
-`pop(t)` over time. In the London measles data, this drift reaches
-**20% within 2 years** (640,000 people below census).
+In the He et al. model, the population trajectory `pop(t)` is an externally
+interpolated census time series. The model's birth and death rates don't exactly
+reproduce this trajectory — births are too low relative to deaths, so the
+compartment total `S+E+I+R` drifts below `pop(t)` over time. In the London
+measles data, this drift reaches **20% within 2 years** (640,000 people below
+census).
 
 pomp handles this with one line in the step function:
 
     R = nearbyint(pop) - S - E - I;
 
-R is not evolved through transitions. It is forcibly set at every step
-to absorb the demographic residual. This ensures `S+E+I+R = pop(t)`
-always holds, which is what the infection rate's `/ pop` denominator
-assumes.
+R is not evolved through transitions. It is forcibly set at every step to absorb
+the demographic residual. This ensures `S+E+I+R = pop(t)` always holds, which is
+what the infection rate's `/ pop` denominator assumes.
 
-This pattern appears in every published implementation of the He et al.
-model: the [pomp vignette](https://kingaa.github.io/pomp/vignettes/He2010.html),
-the [SBIED short course](https://kingaa.github.io/sbied/), Ionides'
-[STATS 531 lecture notes](https://ionides.github.io/531w22/11/index.html),
-and dozens of student replications. It is always presented as code,
-never discussed as a modeling decision. We searched papers, GitHub
-discussions, course forums, and blog posts — no one discusses it
-anywhere.
+This pattern appears in every published implementation of the He et al. model:
+the [pomp vignette](https://kingaa.github.io/pomp/vignettes/He2010.html), the
+[SBIED short course](https://kingaa.github.io/sbied/), Ionides'
+[STATS 531 lecture notes](https://ionides.github.io/531w22/11/index.html), and
+dozens of student replications. It is always presented as code, never discussed
+as a modeling decision. We searched papers, GitHub discussions, course forums,
+and blog posts — no one discusses it anywhere.
 
-The He et al. paper itself presents the model in continuous-time ODE
-form where the trick is invisible (in a closed ODE, R = N - S - E - I
-is a mathematical identity). The stochastic implementation quietly
-transforms it into something different: a hard constraint that ties the
-simulation to an external census trajectory.
+The He et al. paper itself presents the model in continuous-time ODE form where
+the trick is invisible (in a closed ODE, R = N - S - E - I is a mathematical
+identity). The stochastic implementation quietly transforms it into something
+different: a hard constraint that ties the simulation to an external census
+trajectory.
 
-For measles this is harmless — R is ~97% of the population and doesn't
-appear in any rate expression. But it would be wrong in any model where
-the recovered fraction is small or of direct interest. And without it,
-the model silently produces wrong dynamics.
+For measles this is harmless — R is ~97% of the population and doesn't appear in
+any rate expression. But it would be wrong in any model where the recovered
+fraction is small or of direct interest. And without it, the model silently
+produces wrong dynamics.
 
-We added `balance` compartment support to camdl so this constraint is
-explicit and first-class:
+We added `balance` compartment support to camdl so this constraint is explicit
+and first-class:
 
 ```camdl
 balance {
@@ -239,11 +239,11 @@ balance {
 }
 ```
 
-The DSL validates it (is R declared? are all terms in the constraint?),
-warns about it (transitions targeting R fire but are overwritten), and
-documents it (the IR carries the constraint as structured data, not as
-a line buried in a step function). Making implicit conventions explicit
-is one of the reasons a DSL exists.
+The DSL validates it (is R declared? are all terms in the constraint?), warns
+about it (transitions targeting R fire but are overwritten), and documents it
+(the IR carries the constraint as structured data, not as a line buried in a
+step function). Making implicit conventions explicit is one of the reasons a DSL
+exists.
 
 ## How it was found
 
@@ -279,15 +279,16 @@ and move on.
 
 This is wrong, and it's a dangerous kind of wrong, because it's locally
 coherent. The agent correctly observed that different discretizations can have
-different MLEs. It correctly noted that the IF2 optimizer would find compensating
-parameters. It even correctly predicted the qualitative direction of
-compensation (lower alpha to dampen the excess noise from over-counted exits).
+different MLEs. It correctly noted that the IF2 optimizer would find
+compensating parameters. It even correctly predicted the qualitative direction
+of compensation (lower alpha to dampen the excess noise from over-counted
+exits).
 
 The pushback: if two backends at their respective MLEs produce materially
 different policy-relevant outputs (epidemic timing, peak height, intervention
-effectiveness), then "different discretization" isn't a satisfying answer -- it's
-an admission that your results are an artifact of implementation choices. There
-has to be a _right_ answer, or at least a _better approximation_ to the
+effectiveness), then "different discretization" isn't a satisfying answer --
+it's an admission that your results are an artifact of implementation choices.
+There has to be a _right_ answer, or at least a _better approximation_ to the
 continuous-time process, and we have to find it. Accepting a 2128-nat gap as
 "expected" forecloses the search for a real bug.
 
@@ -296,17 +297,15 @@ found shortly after.
 
 ## The third bug: mod(t, 365.25) with integer dt
 
-After the kernel fix (247 nats) and balance feature, a 1880-nat gap
-remained. Bisection testing by the vignette agent showed the gap
-required the cohort pulse — setting `cohort=0.001` eliminated it
-entirely.
+After the kernel fix (247 nats) and balance feature, a 1880-nat gap remained.
+Bisection testing by the vignette agent showed the gap required the cohort pulse
+— setting `cohort=0.001` eliminated it entirely.
 
-Weeks of debugging followed. The cohort birth count was identical in
-both tools (20,619). The ordering matched. The timing matched. The
-balance constraint worked but didn't help. Every individual feature
-(seasonal forcing, alpha, overdispersion) was tested in isolation and
-matched. Yet with all features combined plus cohort, the gap was 2000
-nats.
+Weeks of debugging followed. The cohort birth count was identical in both tools
+(20,619). The ordering matched. The timing matched. The balance constraint
+worked but didn't help. Every individual feature (seasonal forcing, alpha,
+overdispersion) was tested in isolation and matched. Yet with all features
+combined plus cohort, the gap was 2000 nats.
 
 The root cause was a one-character model specification bug:
 
@@ -314,10 +313,10 @@ The root cause was a one-character model specification bug:
 let day_of_year = mod(t, 365.25)   # ← 365.25
 ```
 
-With `dt = 1` (integer daily steps) and period `365.25`, `mod(t, 365.25)`
-drifts by 0.25 days per year. In 75% of years, TWO integer timesteps
-fall inside the `(250, 252)` window, firing the cohort pulse twice. 15
-of 21 years got ~41,000 cohort births instead of ~20,000.
+With `dt = 1` (integer daily steps) and period `365.25`, `mod(t, 365.25)` drifts
+by 0.25 days per year. In 75% of years, TWO integer timesteps fall inside the
+`(250, 252)` window, firing the cohort pulse twice. 15 of 21 years got ~41,000
+cohort births instead of ~20,000.
 
 The fix:
 
@@ -325,23 +324,23 @@ The fix:
 let day_of_year = mod(t, 365)      # ← 365
 ```
 
-Result: camdl loglik = **-5818 ± 7** vs pomp = **-5813**. Gap: **5 nats**.
-The tools match.
+Result: camdl loglik = **-5818 ± 7** vs pomp = **-5813**. Gap: **5 nats**. The
+tools match.
 
-This bug is a UX trap: `365.25` is the astronomically correct year
-length and appears throughout the model (birth rates, covariate
-scaling). Using it in a `mod()` expression that gates a discrete pulse
-event is natural but wrong when the step size doesn't evenly divide
-the period. The compiler should warn about this pattern.
+This bug is a UX trap: `365.25` is the astronomically correct year length and
+appears throughout the model (birth rates, covariate scaling). Using it in a
+`mod()` expression that gates a discrete pulse event is natural but wrong when
+the step size doesn't evenly divide the period. The compiler should warn about
+this pattern.
 
 ## Lessons
 
-**External validation isn't optional.** Three bugs, three different
-categories: an engine algorithm error (Euler-multinomial, 247 nats), an
-undocumented modeling convention (R-residual balance, enabling feature),
-and a model specification error (mod period, 1880 nats). None were
-findable by unit tests, code review, or short-run comparisons. All
-required running against pomp on 21 years of real data.
+**External validation isn't optional.** Three bugs, three different categories:
+an engine algorithm error (Euler-multinomial, 247 nats), an undocumented
+modeling convention (R-residual balance, enabling feature), and a model
+specification error (mod period, 1880 nats). None were findable by unit tests,
+code review, or short-run comparisons. All required running against pomp on 21
+years of real data.
 
 **Don't explain away discrepancies.** When your tool disagrees with a
 well-validated reference implementation by 2128 nats, the answer is not "we're a
@@ -350,18 +349,18 @@ find compensating parameters that make the bug less visible, and an AI agent
 _will_ construct a plausible narrative around those compensatory values. Reject
 the narrative. Find the bug.
 
-**DSLs should prevent UX traps.** The `mod(t, 365.25)` bug is easy to
-write and hard to catch. The number 365.25 is correct everywhere else in
-the model. Using it in a pulse-gating expression is natural but wrong
-with integer dt. The compiler should detect `mod(t, non_integer_period)`
-in boolean conditions and warn. Better yet: provide the right abstraction
-so the modeler never writes the arithmetic in the first place.
+**DSLs should prevent UX traps.** The `mod(t, 365.25)` bug is easy to write and
+hard to catch. The number 365.25 is correct everywhere else in the model. Using
+it in a pulse-gating expression is natural but wrong with integer dt. The
+compiler should detect `mod(t, non_integer_period)` in boolean conditions and
+warn. Better yet: provide the right abstraction so the modeler never writes the
+arithmetic in the first place.
 
 ## The language fix: `events {}`
 
-The root cause wasn't bad arithmetic. It was a missing abstraction. The
-modeler wanted to say "inject cohort births once per year on day 251."
-The DSL made them say:
+The root cause wasn't bad arithmetic. It was a missing abstraction. The modeler
+wanted to say "inject cohort births once per year on day 251." The DSL made them
+say:
 
 ```camdl
 # Compute day of year (drifts 0.25 days/year with integer dt)
@@ -379,17 +378,17 @@ transitions {
 }
 ```
 
-Five operations (modular arithmetic, comparison chain, 0/1 flag,
-magnitude scaling, addition into a rate) to express one concept. Every
-operation is a place for a bug. The drifting `mod`, the window width,
-the `* 365.25` dimensional hack — all consequences of implementing a
-domain concept in general-purpose arithmetic.
+Five operations (modular arithmetic, comparison chain, 0/1 flag, magnitude
+scaling, addition into a rate) to express one concept. Every operation is a
+place for a bug. The drifting `mod`, the window width, the `* 365.25`
+dimensional hack — all consequences of implementing a domain concept in
+general-purpose arithmetic.
 
-The deeper problem: the cohort pulse is an **amount** (20,000 people),
-not a **rate** (people/time). Expressing it as a momentary rate spike
-through the transition system is a dimensional hack. It gets the right
-answer on paper (`20000 births/day * 1 day = 20000 births`) but it
-forces the modeler to manage timing logic that the engine should own.
+The deeper problem: the cohort pulse is an **amount** (20,000 people), not a
+**rate** (people/time). Expressing it as a momentary rate spike through the
+transition system is a dimensional hack. It gets the right answer on paper
+(`20000 births/day * 1 day = 20000 births`) but it forces the modeler to manage
+timing logic that the engine should own.
 
 pomp handles this correctly. The cohort in pomp's C snippet is:
 
@@ -400,13 +399,13 @@ else
     br = (1-cohort)*birthrate;
 ```
 
-The timing logic (`fabs(...) < 0.5*dt`) guarantees exactly one fire per
-year regardless of dt. But it's buried in procedural code — the modeler
-has to understand the `0.5*dt` tolerance trick and get the time
-conversion right. A different kind of fragility.
+The timing logic (`fabs(...) < 0.5*dt`) guarantees exactly one fire per year
+regardless of dt. But it's buried in procedural code — the modeler has to
+understand the `0.5*dt` tolerance trick and get the time conversion right. A
+different kind of fragility.
 
-camdl's fix is an `events {}` block — a first-class DSL primitive for
-scheduled discrete state modifications:
+camdl's fix is an `events {}` block — a first-class DSL primitive for scheduled
+discrete state modifications:
 
 ```camdl
 transitions {
@@ -422,30 +421,28 @@ events {
 }
 ```
 
-No `mod()`. No comparison chain. No `* 365.25` magnitude hack. No
-window width to get wrong. The cohort is what it is: a scheduled
-addition of people to S.
+No `mod()`. No comparison chain. No `* 365.25` magnitude hack. No window width
+to get wrong. The cohort is what it is: a scheduled addition of people to S.
 
-Result: camdl loglik = **-5817 +/- 7** vs pomp = **-5813**. Gap: **4
-nats**. The tools match.
+Result: camdl loglik = **-5817 +/- 7** vs pomp = **-5813**. Gap: **4 nats**. The
+tools match.
 
 ### One more bug on the way: floating-point fire times
 
-The first implementation of `events {}` used a tolerance window to
-match fire times: `|t - target| < 0.5 * dt`. This is the same approach
-pomp uses (`fabs(t - floor(t) - 251/365) < 0.5*dt`). It produced a
-new 600-nat gap — the third manifestation of the same bug class.
+The first implementation of `events {}` used a tolerance window to match fire
+times: `|t - target| < 0.5 * dt`. This is the same approach pomp uses
+(`fabs(t - floor(t) - 251/365) < 0.5*dt`). It produced a new 600-nat gap — the
+third manifestation of the same bug class.
 
 With `period = 365.25` and `at_day = 258`, the fire time for year 3 is
-`258 + 2 * 365.25 = 988.5`. With `dt = 1`, both timestep 988 and 989
-are within 0.5 of the target. Double fire. Changing `<=` to `<` made
-988.5 fire zero times. No tolerance value works when the target lands
-exactly on the boundary.
+`258 + 2 * 365.25 = 988.5`. With `dt = 1`, both timestep 988 and 989 are within
+0.5 of the target. Double fire. Changing `<=` to `<` made 988.5 fire zero times.
+No tolerance value works when the target lands exactly on the boundary.
 
-The fix: eliminate floating-point fire-time comparison entirely. At
-model initialization, snap every fire time to the nearest integer
-timestep and store the result in a `HashSet<i64>`. At runtime, the
-check is an integer lookup — no tolerance, no edge cases:
+The fix: eliminate floating-point fire-time comparison entirely. At model
+initialization, snap every fire time to the nearest integer timestep and store
+the result in a `HashSet<i64>`. At runtime, the check is an integer lookup — no
+tolerance, no edge cases:
 
 ```
 target 988.5 → round to step 989 → HashSet {258, 623, 989, 1354, ...}
@@ -454,23 +451,21 @@ step 989: in set → fire
 step 990: not in set → no fire
 ```
 
-The `HashSet` also deduplicates automatically. If two targets round to
-the same step, the set contains it once. And the engine can detect
-collisions at model init — "event 'cohort_entry' has duplicate fire at
-step 988" — catching period/dt incompatibilities before simulation
-starts.
+The `HashSet` also deduplicates automatically. If two targets round to the same
+step, the set contains it once. And the engine can detect collisions at model
+init — "event 'cohort_entry' has duplicate fire at step 988" — catching
+period/dt incompatibilities before simulation starts.
 
 Three iterations of the same bug class, each deeper than the last:
-`mod(t, 365.25)` drift, tolerance double-fire, and the fundamental
-insight that floating-point time comparison is the wrong tool for
-discrete event scheduling.
+`mod(t, 365.25)` drift, tolerance double-fire, and the fundamental insight that
+floating-point time comparison is the wrong tool for discrete event scheduling.
 
 ### The design lesson
 
-The distinction between `transitions` and `events` is simple:
-transitions are continuous processes that run every substep; events are
-discrete actions that fire at scheduled times. If you find yourself
-writing a `* 365.25` scaling factor or a `mod(t, period)` flag in a
-rate expression, you probably want an event.
+The distinction between `transitions` and `events` is simple: transitions are
+continuous processes that run every substep; events are discrete actions that
+fire at scheduled times. If you find yourself writing a `* 365.25` scaling
+factor or a `mod(t, period)` flag in a rate expression, you probably want an
+event.
 
 (Full proposal: `docs/dev/proposals/2026-04-04-events-block.md`.)

@@ -373,9 +373,9 @@ is computed using row-major (C-order) strides: for shape `[d0, d1, ..., dn]`,
 strides are `[d1*d2*...*dn, d2*...*dn, ..., 1]`. Strides are precomputed at
 model load time and must not be recomputed in the hot loop.
 
-For 1D tables `indices = [expr]`; for contact matrices `indices = [i_expr, j_expr]`.
-The OCaml expander produces the index expressions directly — no manual stride
-arithmetic needed.
+For 1D tables `indices = [expr]`; for contact matrices
+`indices = [i_expr, j_expr]`. The OCaml expander produces the index expressions
+directly — no manual stride arithmetic needed.
 
 **Why tables are essential.** Without them, the OCaml expander must inline every
 age-specific rate as a literal `Const`, producing enormous IR files for
@@ -458,15 +458,13 @@ likelihood :=
 -- within likelihood exprs, `Projected` refers to the projection output
 ```
 
-**`Normal` is a count likelihood, not a continuous one.** The
-runtime evaluates `log ∫_{k-0.5}^{k+0.5} ϕ((x − mean)/sd)/sd dx`
-on the rounded, non-negative observation `k`, following He et al.
-(2010) heteroscedastic modelling of weekly case reports. Using
-it for genuinely continuous observables (log-transformed viral
-load, antibody titer, etc.) silently truncates the observation
-to a non-negative integer. If you need a continuous-PDF Normal,
-either use a separate transformation pipeline or file a request
-for a `ContinuousNormal` variant.
+**`Normal` is a count likelihood, not a continuous one.** The runtime evaluates
+`log ∫_{k-0.5}^{k+0.5} ϕ((x − mean)/sd)/sd dx` on the rounded, non-negative
+observation `k`, following He et al. (2010) heteroscedastic modelling of weekly
+case reports. Using it for genuinely continuous observables (log-transformed
+viral load, antibody titer, etc.) silently truncates the observation to a
+non-negative integer. If you need a continuous-PDF Normal, either use a separate
+transformation pipeline or file a request for a `ContinuousNormal` variant.
 
 In **sampling mode** (v0.1), the runtime evaluates the projection, then draws a
 sample from the likelihood distribution. In **scoring mode** (v0.2+), it
@@ -577,21 +575,21 @@ planned for it has been removed — m20 in the 2026-04-19 compiler review).
 - On-grid: each observation time lands on a simulation substep
 
 When fitting, the data file's **time column supplies the observation times**;
-the observation block's declared `schedule` (`every`/`at`) is *not* consulted in
+the observation block's declared `schedule` (`every`/`at`) is _not_ consulted in
 the inverse direction — it is used only for forward synthetic-data generation
 under `simulate`. The runtime validates chronological order and substep/grid
 alignment of the data times and fails loudly on violation. (The one
-schedule-vs-data alignment constraint is on the *output* schedule, not the
-observation schedule: the deterministic/ODE fit path requires an output
-snapshot at each observation time.) Missing data handling (NA semantics, partial
-streams, irregular observation) is deferred to v0.3.
+schedule-vs-data alignment constraint is on the _output_ schedule, not the
+observation schedule: the deterministic/ODE fit path requires an output snapshot
+at each observation time.) Missing data handling (NA semantics, partial streams,
+irregular observation) is deferred to v0.3.
 
 ### 5.3 Spatial/Stratified Data (v0.2)
 
 For spatially stratified models, the OCaml expander generates one observation
 block per stratum — hence one named data column per stratum. For 774 LGAs this
-means 774 columns — verbose but explicit and mechanically correct. A more compact indexed-stream representation is a v0.3
-optimization.
+means 774 columns — verbose but explicit and mechanically correct. A more
+compact indexed-stream representation is a v0.3 optimization.
 
 ---
 
@@ -857,32 +855,31 @@ runtime should detect and apply this automatically when needed.
 
 ## 10. Random Number Generation
 
-The runtime uses a plain ChaCha8 stateful PRNG (`StatefulRng`).
-Seeded simulations are reproducible: running with the same seed and
-identical control flow produces bitwise-identical trajectories.
+The runtime uses a plain ChaCha8 stateful PRNG (`StatefulRng`). Seeded
+simulations are reproducible: running with the same seed and identical control
+flow produces bitwise-identical trajectories.
 
-An earlier design (EKRNG — event-keyed counter-based PRNG) was
-specified here but was not implemented. The "placebo test" and
-scenario-coupling guarantees that section described are NOT upheld
-by the current runtime: two scenarios that differ in any way
-affecting even one draw's ordering will diverge entirely, even with
-the same seed. Counterfactual comparisons should be treated as
-paired-seed approximations, not as exact couplings.
+An earlier design (EKRNG — event-keyed counter-based PRNG) was specified here
+but was not implemented. The "placebo test" and scenario-coupling guarantees
+that section described are NOT upheld by the current runtime: two scenarios that
+differ in any way affecting even one draw's ordering will diverge entirely, even
+with the same seed. Counterfactual comparisons should be treated as paired-seed
+approximations, not as exact couplings.
 
 ---
 
 ## 11. Example IR Documents `[v0.1]`
 
 **Note:** The authoritative source of truth for the wire format is
-`ir/golden/*.ir.json` — these are generated by the OCaml compiler and parsed
-by the Rust backend on every CI run. The examples below are taken directly
-from those golden files.
+`ir/golden/*.ir.json` — these are generated by the OCaml compiler and parsed by
+the Rust backend on every CI run. The examples below are taken directly from
+those golden files.
 
 ### 11.1 Minimal SIR
 
-Taken from `ir/golden/sir_basic.ir.json`. Shows the core structure:
-compartment objects, `bin_op` expression nodes, parameterized initial
-conditions, `scenarios` (presets), and `model_structure`.
+Taken from `ir/golden/sir_basic.ir.json`. Shows the core structure: compartment
+objects, `bin_op` expression nodes, parameterized initial conditions,
+`scenarios` (presets), and `model_structure`.
 
 ```json
 {
@@ -907,14 +904,14 @@ conditions, `scenarios` (presets), and `model_structure`.
           "left": {
             "bin_op": {
               "op": "mul",
-              "left":  { "param": "beta" },
+              "left": { "param": "beta" },
               "right": { "pop": "S" }
             }
           },
           "right": {
             "bin_op": {
               "op": "div",
-              "left":  { "pop": "I" },
+              "left": { "pop": "I" },
               "right": { "pop_sum": ["S", "I", "R"] }
             }
           }
@@ -932,7 +929,7 @@ conditions, `scenarios` (presets), and `model_structure`.
       "rate": {
         "bin_op": {
           "op": "mul",
-          "left":  { "param": "gamma" },
+          "left": { "param": "gamma" },
           "right": { "pop": "I" }
         }
       },
@@ -951,15 +948,49 @@ conditions, `scenarios` (presets), and `model_structure`.
   "observations": [],
 
   "parameters": [
-    { "name": "beta",  "value": null, "bounds": [0.001, 2.0],    "prior": null, "transform": null, "initial_value": null },
-    { "name": "gamma", "value": null, "bounds": [0.001, 1.0],    "prior": null, "transform": null, "initial_value": null },
-    { "name": "N0",    "value": null, "bounds": [100.0, 100000.0],"prior": null, "transform": null, "initial_value": null },
-    { "name": "I0",    "value": null, "bounds": [1.0, 1000.0],   "prior": null, "transform": null, "initial_value": null }
+    {
+      "name": "beta",
+      "value": null,
+      "bounds": [0.001, 2.0],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "gamma",
+      "value": null,
+      "bounds": [0.001, 1.0],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "N0",
+      "value": null,
+      "bounds": [100.0, 100000.0],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "I0",
+      "value": null,
+      "bounds": [1.0, 1000.0],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    }
   ],
 
   "initial_conditions": {
     "parameterized": {
-      "S": { "bin_op": { "op": "sub", "left": { "param": "N0" }, "right": { "param": "I0" } } },
+      "S": {
+        "bin_op": {
+          "op": "sub",
+          "left": { "param": "N0" },
+          "right": { "param": "I0" }
+        }
+      },
       "I": { "param": "I0" }
     }
   },
@@ -1003,8 +1034,8 @@ conditions, `scenarios` (presets), and `model_structure`.
 ### 11.2 Age-Stratified SEIR with Contact Matrix
 
 Taken from `ir/golden/seir_age.ir.json`. Shows stratified compartments,
-`table_lookup` expression nodes, and a `tables` entry with `expr` values.
-Only one transition shown for brevity — the full file has eight.
+`table_lookup` expression nodes, and a `tables` entry with `expr` values. Only
+one transition shown for brevity — the full file has eight.
 
 ```json
 {
@@ -1034,7 +1065,7 @@ Only one transition shown for brevity — the full file has eight.
           "left": {
             "bin_op": {
               "op": "mul",
-              "left":  { "param": "beta" },
+              "left": { "param": "beta" },
               "right": { "pop": "S_child" }
             }
           },
@@ -1047,11 +1078,18 @@ Only one transition shown for brevity — the full file has eight.
                   "left": {
                     "bin_op": {
                       "op": "mul",
-                      "left":  { "table_lookup": { "table": "C_age", "indices": [{ "const": 0.0 }] } },
+                      "left": {
+                        "table_lookup": {
+                          "table": "C_age",
+                          "indices": [{ "const": 0.0 }]
+                        }
+                      },
                       "right": { "pop": "I_child" }
                     }
                   },
-                  "right": { "pop_sum": ["S_child", "E_child", "I_child", "R_child"] }
+                  "right": {
+                    "pop_sum": ["S_child", "E_child", "I_child", "R_child"]
+                  }
                 }
               },
               "right": {
@@ -1060,18 +1098,29 @@ Only one transition shown for brevity — the full file has eight.
                   "left": {
                     "bin_op": {
                       "op": "mul",
-                      "left":  { "table_lookup": { "table": "C_age", "indices": [{ "const": 1.0 }] } },
+                      "left": {
+                        "table_lookup": {
+                          "table": "C_age",
+                          "indices": [{ "const": 1.0 }]
+                        }
+                      },
                       "right": { "pop": "I_adult" }
                     }
                   },
-                  "right": { "pop_sum": ["S_adult", "E_adult", "I_adult", "R_adult"] }
+                  "right": {
+                    "pop_sum": ["S_adult", "E_adult", "I_adult", "R_adult"]
+                  }
                 }
               }
             }
           }
         }
       },
-      "metadata": { "origin_kind": "transmission", "source_compartment": "S_child", "dest_compartment": "E_child" }
+      "metadata": {
+        "origin_kind": "transmission",
+        "source_compartment": "S_child",
+        "dest_compartment": "E_child"
+      }
     }
     /* ... recovery_child, progression_child, and adult variants omitted */
   ],
@@ -1080,8 +1129,10 @@ Only one transition shown for brevity — the full file has eight.
     {
       "name": "C_age",
       "values": [
-        { "const": 12.0 }, { "const": 4.0 },
-        { "const": 4.0 },  { "const": 8.0 }
+        { "const": 12.0 },
+        { "const": 4.0 },
+        { "const": 4.0 },
+        { "const": 8.0 }
       ],
       "out_of_bounds": "error"
     }
@@ -1093,9 +1144,30 @@ Only one transition shown for brevity — the full file has eight.
   "observations": [],
 
   "parameters": [
-    { "name": "beta",  "value": null, "bounds": [0.001, 0.5], "prior": null, "transform": null, "initial_value": null },
-    { "name": "sigma", "value": null, "bounds": [0.01,  1.0], "prior": null, "transform": null, "initial_value": null },
-    { "name": "gamma", "value": null, "bounds": [0.01,  1.0], "prior": null, "transform": null, "initial_value": null }
+    {
+      "name": "beta",
+      "value": null,
+      "bounds": [0.001, 0.5],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "sigma",
+      "value": null,
+      "bounds": [0.01, 1.0],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "gamma",
+      "value": null,
+      "bounds": [0.01, 1.0],
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    }
   ],
 
   "initial_conditions": {
@@ -1130,7 +1202,12 @@ Only one transition shown for brevity — the full file has eight.
 
   "model_structure": {
     "dimensions": [{ "name": "age", "values": ["child", "adult"] }],
-    "compartment_dims": { "S": ["age"], "E": ["age"], "I": ["age"], "R": ["age"] },
+    "compartment_dims": {
+      "S": ["age"],
+      "E": ["age"],
+      "I": ["age"],
+      "R": ["age"]
+    },
     "base_compartments": ["S", "E", "I", "R"],
     "transmission_transitions": ["infection_child", "infection_adult"],
     "infectious_compartments": ["I"]
@@ -1140,10 +1217,10 @@ Only one transition shown for brevity — the full file has eight.
 
 ### 11.3 Real-Valued Compartment: Cholera SIWR
 
-Taken from `ir/golden/cholera_siwr.ir.json`. Shows `kind: "real"` for the
-water reservoir `W`, `ode_equations`, and an `observations` block with
-`neg_binomial` likelihood. The `"projected": null` node inside the likelihood
-refers to the projection output (§4.2).
+Taken from `ir/golden/cholera_siwr.ir.json`. Shows `kind: "real"` for the water
+reservoir `W`, `ode_equations`, and an `observations` block with `neg_binomial`
+likelihood. The `"projected": null` node inside the likelihood refers to the
+projection output (§4.2).
 
 ```json
 {
@@ -1173,11 +1250,11 @@ refers to the projection output (§4.2).
               "left": {
                 "bin_op": {
                   "op": "mul",
-                  "left":  { "param": "beta_I" },
+                  "left": { "param": "beta_I" },
                   "right": {
                     "bin_op": {
                       "op": "div",
-                      "left":  { "pop": "I" },
+                      "left": { "pop": "I" },
                       "right": { "pop_sum": ["S", "I", "R"] }
                     }
                   }
@@ -1189,14 +1266,14 @@ refers to the projection output (§4.2).
                   "left": {
                     "bin_op": {
                       "op": "mul",
-                      "left":  { "param": "beta_W" },
+                      "left": { "param": "beta_W" },
                       "right": { "pop": "W" }
                     }
                   },
                   "right": {
                     "bin_op": {
                       "op": "add",
-                      "left":  { "pop": "W" },
+                      "left": { "pop": "W" },
                       "right": { "param": "kappa" }
                     }
                   }
@@ -1206,15 +1283,27 @@ refers to the projection output (§4.2).
           }
         }
       },
-      "metadata": { "origin_kind": "transmission", "source_compartment": "S", "dest_compartment": "I" }
+      "metadata": {
+        "origin_kind": "transmission",
+        "source_compartment": "S",
+        "dest_compartment": "I"
+      }
     },
     {
       "name": "recovery",
       "stoichiometry": [["I", -1], ["R", 1]],
       "rate": {
-        "bin_op": { "op": "mul", "left": { "param": "gamma" }, "right": { "pop": "I" } }
+        "bin_op": {
+          "op": "mul",
+          "left": { "param": "gamma" },
+          "right": { "pop": "I" }
+        }
       },
-      "metadata": { "origin_kind": "intrinsic", "source_compartment": "I", "dest_compartment": "R" }
+      "metadata": {
+        "origin_kind": "intrinsic",
+        "source_compartment": "I",
+        "dest_compartment": "R"
+      }
     }
   ],
 
@@ -1225,10 +1314,18 @@ refers to the projection output (§4.2).
         "bin_op": {
           "op": "sub",
           "left": {
-            "bin_op": { "op": "mul", "left": { "param": "xi" },     "right": { "pop": "I" } }
+            "bin_op": {
+              "op": "mul",
+              "left": { "param": "xi" },
+              "right": { "pop": "I" }
+            }
           },
           "right": {
-            "bin_op": { "op": "mul", "left": { "param": "omega_W" }, "right": { "pop": "W" } }
+            "bin_op": {
+              "op": "mul",
+              "left": { "param": "omega_W" },
+              "right": { "pop": "W" }
+            }
           }
         }
       }
@@ -1242,11 +1339,13 @@ refers to the projection output (§4.2).
   "observations": [
     {
       "name": "reported_cases",
-      "schedule": { "obs_regular": { "start": 7.0, "step": 7.0, "end": 365.0 } },
+      "schedule": {
+        "obs_regular": { "start": 7.0, "step": 7.0, "end": 365.0 }
+      },
       "projection": { "cumulative_flow": "infection" },
       "likelihood": {
         "neg_binomial": {
-          "mean":       { "projected": null },
+          "mean": { "projected": null },
           "dispersion": { "param": "rho" }
         }
       }
@@ -1254,13 +1353,55 @@ refers to the projection output (§4.2).
   ],
 
   "parameters": [
-    { "name": "beta_I",  "value": 0.5,    "prior": null, "transform": null, "initial_value": null },
-    { "name": "beta_W",  "value": 0.3,    "prior": null, "transform": null, "initial_value": null },
-    { "name": "kappa",   "value": 0.0001, "prior": null, "transform": null, "initial_value": null },
-    { "name": "gamma",   "value": 0.25,   "prior": null, "transform": null, "initial_value": null },
-    { "name": "xi",      "value": 1.0,    "prior": null, "transform": null, "initial_value": null },
-    { "name": "omega_W", "value": 0.5,    "prior": null, "transform": null, "initial_value": null },
-    { "name": "rho",     "value": 5.0,    "prior": null, "transform": null, "initial_value": null }
+    {
+      "name": "beta_I",
+      "value": 0.5,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "beta_W",
+      "value": 0.3,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "kappa",
+      "value": 0.0001,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "gamma",
+      "value": 0.25,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "xi",
+      "value": 1.0,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "omega_W",
+      "value": 0.5,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    },
+    {
+      "name": "rho",
+      "value": 5.0,
+      "prior": null,
+      "transform": null,
+      "initial_value": null
+    }
   ],
 
   "initial_conditions": {
@@ -1318,12 +1459,11 @@ inference interface.
 
 ## 13. Scenario Comparison and Counterfactual Analysis `[v0.1 basic; v0.3 full]`
 
-In v0.1, paired scenario comparisons are run by simulating baseline
-and intervention with the same seed. Because the runtime uses a
-stateful PRNG, pre-intervention trajectories are identical only when
-both runs consume the RNG in the same order; any RNG-order
-divergence (from a structural change, a different overdispersion
-σ, etc.) breaks the coupling. Treat the comparison as a
+In v0.1, paired scenario comparisons are run by simulating baseline and
+intervention with the same seed. Because the runtime uses a stateful PRNG,
+pre-intervention trajectories are identical only when both runs consume the RNG
+in the same order; any RNG-order divergence (from a structural change, a
+different overdispersion σ, etc.) breaks the coupling. Treat the comparison as a
 paired-seed approximation, not an exact coupling.
 
 ```bash
@@ -1427,8 +1567,8 @@ breaks.
 ## Appendix: Runtime Testing and Verification Strategy
 
 **Applies to:** The Rust backend (simulation, observation sampling, expression
-evaluation). This is designed to catch the specific classes of bugs that
-occur in stochastic simulation runtimes — bugs that are invisible in single runs
+evaluation). This is designed to catch the specific classes of bugs that occur
+in stochastic simulation runtimes — bugs that are invisible in single runs
 because the output is _supposed_ to be noisy.
 
 ---
@@ -1982,20 +2122,20 @@ error). Validated via distributional comparison.
 
 #### Test model inventory
 
-| Model name              | Purpose                                    | Backends tested      |
-| ----------------------- | ------------------------------------------ | -------------------- |
-| `sir_basic`             | Simplest model (3 comp, 2 trans)           | All                  |
-| `sir_closed`            | Population conservation                    | Gillespie, tau-leap  |
-| `sir_birth_death`       | Open model, mass balance                   | All                  |
-| `sir_tiny`              | N=10, extinction dynamics                  | Gillespie            |
-| `sir_large`             | N=10⁸, overflow/perf                       | Gillespie, ODE       |
-| `sir_vaccination`       | Scheduled intervention                     | All                  |
-| `seir_age`              | Age stratification, contact matrix         | All                  |
-| `seir_seasonal`         | Time-varying rates                         | All                  |
-| `pure_death`            | Analytic solution available                | Gillespie            |
-| `birth_death`           | Steady-state analytic                      | Gillespie            |
-| `two_state`             | Reversible process, analytic equilibrium   | Gillespie            |
-| `sir_discrete`          | Chain binomial variant                     | ChainBinomial        |
-| `sir_competing_hazards` | Multiple outflows from same compartment    | ChainBinomial, G, TL |
-| `sir_absorbing`         | Starts in absorbing state                  | All                  |
-| `sir_scenario_pair`     | Baseline + intervention (paired-seed)      | Gillespie            |
+| Model name              | Purpose                                  | Backends tested      |
+| ----------------------- | ---------------------------------------- | -------------------- |
+| `sir_basic`             | Simplest model (3 comp, 2 trans)         | All                  |
+| `sir_closed`            | Population conservation                  | Gillespie, tau-leap  |
+| `sir_birth_death`       | Open model, mass balance                 | All                  |
+| `sir_tiny`              | N=10, extinction dynamics                | Gillespie            |
+| `sir_large`             | N=10⁸, overflow/perf                     | Gillespie, ODE       |
+| `sir_vaccination`       | Scheduled intervention                   | All                  |
+| `seir_age`              | Age stratification, contact matrix       | All                  |
+| `seir_seasonal`         | Time-varying rates                       | All                  |
+| `pure_death`            | Analytic solution available              | Gillespie            |
+| `birth_death`           | Steady-state analytic                    | Gillespie            |
+| `two_state`             | Reversible process, analytic equilibrium | Gillespie            |
+| `sir_discrete`          | Chain binomial variant                   | ChainBinomial        |
+| `sir_competing_hazards` | Multiple outflows from same compartment  | ChainBinomial, G, TL |
+| `sir_absorbing`         | Starts in absorbing state                | All                  |
+| `sir_scenario_pair`     | Baseline + intervention (paired-seed)    | Gillespie            |

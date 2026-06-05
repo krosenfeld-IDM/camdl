@@ -10,14 +10,14 @@
 // off-diagonal scatter colored by |loglik - loglik_max| on a log
 // scale, top-5 red stars.
 
-(function () {
+(function() {
   "use strict";
 
   const COLORS = {
-    GREY_BG:   "#e0e0e0",
+    GREY_BG: "#e0e0e0",
     GREY_HIST: "#cccccc",
     TOP10_GREEN: "#16a085",
-    TOP1_RED:    "#c0392b",
+    TOP1_RED: "#c0392b",
     REF_BLACK: "#000000",
   };
 
@@ -34,8 +34,7 @@
   const nParams = params.length;
   const rows = D.rows.filter((r) => Number.isFinite(r.loglik));
   if (!rows.length) {
-    document.getElementById("plot").innerText =
-      "no finite-loglik rows in landscape.tsv — nothing to plot";
+    document.getElementById("plot").innerText = "no finite-loglik rows in landscape.tsv — nothing to plot";
     return;
   }
   // Pick log axis when the declared bounds span > 2 decades
@@ -53,7 +52,7 @@
 
   // Hide the mean_ess option when not present.
   if (!D.has_mean_ess) {
-    const opt = colorBy.querySelector('option[value="mean_ess"]');
+    const opt = colorBy.querySelector("option[value=\"mean_ess\"]");
     if (opt) opt.disabled = true;
   }
 
@@ -72,7 +71,7 @@
     const seConstant = seVals.length === 0
       || (Math.max(...seVals) - Math.min(...seVals) < 1e-12);
     if (seConstant) {
-      const opt = colorBy.querySelector('option[value="loglik_se"]');
+      const opt = colorBy.querySelector("option[value=\"loglik_se\"]");
       if (opt) {
         opt.disabled = true;
         opt.textContent = "loglik_se (no variation)";
@@ -80,13 +79,23 @@
     }
   }
 
-  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+  function clamp01(x) {
+    return Math.max(0, Math.min(1, x));
+  }
 
   // ── Color scaling helpers ────────────────────────────────────────
   // viridis_r palette (10 sample points, evenly spaced).
   const VIRIDIS_R = [
-    "#fde725", "#b5de2b", "#6ece58", "#35b779", "#1f9e89",
-    "#26828e", "#31688e", "#3e4989", "#482878", "#440154",
+    "#fde725",
+    "#b5de2b",
+    "#6ece58",
+    "#35b779",
+    "#1f9e89",
+    "#26828e",
+    "#31688e",
+    "#3e4989",
+    "#482878",
+    "#440154",
   ];
   function viridis(v) {
     const idx = Math.floor(clamp01(v) * (VIRIDIS_R.length - 1));
@@ -133,13 +142,12 @@
       const topRows = idxs
         .map((k) => ({ k, ll: rowsArr[k].loglik }))
         .filter((o) => Number.isFinite(o.ll))
-        .sort((a, b) => b.ll - a.ll);  // best first
+        .sort((a, b) => b.ll - a.ll); // best first
       if (topRows.length < 2) return rowsArr.map(() => 0);
       const denom = topRows.length - 1;
       const rankCoord = new Map();
       topRows.forEach((o, r) => rankCoord.set(o.k, r / denom));
-      return rowsArr.map((_, k) =>
-        rankCoord.has(k) ? rankCoord.get(k) : 0);
+      return rowsArr.map((_, k) => rankCoord.has(k) ? rankCoord.get(k) : 0);
     }
     // Linear normalisation over the displayed-set range.
     const topVals = idxs
@@ -229,12 +237,16 @@
         layout[xRef] = {
           title: i === nParams - 1 ? params[j] : "",
           type: logAxis[j] ? "log" : "linear",
-          showgrid: true, gridcolor: "#f0f0f0", zeroline: false,
+          showgrid: true,
+          gridcolor: "#f0f0f0",
+          zeroline: false,
         };
         layout[yRef] = {
           title: j === 0 ? params[i] : "",
           type: i === j ? "linear" : (logAxis[i] ? "log" : "linear"),
-          showgrid: true, gridcolor: "#f0f0f0", zeroline: false,
+          showgrid: true,
+          gridcolor: "#f0f0f0",
+          zeroline: false,
         };
 
         if (i === j) {
@@ -264,65 +276,85 @@
           rows.forEach((r, k) => {
             const v = r.params[i];
             if (greenIdx.has(k)) greenVals.push(v);
-            if (redIdx.has(k))   redVals.push(v);
+            if (redIdx.has(k)) redVals.push(v);
           });
           // Plotly histograms with explicit xbins to share bins
           // across layers. The opacities mirror the Python
           // prototype (0.6 / 0.85 / 0.95) so gray reads as
           // background, green as foreground, red as peak marker.
           const histogram = (vals, color, opacity, name) => ({
-            type: "histogram", x: vals,
-            xbins: { start: edges[0], end: edges[edges.length - 1],
-              size: useLog ? null : (edges[1] - edges[0]) },
+            type: "histogram",
+            x: vals,
+            xbins: { start: edges[0], end: edges[edges.length - 1], size: useLog ? null : (edges[1] - edges[0]) },
             marker: { color },
-            opacity, name,
-            xaxis: xkey, yaxis: ykey,
+            opacity,
+            name,
+            xaxis: xkey,
+            yaxis: ykey,
           });
-          traces.push(histogram(grayVals,  COLORS.GREY_HIST,   0.60, "all"));
+          traces.push(histogram(grayVals, COLORS.GREY_HIST, 0.60, "all"));
           traces.push(histogram(greenVals, COLORS.TOP10_GREEN, 0.85, "top X%"));
-          traces.push(histogram(redVals,   COLORS.TOP1_RED,    0.95, "top 1%"));
+          traces.push(histogram(redVals, COLORS.TOP1_RED, 0.95, "top 1%"));
         } else {
           // ── Off-diagonal: gray scatter + top-K viridis + top-5 stars.
           const grayPts = { x: [], y: [], text: [] };
-          const topPts  = { x: [], y: [], text: [], color: [] };
+          const topPts = { x: [], y: [], text: [], color: [] };
           const starPts = { x: [], y: [], text: [] };
           rows.forEach((r, k) => {
             const xv = r.params[j], yv = r.params[i];
             if (!Number.isFinite(xv) || !Number.isFinite(yv)) return;
             const tooltip = paramHover(r, params, j, i);
             if (starIdx.has(k)) {
-              starPts.x.push(xv); starPts.y.push(yv); starPts.text.push(tooltip);
+              starPts.x.push(xv);
+              starPts.y.push(yv);
+              starPts.text.push(tooltip);
             }
             if (greenIdx.has(k) || redIdx.has(k)) {
-              topPts.x.push(xv); topPts.y.push(yv); topPts.text.push(tooltip);
+              topPts.x.push(xv);
+              topPts.y.push(yv);
+              topPts.text.push(tooltip);
               topPts.color.push(viridis(cc[k]));
             } else {
-              grayPts.x.push(xv); grayPts.y.push(yv); grayPts.text.push(tooltip);
+              grayPts.x.push(xv);
+              grayPts.y.push(yv);
+              grayPts.text.push(tooltip);
             }
           });
           traces.push({
-            type: "scattergl", mode: "markers",
-            x: grayPts.x, y: grayPts.y, text: grayPts.text,
-            marker: { color: COLORS.GREY_HIST, size: 3, opacity: 0.4,
-              line: { width: 0 } },
+            type: "scattergl",
+            mode: "markers",
+            x: grayPts.x,
+            y: grayPts.y,
+            text: grayPts.text,
+            marker: { color: COLORS.GREY_HIST, size: 3, opacity: 0.4, line: { width: 0 } },
             hoverinfo: "text",
-            xaxis: xkey, yaxis: ykey, showlegend: false,
+            xaxis: xkey,
+            yaxis: ykey,
+            showlegend: false,
           });
           traces.push({
-            type: "scattergl", mode: "markers",
-            x: topPts.x, y: topPts.y, text: topPts.text,
-            marker: { color: topPts.color, size: 5, opacity: 0.85,
-              line: { color: "#000", width: 0.3 } },
+            type: "scattergl",
+            mode: "markers",
+            x: topPts.x,
+            y: topPts.y,
+            text: topPts.text,
+            marker: { color: topPts.color, size: 5, opacity: 0.85, line: { color: "#000", width: 0.3 } },
             hoverinfo: "text",
-            xaxis: xkey, yaxis: ykey, showlegend: false,
+            xaxis: xkey,
+            yaxis: ykey,
+            showlegend: false,
           });
           traces.push({
-            type: "scattergl", mode: "markers",
-            x: starPts.x, y: starPts.y, text: starPts.text,
-            marker: { color: COLORS.TOP1_RED, size: 10, symbol: "star",
-              line: { color: "#000", width: 1 } },
+            type: "scattergl",
+            mode: "markers",
+            x: starPts.x,
+            y: starPts.y,
+            text: starPts.text,
+            marker: { color: COLORS.TOP1_RED, size: 10, symbol: "star", line: { color: "#000", width: 1 } },
             hoverinfo: "text",
-            xaxis: xkey, yaxis: ykey, showlegend: false,
+            xaxis: xkey,
+            yaxis: ykey,
+            showlegend: false,
           });
         }
       }

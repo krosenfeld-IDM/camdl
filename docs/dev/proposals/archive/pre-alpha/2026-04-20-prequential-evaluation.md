@@ -1,7 +1,7 @@
 ---
 status: archived 2026-05-31 — Part I (plug-in prequential: `camdl compare` log predictive density, `--save-prequential`, `PrequentialTrace`) implemented. Part II (Bayesian LFO-PSIS extension) split to `2026-05-31-prequential-bayesian-lfo.md`.
-date: 2026-04-20
-authors: camdl-book authors
+  date: 2026-04-20
+  authors: camdl-book authors
 ---
 
 # Prequential Out-of-Sample Evaluation in camdl
@@ -19,37 +19,37 @@ running model comparisons for publication._
 This proposal is split into two stages to keep the first-release scope
 tractable. **Part I** is the minimum viable prequential pipeline that unblocks
 the boarding-school chapter and supports plug-in MLE workflows (IF2 + profile
-likelihood). **Part II** is the Bayesian and panel-data extension, deferred to
-a later release.
+likelihood). **Part II** is the Bayesian and panel-data extension, deferred to a
+later release.
 
-| Feature | Stage |
-|---|---|
-| `PrequentialTrace` as first-class output of `camdl fit` | Part I |
-| Plug-in predictive from bootstrap PF (IF2/MLE) | Part I |
-| Log score + CRPS | Part I |
-| PIT coverage at 50% / 90% intervals | Part I |
-| Effective sample size as diagnostic | Part I |
+| Feature                                                     | Stage      |
+| ----------------------------------------------------------- | ---------- |
+| `PrequentialTrace` as first-class output of `camdl fit`     | Part I     |
+| Plug-in predictive from bootstrap PF (IF2/MLE)              | Part I     |
+| Log score + CRPS                                            | Part I     |
+| PIT coverage at 50% / 90% intervals                         | Part I     |
+| Effective sample size as diagnostic                         | Part I     |
 | Testing-by-betting e-process (as display mode on `compare`) | **Part I** |
-| `camdl compare` with baseline-centered Δelpd + ΔCRPS table | Part I |
-| Structural-fairness preflight (data hash, obs model, etc.) | Part I |
-| Anti-pattern detection (t₀=0, seed collisions, etc.) | Part I |
-| Named fits + hash-prefix resolver | Part I |
-| JSON output schema as plotting contract | Part I |
-| Fully Bayesian predictive (LFO-PSIS) | Part II |
-| Pseudo-posterior provenance from IF2 cloud | Part II |
-| PSIS $\hat k$ diagnostic | Part II |
-| Randomized PIT for discrete observations | Part II |
-| Identifiability sweep for $t_0$ (opt-in then default) | Part II |
-| Rolling-origin $k$-step-ahead | Part II |
-| Energy score / panel comparison UX | Part II |
+| `camdl compare` with baseline-centered Δelpd + ΔCRPS table  | Part I     |
+| Structural-fairness preflight (data hash, obs model, etc.)  | Part I     |
+| Anti-pattern detection (t₀=0, seed collisions, etc.)        | Part I     |
+| Named fits + hash-prefix resolver                           | Part I     |
+| JSON output schema as plotting contract                     | Part I     |
+| Fully Bayesian predictive (LFO-PSIS)                        | Part II    |
+| Pseudo-posterior provenance from IF2 cloud                  | Part II    |
+| PSIS $\hat k$ diagnostic                                    | Part II    |
+| Randomized PIT for discrete observations                    | Part II    |
+| Identifiability sweep for $t_0$ (opt-in then default)       | Part II    |
+| Rolling-origin $k$-step-ahead                               | Part II    |
+| Energy score / panel comparison UX                          | Part II    |
 
 Decisions on prioritization: e-values are in Part I because the computation is
 free (a cumulative sum on quantities the PF already emits) and the pedagogical
-framing — "stochastic model's predictives took deterministic model's $1 to
-$59" — belongs in the first user-facing release of prequential comparison.
-LFO is in Part II because all current camdl inference pipelines that matter
-for Part I's worked example (IF2/MLE, profile likelihood) are plug-in; LFO is
-only needed when PMMH/PGAS become default.
+framing — "stochastic model's predictives took deterministic model's $1 to $59"
+— belongs in the first user-facing release of prequential comparison. LFO is in
+Part II because all current camdl inference pipelines that matter for Part I's
+worked example (IF2/MLE, profile likelihood) are plug-in; LFO is only needed
+when PMMH/PGAS become default.
 
 ---
 
@@ -121,17 +121,16 @@ This is necessary for two reasons:
    cloud, before the filter has seen any data. That score tests the prior, not
    the dynamics. The next few are dominated by initial-condition uncertainty
    rather than model quality.
-2. **Identifiability.** For compartmental models, parameters like $R_0$ are
-   only weakly identified until the filter has seen enough rising-limb
-   observations. Prequential scores made against an unidentified MLE inherit
-   the non-identifiability as score variance that swamps inter-model
-   differences.
+2. **Identifiability.** For compartmental models, parameters like $R_0$ are only
+   weakly identified until the filter has seen enough rising-limb observations.
+   Prequential scores made against an unidentified MLE inherit the
+   non-identifiability as score variance that swamps inter-model differences.
 
 $t_0$ is thus the filter analogue of MCMC warmup: samples before $t_0$ are
-consumed by the inference procedure and do not contribute to the scored
-output. The choice of $t_0$ materially affects the score — setting it too low
-makes prequential comparison unreliable — so §7.1 specifies how it is
-defaulted and validated.
+consumed by the inference procedure and do not contribute to the scored output.
+The choice of $t_0$ materially affects the score — setting it too low makes
+prequential comparison unreliable — so §7.1 specifies how it is defaulted and
+validated.
 
 ### 2.2 Recommended reading
 
@@ -184,20 +183,19 @@ violated. Plug-in scores should be labeled as such in output.
 ### 3.2 Fully Bayesian predictive — deferred to Part II
 
 Marginalizing $\theta$ over its partial-data posterior at each $t$ is the
-Bayesian version of the one-step predictive. For plug-in pipelines this
-section does not apply; users running IF2/MLE or profile-likelihood workflows
-in v1 consume only the §3.1 plug-in form. LFO-PSIS, PMMH/PGAS specifics, and
-the $\hat k$ diagnostic are spec'd in Part II (§10).
+Bayesian version of the one-step predictive. For plug-in pipelines this section
+does not apply; users running IF2/MLE or profile-likelihood workflows in v1
+consume only the §3.1 plug-in form. LFO-PSIS, PMMH/PGAS specifics, and the
+$\hat k$ diagnostic are spec'd in Part II (§10).
 
 ### 3.3 Why provenance matters
 
 The `PrequentialTrace` carries a provenance flag so that downstream outputs
-(plots, tables, methods text in the white paper) cannot drift out of sync
-with what was actually computed. In v1 the enum has a single value,
-`PlugIn`; Part II extends it with `LfoPsis`, `FullyBayesian`, `FullRefit`,
-and `PseudoPosterior`. A plug-in predictive that silently gets reported as
-"Bayesian predictive" is a defensible-for-training but
-indefensible-for-publication result. We fail loud.
+(plots, tables, methods text in the white paper) cannot drift out of sync with
+what was actually computed. In v1 the enum has a single value, `PlugIn`; Part II
+extends it with `LfoPsis`, `FullyBayesian`, `FullRefit`, and `PseudoPosterior`.
+A plug-in predictive that silently gets reported as "Bayesian predictive" is a
+defensible-for-training but indefensible-for-publication result. We fail loud.
 
 ---
 
@@ -289,10 +287,10 @@ default. Hiding one behind a "headline metric" would discard this information.
 
 ### 4.4 Energy score — deferred to Part II
 
-For multivariate / panel predictives, CRPS generalizes to the energy score;
-see §11. v1 handles univariate observations only. The `PrequentialTrace`
-tensor shape (§7) is defined from the start to admit multivariate samples so
-that energy-score support can drop in later without schema migration.
+For multivariate / panel predictives, CRPS generalizes to the energy score; see
+§11. v1 handles univariate observations only. The `PrequentialTrace` tensor
+shape (§7) is defined from the start to admit multivariate samples so that
+energy-score support can drop in later without schema migration.
 
 ### 4.5 Recommended reading
 
@@ -324,8 +322,8 @@ $[0,1]$ under correct calibration (Dawid 1984; Gneiting, Balabdaoui & Raftery
 
 For discrete observations (count data), point-estimate PIT exhibits stair-step
 artifacts near integer values. v1 uses point-estimate PIT with this caveat
-documented in the histogram output; the randomized PIT of Czado, Gneiting &
-Held (2009) that removes these artifacts ships in Part II (§12).
+documented in the histogram output; the randomized PIT of Czado, Gneiting & Held
+(2009) that removes these artifacts ships in Part II (§12).
 
 ### 5.2 PSIS $\hat k$ — deferred to Part II
 
@@ -377,9 +375,9 @@ $$
 $$
 
 The log-e-process is exactly the paired difference of prequential log scores.
-camdl already computes this as a byproduct of the `compare` table (see §8) —
-the e-value framing is a reinterpretation, not a new computation. It surfaces
-as columns when the user passes `--show=betting`, not as a separate subcommand
+camdl already computes this as a byproduct of the `compare` table (see §8) — the
+e-value framing is a reinterpretation, not a new computation. It surfaces as
+columns when the user passes `--show=betting`, not as a separate subcommand
 path.
 
 ### 6.3 Why teach this
@@ -405,15 +403,15 @@ appear as a separate module later.
 ### 6.4 User-interpretation caveat
 
 The bankroll number is easy to misread. "$59.20 at α=0.05" is an objective
-betting statistic, but a user who has not internalized what a supermartingale
-is can report it as if it were a p-value (it isn't) or a Bayes factor (it
-isn't, but closer). Two mitigations:
+betting statistic, but a user who has not internalized what a supermartingale is
+can report it as if it were a p-value (it isn't) or a Bayes factor (it isn't,
+but closer). Two mitigations:
 
 1. When `--show=betting` is invoked, `camdl compare` echoes a one-line
-   interpretation disclaimer beneath the table (e.g. "bankroll numbers
-   assume the baseline's predictive is calibrated; they are not p-values and
-   not Bayes factors; see docs/betting.md for the interpretation contract").
-2. The user-facing docs lead with Shafer (2021) *before* describing the
+   interpretation disclaimer beneath the table (e.g. "bankroll numbers assume
+   the baseline's predictive is calibrated; they are not p-values and not Bayes
+   factors; see docs/betting.md for the interpretation contract").
+2. The user-facing docs lead with Shafer (2021) _before_ describing the
    subcommand flag, not the reverse. The betting framing is pedagogy, not a
    one-click feature.
 
@@ -435,18 +433,18 @@ caveat about what the null is.
 Every inference pipeline produces a `PrequentialTrace` as a first-class output,
 stored in the CAS entry alongside the posterior. Fields:
 
-| Field            | Type                | Description                                                                |
-| ---------------- | ------------------- | -------------------------------------------------------------------------- |
-| `t0`             | `usize`             | Minimum window before scoring starts                                       |
-| `times`          | `Vec<Time>`         | Time index for each scored step, length $T - t_0$                          |
-| `y_obs`          | `Tensor`            | Observed value at each scored step                                         |
-| `y_pred_samples` | `Tensor`            | Predictive samples (shape: $[T - t_0, S, d]$, with $d=1$ in v1)            |
-| `log_score`      | `Vec<f64>`          | Per-step log score $\log \hat p(y_{t+1}\mid y_{1:t})$                      |
-| `crps`           | `Vec<f64>`          | Per-step CRPS                                                              |
-| `pit`            | `Vec<f64>`          | Per-step PIT value $u_t$                                                   |
-| `ess`            | `Vec<f64>`          | Per-step filter ESS                                                        |
-| `provenance`     | `enum`              | `PlugIn` in v1; Part II adds `LfoPsis`, `FullyBayesian`, `PseudoPosterior` |
-| `warnings`       | `Vec<Warning>`      | Degenerate filter, under-identified $t_0$, etc.                            |
+| Field            | Type           | Description                                                                |
+| ---------------- | -------------- | -------------------------------------------------------------------------- |
+| `t0`             | `usize`        | Minimum window before scoring starts                                       |
+| `times`          | `Vec<Time>`    | Time index for each scored step, length $T - t_0$                          |
+| `y_obs`          | `Tensor`       | Observed value at each scored step                                         |
+| `y_pred_samples` | `Tensor`       | Predictive samples (shape: $[T - t_0, S, d]$, with $d=1$ in v1)            |
+| `log_score`      | `Vec<f64>`     | Per-step log score $\log \hat p(y_{t+1}\mid y_{1:t})$                      |
+| `crps`           | `Vec<f64>`     | Per-step CRPS                                                              |
+| `pit`            | `Vec<f64>`     | Per-step PIT value $u_t$                                                   |
+| `ess`            | `Vec<f64>`     | Per-step filter ESS                                                        |
+| `provenance`     | `enum`         | `PlugIn` in v1; Part II adds `LfoPsis`, `FullyBayesian`, `PseudoPosterior` |
+| `warnings`       | `Vec<Warning>` | Degenerate filter, under-identified $t_0$, etc.                            |
 
 Part II adds: `psis_k_hat: Option<Vec<f64>>`, `refit_flags: Option<Vec<bool>>`,
 and randomized-PIT seed fields. They are all `Option` so the v1 schema is a
@@ -473,13 +471,13 @@ result.prequential.pit_histogram(bins=10)    # returns binned counts
 #### Default `t0`
 
 $t_0$ selection is load-bearing: scores made against an unidentified MLE are
-dominated by initialization variance and lose power to rank models. The
-default is tiered:
+dominated by initialization variance and lose power to rank models. The default
+is tiered:
 
 **Tier 0 (this release, default): model-structure heuristic with warning.**
 $t_0$ defaults to a value derived from the model's structural identifiability
-(e.g., "3–5 rising-limb observations" for SIR-type). This is a *guess about
-model class*, not a measurement of the current fit, and the fit log says so
+(e.g., "3–5 rising-limb observations" for SIR-type). This is a _guess about
+model class_, not a measurement of the current fit, and the fit log says so
 explicitly:
 
 ```
@@ -488,46 +486,45 @@ note: using structural-heuristic t0=5 for SIR-type model.
       not been verified. Run with --compute-t0-threshold to check.
 ```
 
-User-supplied `t0` values below the structural heuristic emit a warning; below
-1 they error.
+User-supplied `t0` values below the structural heuristic emit a warning; below 1
+they error.
 
-**Tier 1 (opt-in, `--compute-t0-threshold`): identifiability sweep.** The
-sweep runs the MLE pipeline on $y_{1:t}$ for increasing $t$ from multiple
-random starts, and selects the smallest $t$ at which
+**Tier 1 (opt-in, `--compute-t0-threshold`): identifiability sweep.** The sweep
+runs the MLE pipeline on $y_{1:t}$ for increasing $t$ from multiple random
+starts, and selects the smallest $t$ at which
 
 1. $\|\hat\theta_t - \hat\theta_{t+1}\|$ falls below tolerance on the
    appropriate scale (the MLE has stabilized as more data arrives), AND
-2. The between-start spread of $\hat\theta_t$ falls below tolerance (the
-   optimum is identified, not just re-approached from similar initializations).
+2. The between-start spread of $\hat\theta_t$ falls below tolerance (the optimum
+   is identified, not just re-approached from similar initializations).
 
 Both conditions must hold. (a) alone is defeated by correlated initialization;
 between-start spread is the operational detector of non-identifiability. The
-model-structure heuristic is used only as an *initial guess for the sweep
-range*; it is not defensible as a definition of $t_0$ because it describes
+model-structure heuristic is used only as an _initial guess for the sweep
+range_; it is not defensible as a definition of $t_0$ because it describes
 identifiability in principle, not of the current fit.
 
 Under `--compute-t0-threshold`, a user-supplied `t0` below the computed
 threshold **errors** (not warns); overriding requires
 `--allow-underidentified-t0`. If the MLE trajectory $\hat\theta_t$ has no
-plateau over $t\in[1,T]$, the fit is reported as unidentified and no
-prequential score is computed.
+plateau over $t\in[1,T]$, the fit is reported as unidentified and no prequential
+score is computed.
 
-**Tier 2 (later release, default-to-Tier-1):** Once incremental IF2 caching
-lets the sweep warm-start each $t$ from the $t-1$ fit, the sweep becomes
-cheap enough to default to. Part II §13 spec'ing.
+**Tier 2 (later release, default-to-Tier-1):** Once incremental IF2 caching lets
+the sweep warm-start each $t$ from the $t-1$ fit, the sweep becomes cheap enough
+to default to. Part II §13 spec'ing.
 
-The Tier-0 warning is the minimum defensible discipline for v1. The Tier-1
-sweep catches the class of failure where 0.2 nats of training-ll difference
-amplifies into 50+ nats of holdout-ll difference from unidentified nuisance
-parameters — a failure mode we characterized in testing during the
-boarding-school rising-edge holdout experiment.
+The Tier-0 warning is the minimum defensible discipline for v1. The Tier-1 sweep
+catches the class of failure where 0.2 nats of training-ll difference amplifies
+into 50+ nats of holdout-ll difference from unidentified nuisance parameters — a
+failure mode we characterized in testing during the boarding-school rising-edge
+holdout experiment.
 
-**Cost model note.** The Tier-1 sweep with $T$ fit points and $M$ starts is
-$TM$ additional IF2 runs. For small problems ($T=14$, $M=4$) this is cheap.
-For large problems ($T \approx 500$) it is prohibitive; users want
-`--t0 <value>` with an explicit choice instead. That is fine: the point is
-to refuse silent defaults that are hard to defend post-hoc, not to force the
-sweep.
+**Cost model note.** The Tier-1 sweep with $T$ fit points and $M$ starts is $TM$
+additional IF2 runs. For small problems ($T=14$, $M=4$) this is cheap. For large
+problems ($T \approx 500$) it is prohibitive; users want `--t0 <value>` with an
+explicit choice instead. That is fine: the point is to refuse silent defaults
+that are hard to defend post-hoc, not to force the sweep.
 
 ### 7.2 Pipeline notes (v1)
 
@@ -536,8 +533,8 @@ sweep.
   understood as conditional on a point estimate.
 
 Part II (§10–11) extends this to `PseudoPosterior` (from the IF2 chain cloud),
-`LfoPsis` (for PMMH/PGAS with PSIS reweighting), and `FullyBayesian`
-(full refit at each $t$).
+`LfoPsis` (for PMMH/PGAS with PSIS reweighting), and `FullyBayesian` (full refit
+at each $t$).
 
 ### 7.3 What gets persisted to CAS
 
@@ -569,14 +566,14 @@ per-CAS; overwrites require `--force`.
 `--baseline` sets the reference model against which $\Delta$elpd (and,
 optionally, the e-process) is computed. Default is the highest-elpd model
 ("best-baseline"); set explicitly to any `<ref>` for scientific comparisons
-against a deliberate reference (e.g., a deterministic model when the question
-is "does stochasticity earn its keep"). This matches the convention of
+against a deliberate reference (e.g., a deterministic model when the question is
+"does stochasticity earn its keep"). This matches the convention of
 `loo_compare` in R, which users coming from brms/rstanarm will recognize.
 
 There is **no separate pairwise subcommand.** The e-process / betting framing
 (see §6) is available on the standard comparison table by passing
-`--show=betting`; it adds columns (cumulative log-bankroll, first-crossing
-step) without changing the command path. See §8.2 for the display.
+`--show=betting`; it adds columns (cumulative log-bankroll, first-crossing step)
+without changing the command path. See §8.2 for the display.
 
 ### 8.2 Default table (multi-model, $\geq 2$ models)
 
@@ -624,8 +621,8 @@ Design choices made deliberately:
 
 ### 8.3 Betting display mode (`--show=betting`)
 
-Invoking `camdl compare <refs...> --show=betting` adds e-process columns to
-the standard table. No separate subcommand:
+Invoking `camdl compare <refs...> --show=betting` adds e-process columns to the
+standard table. No separate subcommand:
 
 ```
 $ camdl compare he2010-det he2010-stoch --show=betting
@@ -640,41 +637,41 @@ he2010-stoch     pmmh         9    -28.7    +5.5     +4.08      59.2     t=8
   interpretation contract.
 ```
 
-`log E_T` = $\sum_t \Delta\ell_t$ (cumulative log-bankroll), $E_T = \exp(\log E_T)$,
-"First α=0.05" = smallest $t$ where $\mathcal{E}_t \geq 20$ (first crossing of
-the Ville bound at level 0.05). The interpretation disclaimer is emitted
-automatically (§6.4).
+`log E_T` = $\sum_t \Delta\ell_t$ (cumulative log-bankroll),
+$E_T = \exp(\log E_T)$, "First α=0.05" = smallest $t$ where
+$\mathcal{E}_t \geq 20$ (first crossing of the Ville bound at level 0.05). The
+interpretation disclaimer is emitted automatically (§6.4).
 
 ### 8.4 Structural-fairness preflight
 
 Before rendering, `compare` refuses comparisons that are structurally unfair.
 Each refusal is a hard error (not a footnote) with an explicit override flag:
 
-| Condition | Override |
-|---|---|
-| Different `data_hash` across fits (data was edited between runs) | `--allow-data-mismatch` |
-| Different observation models (e.g. Poisson vs continuous density) | `--allow-obs-model-mismatch` |
-| Different particle counts (PF noise is differently biased) | `--allow-particle-mismatch` |
-| Different backends or `dt` | `--allow-backend-mismatch` |
+| Condition                                                                               | Override                     |
+| --------------------------------------------------------------------------------------- | ---------------------------- |
+| Different `data_hash` across fits (data was edited between runs)                        | `--allow-data-mismatch`      |
+| Different observation models (e.g. Poisson vs continuous density)                       | `--allow-obs-model-mismatch` |
+| Different particle counts (PF noise is differently biased)                              | `--allow-particle-mismatch`  |
+| Different backends or `dt`                                                              | `--allow-backend-mismatch`   |
 | `T_score` differs across rows (already in §8.2, override: `--allow-mismatched-horizon`) | `--allow-mismatched-horizon` |
 
-Silent comparison of apples to oranges is the class of failure that produces
-an unreproducible paper table defended by "it's what the tool said." The
-override flags are deliberately verbose so they show up in a command history
-or in a shell-history review.
+Silent comparison of apples to oranges is the class of failure that produces an
+unreproducible paper table defended by "it's what the tool said." The override
+flags are deliberately verbose so they show up in a command history or in a
+shell-history review.
 
 ### 8.5 Anti-pattern detection
 
 `compare` also flags common user mistakes:
 
-| Pattern | Action |
-|---|---|
-| `t0 = 0` (no burn-in) | error; require `--allow-no-burnin` |
-| All models have identical elpd to 3 decimals | error (probable seed / cache collision) |
-| Same seed across models but different `n_particles` | warn (paired SE biased downward) |
-| One model's MLE converged at a parameter bound, others did not | warn per-parameter |
-| User-supplied `t0` below the structural-heuristic default | warn |
-| User-supplied `t0` below `--compute-t0-threshold` result | error; override `--allow-underidentified-t0` |
+| Pattern                                                        | Action                                       |
+| -------------------------------------------------------------- | -------------------------------------------- |
+| `t0 = 0` (no burn-in)                                          | error; require `--allow-no-burnin`           |
+| All models have identical elpd to 3 decimals                   | error (probable seed / cache collision)      |
+| Same seed across models but different `n_particles`            | warn (paired SE biased downward)             |
+| One model's MLE converged at a parameter bound, others did not | warn per-parameter                           |
+| User-supplied `t0` below the structural-heuristic default      | warn                                         |
+| User-supplied `t0` below `--compute-t0-threshold` result       | error; override `--allow-underidentified-t0` |
 
 These are things the tool can learn once so users don't have to.
 
@@ -697,8 +694,8 @@ show = "betting"
 alpha = 0.05
 ```
 
-Then `camdl compare --preset main` and `camdl compare --preset betting_main`
-run the canonical comparisons. Presets live in the repo next to the models.
+Then `camdl compare --preset main` and `camdl compare --preset betting_main` run
+the canonical comparisons. Presets live in the repo next to the models.
 
 ### 8.7 CAS integration: strict non-recomputation
 
@@ -717,28 +714,27 @@ effects are the class of bug that produces unreproducible paper tables.
 
 **Plotting is explicitly not a `compare` subcommand.** The Rust CLI produces
 computation and structured text; figure rendering happens in the companion
-Python package `camdl_diag`, which consumes `--format json` and renders with
-the book's matplotlib conventions. This separation has three benefits:
+Python package `camdl_diag`, which consumes `--format json` and renders with the
+book's matplotlib conventions. This separation has three benefits:
 
-1. **Keeps the CLI minimal.** No matplotlib dependency in the Rust binary;
-   no opinionated default styling that users have to fight.
+1. **Keeps the CLI minimal.** No matplotlib dependency in the Rust binary; no
+   opinionated default styling that users have to fight.
 2. **Reproducibility without tool.** The JSON is content-addressable and
-   archivable; figures regenerate from the JSON without a camdl binary
-   present.
+   archivable; figures regenerate from the JSON without a camdl binary present.
 3. **Matches the existing split.** Book repo already has `styles.py`,
    `profile_plot.py`, `plot_traces.py` as proto-`camdl_diag`.
 
-The JSON schema is therefore **the plotting contract** and must be rich
-enough for downstream figures: per-step log score and CRPS arrays, per-step
-PIT values, per-step ESS, per-step cumulative e-process (if `--show=betting`
-was requested), full warning list, and a reference to the
-`PrequentialTrace`'s `y_pred_samples` tensor in CAS (so the Python side can
-compute custom scoring rules on the same particles without re-running the
-PF). The schema is versioned and non-breaking within a major release.
+The JSON schema is therefore **the plotting contract** and must be rich enough
+for downstream figures: per-step log score and CRPS arrays, per-step PIT values,
+per-step ESS, per-step cumulative e-process (if `--show=betting` was requested),
+full warning list, and a reference to the `PrequentialTrace`'s `y_pred_samples`
+tensor in CAS (so the Python side can compute custom scoring rules on the same
+particles without re-running the PF). The schema is versioned and non-breaking
+within a major release.
 
 All formats include the warnings and the scoring window in a machine-readable
-form so that downstream tools (including the white-paper build) cannot
-silently drop them.
+form so that downstream tools (including the white-paper build) cannot silently
+drop them.
 
 ---
 
@@ -776,9 +772,9 @@ evidence at α=0.05" — is honest about scale in a way that a bare p-value is n
 
 The items below are committed design, deferred implementation. They do not
 affect v1 semantics; the v1 `PrequentialTrace` schema is a forward-compatible
-prefix of the v2 schema (new fields are `Option<T>` where absence means
-"v1 trace"). The v1 `provenance = PlugIn` value is preserved verbatim; Part II
-adds enum variants but does not change existing ones.
+prefix of the v2 schema (new fields are `Option<T>` where absence means "v1
+trace"). The v1 `provenance = PlugIn` value is preserved verbatim; Part II adds
+enum variants but does not change existing ones.
 
 ## 10. Fully Bayesian predictive (LFO-PSIS)
 
@@ -799,61 +795,61 @@ $$
 
 giving weights $w^{(s)} \propto 1/p(y_{t+1:T} \mid \theta^{(s)}, y_{1:t})$ for
 posterior draws $\theta^{(s)} \sim \pi(\theta \mid y_{1:T})$. Weights are
-stabilized with Pareto-smoothed importance sampling (PSIS; Vehtari et al.
-2024). When $\hat k > 0.7$ at some $t$, camdl refits MCMC at that $t$ and
-resets the reference distribution. Typically cuts 10 refits to 2–3.
+stabilized with Pareto-smoothed importance sampling (PSIS; Vehtari et al. 2024).
+When $\hat k > 0.7$ at some $t$, camdl refits MCMC at that $t$ and resets the
+reference distribution. Typically cuts 10 refits to 2–3.
 
 For PMMH and PGAS specifically, the partial-data likelihood
 $p(y_{t+1:T}\mid\theta^{(s)}, y_{1:t})$ is a bootstrap-filter replay on each
-posterior draw — no new MCMC chain per posterior sample. `provenance`
-variants `LfoPsis` and (for budget-exhausted cases where all refits
-complete) `FullyBayesian` distinguish the execution path.
+posterior draw — no new MCMC chain per posterior sample. `provenance` variants
+`LfoPsis` and (for budget-exhausted cases where all refits complete)
+`FullyBayesian` distinguish the execution path.
 
 Pipeline notes:
 
 - **PMMH, CPM-PMMH.** `provenance = LfoPsis` by default.
 - **PGAS / NUTS.** Same as PMMH. Because PGAS mixes in $\theta$-space better
-  than PMMH past $K \approx 600$ observations, the PSIS diagnostics look
-  better at equivalent compute.
+  than PMMH past $K \approx 600$ observations, the PSIS diagnostics look better
+  at equivalent compute.
 
 ## 11. Pseudo-posterior from IF2 cloud
 
 IF2 under cooling produces a final-iteration chain distribution that is a
-*rough* approximation to the posterior. Calling it `plug_in` (the v1 default)
-throws information away: the final particle cloud across chains has
-meaningful spread that captures parameter uncertainty, even though it is not
-a well-calibrated posterior.
+_rough_ approximation to the posterior. Calling it `plug_in` (the v1 default)
+throws information away: the final particle cloud across chains has meaningful
+spread that captures parameter uncertainty, even though it is not a
+well-calibrated posterior.
 
 v2 offers this as a third provenance variant `PseudoPosterior`, selected by
 `camdl fit --pseudo-posterior` or `camdl prequential --pseudo-posterior`.
 LFO-PSIS runs against the cloud as if it were a posterior, with a standing
 caveat in the docs ("uncalibrated posterior approximation; use when PMMH is
-infeasible; report IF2 + LFO-PSIS scores as such"). Strictly better than
-plug-in for the common case where PMMH is too expensive.
+infeasible; report IF2 + LFO-PSIS scores as such"). Strictly better than plug-in
+for the common case where PMMH is too expensive.
 
 The provenance label forces the caveat to travel with the score.
 
 ## 12. Randomized PIT for discrete observations
 
-For count data (the dominant case in epidemic applications), point-estimate
-PIT exhibits stair-step artifacts near integer values. The randomized PIT of
-Czado, Gneiting & Held (2009) corrects this:
+For count data (the dominant case in epidemic applications), point-estimate PIT
+exhibits stair-step artifacts near integer values. The randomized PIT of Czado,
+Gneiting & Held (2009) corrects this:
 
 $$
 u_t = F_{t+1\mid t}(y_{t+1} - 1) + v_t\big[F_{t+1\mid t}(y_{t+1}) - F_{t+1\mid t}(y_{t+1} - 1)\big], \quad v_t \sim \text{Uniform}(0,1),
 $$
 
-which recovers uniformity under correct calibration of the discrete
-predictive. v2 adds a `randomization_seed: Option<u64>` field to
-`PrequentialTrace` so the randomization is reproducible; v1 simply uses
-point-estimate PIT with a documented stair-step caveat.
+which recovers uniformity under correct calibration of the discrete predictive.
+v2 adds a `randomization_seed: Option<u64>` field to `PrequentialTrace` so the
+randomization is reproducible; v1 simply uses point-estimate PIT with a
+documented stair-step caveat.
 
 ## 13. Identifiability sweep (Tier-1 $t_0$ default)
 
 v1 defaults $t_0$ to a model-structure heuristic with a warning (§7.1 Tier 0)
-and offers `--compute-t0-threshold` as an opt-in. v2 makes the sweep the
-default once incremental IF2 caching (warm-starting each $t$ from the $t-1$
-fit's MLE) has made the cost tractable:
+and offers `--compute-t0-threshold` as an opt-in. v2 makes the sweep the default
+once incremental IF2 caching (warm-starting each $t$ from the $t-1$ fit's MLE)
+has made the cost tractable:
 
 Under Tier 1 as default, a user-supplied `t0` below the computed threshold
 errors; override requires `--allow-underidentified-t0`. If the MLE trajectory
@@ -865,66 +861,66 @@ unidentified and no prequential score is computed.
 LFO-specific. Thresholds follow Vehtari et al. (2024):
 
 - $\hat k \leq 0.7$: importance weights reliable, reweight is used.
-- $\hat k > 0.7$: refit triggered; reference distribution reset; trace
-  records the refit.
+- $\hat k > 0.7$: refit triggered; reference distribution reset; trace records
+  the refit.
 
 **Silent fallback is forbidden.** If refitting fails (e.g. budget exhausted),
 the trace records a failure flag at that $t$ and `camdl compare` refuses to
-render the score without `--allow-degenerate`. The anti-pattern we are
-avoiding: silently falling back to the full-data $\theta$ posterior, which
-gives an optimistic score and a user who does not know it.
+render the score without `--allow-degenerate`. The anti-pattern we are avoiding:
+silently falling back to the full-data $\theta$ posterior, which gives an
+optimistic score and a user who does not know it.
 
 v2 adds fields `psis_k_hat: Option<Vec<f64>>` and
-`refit_flags: Option<Vec<bool>>` to `PrequentialTrace`. v1 traces have both
-as `None`.
+`refit_flags: Option<Vec<bool>>` to `PrequentialTrace`. v1 traces have both as
+`None`.
 
 ## 15. Rolling-origin $k$-step-ahead
 
 For nowcasting workflows where the decision horizon is $k > 1$, v2 supports
 `--horizon k` in `fit` and `prequential`; the filter propagates $k$ steps
 without assimilating before the predictive is emitted. The score is then
-$\sum_t \log p(y_{t+k}\mid y_{1:t})$. The `compare` table UX is unchanged
-except that `T_score` adjusts to the reduced count of $k$-step predictions.
+$\sum_t \log p(y_{t+k}\mid y_{1:t})$. The `compare` table UX is unchanged except
+that `T_score` adjusts to the reduced count of $k$-step predictions.
 
-Note that the e-value / betting interpretation in §6 remains valid for
-$k$-step predictives — the supermartingale property holds — but the bets
-being made are block-predictive, not step-predictive. Worth explicit mention
-in the v2 user docs.
+Note that the e-value / betting interpretation in §6 remains valid for $k$-step
+predictives — the supermartingale property holds — but the bets being made are
+block-predictive, not step-predictive. Worth explicit mention in the v2 user
+docs.
 
 ## 16. Energy score and panel / spatial comparison
 
-For multivariate predictives (e.g. Nigeria LGA panels), CRPS generalizes to
-the energy score (Gneiting & Raftery 2007),
+For multivariate predictives (e.g. Nigeria LGA panels), CRPS generalizes to the
+energy score (Gneiting & Raftery 2007),
 
 $$
 \text{ES}(F, y) = \mathbb{E}_F\|Y - y\| - \tfrac{1}{2}\mathbb{E}_F\|Y - Y'\|,
 $$
 
 which handles cross-unit dependence natively. Summing univariate CRPS across
-LGAs would discard exactly the spatial correlation structure the model is
-meant to capture. `PrequentialTrace`'s `y_pred_samples` tensor is defined in
-v1 with shape $[T - t_0, S, d]$ already ($d=1$ in v1, $d > 1$ in v2) so
-energy score drops in without schema migration.
+LGAs would discard exactly the spatial correlation structure the model is meant
+to capture. `PrequentialTrace`'s `y_pred_samples` tensor is defined in v1 with
+shape $[T - t_0, S, d]$ already ($d=1$ in v1, $d > 1$ in v2) so energy score
+drops in without schema migration.
 
-The v2 `compare` UX for multi-unit data — whether per-unit scores are
-summarized with a scalar, a per-unit table, or a small-multiples panel — is
-an open question to be resolved with a dedicated design round.
+The v2 `compare` UX for multi-unit data — whether per-unit scores are summarized
+with a scalar, a per-unit table, or a small-multiples panel — is an open
+question to be resolved with a dedicated design round.
 
 ## 17. Other deferred items
 
-**Two-window / train-gap-test.** Available as a non-default split strategy
-for users who specifically want it, but not recommended for single-outbreak
-data: a train-gap-test split introduces an unmotivated discontinuity in a
+**Two-window / train-gap-test.** Available as a non-default split strategy for
+users who specifically want it, but not recommended for single-outbreak data: a
+train-gap-test split introduces an unmotivated discontinuity in a
 trend-dominated series. Its use case is serial-autocorrelation leakage in
 stationary series, which is not the setting for most compartmental models.
 
 **Stacking / model averaging.** Separate command `camdl stack`. Intentionally
-not a default output of `compare` in either v1 or v2. Users who want an
-ensemble workflow opt in explicitly.
+not a default output of `compare` in either v1 or v2. Users who want an ensemble
+workflow opt in explicitly.
 
-**Conformal prediction.** A *different* framework from testing-by-betting
-despite being frequently conflated with it. A separate module may appear
-once the core prequential UX stabilizes; out of scope for v2.
+**Conformal prediction.** A _different_ framework from testing-by-betting
+despite being frequently conflated with it. A separate module may appear once
+the core prequential UX stabilizes; out of scope for v2.
 
 ---
 
