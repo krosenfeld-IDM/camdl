@@ -654,6 +654,111 @@ fn gh76_binomial_obs_grad_matches_fd() {
     );
 }
 
+/// Build a BetaBinomial-obs version of seir_observations programmatically.
+///
+/// Models reported cases as `k ~ BetaBinomial(n = incidence, α, β)` — the
+/// overdispersed-reporting analogue of the Binomial model, where the
+/// per-case reporting probability itself varies (cluster/household
+/// heterogeneity). `α` and `β` are exposed as estimated parameters
+/// (`a_obs`, `b_obs`) so the gradient's chain-rule path through
+/// `eval_resolved_deriv` is exercised on each in turn. Mean is
+/// `n·α/(α+β)` (see `obs_mean_for_likelihood`), which stays well below `n`
+/// for the chosen α, β, so synthetic obs satisfy `k ≤ n`.
+fn build_beta_binomial_seir() -> ir::Model {
+    use ir::expr::*;
+    use ir::observation::*;
+    use ir::parameter::Parameter;
+    let mut model = load_model("../../../ocaml/golden/seir_observations.ir.json");
+    model.observations.retain(|o| o.name == "weekly_cases");
+
+    for (name, val) in [("a_obs", 2.0), ("b_obs", 8.0)] {
+        model.parameters.push(Parameter {
+            name: name.to_string(),
+            value: Some(val),
+            bounds: Some((0.01, 1000.0)),
+            prior: None,
+            hierarchical: None,
+            transform: None,
+            initial_value: None,
+            param_kind: Some("positive".to_string()),
+            param_dim: None,
+        });
+    }
+
+    for om in &mut model.observations {
+        if let Likelihood::NegBinomial(_) = &om.likelihood {
+            // n = projected (weekly incidence — the FlowSum).
+            // α = a_obs, β = b_obs. Mean = n·a_obs/(a_obs+b_obs) = n·0.2.
+            om.likelihood = Likelihood::BetaBinomial(BetaBinomialLikelihood {
+                n: Expr::Projected(ProjectedExpr { projected: () }),
+                alpha: Expr::Param(ParamExpr { param: "a_obs".to_string() }),
+                beta: Expr::Param(ParamExpr { param: "b_obs".to_string() }),
+            });
+        }
+    }
+    model
+}
+
+#[test]
+fn gh76_beta_binomial_obs_grad_matches_fd() {
+    // gh#76 residual. The BetaBinomial dispatch arm in
+    // `eval_likelihood_resolved_grad` was a documented no-op; this test
+    // pins it end-to-end through `complete_data_loglik_grad`.
+    //
+    // RED→GREEN evidence: against the pre-wiring no-op, the analytic
+    // gradient on a_obs / b_obs is identically 0 while the FD is nonzero,
+    // so rel_err ≈ 1 and `fd_check` fails. After wiring, both arms agree.
+    //
+    // The chain-rule form differs from the other arms:
+    //   d/dα [log C + lgamma(k+α) + lgamma(n−k+β) + lgamma(α+β)
+    //         − lgamma(n+α+β) − lgamma(α) − lgamma(β)]
+    //   = ψ(k+α) − ψ(α) − ψ(n+α+β) + ψ(α+β)   (and the β-mirror)
+    // multiplied by d(α)/d(θ_k) [resp. d(β)/d(θ_k)] via `eval_resolved_deriv`.
+    let mut model = build_beta_binomial_seir();
+    set_param_defaults(&mut model, &[
+        ("beta", 0.3), ("sigma", 0.2), ("gamma", 0.1),
+        ("rho", 0.5), ("k", 5.0), ("p_detect", 0.8),
+        ("N0", 10000.0), ("I0", 10.0),
+        ("a_obs", 2.0), ("b_obs", 8.0),
+    ]);
+    model.simulation.t_end = 60.0;
+    let compiled = Arc::new(CompiledModel::new(model).unwrap());
+    let (params, param_names) = build_params_and_names(&compiled);
+
+    let t_start = compiled.model.simulation.t_start;
+    let t_end = compiled.model.simulation.t_end;
+    let dt = 1.0;
+    let mut rng = StatefulRng::new(48);
+    let trajectory = simulate_reference(&compiled, &params, t_end, dt, &mut rng).unwrap();
+    let n_substeps = trajectory.substeps.len();
+
+    let (substep_idx, obs_times) = obs_substep_indices_regular(
+        t_start, dt, n_substeps, 7.0, 7.0, t_end,
+    );
+
+    let per_stream = project_trajectory_to_obs(&compiled, &trajectory, &substep_idx, &params, dt);
+    let obs_model = build_obs_model(compiled.clone(), &obs_times, per_stream);
+    let observations: Vec<Observation> = obs_times.iter()
+        .map(|&t| Observation { time: t, value: 0.0 }).collect();
+
+    let n_params = compiled.param_index.len();
+    let estimated_indices: Vec<usize> = (0..n_params).collect();
+    let a_obs_idx = compiled.param_index["a_obs"];
+    let b_obs_idx = compiled.param_index["b_obs"];
+    let beta_idx = compiled.param_index["beta"];
+
+    fd_check(
+        &compiled, &trajectory, &observations, &obs_model,
+        &params, &param_names, &estimated_indices,
+        // a_obs (BetaBinomial α arg) and b_obs (β arg) are the new terms;
+        // beta is the regression check that the rate-density gradient is
+        // unaffected.
+        &[a_obs_idx, b_obs_idx, beta_idx],
+        dt, 1e-4,
+        "gh76_beta_binomial_obs",
+    );
+}
+
 fn run_discretized_normal_grad_fd(tail_sigmas: f64, name: &str) {
     let mut model = build_discretized_normal_seir();
     set_param_defaults(&mut model, &[

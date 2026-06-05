@@ -14,6 +14,7 @@ use crate::state::{IntState, RealState};
 use crate::inference::obs_loglik::{
     negbin_logpmf, discretized_normal_logpmf_tol, poisson_logpmf, DEFAULT_TOL,
     negbin_logpmf_grad, discretized_normal_logpmf_grad, poisson_logpmf_grad,
+    beta_binomial_logpmf_grad,
 };
 use crate::inference::types::LOG_PROB_FLOOR;
 use ir::observation::ObservationModel;
@@ -218,14 +219,26 @@ pub(crate) fn eval_likelihood_resolved_grad(
                 }
             }
         }
-        ResolvedLikelihood::BetaBinomial { n: _, alpha: _, beta: _ } => {
-            // BetaBinomial gradient not yet implemented in obs_loglik.
-            // gh#76's reproducer does not exercise BetaBinomial. Estimating a
-            // BetaBinomial-bound param with PGAS+NUTS would land in the same
-            // silent-zero-gradient regime that gh#76 was filed against, but
-            // is rare in practice. Tracked as a follow-up to gh#76.
-            //
-            // No-op: leave grad unchanged.
+        ResolvedLikelihood::BetaBinomial { n, alpha, beta } => {
+            // log L = log C(n,k) + lgamma(k+α) + lgamma(n−k+β) + lgamma(α+β)
+            //         − lgamma(n+α+β) − lgamma(α) − lgamma(β)
+            // n is integer-valued (rounded); treat it as constant w.r.t. θ,
+            // exactly as the Binomial arm treats its `n`. The combinatorial
+            // log C(n,k) term carries no α/β dependence. The remaining
+            // gradient w.r.t. (α, β) comes from `beta_binomial_logpmf_grad`,
+            // then chain-rules to each estimated param via the α/β arg
+            // expressions.
+            let n_val = eval_resolved(n, &ctx);
+            let alpha_val = eval_resolved(alpha, &ctx);
+            let beta_val = eval_resolved(beta, &ctx);
+            let n_round = n_val.round().max(0.0);
+            let (d_alpha, d_beta) =
+                beta_binomial_logpmf_grad(observed, n_round, alpha_val, beta_val);
+            for (i, &model_idx) in estimated_to_model.iter().enumerate() {
+                let da = eval_resolved_deriv(alpha, model_idx, &ctx);
+                let db = eval_resolved_deriv(beta, model_idx, &ctx);
+                grad[i] += d_alpha * da + d_beta * db;
+            }
         }
         ResolvedLikelihood::Bernoulli { p } => {
             // log L = log(p)         if observed > 0.5
