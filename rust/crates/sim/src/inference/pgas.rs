@@ -1276,6 +1276,26 @@ pub fn run_pgas(
     let d = if2_params.len();
     assert_eq!(d, priors.len(), "priors must match if2_params length");
 
+    // gh#175: PGAS does not support hierarchical priors. The NUTS gradient
+    // for a hierarchical leaf is stubbed to -inf (Gate 3b — see
+    // `prior_log_density_and_grad_z`), and the MH fallback's non-env
+    // `log_density` is likewise -inf. A hierarchical prior therefore makes
+    // the log-posterior -inf everywhere, silently freezing the chain at its
+    // starting point (100% divergent, 0% acceptance) rather than erroring —
+    // a frozen, warm-started posterior that looks well-mixed. Refuse loudly
+    // until Gate 3b lands; PMMH (`algorithm = pmmh`) supports hierarchical
+    // priors today.
+    if let Some(i) = priors.iter().position(|p| matches!(p, Prior::Hierarchical(_))) {
+        let pname = if2_params.get(i).map(|p| p.name.as_str()).unwrap_or("<unknown>");
+        return Err(SimError::Validation(format!(
+            "PGAS does not support hierarchical priors (parameter '{pname}'): the \
+             NUTS gradient for hierarchical leaves is not yet implemented (Gate 3b), \
+             so the chain would freeze at its starting point instead of mixing. Use \
+             `algorithm = pmmh` for hierarchical models, or give '{pname}' a \
+             non-hierarchical prior."
+        )));
+    }
+
     let mut rng = StatefulRng::new(seed);
     let mut current_params = base_params.to_vec();
     let t_end = observations.last().map_or(
