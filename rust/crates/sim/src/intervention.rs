@@ -137,13 +137,9 @@ pub fn inject_event_deltas(
                 Action::Add(aa) => {
                     let raw = resolved_val;
                     let n = raw.round() as i64;
-                    {
-                        use std::sync::OnceLock;
-                        static TRACE: OnceLock<bool> = OnceLock::new();
-                        if *TRACE.get_or_init(|| std::env::var("CAMDL_TRACE_STEPS").is_ok_and(|v| v == "1")) {
-                            eprintln!("EVENT '{}' at t={:.1}: add {} += {} (raw={:.2})",
-                                iv.name, t_end, aa.compartment, n, raw);
-                        }
+                    if crate::chain_binomial::trace_enabled() {
+                        eprintln!("EVENT '{}' at t={:.1}: add {} += {} (raw={:.2})",
+                            iv.name, t_end, aa.compartment, n, raw);
                     }
                     if let Some(&global) = model.comp_index.get(aa.compartment.as_str()) {
                         if let Some(local) = model.global_to_int[global] {
@@ -159,6 +155,10 @@ pub fn inject_event_deltas(
                     ) {
                         if let (Some(sl), Some(dl)) = (model.global_to_int[sg], model.global_to_int[dg]) {
                             let delta = (snapshot.counts[sl] as f64 * frac).floor() as i64;
+                            if crate::chain_binomial::trace_enabled() {
+                                eprintln!("EVENT '{}' at t={:.1}: transfer {} -> {} of {} (frac={:.2})",
+                                    iv.name, t_end, ft.src, ft.dst, delta, frac);
+                            }
                             pending_deltas.push((sl, -delta));
                             pending_deltas.push((dl, delta));
                         }
@@ -172,6 +172,10 @@ pub fn inject_event_deltas(
                     ) {
                         if let (Some(sl), Some(dl)) = (model.global_to_int[sg], model.global_to_int[dg]) {
                             let transfer = n.min(snapshot.counts[sl]);
+                            if crate::chain_binomial::trace_enabled() {
+                                eprintln!("EVENT '{}' at t={:.1}: transfer {} -> {} of {} (raw={})",
+                                    iv.name, t_end, at.src, at.dst, transfer, n);
+                            }
                             pending_deltas.push((sl, -transfer));
                             pending_deltas.push((dl, transfer));
                         }
@@ -182,6 +186,10 @@ pub fn inject_event_deltas(
                     if let Some(&global) = model.comp_index.get(sa.compartment.as_str()) {
                         if let Some(local) = model.global_to_int[global] {
                             let old_val = snapshot.counts[local];
+                            if crate::chain_binomial::trace_enabled() {
+                                eprintln!("EVENT '{}' at t={:.1}: set {} = {} (was {})",
+                                    iv.name, t_end, sa.compartment, new_val, old_val);
+                            }
                             pending_deltas.push((local, new_val - old_val));
                         }
                     }
@@ -261,9 +269,14 @@ fn apply_intervention(
             &model.resolved.intervention_exprs[iv_idx][action_idx],
             &EvalCtx { model, int_s, real_s, params, t, dt, projected: None, int_float_override: None },
         );
+        let trace = crate::chain_binomial::trace_enabled();
         match action {
             Action::FractionTransfer(ft) => {
                 let frac = resolved_val.clamp(0.0, 1.0);
+                if trace {
+                    eprintln!("INTERVENTION '{}' at t={:.1}: transfer {} -> {} (frac={:.2})",
+                        iv.name, t, ft.src, ft.dst, frac);
+                }
                 let src_global = *model.comp_index.get(ft.src.as_str())
                     .ok_or_else(|| SimError::UnknownCompartment(ft.src.clone()))?;
                 let dst_global = *model.comp_index.get(ft.dst.as_str())
@@ -288,6 +301,10 @@ fn apply_intervention(
 
             Action::AbsoluteTransfer(at) => {
                 let n = resolved_val;
+                if trace {
+                    eprintln!("INTERVENTION '{}' at t={:.1}: transfer {} -> {} (raw={:.2})",
+                        iv.name, t, at.src, at.dst, n);
+                }
                 let src_global = *model.comp_index.get(at.src.as_str())
                     .ok_or_else(|| SimError::UnknownCompartment(at.src.clone()))?;
                 let dst_global = *model.comp_index.get(at.dst.as_str())
@@ -312,6 +329,10 @@ fn apply_intervention(
 
             Action::Set(sa) => {
                 let v = resolved_val;
+                if trace {
+                    eprintln!("INTERVENTION '{}' at t={:.1}: set {} = {:.2}",
+                        iv.name, t, sa.compartment, v);
+                }
                 let global = *model.comp_index.get(sa.compartment.as_str())
                     .ok_or_else(|| SimError::UnknownCompartment(sa.compartment.clone()))?;
                 if let Some(local) = model.global_to_int[global] {
@@ -324,6 +345,10 @@ fn apply_intervention(
             Action::Add(aa) => {
                 let n = resolved_val;
                 let count = n.round() as i64;
+                if trace {
+                    eprintln!("INTERVENTION '{}' at t={:.1}: add {} += {} (raw={:.2})",
+                        iv.name, t, aa.compartment, count, n);
+                }
                 if count < 0 {
                     // gh#audit-C5 / S2. Action::Add resolving to a
                     // negative value is a config bug — the user wrote
