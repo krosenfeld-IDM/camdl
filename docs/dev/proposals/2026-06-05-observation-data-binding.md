@@ -152,11 +152,12 @@ mod obsdata {
         kind:  TemporalKind,
         cells: Vec<Option<ObsCell>>,    // None = hole; one slot per time in `times`
     }
-    /// Payload of a present cell. A bare scalar today; the variant leaves room
-    /// for likelihoods that need per-observation auxiliary data — e.g. a
-    /// Binomial/BetaBinomial denominator that varies survey-to-survey (see the
-    /// malaria note in §Scope). Extending the payload is additive — the cell
-    /// stays `Option`, holes stay typed.
+    /// Payload of a present cell. `Scalar` is the common case; `Counted`
+    /// carries per-observation auxiliary data — a Binomial/BetaBinomial
+    /// denominator that varies survey-to-survey (the malaria case, §Scope).
+    /// Both ship in this proposal: the cell is `Option<ObsCell>`, so holes stay
+    /// typed regardless of payload, and adding a future payload variant stays
+    /// additive.
     enum ObsCell { Scalar(f64), Counted { value: f64, denom: f64 } }
 
     // ── the report: errors are VALUES, not control flow ──
@@ -165,6 +166,7 @@ mod obsdata {
     pub enum BindIssue {
         LeftoverColumn, LeftoverStratum, OffGridInterval, OffGridInstant,
         Collision, Duplicate, CoarserThanModel, Hole, RejectedValue,
+        UnparseableDate, InconsistentTimeColumn,   // surfaced from the time-column typer
     }
     pub struct BindReport { findings: Vec<Finding>, verdict: Severity }
 
@@ -261,12 +263,75 @@ so the only way to obtain one is through `bind`, so every leftover, collision,
 and hole is accounted for in some `BindReport` before any value reaches
 `log_likelihood`.
 
-## Input format: long-canonical
+## Input format and column typing
 
 One row per _present_ observation: `time, stream, stratum, value`. Sparsity is
 absent rows — no NaN-vs-zero ambiguity. A long-indices/wide-streams sugar
 (`time, patch, afp, es`) is accepted and normalized in, with empty = typed
 `None`, never zero. `BoundObs` is itself "long indices × wide `Option` cells".
+
+The robustness question — _how does the binder know which column is which, and
+how robust is date handling?_ — has two layers, and one of them is already
+solid.
+
+### Column **role** is bound by name, never sniffed from content
+
+A column's role (time / stream / stratum / value) is decided by **matching the
+model's declared names**, not by guessing from cell contents. The model is the
+schema (the "bind, not join" principle applied to columns):
+
+- the **time** column is identified by a fixed header (`time`) or `--time-col`,
+  not by "which column looks date-shaped";
+- a header matching a model **stream** name _is_ that stream; a header matching a
+  **stratum** dimension _is_ that stratum (the multi-stream "column-named loader"
+  already works this way — every column must be named);
+- a header matching **nothing** is a `LeftoverColumn` finding — located,
+  surfaced, Info if it looks like benign metadata (`population`, `notes`), never
+  silently dropped and never content-sniffed into a role.
+
+So "what if it can't figure out a column's type?" has a definite answer: it does
+not guess. An unrecognized column is reported with the column name and a hint
+listing the model's known stream/stratum names. Mis-binding by content heuristic
+— the failure mode that silently routes the wrong column into the likelihood —
+cannot happen.
+
+### Time **cell** typing is already auto + robust (reused, not reinvented)
+
+The whole-column time typer already exists and is the thing `bind` calls — it is
+not new surface. `caltime_load::convert_time_column` /`detect_kind`
+(`caltime_load.rs:100-221`):
+
+- scans the **whole column**: all cells numeric → numeric (day-offsets);
+  all cells ISO-date → dated (converted via the model's `origin` + `time_unit`);
+- a **mixed** column → hard error naming _both_ offending rows
+  (`caltime_load.rs:131-140`; tested: `mixed_column_errors_naming_both_rows`);
+- a **`--time-format numeric|date`** override is honoured _before_ detection
+  (`:154-158`), with a helpful message when `numeric` meets a date cell;
+- a dated column with **no model `origin`** → hard error with the fix hint
+  (`:206-211`; tested: `dated_without_origin_errors`).
+
+So "a date-like column with one bad date in the middle" is already a _located
+hard error_, not a silent coercion: if the bad cell parses as a number the typer
+reports a mixed column naming both rows; if it parses as neither a number nor an
+ISO date, the `detect_kind` else-branch (`:112-125`) reports
+`line N: time cell '…' is neither a number nor an ISO date (reason)`. Under the
+bind, these become `Finding`s (`UnparseableDate` / `InconsistentTimeColumn`,
+Error severity) rather than bare `Result::Err`, so they flow through `BindReport`
+with everything else — but the detection and the located message already exist.
+
+The honest gap is the **invalid-but-date-shaped** cell (`2024-13-45`, `2024-O3-01`
+with a letter O): it hits the right else-branch but there is **no test pinning
+it** today (the suite covers numeric+date mix, not the neither-branch). That is a
+test obligation below, not a missing mechanism.
+
+### Value **cell** typing is the part that needs hardening
+
+`caltime_load` is time-only. The observation **value** cells are parsed with a
+bare `parse::<f64>()` (`pfilter.rs:669,699`) that accepts `"NaN"`/`"inf"` and has
+no located error for a non-numeric value. `bind` adds the typed `RawValue`
+(`Num | Missing | Unparseable`) and a finiteness guard, so a bad value cell is a
+located `RejectedValue` finding and a `NaN`/`inf` can never reach the log-pmf.
+This — not the date path — is where robustness is actually added.
 
 ## Scope: what this unlocks (and what it doesn't)
 
@@ -296,24 +361,25 @@ irregular times? Mostly **yes**, and the part it doesn't reach is named.
 - **Continuous prevalence index — fully covered.** If the datum is a proportion
   scored with Normal/Beta on `I/N`, one scalar per cell suffices; nothing else
   is needed.
-- **Binomial slide-positivity — needs the cell payload.** The rigorous datum is
-  "k positive of n examined," and **n varies survey-to-survey**. Today the
-  Binomial/BetaBinomial denominator is a model expression
-  (`BinomialLikelihood { n: Expr }`, `crates/ir/src/observation.rs`), so a
-  survey-varying n can only be smuggled in as a forcing table indexed by survey
-  time — which splits one logical observation (k of n at t) across the model and
-  the data file. The clean fix is the `ObsCell::Counted { value, denom }`
-  payload above: the denominator rides _with_ the datum in `BoundObs`, and the
-  likelihood reads it per cell. That is an additive extension this proposal
-  reserves room for, not a separate redesign.
+- **Binomial slide-positivity — the `Counted` cell, in scope here.** The
+  rigorous datum is "k positive of n examined," and **n varies
+  survey-to-survey**. Today the Binomial/BetaBinomial denominator is a model
+  expression (`BinomialLikelihood { n: Expr }`, `crates/ir/src/observation.rs`),
+  so a survey-varying n can only be smuggled in as a forcing table indexed by
+  survey time — which splits one logical observation (k of n at t) across the
+  model and the data file. The fix is the `ObsCell::Counted { value, denom }`
+  payload: the denominator rides _with_ the datum in `BoundObs`, and the
+  likelihood reads it per cell. This ships in this proposal (it is a small,
+  self-contained addition to the cell type and the Binomial/BetaBinomial
+  scoring path), so binomial positivity is a first-class target, not a deferral.
 - **The model-side gaps (same as #171).** If prevalence is observed only in a
   subset of patches/age-strata (cross-sectional surveys rarely cover every
   cell), that restriction is the gh#171 subset binder — model-side, separate
   from this loader.
 
-Net: a malaria fit with continuous prevalence at irregular sparse times works on
-this proposal alone; a binomial-positivity fit works once the `Counted` cell
-payload lands; subset-of-strata coverage waits on gh#171.
+Net: a malaria fit with continuous prevalence _or_ binomial slide-positivity at
+irregular sparse times works on this proposal (continuous via `Scalar`,
+positivity via `Counted`); only subset-of-strata coverage waits on gh#171.
 
 ## The shared calendar (gh#98)
 
@@ -338,9 +404,14 @@ battery), per the `rata_die` cross-language rule.
    per-stream accumulator reset for `Interval` streams. FD/likelihood parity
    tests must hold on the dense case; the sparse-interval reset needs its own
    window-correctness test (the umbrella's §5.2.1 trap).
-4. `check-data` + load-time report + `--allow-drop`.
-5. The gh#98 date-equivalence test.
-6. (separate) the gh#171 subset binder + effort covariate — model-side, not this
+4. **(small)** `ObsCell::Counted { value, denom }` — carry a per-observation
+   Binomial/BetaBinomial denominator through `bind` into the scoring path; the
+   likelihood reads `denom` per cell instead of evaluating the model `n: Expr`.
+   Scipy-anchored value test on the per-cell-`n` path; the existing
+   fixed-`n: Expr` path stays the default when no `denom` is supplied.
+5. `check-data` + load-time report + `--allow-drop`.
+6. The gh#98 date-equivalence test.
+7. (separate) the gh#171 subset binder + effort covariate — model-side, not this
    proposal.
 
 ## Forward: summary statistics and synthetic likelihoods
@@ -396,14 +467,98 @@ to the M simulated summary vectors and scores `s(y_obs)` under it (Wood 2010);
 ABC thresholds a distance. Neither needs a gradient, and neither touches the
 loader.
 
-**The one thing to keep clean now** is that inference entry points should reach
-their objective behind a small abstraction (the `Objective`/`SeriesScorer` seam
-above), rather than hard-wiring `MultiStreamObsModel`. The §Unification refactor
-— routing every algorithm through one constructed obs type — is what makes that
-abstraction cheap to introduce later: once all four methods consume a single
-typed objective built from `BoundObs`, adding `Synthetic`/`Abc` as further
-constructors of that objective is additive. The data binding is the foundation;
-the scorer fork sits one layer above it.
+**How it plugs into a fit — concretely.** A fit today is an _outer parameter
+search_ wrapped around an _inner objective_ that turns a θ into a scalar
+(pseudo-)log-density. The inner objective is built once — `FitConfig::build_obs_model`
+(`fit/runner.rs:404`) constructs the `MultiStreamObsModel` — and handed to the
+algorithm, which scores it **sequentially inside a particle filter**: `if2` and
+`particle_filter` take it as `&dyn ObservationModel<ParticleState>`, `pgas`/`pmmh`
+take the concrete `&MultiStreamObsModel` (PGAS additionally needs the per-state
+gradient and a latent-state representation). A `SeriesScorer` replaces the
+_inner objective only_: instead of "run a PF to get a marginal likelihood," it is
+"simulate M trajectories at θ, project each through the same `StreamProjection`,
+reduce to summaries, score against the observed summaries." That scalar then
+feeds the **same** kind of outer search. So the integration is a new `algorithm`
+value in `fit.toml` (e.g. `algorithm = "probe_match"` / `"synthetic"` / `"abc"`)
+whose objective is a `SeriesScorer` and whose outer loop is a derivative-free
+optimizer (Nelder-Mead, as pomp's `probe_match` uses) or a Metropolis sampler
+over θ — reusing the existing `EstimatedParam`/`Transform` bounds-and-scale
+machinery unchanged.
+
+The honest constraint: a summary objective is **incompatible with PGAS and
+NUTS**. Those need a per-observation-time conditional density, a latent-state
+path, and a gradient — none of which a whole-series summary provides. Summary
+methods compose with the _gradient-free_ outer loops (MH-over-θ, derivative-free
+optimization), not with the sequential/gradient samplers. That is not a
+limitation of this proposal; it is intrinsic to summary-based inference, and
+naming it is what keeps the `Objective` enum honest about which (driver,
+objective) pairs are valid.
+
+**What to keep clean now** is only that inference entry points reach their
+objective behind that small abstraction rather than hard-wiring
+`MultiStreamObsModel`. The §Unification refactor — routing every algorithm
+through one constructed obs type built from `BoundObs` — is exactly what makes
+adding `Synthetic`/`Abc` a new constructor of the objective rather than a new
+data path. The data binding is the foundation; the scorer fork sits one layer
+above it, in the fit driver.
+
+## Robustness & test obligations (the checklist)
+
+The point of a typed bind is that every malformed input has a _named, located_
+outcome. Each row below is a test; `[have]` already exists, `[gap]` is new work
+this proposal owes. No silent coercion, no silent drop, anywhere.
+
+**Column typing / parsing**
+
+- `[have]` mixed numeric+date time column → error naming both rows
+  (`mixed_column_errors_naming_both_rows`).
+- `[have]` dated column with no model `origin` → error with fix hint
+  (`dated_without_origin_errors`).
+- `[have]` `--time-format numeric` forbids date cells; `date` forces conversion.
+- `[gap]` **invalid-but-date-shaped time cell** (`2024-13-45`, `2024-O3-01`) →
+  located `UnparseableDate` error. The else-branch handles it
+  (`caltime_load.rs:112-125`) but nothing pins it.
+- `[gap]` non-numeric **value** cell → located `RejectedValue` finding (not a
+  panic, not a silent skip).
+- `[gap]` `"NaN"`/`"inf"` value cell → rejected before the log-pmf (the
+  `pfilter.rs:669,699` finiteness guard).
+- `[gap]` header matching no model stream/stratum/time → `LeftoverColumn`,
+  surfaced (Info), never silently dropped.
+- `[gap]` wide-sugar empty cell → typed `None` hole, never `0`.
+
+**Cardinality / bind correctness**
+
+- `[gap]` two rows → one cell (many:1) → `Collision` Error — the
+  `build_obs_at_substep` silent-overwrite pin (`pgas.rs:269`).
+- `[gap]` duplicate identical row → `Duplicate`.
+- `[gap]` **hole ≠ zero**: a `None` cell and an absent row score _identically_;
+  a `None` cell and an observed `0` score _differently_. This is the whole
+  correctness claim of the `Option` axis — it gets a dedicated likelihood test.
+- `[gap]` leftover stream/stratum (1:0) → `LeftoverStratum` Error.
+- `[gap]` data coarser than model (1:many) → `CoarserThanModel` Error.
+
+**Temporal kind**
+
+- `[gap]` `Instant` off-grid (annual prevalence under a daily grid) → snap +
+  warn, **not** reject.
+- `[gap]` `Interval` off-grid (window can't tile) → Error.
+- `[gap]` **sparse `Interval` per-stream reset** — the §5.2.1 trap: a sparse
+  incidence stream's flow accumulated over `[t₁, t₃]` is not truncated by another
+  stream's observation at `t₂`. The single most important correctness test here.
+
+**`Counted` payload**
+
+- `[gap]` per-cell Binomial/BetaBinomial denominator: scipy-anchored value test;
+  `Counted.denom` used instead of the model `n: Expr`; the fixed-`n: Expr` path
+  unchanged when no `denom` is supplied.
+
+**Cross-cutting**
+
+- `[gap]` gh#98 calendar equivalence:
+  `expander.parse_date_to_float == caltime::date_to_internal` over a date
+  battery.
+- `[gap]` dense-parity regression: the homogeneous dense case scores
+  bit-identically before/after the union-axis refactor (goldens do not move).
 
 ## Open questions
 
