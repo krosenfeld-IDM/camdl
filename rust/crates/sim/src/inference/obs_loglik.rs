@@ -542,6 +542,42 @@ mod tests {
         assert!((ld.exp() - expected).abs() < 1e-6);
     }
 
+    /// gh#20 defense-in-depth: scipy-anchored VALUE check for the gamma
+    /// multiplier-density formula. The PGAS σ² (process-noise) gradient
+    /// test in `gradient_check_obs.rs` validates grad-vs-value consistency
+    /// (FD of `log_gamma_density`); it canNOT catch a wrong *value* formula
+    /// — a constant offset or a shape/scale swap differentiates correctly
+    /// and the FD test stays green. This pins the value against scipy.
+    ///
+    /// `log_gamma_density(x, shape, scale)` is the standalone form of the
+    /// gamma multiplier density. The PGAS substep at `pgas.rs:649` computes
+    /// the same density inline for the overdispersion gamma `g`
+    /// (`shape = dt/σ²`, `scale = σ²/dt`). The two forms are identical
+    /// algebra today (verified by reading both at this commit), so pinning
+    /// this helper's value pins the formula they share; this test does not,
+    /// by itself, prevent the inline copy from drifting independently.
+    ///
+    /// Reference values:
+    /// ```python
+    /// from scipy.stats import gamma
+    /// gamma.logpdf(x, a=shape, scale=scale)
+    /// ```
+    #[test]
+    fn test_log_gamma_density_matches_scipy() {
+        // (x, shape, scale, scipy gamma.logpdf)
+        let cases: [(f64, f64, f64, f64); 4] = [
+            (3.0, 2.0, 3.0, -2.09861229),
+            (1.0, 0.5, 2.0, -1.41893853),
+            (5.0, 4.0, 0.5, -4.19085701),
+            (0.8, 2.5, 1.2, -1.74186876),
+        ];
+        for (x, shape, scale, ref_lp) in cases {
+            let lp = log_gamma_density(x, shape, scale);
+            assert!((lp - ref_lp).abs() <= 1e-6,
+                "log_gamma_density({x}, {shape}, {scale}) = {lp}, scipy ref {ref_lp}");
+        }
+    }
+
     #[test]
     fn test_negbin_grad_vs_fd() {
         let (y, mu, k) = (5.0, 10.0, 3.0);
