@@ -111,6 +111,12 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("seir_age", "gillespie", 0x42aa86e0753ea235),
     ("seir_age", "tau_leap", 0xdcacaf9c1489b282),
     ("seir_age", "chain_binomial", 0x1ea29e011a7eba67),
+    // Same dynamics as seir_age; differ only in the observations block
+    // (un-indexed incidence strata-sum / let-bound projection). The
+    // trajectory hash excludes observations, so these match seir_age.
+    ("seir_age_incidence_sum", "gillespie", 0x42aa86e0753ea235),
+    ("seir_age_incidence_sum", "tau_leap", 0xdcacaf9c1489b282),
+    ("seir_age_incidence_sum", "chain_binomial", 0x1ea29e011a7eba67),
     ("seir_age_table_rates", "gillespie", 0xaefb0972f1798fc5),
     ("seir_age_table_rates", "tau_leap", 0x7ed4e557e6b34be5),
     ("seir_age_table_rates", "chain_binomial", 0x87d0504d39dc8044),
@@ -201,6 +207,7 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("polio_spatial_5", "ode", 0x81ed3b07bb11e95a),
     ("ross_macdonald", "ode", 0xabf137964976a29a),
     ("seir_age", "ode", 0xe751bceb05d6d96f),
+    ("seir_age_incidence_sum", "ode", 0xe751bceb05d6d96f),
     ("seir_age_table_rates", "ode", 0x939b7744fa70ca36),
     ("seir_defines_adj", "ode", 0x572dd8daf4bf4a11),
     ("seir_defines_patch", "ode", 0x673d152ffc0d0062),

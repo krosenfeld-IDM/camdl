@@ -1470,6 +1470,8 @@ pub fn print_observations_summary(model: &ir::Model) {
         let (kind_label, is_snapshot) = match &obs.projection {
             ir::observation::Projection::CumulativeFlow(name) =>
                 (format!("incidence({})", name), false),
+            ir::observation::Projection::CumulativeFlowSum(names) =>
+                (format!("incidence({})", names.join(" + ")), false),
             ir::observation::Projection::CurrentPop(name) =>
                 (format!("prevalence({})", name), true),
             ir::observation::Projection::CurrentPopSum(names) =>

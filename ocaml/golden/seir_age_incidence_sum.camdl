@@ -1,0 +1,68 @@
+# SEIR with age mixing + un-indexed incidence over a stratified
+# transition (spec §25.4). `incidence(infection)` must expand to the
+# SUM of per-stratum cumulative flows: Add(infection_child,
+# infection_adult). gh#160/#164/#165.
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+dimensions {
+  age = [child, adult]
+}
+
+stratify(by = age)
+
+let N_local[a in age] = S[a] + E[a] + I[a] + R[a]
+
+parameters {
+  beta  : rate in [0.001, 0.5]
+  sigma : rate in [0.01, 1.0]
+  gamma : rate in [0.01, 1.0]
+  rho   : probability in [0.0, 1.0]
+  k     : real        in [0.1, 100.0]
+}
+
+tables {
+  C_age : age × age = [[12.0, 4.0], [4.0, 8.0]]
+}
+
+transitions {
+  infection[a in age] : S[a] --> E[a]
+    @ beta * S[a] * sum(b in age, C_age[a, b] * I[b] / N_local[b])
+
+  progression[a in age] : E[a] --> I[a]  @ sigma * E[a]
+  recovery[a in age]    : I[a] --> R[a]  @ gamma * I[a]
+}
+
+observations {
+  weekly_cases : {
+    projected  = incidence(infection)
+    every      = 7 'days
+    likelihood = neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+init {
+  S[child] = 4990
+  S[adult] = 5000
+  I[child] = 10
+}
+
+simulate {
+  from = 0 'days
+  to   = 100 'days
+}
+
+scenarios {
+  baseline {
+    label = "default"
+    simulate { to = 100 'days }
+    set = {
+      beta  = 0.05
+      sigma = 0.2
+      gamma = 0.1
+      rho   = 0.6
+      k     = 5.0
+    }
+  }
+}

@@ -7,6 +7,7 @@ use crate::expr::Expr;
 #[serde(rename_all = "snake_case")]
 pub enum Projection {
     CumulativeFlow(String),
+    CumulativeFlowSum(Vec<String>),
     CurrentPop(String),
     CurrentPopSum(Vec<String>),
     DerivedExpr(Expr),

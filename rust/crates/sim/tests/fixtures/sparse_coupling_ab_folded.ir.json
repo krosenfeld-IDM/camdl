@@ -1,4 +1,4 @@
-{"ir_version":"0.8","validated_by":"ocaml-compiler-v0.8","model":{"name":"sparse_P8","version":"0.3","time_unit":"days","description":null,"compartments":[
+{"ir_version":"0.9","validated_by":"ocaml-compiler-v0.9","model":{"name":"sparse_P8","version":"0.3","time_unit":"days","description":null,"compartments":[
 {"name":"S_p0_a0","kind":"integer"},
 {"name":"S_p1_a0","kind":"integer"},
 {"name":"S_p2_a0","kind":"integer"},

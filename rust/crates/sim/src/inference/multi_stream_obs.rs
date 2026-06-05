@@ -103,15 +103,27 @@ impl StreamProjection {
         use ir::observation::Projection as P;
         match projection {
             P::CumulativeFlow(flow_name) => {
-                let idxs: Vec<usize> = compiled.model.transitions.iter().enumerate()
-                    .filter(|(_, tr)| tr.name == *flow_name
-                        || tr.name.starts_with(&format!("{}_", flow_name)))
-                    .map(|(i, _)| i).collect();
-                if idxs.is_empty() {
-                    return Err(format!(
+                let idx = compiled.model.transitions.iter()
+                    .position(|tr| tr.name == *flow_name)
+                    .ok_or_else(|| format!(
                         "observation '{}': incidence projection references flow '{}', \
-                         but no transition with that name (or family `{}_*`) exists",
-                        obs_name, flow_name, flow_name));
+                         but no transition with that name exists",
+                        obs_name, flow_name))?;
+                Ok(StreamProjection::FlowSum(vec![idx]))
+            }
+            P::CumulativeFlowSum(flow_names) => {
+                // Un-indexed `incidence()` over a stratified transition family:
+                // the OCaml compiler resolved the family to explicit per-stratum
+                // transition names (§25.4). Sum their cumulative flows.
+                let mut idxs = Vec::with_capacity(flow_names.len());
+                for fname in flow_names {
+                    let idx = compiled.model.transitions.iter()
+                        .position(|tr| tr.name == *fname)
+                        .ok_or_else(|| format!(
+                            "observation '{}': incidence-sum projection references \
+                             flow '{}', but no transition with that name exists",
+                            obs_name, fname))?;
+                    idxs.push(idx);
                 }
                 Ok(StreamProjection::FlowSum(idxs))
             }

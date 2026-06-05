@@ -596,19 +596,21 @@ let intervention_of_json j =
 
 let projection_to_json (p : projection) : Yojson.Safe.t =
   match p with
-  | CumulativeFlow tn -> obj [("cumulative_flow", str tn)]
-  | CurrentPop     cn -> obj [("current_pop",     str cn)]
-  | CurrentPopSum  cs -> obj [("current_pop_sum", arr (List.map str cs))]
-  | DerivedExpr    e  -> obj [("derived_expr",    expr_to_json e)]
+  | CumulativeFlow    tn -> obj [("cumulative_flow",     str tn)]
+  | CumulativeFlowSum fs -> obj [("cumulative_flow_sum", arr (List.map str fs))]
+  | CurrentPop        cn -> obj [("current_pop",         str cn)]
+  | CurrentPopSum     cs -> obj [("current_pop_sum",     arr (List.map str cs))]
+  | DerivedExpr       e  -> obj [("derived_expr",        expr_to_json e)]
 
 let projection_of_json j =
   match j with
   | `Assoc [(key, v)] -> (
     match key with
-    | "cumulative_flow" -> CumulativeFlow (as_string v)
-    | "current_pop"     -> CurrentPop     (as_string v)
-    | "current_pop_sum" -> CurrentPopSum  (List.map as_string (as_list v))
-    | "derived_expr"    -> DerivedExpr    (expr_of_json v)
+    | "cumulative_flow"     -> CumulativeFlow    (as_string v)
+    | "cumulative_flow_sum" -> CumulativeFlowSum (List.map as_string (as_list v))
+    | "current_pop"         -> CurrentPop        (as_string v)
+    | "current_pop_sum"     -> CurrentPopSum     (List.map as_string (as_list v))
+    | "derived_expr"        -> DerivedExpr       (expr_of_json v)
     | k -> fail "unknown projection '%s'" k
   )
   | _ -> fail "projection must be a single-key object"

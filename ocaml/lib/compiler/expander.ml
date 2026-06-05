@@ -2267,6 +2267,47 @@ let rec eval_guard env = function
   | GAnd (g1, g2) -> eval_guard env g1 && eval_guard env g2
   | GOr  (g1, g2) -> eval_guard env g1 || eval_guard env g2
 
+(** Transition-name expander — the incidence analogue of
+    [expand_compartment_name]. Given a base transition name, return all
+    fully-expanded IR transition names that base produces, in emission
+    order, or [None] if no declared transition has that base name.
+
+    The naming logic mirrors [emit_one] in [expand_transitions_counted]
+    exactly: one name per index combo that survives the `where` guard,
+    suffixed by [name_parts_from_bindings], with a per-branch suffix for
+    [DstBranch] destinations. Keeping these two in lockstep is what makes
+    `incidence(<stratified family>)` expand to an Add-fold over names that
+    actually exist post-expansion (spec §25.4). *)
+let expand_transition_name ctx tname : string list option =
+  match List.find_opt (fun tr -> tr.trname = tname) ctx.transitions with
+  | None -> None
+  | Some tr ->
+    let combos = cartesian_product tr.trindices ctx in
+    let names =
+      List.concat_map (fun env ->
+        let pass_guard = match tr.trguard with
+          | None   -> true
+          | Some g -> eval_guard env g
+        in
+        if not pass_guard then []
+        else begin
+          let parts = name_parts_from_bindings tr.trindices env in
+          let base_name =
+            if parts = [] then tr.trname
+            else tr.trname ^ "_" ^ String.concat "_" parts
+          in
+          match tr.trdst with
+          | DstSum _ -> [base_name]
+          | DstBranch branches ->
+            List.map (fun ((dst_ref, _weight) : (Ast.stoich_ref * Ast.expr)) ->
+              let (dst_base, _idx) = dst_ref in
+              base_name ^ "_" ^ dst_base
+            ) branches
+        end
+      ) combos
+    in
+    Some names
+
 (** Validate that every identifier in a guard is either a loop variable,
     a dimension level value, or an unknown name — but NOT a parameter or
     compartment name (which cannot be meaningfully compared at compile time).
@@ -3948,6 +3989,20 @@ let expand_observations ctx =
       else
         Ir.CurrentPop concrete  (* Unknown — let the Rust side emit a clean diagnostic. *)
     in
+    (* `incidence(X)` with a bare (un-indexed) transition name. If X is a
+       stratified transition family, the user means "sum over all strata,"
+       symmetric to bare `prevalence` over a stratified compartment (§25.4).
+       Emit CumulativeFlowSum over the expanded transition names when the
+       family has >1 member; CumulativeFlow for the single/unstratified case.
+       An unknown name falls through to CumulativeFlow so post-expansion
+       Validate emits the clean E507 (unknown transition). *)
+    let incidence_projection base =
+      match expand_transition_name ctx base with
+      | None         -> Ir.CumulativeFlow base
+      | Some []      -> Ir.CumulativeFlow base
+      | Some [single] -> Ir.CumulativeFlow single
+      | Some many    -> Ir.CumulativeFlowSum many
+    in
     let projection = match proj_v with
       | ProjIncidence (name, idxs) ->
         let idx_vals = List.map (index_item_to_str env) idxs in
@@ -3959,7 +4014,7 @@ let expand_observations ctx =
         prevalence_projection name idx_vals
       | ProjDerived (EFuncCall ("incidence", args)) ->
         (match List.assoc_opt "" args with
-         | Some (EIdent (n, _))    -> Ir.CumulativeFlow n
+         | Some (EIdent (n, _))    -> incidence_projection n
          | Some (EIndex (n, idxs)) ->
            Ir.CumulativeFlow (String.concat "_" (n :: List.map (index_item_to_str env) idxs))
          | _ -> Ir.CumulativeFlow "?")

@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.8",
-  "validated_by": "ocaml-compiler-v0.8",
+  "ir_version": "0.9",
+  "validated_by": "ocaml-compiler-v0.9",
   "model": {
     "name": "seir_vaccine_seasonal",
     "version": "0.3",

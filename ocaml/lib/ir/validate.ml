@@ -110,6 +110,10 @@ let validate (m : model) : (unit, error list) result =
     (match obs.projection with
      | CumulativeFlow tn ->
        if not (SS.mem tn tr_set) then errors := UnknownTransition tn :: !errors
+     | CumulativeFlowSum tns ->
+       List.iter (fun tn ->
+         if not (SS.mem tn tr_set) then errors := UnknownTransition tn :: !errors
+       ) tns
      | _ -> ());
     (* Walk observation-likelihood expressions. The likelihood AST
        may reference parameters, populations, tables, and the special

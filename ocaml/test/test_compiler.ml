@@ -3385,6 +3385,132 @@ let test_prevalence_unstratified () =
   | Ir.CurrentPop "I" -> ()
   | _ -> Alcotest.fail "expected CurrentPop I on unstratified compartment"
 
+(* ── Observation incidence on stratified transitions ───────────────────────
+   Symmetric to the prevalence-on-stratified tests above. Un-indexed
+   `incidence(infection)` over a stratified `infection[a in age]` family
+   should expand to the SUM of per-stratum cumulative flows
+   (`CumulativeFlowSum [infection_child; infection_adult]`), per language
+   spec §25.4. Previously emitted a bare `CumulativeFlow "infection"` that
+   referenced a name not present post-expansion → E507 at compile.
+   gh#160/#164/#165 (Defect A). *)
+
+let stratified_age_seir_with_obs obs_block =
+  Printf.sprintf {|
+    time_unit = 'days
+    compartments { S, E, I, R }
+    dimensions { age = [child, adult] }
+    stratify(by = age)
+    let N_local[a in age] = S[a] + E[a] + I[a] + R[a]
+    parameters {
+      beta  : rate in [0.001, 0.5]
+      sigma : rate in [0.01, 1.0]
+      gamma : rate in [0.01, 1.0]
+      k     : real in [0.1, 100.0]
+    }
+    tables { C_age : age × age = [[12.0, 4.0], [4.0, 8.0]] }
+    transitions {
+      infection[a in age] : S[a] --> E[a]
+        @ beta * S[a] * sum(b in age, C_age[a, b] * I[b] / N_local[b])
+      progression[a in age] : E[a] --> I[a]  @ sigma * E[a]
+      recovery[a in age]    : I[a] --> R[a]  @ gamma * I[a]
+    }
+    %s
+    init { S[child] = 4990  S[adult] = 5000  I[child] = 10 }
+    simulate { from = 0 'days  to = 50 'days }
+  |} obs_block
+
+let test_incidence_on_stratified_transition_sums_strata () =
+  let src = stratified_age_seir_with_obs {|
+    observations {
+      weekly_cases : {
+        projected  = incidence(infection)
+        every      = 7 'days
+        likelihood = neg_binomial(mean = projected, r = k)
+      }
+    }
+  |} in
+  let m = compile_expect_ok src in
+  match m.observations with
+  | [obs] ->
+    (match obs.projection with
+     | Ir.CumulativeFlowSum names ->
+       Alcotest.(check (list string))
+         "incidence(infection) expands to the per-stratum flow sum"
+         ["infection_child"; "infection_adult"] names
+     | Ir.CumulativeFlow name ->
+       Alcotest.failf
+         "expected CumulativeFlowSum over age strata; got CumulativeFlow(%s)" name
+     | _ -> Alcotest.fail "expected CumulativeFlowSum projection")
+  | _ -> Alcotest.fail "expected exactly one observation block"
+
+(* Positional-indexed incidence pins a single stratum (not a sum). Guards
+   against over-eagerly summing when the user named a stratum. *)
+let test_incidence_positional_indexed_pins_one_stratum () =
+  let src = stratified_age_seir_with_obs {|
+    observations {
+      child_cases : {
+        projected  = incidence(infection[child])
+        every      = 7 'days
+        likelihood = neg_binomial(mean = projected, r = k)
+      }
+    }
+  |} in
+  let m = compile_expect_ok src in
+  match (List.hd m.observations).projection with
+  | Ir.CumulativeFlow "infection_child" -> ()
+  | Ir.CumulativeFlowSum _ ->
+    Alcotest.fail "indexed incidence must not sum over strata"
+  | Ir.CumulativeFlow other ->
+    Alcotest.failf "expected CumulativeFlow infection_child, got CumulativeFlow %s" other
+  | _ -> Alcotest.fail "expected CumulativeFlow projection"
+
+(* Named-indexed incidence pins the named dimension, order-independent. *)
+let test_incidence_named_indexed_pins_one_stratum () =
+  let src = stratified_age_seir_with_obs {|
+    observations {
+      adult_cases : {
+        projected  = incidence(infection[age = adult])
+        every      = 7 'days
+        likelihood = neg_binomial(mean = projected, r = k)
+      }
+    }
+  |} in
+  let m = compile_expect_ok src in
+  match (List.hd m.observations).projection with
+  | Ir.CumulativeFlow "infection_adult" -> ()
+  | _ -> Alcotest.fail "expected CumulativeFlow infection_adult for named index"
+
+(* Unstratified incidence — behaviour unchanged: exact single flow. *)
+let test_incidence_unstratified () =
+  let src = {|
+    time_unit = 'days
+    compartments { S, I, R }
+    parameters {
+      beta  : rate in [0.001, 2.0]
+      gamma : rate in [0.01, 1.0]
+      k     : real in [1.0, 100.0]
+    }
+    transitions {
+      infection : S --> I @ beta * S * I / (S + I + R)
+      recovery  : I --> R @ gamma * I
+    }
+    observations {
+      cases : {
+        projected  = incidence(infection)
+        every      = 1 'days
+        likelihood = neg_binomial(mean = projected, r = k)
+      }
+    }
+    init { S = 999  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} in
+  let m = compile_expect_ok src in
+  match (List.hd m.observations).projection with
+  | Ir.CumulativeFlow "infection" -> ()
+  | Ir.CumulativeFlowSum _ ->
+    Alcotest.fail "unstratified incidence must stay a single CumulativeFlow"
+  | _ -> Alcotest.fail "expected CumulativeFlow infection on unstratified transition"
+
 (* ── Likelihood keyword-argument parsing ──────────────────────────────────
    `rate` is a reserved keyword in parameter type annotations; the kwarg
    rule in the parser must allow it (and other soft keywords) in kwarg
@@ -3848,6 +3974,7 @@ let test_projected_bare_sum_emits_derived_expr () =
        | Ir.CurrentPop _ -> "CurrentPop"
        | Ir.CurrentPopSum _ -> "CurrentPopSum"
        | Ir.CumulativeFlow _ -> "CumulativeFlow"
+       | Ir.CumulativeFlowSum _ -> "CumulativeFlowSum"
        | Ir.DerivedExpr _ -> "DerivedExpr")
 
 (** Prevalence-as-proportion — the canonical Garki/surveillance form.
@@ -5726,6 +5853,10 @@ let () =
       Alcotest.test_case "bare E in projected sums Erlang substages"     `Quick test_projected_bare_stratified_compartment;
       Alcotest.test_case "prevalence(E[e1]) picks single stratum"        `Quick test_prevalence_fully_indexed_stratified;
       Alcotest.test_case "prevalence(I) unstratified is unchanged"       `Quick test_prevalence_unstratified;
+      Alcotest.test_case "incidence(infection) sums age strata"          `Quick test_incidence_on_stratified_transition_sums_strata;
+      Alcotest.test_case "incidence(infection[child]) picks one stratum" `Quick test_incidence_positional_indexed_pins_one_stratum;
+      Alcotest.test_case "incidence(infection[age=adult]) named index"   `Quick test_incidence_named_indexed_pins_one_stratum;
+      Alcotest.test_case "incidence(infection) unstratified unchanged"   `Quick test_incidence_unstratified;
     ];
     "likelihood_kwargs", [
       Alcotest.test_case "poisson(rate = projected) parses"              `Quick test_poisson_rate_kwarg_parses;

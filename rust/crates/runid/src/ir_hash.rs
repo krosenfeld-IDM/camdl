@@ -366,16 +366,20 @@ impl ContentAddressed for Projection {
                 h.write_u32(0);
                 h.write_str(s);
             }
-            Projection::CurrentPop(s) => {
+            Projection::CumulativeFlowSum(v) => {
                 h.write_u32(1);
+                v.hash_into(h);
+            }
+            Projection::CurrentPop(s) => {
+                h.write_u32(2);
                 h.write_str(s);
             }
             Projection::CurrentPopSum(v) => {
-                h.write_u32(2);
+                h.write_u32(3);
                 v.hash_into(h);
             }
             Projection::DerivedExpr(e) => {
-                h.write_u32(3);
+                h.write_u32(4);
                 e.hash_into(h);
             }
         }

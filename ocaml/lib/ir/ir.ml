@@ -217,10 +217,11 @@ type intervention = {
 (* ── Observation model ───────────────────────────────────────────────────────── *)
 
 type projection =
-  | CumulativeFlow of string
-  | CurrentPop     of string
-  | CurrentPopSum  of string list
-  | DerivedExpr    of expr
+  | CumulativeFlow    of string
+  | CumulativeFlowSum of string list
+  | CurrentPop        of string
+  | CurrentPopSum     of string list
+  | DerivedExpr       of expr
 
 type poisson_likelihood      = { rate:       expr }
 type neg_binomial_likelihood = { mean: expr; dispersion: expr }

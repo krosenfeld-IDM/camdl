@@ -3746,9 +3746,7 @@ compartment list and index bindings.
 incidence(infection)           # un-indexed: sum of all expanded flows
 
 # IR (with age stratification):
-BinOp(Add,
-  CumulativeFlow("infection_child"),
-  CumulativeFlow("infection_adult"))
+CumulativeFlowSum(["infection_child", "infection_adult"])
 
 # DSL:
 incidence(infection[child])    # indexed: specific stratum
@@ -3760,7 +3758,7 @@ CumulativeFlow("infection_child")
 prevalence(R)                  # bare: global total
 
 # IR:
-PopSum(["R_child", "R_adult"])
+CurrentPopSum(["R_child", "R_adult"])
 ```
 
 ### 25.5 Interventions

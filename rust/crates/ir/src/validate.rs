@@ -147,13 +147,26 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
     }
     for obs in &model.observations {
         // projection
-        if let crate::observation::Projection::CumulativeFlow(ref tn) = obs.projection {
-            if !tr_names.contains(tn.as_str()) {
-                errors.push(ValidationError::UnknownTransitionInObservation {
-                    obs: obs.name.clone(),
-                    transition: tn.clone(),
-                });
+        match &obs.projection {
+            crate::observation::Projection::CumulativeFlow(tn) => {
+                if !tr_names.contains(tn.as_str()) {
+                    errors.push(ValidationError::UnknownTransitionInObservation {
+                        obs: obs.name.clone(),
+                        transition: tn.clone(),
+                    });
+                }
             }
+            crate::observation::Projection::CumulativeFlowSum(tns) => {
+                for tn in tns {
+                    if !tr_names.contains(tn.as_str()) {
+                        errors.push(ValidationError::UnknownTransitionInObservation {
+                            obs: obs.name.clone(),
+                            transition: tn.clone(),
+                        });
+                    }
+                }
+            }
+            _ => {}
         }
         // likelihood exprs (projected is allowed)
         check_likelihood_exprs(&obs.likelihood, &ctx, &mut errors);

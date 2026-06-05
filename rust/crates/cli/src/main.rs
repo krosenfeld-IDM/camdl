@@ -1661,49 +1661,58 @@ pub(crate) fn project_all_obs_times(
     model: &ir::Model,
     obs_times: &[f64],
 ) -> Vec<f64> {
+    // Per-interval incidence over a set of transition flow indices: build the
+    // running cumulative flow at each snapshot, read it at each obs time, then
+    // difference consecutive obs times. Shared by CumulativeFlow (one exact
+    // transition) and CumulativeFlowSum (explicit strata family per §25.4).
+    let incidence_over = |flow_indices: &[usize]| -> Vec<f64> {
+        let mut cum_at_snap: Vec<(f64, u64)> = Vec::with_capacity(traj.snapshots.len());
+        let mut running = 0u64;
+        for snap in &traj.snapshots {
+            for &fi in flow_indices {
+                running += snap.flows.counts[fi];
+            }
+            cum_at_snap.push((snap.t, running));
+        }
+
+        let mut cum_at_obs = Vec::with_capacity(obs_times.len());
+        let mut snap_idx = 0;
+        for &obs_t in obs_times {
+            while snap_idx + 1 < cum_at_snap.len()
+                && cum_at_snap[snap_idx + 1].0 <= obs_t + 1e-9
+            {
+                snap_idx += 1;
+            }
+            cum_at_obs.push(if snap_idx < cum_at_snap.len() && cum_at_snap[snap_idx].0 <= obs_t + 1e-9 {
+                cum_at_snap[snap_idx].1
+            } else {
+                0
+            });
+        }
+
+        // Difference: flow in interval (prev_obs_t, obs_t]
+        let mut result = Vec::with_capacity(obs_times.len());
+        let mut prev_cum = 0u64;
+        for &cum in &cum_at_obs {
+            result.push((cum - prev_cum) as f64);
+            prev_cum = cum;
+        }
+        result
+    };
     match &obs_ir.projection {
         ir::observation::Projection::CumulativeFlow(flow_name) => {
             let flow_indices: Vec<usize> = model.transitions.iter().enumerate()
-                .filter(|(_, tr)| tr.name == *flow_name || tr.name.starts_with(&format!("{}_", flow_name)))
+                .filter(|(_, tr)| tr.name == *flow_name)
                 .map(|(i, _)| i)
                 .collect();
-
-            // Build running cumulative flow at each snapshot time
-            let mut cum_at_snap: Vec<(f64, u64)> = Vec::with_capacity(traj.snapshots.len());
-            let mut running = 0u64;
-            for snap in &traj.snapshots {
-                for &fi in &flow_indices {
-                    running += snap.flows.counts[fi];
-                }
-                cum_at_snap.push((snap.t, running));
-            }
-
-            // For each obs time, find cumulative flow up to that time.
-            // Then difference consecutive obs times.
-            let mut cum_at_obs = Vec::with_capacity(obs_times.len());
-            let mut snap_idx = 0;
-            for &obs_t in obs_times {
-                // Advance to last snapshot at or before obs_t
-                while snap_idx + 1 < cum_at_snap.len()
-                    && cum_at_snap[snap_idx + 1].0 <= obs_t + 1e-9
-                {
-                    snap_idx += 1;
-                }
-                cum_at_obs.push(if snap_idx < cum_at_snap.len() && cum_at_snap[snap_idx].0 <= obs_t + 1e-9 {
-                    cum_at_snap[snap_idx].1
-                } else {
-                    0
-                });
-            }
-
-            // Difference: flow in interval (prev_obs_t, obs_t]
-            let mut result = Vec::with_capacity(obs_times.len());
-            let mut prev_cum = 0u64;
-            for &cum in &cum_at_obs {
-                result.push((cum - prev_cum) as f64);
-                prev_cum = cum;
-            }
-            result
+            incidence_over(&flow_indices)
+        }
+        ir::observation::Projection::CumulativeFlowSum(flow_names) => {
+            let flow_indices: Vec<usize> = flow_names.iter()
+                .filter_map(|fname| model.transitions.iter()
+                    .position(|tr| tr.name == *fname))
+                .collect();
+            incidence_over(&flow_indices)
         }
         ir::observation::Projection::CurrentPop(comp_name) => {
             let loc = resolve_comp_local(model, &obs_ir.name, comp_name);
@@ -2562,7 +2571,7 @@ mod tests {
     /// in IR envelope so it parses through the new ir::from_str path.
     fn ir_with_prior(name: &str, bounds: &str, prior_json: &str, extras: &str) -> String {
         format!(r#"{{
-          "ir_version": "0.8",
+          "ir_version": "0.9",
           "validated_by": "test-fixture",
           "model": {{
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2640,7 +2649,7 @@ mod tests {
         // should succeed (sampled beta + fixed N0).
         // gh#audit-C8: wrap in IR envelope.
         let json = r#"{
-          "ir_version": "0.8",
+          "ir_version": "0.9",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2888,7 +2897,7 @@ I0    = { bounds = [1, 1000] }
     fn prior_draws_errors_only_when_neither_fit_toml_nor_ir_has_a_prior() {
         // Hand-rolled IR: `beta` has a log_normal prior, `gamma` has none.
         let ir_json = r#"{
-          "ir_version": "0.8",
+          "ir_version": "0.9",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2942,7 +2951,7 @@ gamma = { bounds = [0.05, 1.0] }
     fn prior_draws_fit_toml_prior_wins_over_ir_prior() {
         // beta declared with normal(0, 1) — very narrow around 0.
         let ir_json = r#"{
-          "ir_version": "0.8",
+          "ir_version": "0.9",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",

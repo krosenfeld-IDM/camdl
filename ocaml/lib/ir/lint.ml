@@ -132,6 +132,7 @@ let referenced_compartments (m : model) : (string, unit) Hashtbl.t =
   List.iter (fun (obs : observation_model) ->
     (match obs.projection with
      | CumulativeFlow _flow -> ()   (* transition name, not a compartment *)
+     | CumulativeFlowSum _flows -> ()  (* transition names, not compartments *)
      | CurrentPop name -> add name
      | CurrentPopSum names -> List.iter add names
      | DerivedExpr e -> add_expr e);

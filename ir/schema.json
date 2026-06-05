@@ -502,6 +502,13 @@
           "additionalProperties": false
         },
         {
+          "required": ["cumulative_flow_sum"],
+          "properties": {
+            "cumulative_flow_sum": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        {
           "required": ["current_pop"],
           "properties": {
             "current_pop": { "type": "string" }
