@@ -1866,6 +1866,25 @@ fn generate_uniform_draws(
 /// the RNG-byte trajectory changes. Verified by the
 /// `sample_from_prior_raw_matches_expected_moments` test, which asserts
 /// the moment-matching at N=50k.
+/// gh#158: `simulate --fit <toml>` (via `--draws prior`) loads a full
+/// `FitConfigV2`, so a minimal or wrong file fails with a raw serde
+/// message (e.g. `expected struct ModelRef`) that does not tell the
+/// user what shape the file must have. Append a hint naming the
+/// expected `[model]` table and pointing at the docs. The original
+/// error is preserved so the underlying cause is still visible.
+fn wrap_fit_load_error(fit_path: &str, err: String) -> String {
+    format!(
+        "{}\n  \
+         hint: `simulate --fit` expects a fit-config TOML, not a bare \
+         params file. It must declare a `[model]` table naming the \
+         model file, e.g.\n    \
+         [model]\n    \
+         camdl = \"path.camdl\"\n  \
+         See `camdl docs fit-toml` for the full schema. \
+         (file: {})",
+        err, fit_path)
+}
+
 fn generate_prior_draws(
     fit_path: &str,
     n: usize,
@@ -1877,7 +1896,7 @@ fn generate_prior_draws(
         resolve_priors_with_precedence, PriorSource,
     };
 
-    let config = FitConfigV2::load(fit_path)?;
+    let config = FitConfigV2::load(fit_path).map_err(|e| wrap_fit_load_error(fit_path, e))?;
     let fixed = config.fixed.resolve()?;
 
     // Three-tier resolution: fit_toml > model_ir > flat. Walks every
@@ -2887,6 +2906,61 @@ I0    = { bounds = [1, 1000] }
             assert!(row["rho"] >= 0.001 && row["rho"] <= 1.0,
                 "rho out of fit-toml bounds: {}", row["rho"]);
         }
+    }
+
+    // ─── gh#158: `simulate --fit` config-load error carries a hint ───────
+
+    /// A `--fit` file with no `[model]` table fails the `FitConfigV2`
+    /// deserialize. The raw serde message is opaque ("missing field
+    /// `model`"); the wrapped error must add the `[model]` shape hint so
+    /// the user knows what kind of file `simulate --fit` wants.
+    #[test]
+    fn simulate_fit_malformed_config_error_carries_hint() {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let ir_path = format!("{}/../../../ocaml/golden/sir_priors.ir.json", manifest);
+        let (model, _) = util::load_model(&ir_path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        // A plausible "bare params" file a user might pass by mistake:
+        // no [model] table at all.
+        let bad = dir.path().join("bad.toml");
+        std::fs::write(&bad, "beta = 0.4\ngamma = 0.2\n").unwrap();
+
+        let err = generate_prior_draws(&bad.to_string_lossy(), 5, 1, &model)
+            .expect_err("a fit file with no [model] table must fail to load");
+        assert!(err.contains("simulate --fit") && err.contains("fit-config TOML"),
+            "wrapped error must explain what simulate --fit expects: {}", err);
+        assert!(err.contains("[model]") && err.contains("camdl ="),
+            "wrapped error must show the [model] table shape: {}", err);
+        assert!(err.contains("camdl docs fit-toml"),
+            "wrapped error must point at the docs: {}", err);
+    }
+
+    /// Control: a well-formed fit-config loads cleanly, so the
+    /// `simulate --fit` hint must NOT appear in the (success) path. A
+    /// bare assertion that the load succeeds is the negative control for
+    /// the wrapper firing only on the deserialize-error branch.
+    #[test]
+    fn simulate_fit_valid_config_no_hint() {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let ir_path = format!("{}/../../../ocaml/golden/sir_priors.ir.json", manifest);
+        let (model, _) = util::load_model(&ir_path).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let estimate = "\
+beta  = { bounds = [0.01, 2.0] }
+gamma = { bounds = [0.05, 1.0] }
+rho   = { bounds = [0.001, 1.0] }
+N0    = { bounds = [100, 1000000] }
+I0    = { bounds = [1, 1000] }
+";
+        let fit_path = write_fit_toml_for_prior_draws(
+            dir.path(), &ir_path, estimate, "");
+
+        // Loads and draws — the wrapper's hint never enters this path.
+        let draws = generate_prior_draws(&fit_path, 3, 7, &model)
+            .expect("well-formed fit-config must load");
+        assert_eq!(draws.len(), 3);
     }
 
     /// gh#86 RED test 2: only error when NEITHER the fit toml NOR the
