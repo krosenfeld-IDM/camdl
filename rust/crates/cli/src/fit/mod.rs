@@ -186,6 +186,12 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         // mental-model-mismatch class of bug that's the actual risk.
         eprintln!("\x1b[33mwarning:\x1b[0m {}", msg);
     }
+    if let Some(msg) = config.single_init_multichain_warning() {
+        // gh#71: single-init multi-chain posterior runs produce an
+        // uninformative R̂. Warning, not error — the sample is still
+        // valid; only the convergence diagnostic is weakened.
+        eprintln!("\x1b[33mwarning:\x1b[0m {}", msg);
+    }
 
     // ── Validate sweeps ───────────────────────────────────────────────────
     // Validate: swept params must be in [fixed], not [estimate]

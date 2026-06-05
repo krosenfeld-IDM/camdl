@@ -1109,6 +1109,20 @@ impl Stage {
         }
     }
 
+    /// The per-chain initialisation method (`single` / `lhs` /
+    /// `survey_top_k`). NLopt-family and PFilter stages do not carry an
+    /// `init_method` field; they report the default (`Lhs`).
+    pub fn init_method(&self) -> super::init::InitMethod {
+        match self {
+            Stage::IF2 { init_method, .. }
+            | Stage::PGAS { init_method, .. }
+            | Stage::PMMH { init_method, .. } => init_method.clone(),
+            Stage::PFilter { .. } | Stage::NlSbplx(_) | Stage::NlBobyqa(_) => {
+                super::init::InitMethod::default()
+            }
+        }
+    }
+
     /// gh#147 (M3.2). The stage's *extension dimension* (the field
     /// `identity_payload` omits so `--resume` can extend a chain): PGAS
     /// `sweeps`, IF2/PMMH `iterations`. A resumed run is a distinct artifact
@@ -1720,6 +1734,43 @@ impl FitConfigV2 {
              - use priors for starts:  fit_starts = \"prior\"\n    \
              - remove the priors:      drop `prior = {{...}}` from [estimate.*] entries",
             params_with_priors.join(", ")))
+    }
+
+    /// gh#71: warn when a posterior-sampling stage (PGAS / PMMH) runs
+    /// multiple chains from a single shared initialisation.
+    ///
+    /// `init = "single"` starts every chain at the same point
+    /// (`config.estimate[*].initial`). For an MLE method that is merely
+    /// wasteful, but for a posterior sampler with `chains > 1` it makes
+    /// the between-chain R̂ (Gelman–Rubin) diagnostic uninformative:
+    /// chains that begin co-located can't reveal failure to mix from
+    /// distinct starting points. A multi-start init (`lhs` /
+    /// `survey_top_k`) is needed for R̂ to mean anything.
+    ///
+    /// Does NOT error — a single-init multi-chain posterior run is
+    /// still a valid sample; only the convergence diagnostic is
+    /// weakened. Returns `Some(msg)` for the caller to print to stderr.
+    pub fn single_init_multichain_warning(&self) -> Option<String> {
+        use super::init::InitMethod;
+        let offenders: Vec<String> = self.stages.iter()
+            .filter(|(_, s)| matches!(s, Stage::PGAS { .. } | Stage::PMMH { .. }))
+            .filter(|(_, s)| s.chains() > 1
+                && matches!(s.init_method(), InitMethod::Single))
+            .map(|(name, s)| format!("'{}' ({}, chains = {})",
+                name, s.method_name(), s.chains()))
+            .collect();
+        if offenders.is_empty() { return None; }
+        Some(format!(
+            "posterior-sampling stage(s) {} use init = \"single\" with \
+             chains > 1.\n  \
+             Every chain then starts at the same point, so the \
+             between-chain R̂ (Gelman–Rubin) convergence diagnostic is \
+             uninformative — co-located chains cannot reveal a failure \
+             to mix.\n  \
+             Use a multi-start init for meaningful R̂:\n    \
+             - init = \"lhs\"           (Latin-hypercube over bounds)\n    \
+             - init = \"survey_top_k\"  (top-K rows of a `camdl survey`)",
+            offenders.join(", ")))
     }
 
     /// Real-data observation paths. Returns an error with a helpful
@@ -3944,6 +3995,102 @@ cooling = 0.7
         let config = parse(src).unwrap();
         assert!(config.dangling_priors_warning().is_none(),
             "no priors declared — nothing to warn about");
+    }
+
+    // ── gh#71: single-init multi-chain posterior R̂ warning ─────────────────
+
+    /// A PGAS (posterior-sampling) fit with a tunable `init` / `chains`
+    /// on the single Bayesian stage. `{init}` / `{chains}` are filled in
+    /// per-test so the trigger and its controls share one fixture.
+    fn fit_pgas_with_init(init: &str, chains: usize) -> String {
+        format!(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+cases = "data/cases.tsv"
+
+[estimate]
+beta  = {{ bounds = [0.01, 2.0], prior = {{ log_normal = {{ mu = -0.3, sigma = 0.5 }} }} }}
+gamma = {{ bounds = [0.05, 1.0], prior = {{ half_normal = {{ sigma = 1.0 }} }} }}
+
+[fixed]
+N0 = 1000
+
+[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+init = "{init}"
+chains = {chains}
+particles = 500
+sweeps = 1000
+"#, init = init, chains = chains)
+    }
+
+    #[test]
+    fn single_init_multichain_warns_for_pgas() {
+        let config = parse(&fit_pgas_with_init("single", 4)).unwrap();
+        let msg = config.single_init_multichain_warning()
+            .expect("PGAS with init=single and chains>1 must warn");
+        assert!(msg.contains("posterior") && msg.contains("'posterior'"),
+            "warning must name the offending stage: {}", msg);
+        assert!(msg.contains("pgas") && msg.contains("chains = 4"),
+            "warning must report the method and chain count: {}", msg);
+        assert!(msg.contains("R\u{0302}") || msg.contains("Gelman"),
+            "warning must explain the R-hat consequence: {}", msg);
+        assert!(msg.contains("lhs") && msg.contains("survey_top_k"),
+            "warning must suggest a multi-start init as the fix: {}", msg);
+    }
+
+    #[test]
+    fn single_init_multichain_silent_for_single_chain() {
+        // Control: init=single but chains=1 — R̂ is not even defined for
+        // one chain, so a shared init is harmless. No warning.
+        let config = parse(&fit_pgas_with_init("single", 1)).unwrap();
+        assert!(config.single_init_multichain_warning().is_none(),
+            "chains=1 has no between-chain R̂ to weaken — no warning expected");
+    }
+
+    #[test]
+    fn single_init_multichain_silent_for_multistart_init() {
+        // Control: chains>1 but a multi-start init (lhs) — chains begin
+        // dispersed, so R̂ is informative. No warning.
+        let config = parse(&fit_pgas_with_init("lhs", 4)).unwrap();
+        assert!(config.single_init_multichain_warning().is_none(),
+            "lhs disperses chain starts — no R̂ warning expected");
+    }
+
+    #[test]
+    fn single_init_multichain_silent_for_if2() {
+        // Control: IF2 (an MLE method, not a posterior sampler) with
+        // init=single and chains>1 — IF2 reports no R̂, so the warning
+        // must NOT fire for it.
+        let src = r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+gamma = 0.3
+N0 = 1000
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+init = "single"
+chains = 4
+particles = 500
+iterations = 50
+cooling = 0.7
+"#;
+        let config = parse(src).unwrap();
+        assert!(config.single_init_multichain_warning().is_none(),
+            "IF2 is not a posterior sampler — single-init R̂ warning must not fire");
     }
 
     #[test]
