@@ -274,3 +274,40 @@ fn changing_a_field_changes_the_hash() {
     m_out.output.times = OutputSchedule::AtTimes(vec![1.0, 2.0, 3.0]);
     assert_ne!(base, m_out.content_hash(), "output schedule change must matter");
 }
+
+/// Run-id stability: every `Projection` variant has a PERMANENT hash index.
+/// This pins each variant's content hash. The `CumulativeFlowSum` addition
+/// (gh#160) originally renumbered `CurrentPop`/`CurrentPopSum`/`DerivedExpr`,
+/// silently churning the run_id of every prevalence/derived-projection model;
+/// nothing caught it because `representative_model()` only exercises the
+/// index-0 variant. A future insert-and-renumber (or a reorder of the
+/// `ir_hash` arms) now trips this. The four pre-existing variants keep their
+/// pre-gh#160 indices (0-3), so their pins are unchanged and existing run_ids
+/// are preserved; `CumulativeFlowSum` is appended at 4.
+#[test]
+fn projection_variant_hashes_are_pinned() {
+    let hex = |p: Projection| p.content_hash().to_hex();
+    // Indices 0-3 are byte-identical to the pre-gh#160 `ir_hash` arms, so
+    // these four pins equal existing run_ids (no churn); 4 is the appended
+    // `CumulativeFlowSum`.
+    assert_eq!(
+        hex(Projection::CumulativeFlow("x".into())),
+        "bae333c82bc85a194d4899c1c76fd8f50120f506f4bf07ccbf4e6f1681a6c38e"
+    );
+    assert_eq!(
+        hex(Projection::CurrentPop("x".into())),
+        "bce336b063891b80dd2c16513f0e4938597ee2b1d600425e56ee0f7b88e5f30f"
+    );
+    assert_eq!(
+        hex(Projection::CurrentPopSum(vec!["x".into()])),
+        "2b4a65d0eb4d300730fee44b465903c6b615464a67ed503f4421a6ccaac9e8d6"
+    );
+    assert_eq!(
+        hex(Projection::DerivedExpr(Expr::const_(1.0))),
+        "eea65976e3ecc65043310f5f9ba5df473ade14554ee2f2f05b761142e73257cf"
+    );
+    assert_eq!(
+        hex(Projection::CumulativeFlowSum(vec!["x".into()])),
+        "439f6c25062e7e8e22487f37d5d2536725ae6487a902fd1b2e4cc9e51e54b0a1"
+    );
+}

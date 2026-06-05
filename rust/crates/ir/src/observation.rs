@@ -7,10 +7,13 @@ use crate::expr::Expr;
 #[serde(rename_all = "snake_case")]
 pub enum Projection {
     CumulativeFlow(String),
-    CumulativeFlowSum(Vec<String>),
     CurrentPop(String),
     CurrentPopSum(Vec<String>),
     DerivedExpr(Expr),
+    // New variants append at the END: the run_id hash (runid::ir_hash) tags
+    // variants by position, so declaration order == hash index, and that
+    // index is permanent. Inserting earlier would churn stored run_ids.
+    CumulativeFlowSum(Vec<String>),
 }
 
 // ── Likelihood ────────────────────────────────────────────────────────────────

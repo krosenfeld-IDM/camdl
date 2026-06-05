@@ -218,10 +218,12 @@ type intervention = {
 
 type projection =
   | CumulativeFlow    of string
-  | CumulativeFlowSum of string list
   | CurrentPop        of string
   | CurrentPopSum     of string list
   | DerivedExpr       of expr
+  (* New variants append last — keeps parity with the Rust run_id hash,
+     whose variant indices are positional and permanent. *)
+  | CumulativeFlowSum of string list
 
 type poisson_likelihood      = { rate:       expr }
 type neg_binomial_likelihood = { mean: expr; dispersion: expr }
