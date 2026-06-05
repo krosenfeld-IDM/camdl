@@ -39,5 +39,5 @@
 (test
  (name test_diagnostics)
  (modules test_diagnostics)
- (libraries compiler ir alcotest)
+ (libraries compiler ir alcotest yojson)
  (deps (source_tree lints) (source_tree ../golden)))

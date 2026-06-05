@@ -1082,26 +1082,31 @@ let run_inspect path opts =
      | Tables pat ->
        run_tables ppf model ctx pat)
 
-(** Run 'camdl check': validate + show summary. *)
+(** Run 'camdl check': run the FULL front-end pipeline and show the summary.
+
+    Routed through [Compiler.collect_detail] — the single non-aborting core
+    that [compile] and [collect_diagnostics] also use — so `check` runs the
+    exact same stages as a real compile (lex → parse → expand → validate →
+    dimcheck → lint → autodiff) and can never disagree with it on a model's
+    validity. Two earlier divergences (gh#9: dimcheck skipped; gh#170: Validate
+    skipped) both came from `check` re-deriving a bespoke sub-pipeline; this
+    removes that surface entirely. *)
 let run_check path =
   let name = Filename.basename path |> Filename.remove_extension in
   let src  = read_file path in
   Fmt.set_style_renderer Fmt.stdout `Ansi_tty;
   Fmt.set_style_renderer Fmt.stderr `Ansi_tty;
-  match Compiler.compile_detail_result ~name ~filename:path src with
-  | Error e when e = "compilation failed"
-              || (String.length e > 0 && e.[0] = '[') -> exit 1
-  | Error e ->
-    Fmt.epr "Error: %s@\n" e;
+  let (detail, diags, source) = Compiler.collect_detail ~name ~filename:path src in
+  match detail with
+  | None ->
+    (* lex/parse/expand structurally failed; [diags] holds the E001.
+       Route through [Diagnostics.render] so `check --json-errors` emits
+       the JSON array (matching the old front-end-failure path, which
+       reached this rendering via [compile_detail_result]). *)
+    ignore (Diagnostics.render diags source);
     exit 1
-  | Ok d ->
-    (* Run Dimcheck so `camdlc check` matches the `compile` pipeline
-       (GH #9: previously check silently skipped dimcheck and reported
-       "no errors" on models that simulate would reject with E301). *)
-    Compiler.run_dimcheck d;
-    Compiler.run_lint d;
+  | Some d ->
     let ctx = d.Compiler.ctx in
-    let source = d.Compiler.source in
     let model = d.Compiler.model in
     let summary = d.Compiler.summary in
     if Diagnostics.has_errors ctx.diags then (

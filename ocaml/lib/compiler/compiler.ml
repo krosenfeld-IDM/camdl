@@ -351,24 +351,34 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
 
 (* ── Severity-agnostic diagnostic collection ─────────────────────────────────
 
-   [collect_diagnostics] runs the real compile pipeline (lex → parse →
-   expand → validate → dimcheck → lint → autodiff) over a source and
-   returns EVERY diagnostic it produced — errors, warnings, and infos
-   alike — without rendering to stderr and without aborting via
-   [report_and_exit]. It is the test/tooling counterpart to [compile],
-   which can only surface diagnostics on the failing (Error) path.
+   [collect_detail] runs the real compile pipeline (lex → parse → expand →
+   validate → dimcheck → lint → autodiff) over a source, accumulating EVERY
+   diagnostic — errors, warnings, and infos alike — into the returned
+   [Diagnostics.t], without rendering to stderr and without aborting via
+   [report_and_exit]. It is the shared non-aborting core behind both
+   [collect_diagnostics] (test/tooling: keeps only the diagnostic list) and
+   `inspect`'s `run_check` (the CLI: also renders the summary off the
+   [compile_detail]). [compile] is the aborting counterpart that runs the
+   same stages but renders and exits on errors.
+
+   Routing `run_check` through this core is the cure for the recurring
+   check/compile divergence (gh#9 re dimcheck, gh#170 re validate): there is
+   now ONE place that defines "the front-end pipeline", so `check` and
+   `compile` cannot disagree on a model's validity.
 
    The pipeline short-circuits exactly as [compile] does: a structural
    [Validate] error stops before dimcheck (Validate runs first precisely
    because dimcheck ICEs on unknown params). On the no-error path, all of
    dimcheck, lint, and autodiff run, so non-blocking warnings/lints (e.g.
-   L402 on a clean-compiling model) are captured. This matches what a
-   user sees from `camdlc`, so a fixture-driven test over [collect_diagnostics]
-   exercises the same diagnostic surface as the CLI. *)
+   L402 on a clean-compiling model) are captured.
 
-let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
-    : Diagnostics.diagnostic list =
-  let (detail, diags, _source) = front_end_collect ~name ~filename src in
+   Return shape mirrors [front_end_collect]: [(detail, diags, source)] with
+   [detail = None] when lex/parse/expand structurally failed (then [diags]
+   holds the E001), [Some d] otherwise (then [diags] is [d.ctx.diags], now
+   also carrying any validate/dimcheck/lint/autodiff diagnostics). *)
+let collect_detail ?(name = "model") ?(filename = "<input>") (src : string)
+    : compile_detail option * Diagnostics.t * Source_cache.t =
+  let (detail, diags, source) = front_end_collect ~name ~filename src in
   (match detail with
    | None -> ()                     (* lex/parse/expand failed; diags has the E001 *)
    | Some d ->
@@ -382,5 +392,14 @@ let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
        if not (Diagnostics.has_errors d.ctx.diags) then
          ignore (differentiate_transitions d)
      end);
+  (detail, diags, source)
+
+(* [collect_diagnostics] is the thin test/tooling projection of
+   [collect_detail]: it discards the model/summary and returns just the
+   accumulated diagnostics in source order. A fixture-driven test over it
+   exercises the same diagnostic surface as the CLI. *)
+let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
+    : Diagnostics.diagnostic list =
+  let (_detail, diags, _source) = collect_detail ~name ~filename src in
   (* diags accumulates newest-first via [emit]; reverse to source order. *)
   List.rev diags.Diagnostics.diags

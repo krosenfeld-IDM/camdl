@@ -432,6 +432,143 @@ let test_catalog_consistency () =
   Alcotest.(check bool) "parsed a non-trivial number of catalog codes"
     true (SS.cardinal singles + List.length ranges > 20)
 
+(* ── Piece 5: check ↔ compile parity (gh#170) ────────────────────────────────
+
+   `camdl check` and a full compile must never disagree on whether a model
+   is valid. They diverged twice — gh#9 (`check` skipped dimcheck) and
+   gh#170 (`check` skipped Validate, so a dangling observation reference
+   E507 passed `check` but failed `fit`/compile). The structural cure was to
+   route `check`'s diagnostics through [Compiler.collect_detail], the single
+   non-aborting pipeline core that [Compiler.compile] also runs. These tests
+   pin that agreement so it can't drift a third time.
+
+   We compare the two production surfaces directly:
+     - CHECK side: [Compiler.collect_detail] — the exact function
+       `Inspect.run_check` consumes — collapsed to its Error-severity codes.
+     - COMPILE side: [Compiler.compile] — the real compile — collapsed to
+       its error codes (it surfaces post-expansion errors by *raising*
+       [Diagnostics.Compile_error] carrying the JSON payload, and front-end
+       errors via its [Error] return; we capture both).
+
+   A divergence (one accepts, the other rejects; or different code sets) is
+   the smell the Defect-B class is made of. *)
+
+(* Pass the real source path as [~filename] so data-dependent models (a
+   `patch` dimension `read(...)` from `data/*.tsv`) resolve their files
+   relative to their own directory — exactly as [emitted_pairs] does.
+   Compiling these out of their source dir would spuriously fail expansion
+   (E200/E100/E263) and is not what either pipeline does in practice. *)
+
+(* Error codes (sorted-unique) from the CHECK pipeline — i.e. the diagnostic
+   surface `run_check` renders. Only Error severity counts toward
+   accept/reject parity; warnings/infos (e.g. L402) don't fail a compile. *)
+let check_error_codes ~filename src : string list =
+  let (_detail, diags, _src) =
+    Compiler.collect_detail ~name:(Filename.basename filename) ~filename src in
+  diags.Diagnostics.diags
+  |> List.filter (fun (d : Diagnostics.diagnostic) ->
+       d.severity = Diagnostics.Error)
+  |> List.map (fun (d : Diagnostics.diagnostic) -> d.code)
+  |> List.sort_uniq String.compare
+
+(* Error codes (sorted-unique) from the COMPILE pipeline. [Compiler.compile]
+   prints to stderr and either returns [Error json] (front-end failure) or
+   raises [Compile_error json] (post-expansion failure, e.g. Validate E507);
+   under [json_errors_mode] both payloads are the same JSON array, which we
+   parse for `"code"` fields. An [Ok] compile yields the empty set. *)
+let compile_error_codes ~filename src : string list =
+  let codes_of_json (payload : string) : string list =
+    (* payload is a JSON array of diagnostic objects, each with a "code".
+       If it isn't valid JSON (the non-json "compilation failed" sentinel
+       should never appear here since we set json mode), fall back to []. *)
+    match Yojson.Safe.from_string payload with
+    | exception _ -> []
+    | `List items ->
+      List.filter_map (fun item ->
+        match item with
+        | `Assoc fields ->
+          (match List.assoc_opt "code" fields with
+           | Some (`String c) -> Some c
+           | _ -> None)
+        | _ -> None) items
+      |> List.sort_uniq String.compare
+    | _ -> []
+  in
+  let prev = !Diagnostics.json_errors_mode in
+  Diagnostics.json_errors_mode := true;
+  let result =
+    match Compiler.compile ~name:(Filename.basename filename) ~filename src with
+    | Ok _ -> []
+    | Error payload -> codes_of_json payload
+    | exception Diagnostics.Compile_error payload -> codes_of_json payload
+  in
+  Diagnostics.json_errors_mode := prev;
+  result
+
+(* Focused red→green guard: the dangling-obs fixture (E507, independent of
+   stratified incidence) must be rejected by BOTH pipelines with E507.
+   Pre-fix, `check` accepted it (empty code set) while `compile` rejected
+   (E507) — the divergence. *)
+let dangling_obs_fixture = Filename.concat lints_dir "e507_dangling_obs_transition.camdl"
+
+let test_dangling_obs_parity () =
+  let src = read_file dangling_obs_fixture in
+  let check_codes   = check_error_codes   ~filename:dangling_obs_fixture src in
+  let compile_codes = compile_error_codes ~filename:dangling_obs_fixture src in
+  Alcotest.(check bool) "check rejects (E507 present)"
+    true (List.mem "E507" check_codes);
+  Alcotest.(check bool) "compile rejects (E507 present)"
+    true (List.mem "E507" compile_codes);
+  Alcotest.(check (list string)) "check and compile agree on the error-code set"
+    compile_codes check_codes
+
+(* Structural drift guard: across every fixture (lints/ + the model
+   corpora), the CHECK and COMPILE error-code sets must be IDENTICAL. This
+   is the meta-test that kills the whole Defect-B class — any future
+   `run_check` reimplementation that drifts from `compile` fails here.
+
+   We exclude `ocaml/golden/errors/` (deliberately-broken dimcheck/semantic
+   negatives) by reusing the same `skip_dirs` the clean-corpus test uses;
+   they're still covered by the lints/ E5xx fixtures, and several are
+   crafted to trip a single pass in isolation. The lints/ dir IS included —
+   it carries the E507 fixture plus L402/clean models, exercising the
+   warning-vs-error boundary of the parity (a lint warns in both; it must
+   NOT show up as an error-code divergence). *)
+let parity_corpus_dirs = [
+  ("ocaml/test/lints", []);
+  ("ocaml/golden",     ["errors"; "data"]);
+  ("tests/fixtures",   []);
+  ("tests/recovery",   []);
+]
+
+let test_corpus_check_compile_parity () =
+  let files =
+    List.concat_map (fun (rel, skip_dirs) ->
+      camdl_files_under ~skip_dirs (root_path rel)) parity_corpus_dirs
+  in
+  if files = [] then
+    Alcotest.failf
+      "parity test found no .camdl files under %s (repo_root=%s)"
+      (String.concat ", " (List.map fst parity_corpus_dirs)) repo_root;
+  let divergences =
+    List.filter_map (fun path ->
+      let src = read_file path in
+      let check_codes   = check_error_codes   ~filename:path src in
+      let compile_codes = compile_error_codes ~filename:path src in
+      if check_codes <> compile_codes then
+        Some (Printf.sprintf
+          "%s\n      check:   [%s]\n      compile: [%s]"
+          (Filename.basename path)
+          (String.concat ", " check_codes)
+          (String.concat ", " compile_codes))
+      else None
+    ) files
+  in
+  if divergences <> [] then
+    Alcotest.failf
+      "check ↔ compile error-code divergence on %d fixture(s):\n    %s"
+      (List.length divergences) (String.concat "\n    " divergences)
+
 (* ── Driver ──────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -442,5 +579,11 @@ let () =
     ];
     "catalog", [
       Alcotest.test_case "emit sites ↔ warning-catalog.md" `Quick test_catalog_consistency;
+    ];
+    "check-compile-parity", [
+      Alcotest.test_case "dangling obs (E507) rejected by check AND compile"
+        `Quick test_dangling_obs_parity;
+      Alcotest.test_case "every fixture: check error-set = compile error-set"
+        `Quick test_corpus_check_compile_parity;
     ];
   ]
