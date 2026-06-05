@@ -157,7 +157,10 @@ type time_function = {
 
 (* ── Tables ──────────────────────────────────────────────────────────────────── *)
 
-type oob_policy = Clamp | Wrap | Error
+(* Table out-of-range lookups fail loud (a model bug), never silently
+   clamp/flat-extrapolate or wrap — those masked errors with surprising
+   behaviour and were removed (the evaluator was built but unselectable). *)
+type oob_policy = Error
 
 type table_source =
   | Inline   of expr list  (** values resolved at compile time *)

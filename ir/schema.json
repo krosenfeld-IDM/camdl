@@ -389,7 +389,7 @@
       "properties": {
         "name": { "type": "string" },
         "values": { "type": "array", "items": { "type": "number" } },
-        "out_of_bounds": { "type": "string", "enum": ["clamp", "wrap", "error"] }
+        "out_of_bounds": { "type": "string", "enum": ["error"] }
       }
     },
 

@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use crate::expr::Expr;
 
+/// Table out-of-range lookups fail loud (a model bug). `Clamp`/`Wrap`
+/// (silent flat-extrapolation / wrapping) were removed: the evaluator was
+/// built but unselectable, and silent extrapolation masks modeling errors.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OobPolicy {
-    Clamp,
-    Wrap,
     Error,
 }
 

@@ -98,7 +98,7 @@ fn representative_model() -> Model {
         tables: vec![Table {
             name: "contact".into(),
             source: TableSource::Inline { values: vec![Expr::const_(1.0), Expr::const_(0.5)] },
-            out_of_bounds: OobPolicy::Clamp,
+            out_of_bounds: OobPolicy::Error,
             cell_kind: None,
         }],
         interventions: vec![Intervention {
@@ -195,7 +195,10 @@ fn representative_model() -> Model {
 /// this value; an unintended change to any hand impl trips it.
 #[test]
 fn model_golden_hash() {
-    const GOLDEN: &str = "94381cacffb3b553d0ca77d03a55cbf7dd7925ead8d8ff875112d8d9db8d0cb3";
+    // Updated when representative_model()'s table out_of_bounds went
+    // Clamp -> Error (Clamp/Wrap removed). No real model used Clamp/Wrap, so
+    // produced run_ids are unaffected; only this hand-built fixture moved.
+    const GOLDEN: &str = "ae7d5325233cbd6c6108e5f1b73b757424093822a7c883df629b41a72e383cf8";
     let got = representative_model().content_hash().to_hex();
     assert_eq!(got, GOLDEN, "ir Model golden hash changed (got {got})");
 }

@@ -441,13 +441,11 @@ let time_function_of_json j =
 (* ── Table ───────────────────────────────────────────────────────────────── *)
 
 let oob_policy_to_json = function
-  | Clamp -> str "clamp"
-  | Wrap  -> str "wrap"
   | Error -> str "error"
 
 let oob_policy_of_json j =
   match as_string j with
-  | "clamp" -> Clamp | "wrap" -> Wrap | "error" -> Error
+  | "error" -> Error
   | s -> fail "unknown oob_policy '%s'" s
 
 let table_to_json (t : table) : Yojson.Safe.t =

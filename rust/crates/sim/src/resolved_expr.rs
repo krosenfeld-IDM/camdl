@@ -362,26 +362,16 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
             let table_idx_val = raw.floor() as i64;
             let n = *table_len as i64;
             let i = match oob {
-                OobPolicy::Clamp => table_idx_val.clamp(0, n - 1),
-                OobPolicy::Wrap => {
-                    if n == 0 { return 0.0; }
-                    table_idx_val.rem_euclid(n)
-                }
+                // Out-of-range table lookups fail loud: the index is a model
+                // assertion ("never out of range"); a hot-path violation is a
+                // model bug, not something to silently clamp or wrap (RM3,
+                // 2026-04-19 engine review). The slow-path (eval_expr) and
+                // construction-time (eval_table_expr) evaluators fail the same.
                 OobPolicy::Error => {
-                    // RM3 in 2026-04-19 engine review: previously this
-                    // silently clamped + log::warn'd, defeating the
-                    // whole point of the Error policy. The compiler's
-                    // Error policy is a contract: "I assert the index
-                    // will never be out of range." A violation in the
-                    // hot path is a model bug, and the honest response
-                    // is to fail loud. The slow-path (eval_expr) and
-                    // construction-time (eval_table_expr) evaluators
-                    // already do so; this is alignment, not a new cost.
                     if table_idx_val < 0 || table_idx_val >= n {
                         panic!(
-                            "table lookup out of bounds: index {} not in [0, {}) \
-                             (oob_policy = Error). Either widen the bounds, change \
-                             the policy to Clamp/Wrap, or fix the index expression.",
+                            "table lookup out of bounds: index {} not in [0, {}). \
+                             Widen the table bounds or fix the index expression.",
                             table_idx_val, n
                         );
                     }

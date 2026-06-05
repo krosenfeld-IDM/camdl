@@ -365,7 +365,7 @@ tables: [{
 -- OCaml expander lays values out in row-major order and emits two-index
 -- TableLookup calls; the Rust backend uses the same row-major stride.
 
-oob_policy := Clamp | Wrap | Error
+oob_policy := Error          -- out-of-range table lookups fail loud
 ```
 
 Each index expression is evaluated and `floor`'d to an integer. The flat offset

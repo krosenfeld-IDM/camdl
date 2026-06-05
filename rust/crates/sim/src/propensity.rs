@@ -322,11 +322,8 @@ fn table_lookup(table: &ir::table::Table, cached: &[f64], idx: i64) -> Result<f6
     use ir::table::OobPolicy;
     let n = cached.len() as i64;
     let i = match table.out_of_bounds {
-        OobPolicy::Clamp => idx.clamp(0, n - 1),
-        OobPolicy::Wrap  => {
-            if n == 0 { return Err(SimError::TableLookup(format!("table '{}' is empty", table.name))); }
-            idx.rem_euclid(n)
-        }
+        // Out-of-range table lookups fail loud; Clamp/Wrap were removed
+        // (silent flat-extrapolation/wrapping masks model bugs).
         OobPolicy::Error => {
             if idx < 0 || idx >= n {
                 return Err(SimError::TableLookup(format!(

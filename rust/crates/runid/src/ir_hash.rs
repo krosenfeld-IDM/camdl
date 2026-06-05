@@ -469,9 +469,9 @@ impl ContentAddressed for OdeEquation {
 impl ContentAddressed for OobPolicy {
     fn hash_into(&self, h: &mut CanonicalHasher) {
         header(h, "ir::table::OobPolicy");
+        // Keep Error at index 2 (its value when Clamp=0 / Wrap=1 existed) so
+        // removing those dead variants stayed run_id-neutral — do NOT renumber.
         let idx: u32 = match self {
-            OobPolicy::Clamp => 0,
-            OobPolicy::Wrap => 1,
             OobPolicy::Error => 2,
         };
         h.write_u32(idx);
