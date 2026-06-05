@@ -122,22 +122,46 @@ Severities split by **direction**: data-has-extra (`LeftoverColumn`) defaults to
 Info (real files carry `population`, `notes` columns); model-cell-unfilled-
 when-dense and stratum-mismatch default to Error.
 
-## Types and how they throw
+## Types and how they flow into one another
+
+Two type families meet at the bind: the **new loader types** (`obsdata`, below)
+and the **existing inference types** they feed. The value of the bind is that it
+is the _one_ place those families connect — data enters as untyped rows and
+leaves as a value the inference traits already know how to consume. Nothing
+downstream is new; the work is to give the existing seam a single, typed input.
+
+### The new types (`obsdata`)
 
 ```rust
 mod obsdata {
+    /// Set by the stream's projection; governs grid policy + accumulator
+    /// semantics. The runtime analogue is `StreamProjection` (below).
     pub enum TemporalKind { Interval, Instant }
 
+    // ── input: one untyped row per PRESENT observation ──
     struct LongRow { stream: String, stratum: Option<String>, when: RawTime, value: RawValue }
-    enum RawTime  { Offset(f64), Date(String) }     // via ir::caltime + model origin
+    enum RawTime  { Offset(f64), Date(String) }      // resolved via ir::caltime + model origin
     enum RawValue { Num(f64), Missing, Unparseable(String) }
 
-    /// model-shaped result; PRIVATE ctor — only `bind` makes it.
+    // ── output: a model-shaped, fully-typed object ──
+    /// PRIVATE ctor — only `bind` constructs one, so no un-validated data can
+    /// reach the likelihood.
     pub struct BoundObs { times: Vec<f64>, streams: Vec<StreamCells> }
-    struct StreamCells { name: String, kind: TemporalKind, cells: Vec<Option<f64>> }  // None = hole
+    struct StreamCells {
+        name:  String,
+        kind:  TemporalKind,
+        cells: Vec<Option<ObsCell>>,    // None = hole; one slot per time in `times`
+    }
+    /// Payload of a present cell. A bare scalar today; the variant leaves room
+    /// for likelihoods that need per-observation auxiliary data — e.g. a
+    /// Binomial/BetaBinomial denominator that varies survey-to-survey (see the
+    /// malaria note in §Scope). Extending the payload is additive — the cell
+    /// stays `Option`, holes stay typed.
+    enum ObsCell { Scalar(f64), Counted { value: f64, denom: f64 } }
 
+    // ── the report: errors are VALUES, not control flow ──
     pub enum Severity { Error, Warn, Info }
-    pub struct Finding { kind: BindIssue, stream: String, detail: String, count: usize, severity: Severity }
+    pub struct Finding  { kind: BindIssue, stream: String, detail: String, count: usize, severity: Severity }
     pub enum BindIssue {
         LeftoverColumn, LeftoverStratum, OffGridInterval, OffGridInstant,
         Collision, Duplicate, CoarserThanModel, Hole, RejectedValue,
@@ -149,19 +173,93 @@ mod obsdata {
 }
 ```
 
-Throw discipline:
+### The existing types it feeds (verified against the code)
 
-- `bind` returns the pair; the **caller** gates on `report.verdict`.
-- `fit`/`pfilter` at load: `Error` → refuse with the rendered findings (a
-  `SimError::Validation` value), unless `--allow-drop[=kind]` downgrades the
-  acknowledged kinds.
-- **`camdl check-data <model> --data …`** — a _new Rust subcommand_ that runs
-  `bind` to render the report + set the exit code. (Not the OCaml `check`, which
-  is a `camdlc` passthrough — `main.rs:206,414` — and never reads obs data.)
-  Findings render as structured diagnostics so `--json-errors`/CI/book consume
-  them, per gh#181.
-- Invariant: `BoundObs` has no public constructor → no un-bound data reaches the
-  likelihood; every leftover/collision/hole is in some `BindReport`.
+`BoundObs` is not a parallel universe — it is the input to types that already
+exist in `sim::inference`. The seam is small and already unified for _scoring_;
+this proposal unifies what _builds_ it.
+
+- **`trait ObservationModel<S>`** (`traits.rs:89`) — the single seam every
+  algorithm scores through. Its core method is
+  `fn log_likelihood(&self, state: &S, obs_idx: usize, params: &[f64]) -> f64`
+  (`traits.rs:94`), plus `n_observations` / `obs_time(obs_idx)` / `n_streams`.
+  The doc-comment is explicit: "This is the ONLY method required for inference.
+  All algorithms (PF, IF2, PMMH, PGAS) call this for particle weighting." This
+  is the type every fitting algorithm consumes — exactly the "passed as a type
+  to each of them" shape.
+- **`struct MultiStreamObsModel`** (`multi_stream_obs.rs:246`) — the production
+  `impl ObservationModel<ParticleState>`. Owns `obs_times`, the per-stream
+  `StreamProjection`, and the per-stream observed series. This is what `bind`'s
+  output is _built into_.
+- **`enum StreamProjection`** (`multi_stream_obs.rs:72`) —
+  `FlowSum | IntCompSum | Expr`, with `resets_after_observation()` true only for
+  `FlowSum`. This **is** `TemporalKind` at the runtime layer:
+  `Interval ≙ FlowSum` (reads `flow_accumulators`, resets);
+  `Instant ≙ IntCompSum`/`Expr` (reads `counts`, no reset). `bind` chooses the
+  variant; the projection enforces the semantics.
+- **`struct ParticleState { counts, flow_accumulators }`** (`types.rs`) +
+  **`trait Resettable`** (`traits.rs:27`) — the state a projection reads.
+  `Resettable::reset_accumulators` is the per-stream-reset hook the
+  sparse-`Interval` work needs; today it is driven _globally_
+  (`particle_filter.rs:401-402` resets every particle's accumulators at every
+  obs time), which is the umbrella's §5.2.1 trap for sparse incidence.
+- **`trait ProcessModel` / `DensityProcess`** (`traits.rs`) — the simulator
+  side; unchanged here, named only to locate the observation seam relative to
+  it (`ProcessModel::State: Resettable` is the bound that ties the two).
+
+So `BoundObs` slots in at exactly one place, and the mapping into
+`MultiStreamObsModel` is mechanical:
+
+| `BoundObs`                | becomes, in `MultiStreamObsModel`                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `times` (the union axis)  | `obs_times`; drives `n_observations()`                                                        |
+| `StreamCells.kind`        | the `StreamProjection` variant (Interval→`FlowSum`; Instant→`IntCompSum`/`Expr`)             |
+| `cells[k] = Some(v)`      | a scored observation for that stream at `obs_idx = k`                                         |
+| `cells[k] = None` (hole)  | that stream contributes **0** to the joint log-likelihood at `obs_idx = k` — skipped, not scored as an observed zero |
+
+That last row is the entire correctness point: a hole is the _absence of a term
+in the sum_, not an observed value of zero. The homogeneous path can't express
+it because every stream shares one dense `obs_times`; `Option` cells over a
+union axis can.
+
+### The flow
+
+```
+  --data PATH  /  --data NAME=PATH                  (raw file: long, or wide-sugar)
+        |   parse + ir::caltime  (date -> model-time)
+        v
+  Vec<LongRow>                                      (untyped: stream, stratum, when, value)
+        |   obsdata::bind(model, rows, dt, cal, policy)
+        v
+  (BoundObs, BindReport) ----------------> report.verdict
+        |  value: model-shaped, typed,             |  Error      -> refuse: SimError::Validation
+        |  Option cells (holes typed)              |               with rendered findings,
+        |                                          |               unless --allow-drop[=kind]
+        |                                          |  Warn/Info  -> proceed, surface findings
+        v
+  MultiStreamObsModel : ObservationModel<ParticleState>
+        |   log_likelihood(state, obs_idx, params)   (the one seam; traits.rs:94)
+        v
+  { particle_filter, if2, pmmh, pgas }              (each generic over ObservationModel)
+        |   reads state via StreamProjection
+        v
+  ParticleState { counts (Instant) | flow_accumulators (Interval) }
+        ^   Resettable::reset_accumulators          (per-stream, for Interval streams)
+```
+
+Errors flow _alongside_ the data, never as control flow. `bind` always returns
+the pair; the caller decides what `report.verdict` means: `fit`/`pfilter` at
+load refuse on `Error` (a `SimError::Validation` value carrying the rendered
+findings) unless `--allow-drop[=kind]` downgrades acknowledged kinds, and the
+new **`camdl check-data <model> --data …`** subcommand runs `bind` purely to
+render the report and set an exit code. (`check-data` is a _new Rust_
+subcommand, **not** the OCaml `check`, which is a `camdlc` passthrough at
+`main.rs:206,414` and never reads obs data.) Findings render as structured
+diagnostics so `--json-errors` / CI / the book consume them (gh#181). The
+invariant that makes the whole flow safe: `BoundObs` has a private constructor,
+so the only way to obtain one is through `bind`, so every leftover, collision,
+and hole is accounted for in some `BindReport` before any value reaches
+`log_likelihood`.
 
 ## Input format: long-canonical
 
@@ -170,7 +268,7 @@ absent rows — no NaN-vs-zero ambiguity. A long-indices/wide-streams sugar
 (`time, patch, afp, es`) is accepted and normalized in, with empty = typed
 `None`, never zero. `BoundObs` is itself "long indices × wide `Option` cells".
 
-## Scope vs #171 (honest)
+## Scope: what this unlocks (and what it doesn't)
 
 This is the **data-sparsity substrate** for gh#171: it lets the _data_ be sparse
 and time-varying, and the `Option` cells carry it through scoring. It does
@@ -178,7 +276,44 @@ and time-varying, and the `Option` cells carry it through scoring. It does
 `projected` to a subset of strata, and time-varying observation effort (a
 forcing). Those are separate (a subset binder in the DSL; an effort covariate).
 Necessary, not sufficient — the Sokoto ES case needs all three. gh#172
-(summary-statistic targets) is orthogonal (it changes _what_ is scored).
+(summary-statistic targets) is orthogonal (it changes _what_ is scored; see
+§Forward).
+
+### Worked target: malaria-like sparse, irregular prevalence
+
+Does this unlock fitting to malaria-style data — prevalence surveys at sparse,
+irregular times? Mostly **yes**, and the part it doesn't reach is named.
+
+- **The hard part — yes.** Malaria prevalence is an `Instant` stream
+  (`CurrentPop`/`DerivedExpr`, e.g. `I/(S+I+R)`): read at the survey instant,
+  no accumulation window, no per-stream reset (it bypasses `flow_accumulators`
+  entirely and reads `counts`). Sparse + irregular survey times are exactly the
+  union-axis + `Option`-cell case: each survey is a present cell on the union
+  `times`; every non-survey time is a typed hole that contributes no term.
+  Off-grid survey dates resolve to the nearest grid point and **warn** (not
+  reject), per the `Instant` policy. So the binding and scoring of irregular
+  sparse prevalence is precisely what this proposal delivers.
+- **Continuous prevalence index — fully covered.** If the datum is a proportion
+  scored with Normal/Beta on `I/N`, one scalar per cell suffices; nothing else
+  is needed.
+- **Binomial slide-positivity — needs the cell payload.** The rigorous datum is
+  "k positive of n examined," and **n varies survey-to-survey**. Today the
+  Binomial/BetaBinomial denominator is a model expression
+  (`BinomialLikelihood { n: Expr }`, `crates/ir/src/observation.rs`), so a
+  survey-varying n can only be smuggled in as a forcing table indexed by survey
+  time — which splits one logical observation (k of n at t) across the model and
+  the data file. The clean fix is the `ObsCell::Counted { value, denom }`
+  payload above: the denominator rides _with_ the datum in `BoundObs`, and the
+  likelihood reads it per cell. That is an additive extension this proposal
+  reserves room for, not a separate redesign.
+- **The model-side gaps (same as #171).** If prevalence is observed only in a
+  subset of patches/age-strata (cross-sectional surveys rarely cover every
+  cell), that restriction is the gh#171 subset binder — model-side, separate
+  from this loader.
+
+Net: a malaria fit with continuous prevalence at irregular sparse times works on
+this proposal alone; a binomial-positivity fit works once the `Counted` cell
+payload lands; subset-of-strata coverage waits on gh#171.
 
 ## The shared calendar (gh#98)
 
@@ -207,6 +342,68 @@ battery), per the `rata_die` cross-language rule.
 5. The gh#98 date-equivalence test.
 6. (separate) the gh#171 subset binder + effort covariate — model-side, not this
    proposal.
+
+## Forward: summary statistics and synthetic likelihoods
+
+camdl scores every fit through one seam — `ObservationModel::log_likelihood`,
+evaluated _per observation time_ and combined sequentially by the particle
+filter. That per-cell, Markovian shape is what makes the bootstrap filter and
+PGAS work. But a whole class of methods deliberately abandons the per-time
+likelihood: **probe-matching / synthetic likelihood** (Wood 2010; King, Nguyen
+& Ionides 2016, the pomp `probe`/`probe_match` and synthetic-likelihood
+surface) and **approximate Bayesian computation (ABC)**. These score a model by
+how well _summaries_ of simulated data match summaries of the observed data —
+peak height, time-to-peak, final size, growth rate, autocorrelations, spectral
+features — rather than by a point-by-point density. They are the right tool when
+the per-observation likelihood is intractable, ill-defined, or pathological
+(near-deterministic dynamics, hard-to-specify reporting processes), and they are
+on the roadmap as gh#172. This proposal should not implement them, but it should
+not foreclose them — and a few choices here decide whether they slot in cleanly.
+
+**The structural fact: a summary statistic is a function of the whole series,
+not of one `obs_idx`.** `s(y₁..y_T)` cannot be evaluated inside the sequential
+filter; it needs the full trajectory in hand. So summary-stat scoring is **not**
+a new `ObservationModel` arm — it is a _sibling_ scorer consumed by a different
+driver (simulate-many-then-compare, not sequential weighting):
+
+```rust
+/// Today's per-cell sequential likelihood (MultiStreamObsModel) and a future
+/// whole-series summary scorer are SIBLINGS, not the same trait. Both read the
+/// same `BoundObs` — the data type does not fork; the scorer does.
+trait SeriesScorer {
+    /// A (pseudo-)log-density of the observed data given simulated output.
+    /// Sees the WHOLE series, not one obs_idx — not sequential, not Markovian.
+    fn score(&self, observed: &BoundObs, simulated: &[Trajectory], params: &[f64]) -> f64;
+}
+
+enum Objective {
+    Likelihood(MultiStreamObsModel),   // sequential; consumed INSIDE the PF (today)
+    Synthetic(SyntheticLikelihood),    // simulate M reps → N(s; μ_θ, Σ_θ)  (Wood 2010)
+    Abc(AbcDistance),                  // accept iff ρ(s_sim, s_obs) ≤ ε
+}
+```
+
+**What `BoundObs` gives these methods for free.** The observed summary `s(y_obs)`
+is computed _once_ from `BoundObs`; the simulated summary is computed from each
+simulated `Trajectory` **projected through the same `StreamProjection`**. Because
+both sides flow through the identical projection (the `Interval`/`Instant` split,
+the stratum layout, the union axis), the observed and simulated summaries are
+guaranteed apples-to-apples — a summary function is just a reduction over the
+model-shaped cells, defined once and applied to both sides. Holes (`None` cells)
+are handled by the summary itself (e.g. "mean over present cells"), exactly as
+they should be, with no special path. Synthetic likelihood then fits a Gaussian
+to the M simulated summary vectors and scores `s(y_obs)` under it (Wood 2010);
+ABC thresholds a distance. Neither needs a gradient, and neither touches the
+loader.
+
+**The one thing to keep clean now** is that inference entry points should reach
+their objective behind a small abstraction (the `Objective`/`SeriesScorer` seam
+above), rather than hard-wiring `MultiStreamObsModel`. The §Unification refactor
+— routing every algorithm through one constructed obs type — is what makes that
+abstraction cheap to introduce later: once all four methods consume a single
+typed objective built from `BoundObs`, adding `Synthetic`/`Abc` as further
+constructors of that objective is additive. The data binding is the foundation;
+the scorer fork sits one layer above it.
 
 ## Open questions
 
