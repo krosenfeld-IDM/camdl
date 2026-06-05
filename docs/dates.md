@@ -396,5 +396,14 @@ all stay legal.
 - **`time_unit` vs `dt` vs cadence:** `time_unit` is the axis unit; `dt` is the
   integrator step (set by the dynamics, not the data); observation cadence is a
   property of the data. See `docs/camdl-run-spec.md`.
+- **Where `dt` lives:** `dt` is a model knob — write it in the model's
+  `simulate { dt = … }` block, where it sits next to `from`/`to` and is
+  unit-aware (`dt = 0.05 'months`). Models are genuinely sensitive to the
+  discretization step, so it belongs in the model, not buried in a CLI flag.
+  The `--dt` flag is the *override*: it wins over the model's `dt` for one
+  run, which is what you want for a sensitivity sweep or Richardson-
+  extrapolation diagnostic. With neither set, the step defaults to 1
+  (`time_unit`). Omit `dt` from the model only when you intend the run to
+  pick it.
 - **Design rationale and test plan:**
   `docs/dev/proposals/2026-05-22-calendar-time.md`.

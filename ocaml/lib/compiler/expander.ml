@@ -3183,8 +3183,13 @@ let expand_simulate ctx =
   | Some sd ->
     let t_start = resolve_float_expr ctx sd.sim_from in
     let t_end   = resolve_float_expr ctx sd.sim_to   in
+    (* gh#161: `dt` is a model knob. It is unit-aware like from/to —
+       `dt = 0.05 'months` resolves through resolve_float_expr (EUnit →
+       model time units). None when omitted, so the CLI default / --dt
+       override applies. *)
+    let dt = Option.map (resolve_float_expr ctx) sd.sim_dt in
     { Ir.t_start; Ir.t_end;
-      Ir.time_semantics = "continuous"; Ir.dt = None; Ir.rng_seed = None }
+      Ir.time_semantics = "continuous"; Ir.dt; Ir.rng_seed = None }
 
 let expand_output ctx =
   let t_start, t_end = match ctx.simulate with
@@ -4387,6 +4392,11 @@ let check_surface_time_typing ctx =
    | Some sd ->
      walk_expr_rule1 ~loc:Diagnostics.no_loc ~context:"simulate.from" sd.sim_from;
      walk_expr_rule1 ~loc:Diagnostics.no_loc ~context:"simulate.to"   sd.sim_to;
+     (* dt is a duration (step length), so a bare numeric dt is correct —
+        no W324 here, unlike from/to which want calendar dates under origin. *)
+     Option.iter
+       (walk_expr_rule1 ~loc:Diagnostics.no_loc ~context:"simulate.dt")
+       sd.sim_dt;
      warn_bare_numeric ~loc:Diagnostics.no_loc ~code:"W324" ~field:"from"
        ~hint:Time_typing.hint_bare_numeric_simulate sd.sim_from;
      warn_bare_numeric ~loc:Diagnostics.no_loc ~code:"W324" ~field:"to"

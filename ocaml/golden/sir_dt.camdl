@@ -1,0 +1,43 @@
+# SIR with an explicit discretization step `dt` in the simulate block (gh#161).
+# `dt` is a model knob: the chosen step is part of the model, not a CLI-only
+# afterthought. `--dt` overrides it on the command line for sensitivity sweeps.
+time_unit = 'days
+
+compartments { S, I, R }
+
+let N = S + I + R
+
+parameters {
+  beta  : rate     in [0.001, 2.0]
+  gamma : rate     in [0.001, 1.0]
+  N0    : count    in [100, 100000]
+  I0    : count    in [1, 1000]
+}
+
+transitions {
+  infection : S --> I  @ beta * S * (I / N)
+  recovery  : I --> R  @ gamma * I
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+simulate {
+  from = 0 'days
+  to   = 100 'days
+  dt   = 0.5
+}
+
+scenarios {
+  baseline {
+    label = "default  (R0 ≈ 3)"
+    set = {
+      beta  = 0.3
+      gamma = 0.1
+      N0    = 1000
+      I0    = 10
+    }
+  }
+}

@@ -238,7 +238,7 @@ type output_decl = {
   out_trajectories: output_traj_decl option;
 }
 
-type simulate_decl = { sim_from: expr; sim_to: expr }
+type simulate_decl = { sim_from: expr; sim_to: expr; sim_dt: expr option }
 
 type timepoint_decl = { tpname: string; tptime: expr }
 

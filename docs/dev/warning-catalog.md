@@ -36,7 +36,7 @@ specifics are documented at each emit site in `ocaml/lib/compiler/`.)
 | E103 | parse | duplicate let binding |
 | E104 | parse | reserved name used as identifier |
 | E105 | parse | unknown unit suffix |
-| E106 | parse | malformed range |
+| E106 | parse | unknown / conflicting key in a config block (`output {}` section, `simulate {}` key, schedule `every`/`at` conflict) |
 | E107 | parse | ambiguous unit literal after `/` |
 | E108 | parse | malformed initial-condition expression |
 | E109 | parse | unknown forcing function shape |

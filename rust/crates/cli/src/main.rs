@@ -476,7 +476,13 @@ fn run_simulate(a: &args::SimulateArgs) {
     // Default is chain_binomial so `simulate` and `fit` agree at the
     // same MLE params (see docs/dev/incidents/2026-04-19-backend-default-mismatch.md).
     let mut backend      = a.backend.backend.unwrap_or(args::types::Backend::ChainBinomial);
-    let mut dt           = a.backend.dt.unwrap_or(1.0_f64);
+    // dt precedence (gh#161): an explicit `--dt` always wins. Otherwise the
+    // model's own `simulate { dt = … }` is the default (dt is a model knob).
+    // If neither is set, fall back to 1.0. A fit-provenance `dt` (below) can
+    // still override the model default when a fit-MLE params file is passed and
+    // `--dt` was not given, so the consumer reproduces the fit's step.
+    let model_dt: Option<f64> = util::peek_simulation_dt(&ir_path_compiled);
+    let mut dt           = a.backend.dt.or(model_dt).unwrap_or(1.0_f64);
     let seed             = a.seed;
     let overrides: HashMap<String, f64> = a.model_overrides.param.iter()
         .map(|p| (p.name.clone(), p.value)).collect();

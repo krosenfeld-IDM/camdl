@@ -685,15 +685,33 @@ simulate_body:
   | kvs = list(simulate_kv)
       { let sim_from = ref (EConst 0.0) in
         let sim_to   = ref (EConst 100.0) in
+        let sim_dt   = ref None in
         List.iter (function
           | `From e -> sim_from := e
           | `To   e -> sim_to   := e
+          | `Dt   e -> sim_dt   := Some e
         ) kvs;
-        { sim_from = !sim_from; sim_to = !sim_to } }
+        { sim_from = !sim_from; sim_to = !sim_to; sim_dt = !sim_dt } }
 
+(* `dt` is the discretization step (gh#161). It is a model knob — models are
+   sensitive to it (discretization error; Richardson-extrapolation diagnostics
+   deliberately vary it) — so it belongs in the model, with `--dt` as the CLI
+   override. `dt` is *not* a keyword token: it is a bare identifier in rate
+   expressions (`(1 - exp(-rate * dt))`), so it lexes as IDENT and is matched
+   here by text. Unknown keys are a hard error (no-loose-semantics), never a
+   silent drop. *)
 simulate_kv:
   | FROM EQ e = expr { `From e }
   | TO   EQ e = expr { `To   e }
+  | k = IDENT EQ e = expr
+      { if k = "dt" then `Dt e
+        else begin
+          Parser_errors.push_error ~sp:$startpos(k) ~ep:$endpos(k)
+            ~code:"E106"
+            ~msg:(Printf.sprintf
+              "unknown simulate key '%s': expected one of from, to, dt" k);
+          `Dt e  (* placeholder; the error above aborts compilation *)
+        end }
 
 (* ── Init block ──────────────────────────────────────────────────────────── *)
 
@@ -857,7 +875,18 @@ scenario_block:
 
 scenario_field:
   | SIMULATE LBRACE kvs = list(simulate_kv) RBRACE
-      { let e = match List.find_map (function `To e -> Some e | _ -> None) kvs with
+      { (* A scenario's `simulate {}` block overrides only the end time
+           (`to`); it lowers to ScTEnd. `dt` is a whole-model knob, not a
+           per-scenario override, so reject it here rather than silently
+           drop it (no-loose-semantics). *)
+        (match List.find_map (function `Dt e -> Some e | _ -> None) kvs with
+         | Some _ ->
+           Parser_errors.push_error ~sp:$startpos ~ep:$endpos
+             ~code:"E106"
+             ~msg:"`dt` is not a per-scenario override: set it once in the \
+                   top-level `simulate {}` block, or pass --dt on the CLI"
+         | None -> ());
+        let e = match List.find_map (function `To e -> Some e | _ -> None) kvs with
                 | Some e -> e | None -> EConst 0.0 in
         Ast.ScTEnd e }
   | k = IDENT EQ LBRACE ps = list(scenario_kv_item) RBRACE

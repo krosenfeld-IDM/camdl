@@ -2646,8 +2646,30 @@ operations.
 simulate {
   from = 0 'days
   to   = 2 'years
+  dt   = 0.5 'days     # optional: the discretization step
 }
 ```
+
+The `simulate {}` block sets the time window (`from`, `to`) and, optionally,
+the discretization step `dt`. All three are unit-aware like any time literal:
+`dt = 0.05 'months` is one month-scaled step (affine 30.44-day months), the
+same convention `from`/`to` use.
+
+`dt` is a **model knob**. A stochastic compartmental model's behaviour is
+genuinely sensitive to the step — discretization error shrinks as `dt → 0`, and
+Richardson-extrapolation diagnostics deliberately vary it — so the chosen step
+is part of the model, declared next to the dynamics it discretizes. (`dt` is
+the per-substep length the tau-leap, chain-binomial, and ODE backends integrate
+with; the exact-event Gillespie backend ignores it.)
+
+The CLI `--dt` flag is the **override**: it wins over the model's `dt` for a
+single run, which is exactly what a sensitivity sweep or a convergence check
+wants. When neither the model nor `--dt` sets a step, it defaults to `1` in the
+model's `time_unit`. Omit `dt` from the model only when you intend the run — not
+the model — to choose it.
+
+A typo'd or unsupported key in `simulate {}` is a hard error (`E106`), never
+silently dropped; the accepted keys are `from`, `to`, `dt`.
 
 Seed is always external (CLI `--seed`), never in the model file.
 

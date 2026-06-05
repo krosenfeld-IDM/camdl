@@ -513,6 +513,19 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
     Ok((tmp.to_string_lossy().into_owned(), Some(tmp)))
 }
 
+/// Read the model's `simulate { dt = … }` step from a resolved IR path,
+/// without running full validation. Used to seed the simulate `dt` default
+/// (gh#161): the model knob is the default, `--dt` overrides it. Returns
+/// `None` on any read/parse error — the authoritative `load_model` runs later
+/// and surfaces a real diagnostic, so a peek failure must not abort or mislead.
+pub fn peek_simulation_dt(path: &str) -> Option<f64> {
+    // `path` is already a resolved `.ir.json` (resolve_ir_path ran upstream),
+    // so this is a plain read, never a camdlc invocation.
+    let json = std::fs::read_to_string(path).ok()?;
+    let model: ir::Model = ir::from_str(&json).ok()?;
+    model.simulation.dt
+}
+
 /// Load a .camdl or .ir.json model, returning the parsed model and raw IR JSON.
 /// The JSON is needed for provenance hashing. Compiles via camdlc if needed.
 pub fn load_model(path: &str) -> Result<(ir::Model, String), String> {

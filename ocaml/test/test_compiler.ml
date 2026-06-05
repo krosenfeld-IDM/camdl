@@ -5409,6 +5409,71 @@ let test_phase2_origin_in_unanchored_errors () =
       simulate { from = 0  to = 24 }
     |}
 
+(* ── #161: dt as a model knob in the simulate block ───────────────────── *)
+
+let dt_model_body = {|
+    compartments { S, I, R }
+    parameters { beta : rate  gamma : rate  N0 : count  I0 : count }
+    let N = S + I + R
+    transitions {
+      infection : S --> I  @ beta * S * I / N
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = N0 - I0  I = I0 }
+|}
+
+let test_simulate_dt_plain () =
+  (* `simulate { dt = 0.5 }` lowers to simulation.dt = Some 0.5. *)
+  let src = dt_model_body ^ {|
+    simulate { from = 0 'days  to = 100 'days  dt = 0.5 }
+  |} in
+  match Compiler.compile ~name:"test_sim_dt_plain" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.simulation.Ir.dt with
+     | Some d -> Alcotest.(check (float 1e-9)) "simulation.dt = 0.5" 0.5 d
+     | None   -> Alcotest.fail "expected simulation.dt = Some 0.5, got None")
+
+let test_simulate_dt_omitted_is_none () =
+  (* No dt in the simulate block → simulation.dt = None (CLI default applies). *)
+  let src = dt_model_body ^ {|
+    simulate { from = 0 'days  to = 100 'days }
+  |} in
+  match Compiler.compile ~name:"test_sim_dt_none" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.simulation.Ir.dt with
+     | None   -> ()
+     | Some d -> Alcotest.failf "expected simulation.dt = None, got Some %g" d)
+
+let test_simulate_dt_unit_aware () =
+  (* dt is unit-aware like from/to: `dt = 0.05 'months` is one month-scaled
+     step. The model time unit is days (default). The 'months factor is the
+     Gregorian mean month, days_per(Months) = 365.2425 / 12 = 30.436875 days
+     (expander.ml `days_per`), so 0.05 months = 0.05 * 30.436875 =
+     1.52184375 days. *)
+  let src = {|
+    time_unit = 'days
+  |} ^ dt_model_body ^ {|
+    simulate { from = 0 'days  to = 100 'days  dt = 0.05 'months }
+  |} in
+  match Compiler.compile ~name:"test_sim_dt_unit" src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok m ->
+    (match m.Ir.simulation.Ir.dt with
+     | Some d ->
+       let expected = 0.05 *. (365.2425 /. 12.0) in  (* = 1.52184375 *)
+       Alcotest.(check (float 1e-9)) "dt = 0.05 'months in days" expected d
+     | None -> Alcotest.fail "expected simulation.dt = Some _, got None")
+
+let test_simulate_unknown_key_errors () =
+  (* A typo'd / unsupported simulate key is a clear error, never silently
+     dropped (no-loose-semantics). *)
+  compile_expect_error_code ~code:"E106" ~contains:"step"
+    (dt_model_body ^ {|
+    simulate { from = 0 'days  to = 100 'days  step = 0.5 }
+  |})
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -5814,5 +5879,15 @@ let () =
         `Quick test_phase2_origin_in_simulate_from_anchored;
       Alcotest.test_case "E327 origin reference in unanchored model"
         `Quick test_phase2_origin_in_unanchored_errors;
+    ];
+    "simulate_dt", [
+      Alcotest.test_case "dt = 0.5 lowers to simulation.dt = Some 0.5"
+        `Quick test_simulate_dt_plain;
+      Alcotest.test_case "no dt → simulation.dt = None"
+        `Quick test_simulate_dt_omitted_is_none;
+      Alcotest.test_case "dt = 0.05 'months is unit-aware (→ days)"
+        `Quick test_simulate_dt_unit_aware;
+      Alcotest.test_case "E106 unknown simulate key (typo) errors"
+        `Quick test_simulate_unknown_key_errors;
     ];
   ]
