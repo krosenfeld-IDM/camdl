@@ -377,6 +377,10 @@ the filter is pure waste. Its algorithms (NLopt MLE, Metropolis–Hastings,
 NUTS-via-sensitivity-ODE) are worked out in
 `archive/pre-alpha/2026-05-04-ode-inference-three-phase.md`; the unified
 architecture gives them a home beside the filter rather than as a parallel stack.
+The *full* ODE-inference design (integrator choice, sensitivity-equation
+derivation, NLopt/MH/NUTS stage wiring) is deferred to its own proposal; this
+design only **reserves the driver seam** — a deterministic `ProcessModel` plus a
+non-filter driver — so that nothing in the shared substrate forecloses it.
 
 ```rust
 pub fn run_trajmatch(
@@ -497,6 +501,57 @@ lines differ:
   └───────┘   loop to next boundary
 ```
 
+And the trait/type view — which traits exist, what implements them, and where
+the new effect types and drivers sit:
+
+```
+ TRAITS (interfaces)                     implemented by
+ ──────────────────                      ──────────────
+ Resettable                              ParticleState, OdeState
+   fn reset_accumulators(&mut self)
+
+ ProcessModel : Send + Sync              ChainBinomialProcess (State=ParticleState)
+   type State : Clone+Send+Resettable    OdeProcess           (State=OdeState) [future]
+   type Scratch
+   fn initial_state(&self, θ) -> State
+   fn step(&mut State, θ, t, dt, rng, scratch)   ← shared kernel (step_one|integrate)
+   fn new_scratch(&self) -> Scratch
+
+ DensityProcess : ProcessModel           ChainBinomialProcess only
+   fn log_transition_density(…)            (PGAS / gradient)
+
+ ObservationModel<S> : Send + Sync        MultiStreamObsModel  (S=ParticleState)
+   fn log_likelihood(&self,&S,i,θ)->f64   ← scoring seam, READ-ONLY &S
+   fn sample(&self,&S,i,θ,rng)->Vec<f64>    (forward only; RNG)
+
+ NEW EFFECT TYPES (structs; method signatures enforce read vs write)
+ ───────────────────────────────────────────────────────────────────
+ Observe   { trigger, projection, kind, likelihood }
+   fn project(&self, state: &State,     t) -> f64   ← &State  (cannot mutate)
+ Mutate    { trigger, phase, read_from, actions }
+   fn apply  (&self, state: &mut State, t)          ← &mut State, in Phase order
+ Constrain { target, expr }
+   fn enforce(&self, state: &mut State, t)          ← &mut State, last
+
+ NEW TIMELINE TYPES
+ ──────────────────
+ Schedule    fn next(&mut self, t) -> (f64, [Boundary])
+ Boundary  = Substep | Output(i) | Observation(i) | Effect(id)
+ Trigger   = AtTimes | Recurring | EverySubstep | StateCondition | ObservationTime
+               fn caps(&self) -> TriggerCaps { differentiable, markov }
+ Phase     = Transition < Event < Intervention < Balance     (Ord)
+ ReadFrom  = Snapshot | Current
+
+ DRIVERS (free functions over the traits + effects + schedule)
+ ─────────────────────────────────────────────────────────────
+ run_forward  (&Compiled, θ, seed)                                 -> Trajectory
+ run_filter   <P: ProcessModel>(&P, &dyn ObservationModel<P::State>,
+                                &Effects, &Schedule)               -> Loglik
+                // PGAS branch additionally requires  P: DensityProcess
+ run_trajmatch(&OdeProcess, &dyn ObservationModel<OdeState>,
+                            &Effects, &Schedule)        -> (Loglik, Grad)  [future]
+```
+
 ## Leaky abstractions the types must honour
 
 These are the failure modes a naïve "one effect trait" would introduce; the types
@@ -613,17 +668,97 @@ and the reason this is a proposal rather than a refactor PR.
 - Vital dynamics, spatial coupling — structural (transition-graph) changes.
 - Reporting-delay convolutions — scoring-with-memory, designed separately.
 
-## Test obligations
+## Testing
 
-- **Forward refactor parity** — golden trajectories byte-identical after step 1.
-- **Filter unification parity** — PF/IF2/PMMH log-likelihoods byte-identical
-  after step 2; paired-seed CRN coupling preserved.
-- **Cross-backend fire-time** — same model with an off-grid intervention scores
-  consistently across chain-binomial and tau-leap, and converges as `dt → 0`
-  (the task #9 test; red-first on current code).
-- **PGAS reference migration** — no posterior drift on golden fits; gradient FD
-  battery still passes; Richardson ladder + pomp validation green (step 4).
-- **Capability gate** — a reactive trigger in a gradient/PGAS `fit` is rejected
-  with a clear error; the same model runs under `simulate`/`batch`.
-- **Phase ordering** — events read the pre-transition snapshot, interventions the
-  post-transition state, balance last — pinned by a model exercising all four.
+This is correctness-critical, refactor-heavy code: most of the migration moves
+working logic behind a new abstraction *without intending to change a single
+result*, and the one place it does change results — the PGAS reference
+trajectory — is the place a silent error corrupts a posterior with no symptom.
+The strategy is built around that asymmetry: **differential parity is the
+spine**, and the irreducible behaviour change gets the strongest external
+oracles. Nothing here lowers a bar to go green; a failure is a cause to find.
+
+### Differential parity is the spine
+
+Steps 1–3 are refactors. The forward `Schedule` extraction, the filter-loop
+unification, and the effect-type re-expression must each be **bit-for-bit
+identical** to the code they replace.
+
+- **Keep the old path live behind a flag** during each step (the
+  `CAMDL_EVAL_UNRESOLVED` differential-oracle pattern from the pre-resolution
+  work) and assert the new path matches the old, byte-for-byte, on a corpus of
+  models, *before* deleting the old path. A refactor whose two sides are not
+  provably identical is not done.
+- **Golden trajectories do not move.** All `ir/expected/*` and golden fits are
+  re-run; any diff is a regression until proven intended. An intended diff (e.g.
+  an intervention previously rounded, now exact) is isolated to its own step,
+  documented, and the golden updated in that commit alone.
+- **RNG draw order is an invariant, not an accident.** A harness that logs the
+  sequence of RNG draws (kind, count, order) asserts it is identical old-vs-new.
+  This is what protects paired-seed CRN coupling and the `gamma_used` /
+  `binomial_z` PGAS hooks; a reordering that shifts a posterior by 1e-12 still
+  fails here — which is the point.
+
+### Per-step gates
+
+| step                         | what changes            | gate                                                                                                                  |
+| ---------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 1. forward `Schedule`        | refactor                | golden trajectories byte-identical; RNG-order invariant                                                               |
+| 2. filter unification        | refactor (4 loops → 1)  | PF/IF2/PMMH/PGAS log-likelihoods byte-identical on the corpus; paired enable/disable byte-identical pre-intervention; correlated-PF coupling preserved |
+| 3. effect types             | refactor (re-express)   | golden unchanged; the phase-ordering pin; the capability-gate negative test                                          |
+| 4. PGAS reference → schedule | **behaviour may change** | the external-oracle battery below — the only step where parity is *not* the bar                                       |
+| 5. reactive trigger          | additive (forward only) | capability-gate rejection in `fit`; runs under `simulate`/`batch`                                                     |
+| 6. reduction axis            | additive                | new-feature tests; no movement on existing                                                                            |
+
+### Cross-cutting invariants (property-based)
+
+- **Schedule correctness.** Over randomly generated sets of obs / effect / `dt`
+  times: every observation time is a boundary hit exactly; no two *distinct*
+  times collide onto one boundary; the merged sequence is sorted and strictly
+  monotone; and where the old `interval_steps` grid and the new schedule agree
+  (on-grid times), substep counts match. Proptest.
+- **Phase ordering.** A model exercising transitions + events + interventions +
+  balance, hand-computed: events read the pre-transition snapshot, interventions
+  the post-transition state, balance last and exempt from the negative-count
+  check. Asserted on the actual counts, not a proxy.
+- **Read/write at the type level.** That `Observe` cannot mutate state is a
+  compile-time fact (its method takes `&State`). A `trybuild` test that a
+  mutating `Observe` *fails to compile* makes the guarantee regression-proof.
+- **Cross-backend fire-time.** Same model, off-grid intervention: chain-binomial
+  and tau-leap score consistently, and the discrepancy → 0 as `dt → 0` (the
+  task #9 test). Red-first against current code — it must fail today.
+- **Gillespie propensity invalidation.** A model where skipping the
+  post-mutation recompute yields a detectably wrong next-rate; assert it fires.
+
+### External oracles for the irreducible change (step 4)
+
+The PGAS reference-trajectory migration is the only step that can change a
+posterior and the only one where a bug is silent. It does not ship on internal
+parity alone:
+
+- **pomp cross-check** — the He et al. (2010) measles benchmark already used to
+  catch gh#52/gh#53 (`time.rs` header): the PGAS MLE/posterior must match pomp's
+  to the established tolerance after the migration.
+- **Richardson `dt`-ladder** — log-likelihood and posterior summaries converge
+  along a `dt` refinement ladder at the expected order; a scheduler bug that
+  mis-tiles a window breaks the *convergence rate*, not just the value.
+- **FD gradient battery** — every gradient arm (hierarchical, obs-parameter)
+  still matches central finite differences to ≤ 1e-6; the gradient is
+  re-validated *after* the reference moves, not assumed stable.
+- **Posterior non-drift** — on the golden fits, posterior means within the
+  pre-migration credible bands, with a KS check on the marginals to catch a
+  distributional shift a point estimate would miss.
+
+### Red-first for the bugs this retires
+
+Each bug the unification fixes gets a failing test first, against current `main`,
+then shown green: the gh#53 intervention-rounding class, the cross-backend
+off-grid divergence (#9), and the sparse-`Interval` per-stream reset window error
+(the §5.2.1 trap). A "fix" with no red baseline is not trusted.
+
+### What "done" means
+
+No step merges without a clean full `make test` (unit + golden + integration);
+the parity steps additionally require the differential-oracle corpus green and
+the RNG-order invariant intact; step 4 additionally requires the external-oracle
+battery. No `--no-verify`, no widened tolerance, no skipped gate.
