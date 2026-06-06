@@ -2,6 +2,11 @@
 
 Status: accepted (maintainer, 2026-06-05) — adopt the robust convention,
 accept the result changes for time-inhomogeneous models.
+Implemented: chain_binomial (the whole-run drifter, now matches PGAS) — 5aa4bf2.
+Deferred (low priority, task #14): the EXACT steppers (ode, tau_leap,
+particle_filter, correlated_pf, if2) clip to every boundary/obs, so their drift
+is already bounded to one window (~1e-15); s*dt there is near-zero-benefit
+consistency (byte-identical except ode's continuous output).
 Supersedes: nothing. Part of the unified-timeline-effect architecture
 (`2026-06-05-unified-timeline-effect-architecture.md`).
 
