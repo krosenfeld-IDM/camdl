@@ -9,6 +9,7 @@ use crate::{
     output::output_times as get_output_times,
     propensity::{eval_propensities, EvalCtx},
     resolved_expr::eval_resolved,
+    schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
     state::{FlowVec, Snapshot, Trajectory},
 };
@@ -82,17 +83,26 @@ pub fn run_tau_leap_with_observer(
     let mut rng = StatefulRng::new(seed);
     let mut propensities = Vec::with_capacity(n_transitions);
 
-    let output_times = get_output_times(&model.model.output.times);
-    let mut output_idx = 0;
-    let iv_times = all_intervention_times(model, params);
-    let mut iv_idx = 0;
+    // The merged timeline spine: tau-leap is the EXACT policy (clip dt to land on
+    // each output/effect boundary). The schedule owns the sorted output/effect
+    // times; `cursor` walks them. Firing stays inline (apply_interventions_at);
+    // the schedule only answers "where is the next stop, what is due".
+    let schedule = Schedule::new(
+        cfg.dt,
+        cfg.t_end,
+        cfg.dt,
+        StepPolicy::Exact,
+        get_output_times(&model.model.output.times),
+        all_intervention_times(model, params),
+    );
+    let mut cursor = Cursor::default();
 
     let mut traj = Trajectory::new();
     let mut current_flows = FlowVec::new(n_transitions);
     let mut t = cfg.t_start;
 
     // Initial snapshot
-    if output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+    if schedule.output_due_at(&cursor, t) {
         traj.push(Snapshot {
             t,
             int_state: int_s.clone(),
@@ -100,39 +110,38 @@ pub fn run_tau_leap_with_observer(
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     while t < cfg.t_end {
         // Progress tick: report current time before drawing this step. RNG-free.
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        // Determine actual step (might be truncated by boundary)
-        let next_boundary = {
-            let out_t = output_times.get(output_idx).copied().unwrap_or(f64::INFINITY);
-            let iv_t = iv_times.get(iv_idx).copied().unwrap_or(f64::INFINITY);
-            cfg.t_end.min(out_t).min(iv_t)
-        };
-        let dt = cfg.dt.min(next_boundary - t);
+        // Determine actual step (might be truncated by a boundary). The schedule
+        // is the single source of truth for min(t_end, next_output, next_effect);
+        // step.t_to - t == cfg.dt.min(next_boundary - t) by construction.
+        let step = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop");
+        let dt = step.t_to - t;
         if dt <= 0.0 {
             // At a boundary — handle it
             // Apply intervention if due
-            if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
+            if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
                 // gh#67: also fire always_active events at this boundary.
                 apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
-                while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
+                while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
             // Record output if due
-            while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+            while schedule.output_due_at(&cursor, t) {
+                let ot = schedule.output_time(&cursor).expect("due implies present");
                 traj.push(Snapshot {
-                    t: output_times[output_idx],
+                    t: ot,
                     int_state: int_s.clone(),
                     real_state: real_s.clone(),
                     flows: current_flows.clone(),
                 });
                 current_flows.reset();
-                output_idx += 1;
+                cursor.pass_output();
             }
             if t >= cfg.t_end { break; }
             continue;
@@ -293,36 +302,37 @@ pub fn run_tau_leap_with_observer(
         t += dt;
 
         // Apply intervention if now at that time
-        if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
+        if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
             apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
             // gh#67: also fire always_active events at this boundary.
             apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
-            while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
+            while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
 
         // Record outputs
-        while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+        while schedule.output_due_at(&cursor, t) {
+            let ot = schedule.output_time(&cursor).expect("due implies present");
             traj.push(Snapshot {
-                t: output_times[output_idx],
+                t: ot,
                 int_state: int_s.clone(),
                 real_state: real_s.clone(),
                 flows: current_flows.clone(),
             });
             current_flows.reset();
-            output_idx += 1;
+            cursor.pass_output();
         }
     }
 
     // Flush remaining outputs
-    while output_idx < output_times.len() {
+    while let Some(ot) = schedule.output_time(&cursor) {
         traj.push(Snapshot {
-            t: output_times[output_idx],
+            t: ot,
             int_state: int_s.clone(),
             real_state: real_s.clone(),
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     Ok(traj)

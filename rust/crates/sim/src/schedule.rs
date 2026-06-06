@@ -205,6 +205,19 @@ impl Schedule {
         self.next_effect(cursor) <= t + EFFECT_EPS
     }
 
+    /// The current (next un-emitted) output time for `cursor`, or `None` past the
+    /// end. The backend records its snapshot AT this time.
+    pub fn output_time(&self, cursor: &Cursor) -> Option<f64> {
+        self.output_times.get(cursor.output_idx).copied()
+    }
+
+    /// The current (next un-applied) effect time for `cursor`, or `None` past the
+    /// end. The backend keeps its own firing-tolerance check against this time
+    /// (e.g. tau-leap's `(iv - t).abs() < 1e-10`).
+    pub fn effect_time(&self, cursor: &Cursor) -> Option<f64> {
+        self.effect_times.get(cursor.effect_idx).copied()
+    }
+
     pub fn t_end(&self) -> f64 {
         self.t_end
     }
