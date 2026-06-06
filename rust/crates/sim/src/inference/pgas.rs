@@ -24,6 +24,7 @@ use crate::inference::pmmh::Prior;
 use crate::inference::types::{EstimatedParam, LOG_PROB_FLOOR, RESAMPLE_RNG_STREAM, init_particle_rngs, restore_z_values};
 use crate::propensity::{eval_propensities, EvalCtx};
 use crate::resolved_expr::eval_resolved;
+use crate::schedule::StepPolicy;
 use crate::state::{IntState, RealState};
 
 /// Collect names of every `Param` referenced by an expression tree.
@@ -280,6 +281,110 @@ pub fn build_obs_at_substep(
         if s > 0 { map.insert(s - 1, obs_idx); }
     }
     map
+}
+
+/// The realized substep grid for one PGAS run: per-substep `(t0, dt_substep)`
+/// plus the substep→observation-index map. Built once per run from the
+/// observation times, the nominal `dt`, and the alignment policy; the reference
+/// trajectory, the CSMC free particles, and the density consumers all tile time
+/// against this one grid, so they agree by construction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubstepGrid {
+    /// `(t0, dt_substep)` for each substep, chronological. `t0` is computed
+    /// drift-free (`anchor + j·dt`, one multiply — never accumulated), so a
+    /// time-inhomogeneous rate samples the same instants the snap grid did.
+    pub steps: Vec<(f64, f64)>,
+    /// substep index → observation index: the substep whose end coincides with
+    /// that observation time (where the likelihood is scored).
+    pub obs_at_substep: ObsAtSubstep,
+}
+
+/// Fractional distance (in steps) within which an observation is treated as
+/// landing ON the `dt` grid: `(obs − window_start)/dt` this close to an integer
+/// snaps to a full-step landing. Measured in STEPS so the test is independent of
+/// `dt` and of the magnitude of `t`; comfortably separates FP noise (≲1e-9 of a
+/// step) from a genuinely off-grid offset (a real half-step is 0.5).
+const ON_GRID_STEP_TOL: f64 = 1e-6;
+
+/// Build the substep grid over `[t_start, last_obs]` under the alignment policy.
+///
+/// * `Snap` reproduces the legacy uniform grid bit-for-bit: `(t_start + s·dt, dt)`
+///   for `s in 0..interval_steps(t_start, last_obs, dt)`, with the obs map from
+///   [`build_obs_at_substep`] (observation times rounded onto the `dt` grid).
+/// * `Exact` tiles each observation window. A window whose obs is on-grid emits
+///   `m` full literal-`dt` steps exactly as `Snap` would; a window whose obs is
+///   off-grid emits `⌊·⌋` full `dt` steps plus one shortened remainder landing
+///   exactly on the obs time, then RE-ANCHORS the grid there.
+///
+/// `t0` is drift-free: `anchor + (s − anchor_s)·dt`, a single multiply from the
+/// last re-anchor, never an accumulation. The anchor stays at `t_start` across
+/// on-grid windows, so the global grid is `t_start + s·dt` — identical to `Snap`
+/// bit-for-bit at ANY `dt` (including non-power-of-2 like 0.1, where the grid
+/// SPACING `m·dt − (m−1)·dt` differs from `dt` in floating point). That FP fact
+/// is exactly why the magnitude is the LITERAL `dt` for full steps rather than a
+/// `Schedule`-style `dt.min(boundary − t0)` clip: clipping the last full step of
+/// an on-grid window to `boundary − t0` would carve a spurious ~1-ULP-short
+/// remainder and break snap byte-parity. The `Schedule` remains the single
+/// source of truth for the forward/PF exact policy (which accumulates `t` and is
+/// integer-draw insensitive to the ULP); the PGAS transition density is
+/// continuous and needs the drift-free, snap-exact grid built here.
+pub fn build_substep_grid(
+    t_start: f64,
+    dt: f64,
+    observations: &[Observation],
+    policy: StepPolicy,
+) -> SubstepGrid {
+    let last_obs = observations.last().map(|o| o.time).unwrap_or(t_start);
+    match policy {
+        StepPolicy::Snap => {
+            let n = crate::time::interval_steps(t_start, last_obs, dt);
+            let steps = (0..n).map(|s| (t_start + s as f64 * dt, dt)).collect();
+            let obs_at_substep = build_obs_at_substep(observations, t_start, dt);
+            SubstepGrid { steps, obs_at_substep }
+        }
+        StepPolicy::Exact => {
+            let mut steps: Vec<(f64, f64)> = Vec::new();
+            let mut obs_at_substep = ObsAtSubstep::new();
+            // (anchor, anchor_s): realized t0 and global substep index of the
+            // first substep of the current uniform run. t0(s) = anchor +
+            // (s − anchor_s)·dt. Starts on the global grid (anchor = t_start) and
+            // re-anchors only after an off-grid remainder landing.
+            let mut anchor = t_start;
+            let mut anchor_s = 0usize;
+            let mut s = 0usize;
+            let t0_at = |anchor: f64, anchor_s: usize, s: usize| anchor + (s - anchor_s) as f64 * dt;
+            for (obs_idx, obs) in observations.iter().enumerate() {
+                let w_start = t0_at(anchor, anchor_s, s);
+                let frac = (obs.time - w_start) / dt;
+                let m = frac.round();
+                if (frac - m).abs() < ON_GRID_STEP_TOL {
+                    // On-grid window: m full literal-dt steps, exactly like Snap.
+                    let m = m.max(0.0) as usize;
+                    for _ in 0..m {
+                        steps.push((t0_at(anchor, anchor_s, s), dt));
+                        s += 1;
+                    }
+                    if m > 0 { obs_at_substep.insert(s - 1, obs_idx); }
+                    // Stays on the global grid: no re-anchor.
+                } else {
+                    // Off-grid window: ⌊frac⌋ full dt steps + one shortened
+                    // remainder landing exactly on the obs time.
+                    let n_full = frac.floor().max(0.0) as usize;
+                    for _ in 0..n_full {
+                        steps.push((t0_at(anchor, anchor_s, s), dt));
+                        s += 1;
+                    }
+                    let t0 = t0_at(anchor, anchor_s, s);
+                    steps.push((t0, obs.time - t0));
+                    obs_at_substep.insert(s, obs_idx);
+                    s += 1;
+                    anchor = obs.time;
+                    anchor_s = s;
+                }
+            }
+            SubstepGrid { steps, obs_at_substep }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2100,4 +2205,109 @@ pub fn run_pgas(
         n_max_treedepth_post_burn,
         swap_acceptance_rates,
     })
+}
+
+#[cfg(test)]
+mod grid_tests {
+    //! Keystone unit tests for [`build_substep_grid`] — the realized-grid + obs-map
+    //! contract every exact-PGAS producer tiles against (Stage 3, 2c).
+    use super::*;
+
+    fn obs(times: &[f64]) -> Vec<Observation> {
+        times.iter().map(|&t| Observation { time: t, value: 0.0 }).collect()
+    }
+
+    fn sorted_map(g: &SubstepGrid) -> Vec<(usize, usize)> {
+        let mut v: Vec<(usize, usize)> = g.obs_at_substep.iter().map(|(&k, &val)| (k, val)).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn snap_grid_is_the_legacy_uniform_grid() {
+        let observations = obs(&[3.0, 7.0, 10.0]);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap);
+        let expect: Vec<(f64, f64)> = (0..10).map(|s| (s as f64, 1.0)).collect();
+        assert_eq!(g.steps, expect);
+        assert_eq!(g.obs_at_substep, build_obs_at_substep(&observations, 0.0, 1.0));
+        assert_eq!(sorted_map(&g), vec![(2, 0), (6, 1), (9, 2)]);
+    }
+
+    #[test]
+    fn exact_tiles_off_grid_obs_with_remainder() {
+        let observations = obs(&[3.5, 7.0, 10.5]);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact);
+        assert_eq!(g.steps.len(), 12);
+        let dts: Vec<f64> = g.steps.iter().map(|&(_, d)| d).collect();
+        assert_eq!(dts, vec![1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 0.5]);
+        // Each window's recorded substep ends exactly on its obs time.
+        for (s, obs_t) in [(3usize, 3.5_f64), (7, 7.0), (11, 10.5)] {
+            let (t0, d) = g.steps[s];
+            assert!((t0 + d - obs_t).abs() < 1e-9, "substep {s} must land on obs {obs_t}");
+        }
+        assert_eq!(sorted_map(&g), vec![(3, 0), (7, 1), (11, 2)]);
+        // 7.0 is on the GLOBAL grid but off the SHIFTED (anchored at 3.5) grid —
+        // a window is tiled relative to its own start, so it lands via a remainder.
+        assert!(g.steps.iter().any(|&(_, d)| d != 1.0), "off-grid windows must produce shortened substeps");
+    }
+
+    #[test]
+    fn exact_on_grid_equals_snap_dt_one() {
+        // On-grid obs at dt=1.0: Exact and Snap grids are identical.
+        let observations = obs(&[3.0, 7.0, 10.0]);
+        let snap = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap);
+        let exact = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact);
+        assert_eq!(exact, snap);
+    }
+
+    #[test]
+    fn exact_on_grid_equals_snap_fractional_dt_bit_for_bit() {
+        // The robustness case: at dt=0.1 the grid SPACING differs from dt in FP,
+        // yet an all-on-grid model must still reproduce the snap grid bit-for-bit
+        // (this is what the literal-dt full step + drift-free anchoring buys).
+        let observations = obs(&[3.0, 5.0]);
+        let snap = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Snap);
+        let exact = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Exact);
+        assert_eq!(exact.obs_at_substep, snap.obs_at_substep);
+        assert_eq!(exact.steps.len(), snap.steps.len());
+        for (i, (&(et, ed), &(st, sd))) in exact.steps.iter().zip(&snap.steps).enumerate() {
+            assert_eq!(et.to_bits(), st.to_bits(), "t0 differs at substep {i}: {et} vs {st}");
+            assert_eq!(ed.to_bits(), sd.to_bits(), "dt_substep differs at substep {i}: {ed} vs {sd}");
+        }
+    }
+
+    #[test]
+    fn exact_t0_is_drift_free_global_on_grid() {
+        // On-grid: every t0 is the single-multiply global grid point t_start+s·dt,
+        // never an accumulation (which would drift by O(s) ULPs at dt=0.1).
+        let observations = obs(&[5.0]);
+        let g = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Exact);
+        for (s, &(t0, d)) in g.steps.iter().enumerate() {
+            assert_eq!(t0.to_bits(), (s as f64 * 0.1).to_bits(), "t0 not drift-free at {s}");
+            assert_eq!(d, 0.1, "on-grid substep must be a full dt");
+        }
+    }
+
+    #[test]
+    fn exact_window_substeps_sum_to_window_length() {
+        // Σ dt_substep within each obs window equals the window length, and each
+        // t0 is monotone — the relaxed invariant the consumers assert under exact.
+        let observations = obs(&[2.5, 6.0, 9.3]);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact);
+        let mut prev_end = 0.0;
+        for &(t0, d) in &g.steps {
+            assert!(t0 >= prev_end - 1e-12, "t0 must be monotone (got {t0} after {prev_end})");
+            assert!(d > 0.0 && d <= 1.0 + 1e-12, "0 < dt_substep ≤ dt, got {d}");
+            prev_end = t0 + d;
+        }
+        // The last substep of the run lands on the last obs.
+        let (lt, ld) = *g.steps.last().unwrap();
+        assert!((lt + ld - 9.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn empty_obs_yields_empty_grid() {
+        let g = build_substep_grid(0.0, 1.0, &[], StepPolicy::Exact);
+        assert!(g.steps.is_empty() && g.obs_at_substep.is_empty());
+    }
 }
