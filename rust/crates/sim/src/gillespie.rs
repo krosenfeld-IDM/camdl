@@ -9,8 +9,9 @@ use crate::{
     output::output_times as get_output_times,
     propensity::{eval_propensities, EvalCtx},
     resolved_expr::eval_resolved,
+    schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
-    state::{FlowVec, IntState, RealState, Snapshot, Trajectory},
+    state::{FlowVec, Snapshot, Trajectory},
     transition_diagnostics::TransitionDiagnostics,
 };
 
@@ -102,14 +103,6 @@ pub fn run_gillespie_with_observer(
     let mut stateful_rng = StatefulRng::new(seed);
 
     // Sorted output times
-    let output_times = get_output_times(&model.model.output.times);
-    let mut output_idx = 0;
-
-    // Sorted intervention times. gh#69: pass params so parametric
-    // `at [...]` schedules resolve against the run's parameter vector.
-    let iv_times = all_intervention_times(model, params);
-    let mut iv_idx = 0;
-
     // gh#53: resolve fire_steps using the model's compile-time dt.
     // Gillespie has no runtime dt of its own (continuous-time SSA); the
     // fire_steps lookup uses model.simulation.dt as a step-rounding
@@ -120,12 +113,27 @@ pub fn run_gillespie_with_observer(
     let iv_resolution_dt = model.model.simulation.dt.unwrap_or(1.0);
     let fire_steps = model.resolve_fire_steps(iv_resolution_dt, params);
 
+    // Merged timeline spine. Gillespie is event-driven: it PROPOSES an
+    // exponential time and the schedule CLIPS it to the next boundary
+    // (Schedule::clip). The grid is iv_resolution_dt (no integrator dt of its
+    // own); StepPolicy is irrelevant to clip. The schedule owns the sorted
+    // output/effect times; `cursor` walks them. Firing stays inline.
+    let schedule = Schedule::new(
+        iv_resolution_dt,
+        cfg.t_end,
+        iv_resolution_dt,
+        StepPolicy::Exact,
+        get_output_times(&model.model.output.times),
+        all_intervention_times(model, params),
+    );
+    let mut cursor = Cursor::default();
+
     let mut t = cfg.t_start;
     let mut traj = Trajectory::new();
     let mut current_flows = FlowVec::new(n_transitions);
 
     // Record initial state
-    if output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+    if schedule.output_due_at(&cursor, t) {
         traj.push(Snapshot {
             t,
             int_state: int_s.clone(),
@@ -133,7 +141,7 @@ pub fn run_gillespie_with_observer(
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     // Initial full propensity evaluation — maintained incrementally from here on.
@@ -155,22 +163,32 @@ pub fn run_gillespie_with_observer(
         }
 
         if lambda_total <= 0.0 {
-            // Absorbing state — advance to next output/intervention or end
-            let next_special = next_time(cfg.t_end, output_idx, &output_times, iv_idx, &iv_times);
-            flush_outputs(
-                t, next_special, &mut output_idx, &output_times,
-                &int_s, &real_s, &mut current_flows, &mut traj, n_transitions,
-            );
-            // If we hit t_end, break; if intervention, apply and continue
-            if let Some(iv_t) = next_iv(t, iv_idx, &iv_times) {
+            // Absorbing state — advance to next output/intervention or end.
+            // next_special = min(t_end, next_output, next_effect) with NO > t
+            // filter (matches the retired next_time helper).
+            let next_special = cfg.t_end
+                .min(schedule.output_time(&cursor).unwrap_or(f64::INFINITY))
+                .min(schedule.effect_time(&cursor).unwrap_or(f64::INFINITY));
+            while let Some(ot) = schedule.output_time(&cursor) {
+                if ot > next_special + 1e-12 { break; }
+                traj.push(Snapshot {
+                    t: ot,
+                    int_state: int_s.clone(),
+                    real_state: real_s.clone(),
+                    flows: current_flows.clone(),
+                });
+                current_flows.reset();
+                cursor.pass_output();
+            }
+            // If we hit t_end, break; if intervention, apply and continue.
+            // next-effect-after-t mirrors the retired next_iv (> t guard).
+            if let Some(iv_t) = schedule.effect_time(&cursor).filter(|&iv| iv > t) {
                 if iv_t <= cfg.t_end {
                     t = iv_t;
                     apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
                     // gh#67: also fire always_active events at this boundary.
                     apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
-                    while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 {
-                        iv_idx += 1;
-                    }
+                    while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                     // Full recompute after intervention
                     eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;
                     lambda_total = propensities.iter().sum();
@@ -187,17 +205,14 @@ pub fn run_gillespie_with_observer(
         let dt = -(1.0 / lambda_total) * u1.ln();
         let t_next = t + dt;
 
-        // Check for intervention or output boundary before this event
-        let next_iv_t = next_iv(t, iv_idx, &iv_times);
-        let next_out_t = output_times.get(output_idx).copied();
+        // Clip the proposed reaction time to the next boundary in (t, t_next).
+        // next_eff_after_t mirrors the retired next_iv (> t guard) and is reused
+        // for the at_iv decision below, computed against the OLD t.
+        let next_eff_after_t = schedule.effect_time(&cursor).filter(|&iv| iv > t);
+        let clipped = schedule.clip(&cursor, t, t_next);
 
-        let boundary = [Some(cfg.t_end), next_iv_t, next_out_t]
-            .iter()
-            .filter_map(|x| *x)
-            .filter(|&b| b < t_next)
-            .fold(f64::INFINITY, f64::min);
-
-        if boundary < f64::INFINITY {
+        if clipped.hit_boundary {
+            let boundary = clipped.t;
             // Advance to boundary without firing an event
             // TODO(v0.2): replace with PDMP thinning for real compartments
             // For v0.1: advance real state to boundary using RK4
@@ -208,14 +223,12 @@ pub fn run_gillespie_with_observer(
             t = boundary;
 
             // Apply intervention if at intervention boundary
-            let at_iv = next_iv_t.is_some_and(|iv_t| (iv_t - t).abs() < 1e-10);
+            let at_iv = next_eff_after_t.is_some_and(|iv_t| (iv_t - t).abs() < 1e-10);
             if at_iv {
                 apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
                 // gh#67: also fire always_active events at this boundary.
                 apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
-                while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 {
-                    iv_idx += 1;
-                }
+                while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                 // Full recompute after intervention (integer state changed)
                 eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;
                 lambda_total = propensities.iter().sum();
@@ -232,15 +245,16 @@ pub fn run_gillespie_with_observer(
             }
 
             // Record output if at output boundary
-            while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+            while schedule.output_due_at(&cursor, t) {
+                let ot = schedule.output_time(&cursor).expect("due implies present");
                 traj.push(Snapshot {
-                    t: output_times[output_idx],
+                    t: ot,
                     int_state: int_s.clone(),
                     real_state: real_s.clone(),
                     flows: current_flows.clone(),
                 });
                 current_flows.reset();
-                output_idx += 1;
+                cursor.pass_output();
             }
 
             if t >= cfg.t_end { break; }
@@ -347,69 +361,32 @@ pub fn run_gillespie_with_observer(
         }
 
         // Record output at any output times we've passed
-        while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+        while schedule.output_due_at(&cursor, t) {
+            let ot = schedule.output_time(&cursor).expect("due implies present");
             traj.push(Snapshot {
-                t: output_times[output_idx],
+                t: ot,
                 int_state: int_s.clone(),
                 real_state: real_s.clone(),
                 flows: current_flows.clone(),
             });
             current_flows.reset();
-            output_idx += 1;
+            cursor.pass_output();
         }
 
     }
 
     // Ensure final output time is recorded
-    while output_idx < output_times.len() {
+    while let Some(ot) = schedule.output_time(&cursor) {
         traj.push(Snapshot {
-            t: output_times[output_idx],
+            t: ot,
             int_state: int_s.clone(),
             real_state: real_s.clone(),
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     traj.transition_diagnostics = diag_vec;
     Ok(traj)
-}
-
-fn next_iv(t: f64, iv_idx: usize, iv_times: &[f64]) -> Option<f64> {
-    iv_times.get(iv_idx).copied().filter(|&iv| iv > t)
-}
-
-fn next_time(
-    t_end: f64,
-    out_idx: usize, out_times: &[f64],
-    iv_idx: usize, iv_times: &[f64],
-) -> f64 {
-    let out_t = out_times.get(out_idx).copied().unwrap_or(f64::INFINITY);
-    let iv_t = iv_times.get(iv_idx).copied().unwrap_or(f64::INFINITY);
-    t_end.min(out_t).min(iv_t)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn flush_outputs(
-    _t_from: f64,
-    t_to: f64,
-    output_idx: &mut usize,
-    output_times: &[f64],
-    int_s: &IntState,
-    real_s: &RealState,
-    current_flows: &mut FlowVec,
-    traj: &mut Trajectory,
-    _n_transitions: usize,
-) {
-    while *output_idx < output_times.len() && output_times[*output_idx] <= t_to + 1e-12 {
-        traj.push(Snapshot {
-            t: output_times[*output_idx],
-            int_state: int_s.clone(),
-            real_state: real_s.clone(),
-            flows: current_flows.clone(),
-        });
-        current_flows.reset();
-        *output_idx += 1;
-    }
 }

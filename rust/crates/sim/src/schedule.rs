@@ -181,13 +181,21 @@ impl Schedule {
         }
     }
 
-    /// Gillespie's query: the process proposes `t_proposed` (drawn exponential);
-    /// the schedule clips it back to the nearest earlier boundary
-    /// (`min(t_end, next_output, next_effect)`) if one falls in `(t, t_proposed)`,
-    /// else passes it through. Returns the clipped time and whether it hit a
-    /// boundary (vs a genuine reaction firing at `t_proposed`).
-    pub fn clip(&self, cursor: &Cursor, t_proposed: f64) -> ClipResult {
-        let boundary = self.t_end.min(self.next_output(cursor)).min(self.next_effect(cursor));
+    /// Gillespie's query: the process proposes `t_proposed` (drawn exponential)
+    /// from the current time `t`; the schedule clips it back to the nearest
+    /// boundary if one falls before it, else passes it through. The boundary is
+    /// `min(t_end, next_output, next_effect-strictly-after-t)`.
+    ///
+    /// The `> t` filter on the effect (but NOT the output) is deliberate and
+    /// matches the SSA's boundary semantics: an effect exactly at `t` has already
+    /// been applied this iteration and must not re-fire, whereas an output exactly
+    /// at `t` is still recorded. (Reproduces gillespie.rs's `next_iv` `> t` guard
+    /// vs `next_out_t` raw — the asymmetry is observable only when a reaction
+    /// lands exactly on a boundary time.) Returns the clipped time and whether it
+    /// hit a boundary (vs a reaction firing at `t_proposed`).
+    pub fn clip(&self, cursor: &Cursor, t: f64, t_proposed: f64) -> ClipResult {
+        let eff = self.effect_time(cursor).filter(|&e| e > t).unwrap_or(f64::INFINITY);
+        let boundary = self.t_end.min(self.next_output(cursor)).min(eff);
         if boundary < t_proposed {
             ClipResult { t: boundary, hit_boundary: true }
         } else {
@@ -345,13 +353,31 @@ mod tests {
         let s = exact(1.0, 100.0, vec![5.0], vec![3.0]);
         let cur = Cursor::default();
         // Proposed reaction before the next boundary (3.0): pass through.
-        let r = s.clip(&cur, 2.4);
+        let r = s.clip(&cur, 0.0, 2.4);
         assert_eq!(r.t, 2.4);
         assert!(!r.hit_boundary);
         // Proposed reaction past the boundary: clip to 3.0.
-        let r = s.clip(&cur, 3.7);
+        let r = s.clip(&cur, 0.0, 3.7);
         assert_eq!(r.t, 3.0);
         assert!(r.hit_boundary);
+    }
+
+    #[test]
+    fn clip_excludes_effect_exactly_at_t_but_not_output() {
+        // The SSA asymmetry: a reaction landing exactly on an effect time (t=3.0,
+        // effect at 3.0) must NOT clip back to it (already applied) — the > t
+        // filter excludes it, so the proposed 4.0 passes through (next is out=5.0).
+        let s = exact(1.0, 100.0, vec![5.0], vec![3.0]);
+        let cur = Cursor::default();
+        let r = s.clip(&cur, 3.0, 4.0);
+        assert_eq!(r.t, 4.0);
+        assert!(!r.hit_boundary);
+        // An OUTPUT exactly at t is NOT excluded (no > t filter): output at 3.0,
+        // t=3.0, proposed 4.0 → clips to 3.0.
+        let s2 = exact(1.0, 100.0, vec![3.0], vec![]);
+        let r2 = s2.clip(&cur, 3.0, 4.0);
+        assert_eq!(r2.t, 3.0);
+        assert!(r2.hit_boundary);
     }
 
     #[test]
