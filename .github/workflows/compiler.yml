@@ -1,0 +1,40 @@
+name: Compiler
+
+# The OCaml compiler front-end's own unit tests (parse / expand / stratification,
+# dimensional analysis, lint, diagnostics, IR roundtrip, the doctest classifier)
+# plus the golden + negative-golden corpora — `dune runtest`. OCaml-only, so it
+# runs without the Rust toolchain. Triggers only on changes that can affect the
+# compiler or the IR contract.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ocaml/**"
+      - "ir/**"
+      - ".github/workflows/compiler.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ocaml/**"
+      - "ir/**"
+      - ".github/workflows/compiler.yml"
+
+jobs:
+  test-ocaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: |
+          cd ocaml
+          opam install . --deps-only --with-test --yes
+
+      - name: Test OCaml
+        run: opam exec -- make test-ocaml

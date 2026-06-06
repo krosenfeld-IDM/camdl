@@ -1,0 +1,48 @@
+name: Inference
+
+# The sim crate: the simulation engine (Gillespie / tau-leap / ODE / chain-
+# binomial, determinism + conservation invariants, oracle tests) and the
+# inference stack (particle filter, IF2, PGAS, PMMH, NUTS, autodiff gradient
+# checks, likelihood-path parity). This is the heaviest, highest-stakes test
+# group — `cargo test -p sim`, ~1k tests — so it gets its own workflow and badge.
+# Needs camdlc (a few sim tests compile .camdl fixtures), so the OCaml toolchain
+# is set up and `make test-inference` symlinks camdlc onto PATH.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rust/crates/sim/**"
+      - "rust/crates/ir/**"
+      - "ir/**"
+      - "ocaml/**"
+      - ".github/workflows/inference.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "rust/crates/sim/**"
+      - "rust/crates/ir/**"
+      - "ir/**"
+      - "ocaml/**"
+      - ".github/workflows/inference.yml"
+
+jobs:
+  test-inference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: |
+          cd ocaml
+          opam install . --deps-only --yes
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Engine + inference tests (sim crate)
+        run: opam exec -- make test-inference

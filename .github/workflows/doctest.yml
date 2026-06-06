@@ -1,0 +1,50 @@
+name: Doctest
+
+# Gates the documented CAMDL code blocks against the real compiler: every gated
+# ```camdl example must compile (`make test-docs` → camdlc doctest --gate). The
+# main CI ignores docs/**, so this covers doc-only PRs; a *code* change that
+# breaks a documented model is caught by the Compiler workflow (its dune runtest
+# includes the doctest classifier self-test). OCaml-only — a ~1s camdlc build.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/camdl-language-spec.md"
+      - "docs/intro.md"
+      - "docs/user-features.md"
+      - "docs/dsl-cheatsheet.md"
+      - "docs/dates.md"
+      - "docs/camdl-run-spec.md"
+      - "ocaml/**"
+      - ".github/workflows/doctest.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/camdl-language-spec.md"
+      - "docs/intro.md"
+      - "docs/user-features.md"
+      - "docs/dsl-cheatsheet.md"
+      - "docs/dates.md"
+      - "docs/camdl-run-spec.md"
+      - "ocaml/**"
+      - ".github/workflows/doctest.yml"
+
+jobs:
+  doctest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: |
+          cd ocaml
+          opam install . --deps-only --yes
+
+      - name: Doctest the spec set
+        run: opam exec -- make test-docs

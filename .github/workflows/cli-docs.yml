@@ -1,0 +1,38 @@
+name: CLI docs
+
+# CLI command-surface drift gate: asks the binary's hidden parse-only mode
+# (`camdl __check-args`) whether every documented `camdl …` invocation in
+# CLI_DOCS references a real subcommand/flag. `make test-cli-docs` runs the
+# non-vacuous --selftest first (it must catch synthetic drift), then the docs.
+# No OCaml/camdlc needed — the parse-only check never touches the compiler.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/workflow.md"
+      - "docs/inference.md"
+      - "docs/debugging.md"
+      - "scripts/check_cli_docs.sh"
+      - "rust/crates/cli/**"
+      - ".github/workflows/cli-docs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/workflow.md"
+      - "docs/inference.md"
+      - "docs/debugging.md"
+      - "scripts/check_cli_docs.sh"
+      - "rust/crates/cli/**"
+      - ".github/workflows/cli-docs.yml"
+
+jobs:
+  cli-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Gate documented CLI commands
+        run: make test-cli-docs

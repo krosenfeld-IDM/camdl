@@ -1,12 +1,14 @@
 name: CI
 
-# Runs on every push / PR to main. Linux-only: macOS runners bill 10×
-# and Windows 2× the Linux rate, and the Rust code is platform-invariant
-# (no OS-conditional cfgs). There is no cross-platform / release workflow
-# at present (camdl is alpha, source-install only); add one post-alpha if
-# tagged binary builds are wanted.
+# Backend gate: builds the OCaml compiler (camdlc), runs the Rust workspace
+# tests EXCEPT the sim crate (which has its own Inference workflow), clippy, the
+# golden-file determinism check, and the cross-language integration suite. The
+# OCaml compiler's own unit tests run in the Compiler workflow; the simulation
+# engine + inference suite runs in the Inference workflow. Together with those,
+# this is the same surface `make test` runs locally.
 #
-# Doc-only and fixture-only changes skip this workflow.
+# Linux-only: macOS/Windows runners bill 10×/2× and the code is platform-
+# invariant. Doc-only and fixture-only changes skip this workflow.
 
 on:
   push:
@@ -34,7 +36,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── OCaml ──────────────────────────────────────────
       - uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: "5.2"
@@ -43,49 +44,25 @@ jobs:
       - name: Install OCaml dependencies
         run: |
           cd ocaml
-          opam install . --deps-only --with-test --yes
+          opam install . --deps-only --yes
 
-      - name: Build OCaml
-        run: opam exec -- make build-ocaml
-
-      - name: Test OCaml
-        run: opam exec -- bash -c "cd ocaml && dune runtest"
-
-      # ── Rust ───────────────────────────────────────────
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
 
-      - name: Build Rust
-        run: make build-rust
-
       - name: Clippy
         run: cd rust && cargo clippy --all-targets -- -D warnings
 
-      # ── Install camdlc to ~/.local/bin + put on PATH ───
-      # Several Rust integration tests (`scenario_runtime_application`,
-      # `synthetic_fit_grid`, …) shell out to the built `camdl` binary,
-      # which in turn needs to locate `camdlc` to compile inline .camdl
-      # sources. `make install` puts camdlc at ~/.local/bin/camdlc; we
-      # export that directory so the spawned binary's PATH search finds
-      # it.
-      - name: Install camdlc on PATH
+      # make test-rust builds camdlc + the release binaries, symlinks camdlc onto
+      # PATH (so spawned `camdl` finds it), and runs `cargo test --workspace
+      # --exclude sim --no-fail-fast`.
+      - name: Rust tests (workspace except sim)
+        run: opam exec -- make test-rust
+
+      - name: Golden files unchanged
         run: |
-          opam exec -- make install
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Rust tests
-        # --no-fail-fast: run every test binary even after one fails, so a
-        # single early failure can't mask the rest of the suite (gh#110's
-        # PF-degeneracy breakage hid behind the first red binary for days).
-        run: cd rust && cargo test --no-fail-fast
-
-      # ── Integration ────────────────────────────────────
-      - name: Update golden files
-        run: opam exec -- make update-golden
-
-      - name: Check golden files unchanged
-        run: git diff --exit-code ir/golden/ ocaml/golden/
+          opam exec -- make update-golden
+          git diff --exit-code ir/golden/ ocaml/golden/
 
       - name: Integration tests
         run: opam exec -- make test-integration

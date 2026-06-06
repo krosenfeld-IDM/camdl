@@ -96,9 +96,13 @@ dev-camdlc: build-ocaml
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
-.PHONY: test test-ocaml test-rust test-integration test-docs test-cli-docs
+.PHONY: test test-ocaml test-rust test-inference test-integration test-docs test-cli-docs
 
-test: test-ocaml test-rust test-integration test-docs test-cli-docs
+# `make test` runs the full surface. The Rust suite is split into two groups so
+# CI can run and badge them independently (see .github/workflows/): test-rust =
+# everything except the sim crate; test-inference = the sim crate (simulation
+# engine + the inference stack). Their union is the whole workspace.
+test: test-ocaml test-rust test-inference test-integration test-docs test-cli-docs
 
 # build-ocaml regenerates the gitignored ir_version_generated.ml from
 # ir/VERSION; without this dep, `dune runtest` runs against a stale version
@@ -126,7 +130,19 @@ CAMDLC_BIN := $(abspath rust/target/_camdlc_bin)
 test-rust: build-ocaml build-rust
 	@mkdir -p $(CAMDLC_BIN)
 	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
-	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 cargo test --workspace
+	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 \
+	  cargo test --no-fail-fast --workspace --exclude sim
+
+# The sim crate — simulation engine (Gillespie/tau-leap/ODE/chain-binomial) plus
+# the inference stack (particle filter, IF2, PGAS, PMMH, NUTS, gradient checks)
+# — is the heaviest, highest-stakes test group, so CI gives it its own workflow
+# and badge. Same camdlc-on-PATH shim as test-rust (some sim tests compile .camdl
+# fixtures via camdlc). `make test` runs this alongside test-rust.
+test-inference: build-ocaml build-rust
+	@mkdir -p $(CAMDLC_BIN)
+	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
+	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 \
+	  cargo test --no-fail-fast -p sim
 
 test-integration: build
 	CAMDLC="$(CAMDLC)" CAMDL="$(CAMDL)" bash tests/test_ocaml_to_rust.sh
