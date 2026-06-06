@@ -96,9 +96,9 @@ dev-camdlc: build-ocaml
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
-.PHONY: test test-ocaml test-rust test-integration test-docs
+.PHONY: test test-ocaml test-rust test-integration test-docs test-cli-docs
 
-test: test-ocaml test-rust test-integration test-docs
+test: test-ocaml test-rust test-integration test-docs test-cli-docs
 
 # build-ocaml regenerates the gitignored ir_version_generated.ml from
 # ir/VERSION; without this dep, `dune runtest` runs against a stale version
@@ -141,6 +141,23 @@ DOCTEST_DOCS := docs/camdl-language-spec.md docs/intro.md docs/user-features.md 
                 docs/dsl-cheatsheet.md docs/dates.md docs/camdl-run-spec.md
 test-docs: build-ocaml
 	$(CAMDLC) doctest --gate $(DOCTEST_DOCS)
+
+# Gate every documented `camdl …` invocation in CLI_DOCS against the real CLI
+# parser (the binary's hidden `camdl __check-args` parse-only mode). Fails on
+# DRIFT — a documented subcommand/flag/arg shape the binary does not expose —
+# while tolerating EXPECTED input-layer failures (missing file, placeholder
+# path), which the parse-only check never even reaches. The script's
+# `--selftest` is the NON-VACUOUS guard: it asserts the gate catches synthetic
+# drift AND does not over-flag valid-but-input-missing commands, so this target
+# can never silently degrade into a no-op.
+#
+# CLI_DOCS is the set of docs verified drift-free / kept-clean. Extend it as
+# other docs are brought to green. (inference.md / debugging.md are
+# deliberately excluded while their known drift is being fixed separately.)
+CLI_DOCS := docs/workflow.md
+test-cli-docs: build-rust
+	bash scripts/check_cli_docs.sh --selftest
+	bash scripts/check_cli_docs.sh $(CLI_DOCS)
 
 # ── Golden file management ────────────────────────────────────────────────────
 

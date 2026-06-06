@@ -339,7 +339,88 @@ struct Passthrough {
     args: Vec<String>,
 }
 
+/// Hidden parse-only mode: `camdl __check-args -- <argv...>`.
+///
+/// Runs ONLY clap argument parsing against the real `Cli` command tree — no
+/// file I/O, no compilation, no simulation. It answers exactly one question:
+/// "does the documented invocation `camdl <argv...>` reference a subcommand /
+/// flag / argument shape that this binary's CLI surface actually has?"
+///
+/// Exit codes:
+///   0 — the args parse (the surface is real), OR clap wants to display help
+///       or version for them (`--help`/`--version` are valid surface). The doc
+///       command is structurally sound; any runtime failure (missing file,
+///       bad value) is NOT our concern here.
+///   2 — clap rejected the surface: unknown subcommand, unrecognized flag,
+///       unexpected positional, or a too-few/too-many arg-count violation.
+///       This is DRIFT — the doc names something the CLI does not expose.
+///
+/// This is parser-truth, not stderr string-matching: the same typed clap
+/// parser the real CLI uses decides, so the gate can never disagree with the
+/// binary about what's a valid command surface.
+///
+/// `compile` / `check` / `inspect` forward verbatim to camdlc via the
+/// `Passthrough` arg (`trailing_var_arg` + `allow_hyphen_values`). clap
+/// therefore accepts ANY tail after them (e.g. `camdl compile m.camdl
+/// --set b=0.3 --json-errors`), so this check necessarily passes those
+/// through as OK — their flags belong to camdlc, not camdl, and are out of
+/// scope for camdl-surface drift detection. Documented as a known limitation.
+///
+/// Intercepted at the very top of `main`, before `Cli::parse`, so the
+/// `__check-args` token never reaches the real subcommand dispatch and the
+/// inner argv is validated against the unmodified `Cli` tree (program name
+/// `camdl` is synthesized as argv[0]).
+fn run_check_args_mode() -> Option<i32> {
+    use clap::CommandFactory;
+    let raw: Vec<String> = std::env::args().collect();
+    // Expect: camdl __check-args -- <argv...>
+    if raw.len() < 2 || raw[1] != "__check-args" {
+        return None;
+    }
+    // Strip argv[0] (`camdl`), argv[1] (`__check-args`), and an optional `--`
+    // separator. Everything after is the documented invocation's tail.
+    let mut rest: &[String] = &raw[2..];
+    if rest.first().map(String::as_str) == Some("--") {
+        rest = &rest[1..];
+    }
+    // Reconstruct the full argv clap expects: program name + the doc tail.
+    let mut argv: Vec<String> = Vec::with_capacity(rest.len() + 1);
+    argv.push("camdl".to_string());
+    argv.extend_from_slice(rest);
+
+    let cmd = Cli::command();
+    match cmd.try_get_matches_from(argv) {
+        Ok(_) => Some(0),
+        Err(e) => {
+            use clap::error::ErrorKind;
+            match e.kind() {
+                // Help/version requests are NOT drift — the flags are real and
+                // the surface is valid. clap models them as "errors" only
+                // because it short-circuits parsing to render the text.
+                ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => Some(0),
+                // A missing *required* argument means the surface itself is
+                // valid (the subcommand/flags were recognized) — the user just
+                // didn't supply a positional. That's an input concern (EXPECTED),
+                // not surface drift, so we do not flag it.
+                ErrorKind::MissingRequiredArgument => Some(0),
+                // Everything else clap rejects at the parse layer is surface
+                // drift: unknown subcommand, unrecognized flag, unexpected
+                // positional, bad arg count, invalid enum value, etc.
+                _ => Some(2),
+            }
+        }
+    }
+}
+
 fn main() {
+    // Hidden parse-only drift check (used by `make test-cli-docs`). Returns
+    // an exit code and short-circuits before any real parsing/execution.
+    if let Some(code) = run_check_args_mode() {
+        std::process::exit(code);
+    }
+
     let cli = Cli::parse();
 
     // Resolve the effective verbosity. Precedence:

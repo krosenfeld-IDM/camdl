@@ -21,6 +21,9 @@ on:
       - "docs/dsl-cheatsheet.md"
       - "docs/dates.md"
       - "docs/camdl-run-spec.md"
+      - "docs/workflow.md"
+      - "scripts/check_cli_docs.sh"
+      - "rust/crates/cli/**"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
@@ -31,6 +34,9 @@ on:
       - "docs/dsl-cheatsheet.md"
       - "docs/dates.md"
       - "docs/camdl-run-spec.md"
+      - "docs/workflow.md"
+      - "scripts/check_cli_docs.sh"
+      - "rust/crates/cli/**"
       - ".github/workflows/docs.yml"
 
 jobs:
@@ -51,3 +57,23 @@ jobs:
 
       - name: Doctest the language spec
         run: opam exec -- make test-docs
+
+  # CLI command-surface drift gate. Builds the Rust `camdl` binary and asks its
+  # hidden parse-only mode (`camdl __check-args`) whether every documented
+  # `camdl …` invocation in CLI_DOCS references a real subcommand/flag. The
+  # script's `--selftest` runs first as the non-vacuous guard (it must catch
+  # synthetic drift), then the docs are gated. No OCaml/camdlc needed: the
+  # parse-only check never delegates to the compiler. Cost note: this builds
+  # the release `camdl` binary (the toolchain action caches the Cargo registry
+  # + target dir, matching ci.yml's Rust setup).
+  cli-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # build-rust is a prereq of test-cli-docs (make builds once); the gate
+      # then runs the non-vacuous --selftest and the CLI_DOCS surface check.
+      - name: Gate documented CLI commands
+        run: make test-cli-docs
