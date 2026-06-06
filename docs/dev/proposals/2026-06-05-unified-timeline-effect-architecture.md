@@ -495,29 +495,55 @@ consolidation and the bug-surface win — it *names* the PF/PGAS divergence and
 deletes the duplicated loops, but does not yet *close* the divergence (that is
 Stage 2).
 
-**Stage 2 — expose the knob, `snap` default.** Add `--obs-alignment`, default
-`snap`. Because `snap` and `exact` *coincide where every obs/output time is an
-exact `dt` multiple*, the on-grid goldens are unchanged; the only behaviour that
-changes is the PF's *implicit off-grid exactness*, now opt-in via `exact`. (Audit
-the corpus for hidden fractional times first — `seir_vaccine_seasonal`'s
-`output.end = 1095.7275` snaps under the default and must be pinned to `exact` or
-re-baselined deliberately.) Any off-grid fit that relied on exactness is pinned to
-`exact`, so "reproduces past results" is literal. The capability gate lands here.
+**Stage 2 — expose the knob; default to the most-accurate alignment each
+algorithm supports.** Add `--obs-alignment exact | snap` (bundled in `fit.toml`).
+The default is **`exact` where the algorithm supports it**: PF/IF2/PMMH are exact
+today, so the default preserves their behaviour byte-for-byte (the PF keeps its
+off-grid exactness — it is *not* snapped away); PGAS supports only `snap`, so it
+falls back to `snap` under the capability gate, and `--obs-alignment exact` + PGAS
+is the one clean "not implemented" error. Nothing regresses. The
+`(algorithm, obs_alignment)` capability gate lands here — **consolidating today's
+two scattered checks** (the forward gate in `util.rs` and `check_model_capabilities`
+in `fit/methods.rs`, a hard-coded `match backend`) into one fit-dispatch seam;
+otherwise "one clean error / one place" is false. (Audit the corpus for hidden
+fractional times so the distinction is exercised, e.g. `seir_vaccine_seasonal`'s
+`output.end = 1095.7275`.) This default rule is chosen so that when exact-PGAS
+lands (Stage 3) the default becomes **uniform exact** with no policy change — the
+fallback simply disappears.
 
-**Stage 3 — future, evidence-gated (the eventual clean interface).** After
-(a) profiling the `snap`-vs-`exact` performance difference, and (b) validating
-across a variety of models that the adaptive (`exact`) stepping is correct and
-reproduces references, *consider* flipping the default to `exact` (or hiding the
-knob) — this is the clean-interface goal, deliberately *after* both modes work and
-match current behaviour, never before. Separately, the **exact-PGAS** migration
-moves the uniform-grid assumption out of PGAS so each record carries its realized
-`(t0, dt_substep)` and **no path recomputes `s*dt`** — eight reconstruction sites
-to convert together (`pgas.rs:568,605,716,869,1079`, `pgas_grad.rs:397`, plus the
-`interval_steps` obs mapping at `pgas.rs:268,704`); a single missed site silently
-reconstructs the wrong time → wrong rate freeze → wrong density. Gated behind a
-mixing PGAS (gh#175 fixed → a trustworthy parity baseline) and a genuine need for
-off-grid observations *under PGAS specifically*. Until then, `exact` + PGAS is the
-clean capability error.
+**Stage 3 — exact everywhere (the committed end-state), evidence-gated.** Implement
+**exact-PGAS**: move the uniform-grid assumption out of PGAS so each
+`SubstepRecord` carries its realized `(t0, dt_substep)` and **no path recomputes
+`s*dt`** — the eight reconstruction sites converted together
+(`pgas.rs:568,605,716,869,1079`, `pgas_grad.rs:397`, and the `interval_steps` obs
+mapping at `pgas.rs:268,704`); a single missed site silently reconstructs the
+wrong time → wrong rate freeze → wrong density. With exact-PGAS landed *and
+validated by the evidence below*, PGAS's `snap` fallback is removed and the
+"exact where supported" default becomes **uniform exact** — the clean end-state.
+The validation uses **non-hierarchical** PGAS (which mixes today); gh#175 blocks
+only *hierarchical*-model exact-PGAS, a smaller subset deferred with it, so it does
+not gate this.
+
+**The evidence that earns the default (Stage 3 gate).** A study, not a vibe, exact
+vs snap across the model-feature matrix:
+
+- **Recovery** — plant θ → simulate → fit under both alignments; both must recover
+  θ within the MC bracket, on **SIR, an off-grid-obs model, an intervention model,
+  an event model, and a seasonal (time-inhomogeneous) model**. Exact should match
+  or beat snap on the off-grid/seasonal cases (where snap's rounding bites) and tie
+  elsewhere.
+- **exact-PGAS density correctness** — the per-substep transition density under the
+  shortened terminal substep equals a from-scratch recompute using `rec.dt_substep`
+  (never `s*dt`), pinned `gate_pgas_density_baseline`-style on an off-grid model.
+- **exact-PGAS gradient correctness** — a **finite-difference check** on the NUTS
+  gradient under the shortened substep (`|∂L/∂θ_analytic − ∂L/∂θ_FD| < tol`):
+  recovery cannot catch a wrong gradient because a wrong gradient mixes and lies.
+- **On-grid parity** — exact-PGAS on an on-grid model reproduces the snap result
+  byte-for-byte (where exact == snap), proving the migration left the common case
+  untouched.
+
+This is the "exact earned, not asserted" gate: only after all four does `exact`
+become the default.
 
 ## Consolidation: substrate, not algorithms
 
@@ -539,6 +565,54 @@ three hand-rolled forward boundary cursors. Added are the `Schedule`/`Boundary`/
 *mapped*, not removed. The win is consolidating control flow into one typed
 spine, not reducing the type count — and that is where the cross-backend bugs
 live.
+
+### Filter architecture: existing vs proposed
+
+The trait spine is already well-factored and is **kept**: `ProcessModel` (the
+kernel `step`), `ObservationModel` (`log_likelihood`/`obs_time`), `DensityProcess:
+ProcessModel` (`log_transition_density`, PGAS only), `Resettable`; plus the shared
+types `ParticleState` / `ParticleSwarm` / `systematic_resample` / `log_sum_exp`.
+What is *not* consolidated today is the **filter loop**: four functions each
+hand-roll the same per-observation structure.
+
+Existing (each a separate `propagate → weight → resample` loop; `Schedule.substep`
+just routed under each this session, but the loops are still four):
+
+```
+bootstrap_filter             SIS; systematic resample; per-particle death-on-recoverable-error
+bootstrap_filter_correlated  = bootstrap, but PROPAGATE injects pre-drawn correlated noise (CPM, for PMMH)
+run_if2                      outer iteration loop: perturb θ per-obs + cool, running a full filter each iteration
+run_pgas  (the sweep)        CONDITIONAL PF: particle 0 = reference trajectory; ANCESTOR resample (not systematic);
+                             needs the transition DENSITY (ancestor weights + NUTS gradient); RECORDS the path;
+                             uniform s*dt grid (snap)
+```
+
+Proposed — consolidate the **substrate**, keep the **algorithms** distinct:
+
+```
+propagate_window(schedule, process, particles, obs_idx, noise)        ← the ONE shared unit (all four use it):
+        the Schedule.substep spine + kernel step + per-particle death handling.
+        `noise: Fresh | PreDrawn(&PFRandomState)`. Alignment (exact|snap) is the
+        Schedule's, so it threads to every caller at once.
+
+run_filter = loop over obs { propagate_window; weight (obs_model); loglik (log_sum_exp); systematic_resample }
+        ├─ bootstrap PF   = run_filter(noise = Fresh)
+        ├─ correlated PF  = run_filter(noise = PreDrawn)            // PMMH's L̂(θ)
+        └─ if2            = for iter { run_filter(perturbed θ); cool }   // WRAPS run_filter; does not reimplement it
+
+run_pgas_sweep = loop over obs { propagate_window(conditional); weight; ANCESTOR resample; record + density }
+        a conditional SIBLING — shares propagate_window, keeps its own resample / conditioning / density / recording.
+```
+
+Where consolidation **stops on purpose** (further merging would leak): PGAS's
+conditioning + ancestor sampling + density + trajectory recording are a genuinely
+different filter, not a flag on the bootstrap; collapsing them into one
+`run_filter(strategy: 5 toggles)` would be the leaky god-function. `if2`'s
+iteration/cooling is an optimiser that *wraps* the filter, not a filter mode. So
+the consolidation target is `propagate_window` (the bug-prone substrate, shared by
+all four) and `run_filter` (the three non-conditional filters); PGAS shares the
+propagation and stays its own sweep. That is the "a family of reused functions
+that can't be further merged without leaking is the right answer" shape, applied.
 
 ## Leaky abstractions the types must honour
 
