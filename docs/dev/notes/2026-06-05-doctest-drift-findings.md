@@ -11,7 +11,7 @@ reported by a conversion pass, not yet independently reproduced).
 
 ## Compiler bugs (valid CAMDL the compiler wrongly rejects)
 
-### B1 ✓ — `projected` keyword hard-coded to dimension P → false E304
+### B1 ✓ FIXED (`b141634`) — `projected` keyword hard-coded to dimension P → false E304
 `Projected` is unconditionally dimensioned `population` in the dim-checker
 (`ocaml/lib/ir/dimcheck.ml:282` and `:584`: `| Projected -> Known population`).
 So a projection that is a *proportion* used as a probability false-fires E304.
@@ -62,6 +62,12 @@ Either the spec is wrong (use the block form) or `set(...)` should be added to
 the grammar. Decide direction. Block left skipped: spec §13 intro.
 
 ## CLI drift (commands/flags the docs show that don't exist — agents will fail)
+
+**Resolution:** all fixed (`0218b3f`) and now gated. A permanent CLI run-gate
+(`f5501ef`, `e96ec5a`) adds `camdl __check-args` (parse-only, exit 2 on a bad
+command/flag) and `make test-cli-docs` over workflow.md + inference.md +
+debugging.md (37 commands, 0 drift), with a non-vacuous `--selftest` and a Rust
+exit-code test.
 
 Verified against `rust/crates/cli/src/args/mod.rs` (clap-typed; surface errors
 exit 2, distinct from input errors exit 1).
