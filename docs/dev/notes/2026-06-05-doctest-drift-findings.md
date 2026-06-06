@@ -89,6 +89,38 @@ from bash fences, classifies DRIFT vs EXPECTED by exit code + stderr). The robus
 permanent form is a hidden `camdl <sub> --check-args` parse-only mode (exit 0/2,
 no I/O) so DRIFT = exit 2 with no stderr heuristics — ~30 lines.
 
+## Wrapping-pass findings (transition features §9–§10)
+
+Surfaced wrapping bare-transition feature snippets in `transitions { }` and
+compiling them. §12 prevalence-as-proportion converted cleanly (confirms B1's
+fix end-to-end); the following were left skipped:
+
+### G1 ⟳ — dimension-annotation grammar can't spell `1/(P·T)` (§9.1.1)
+The chemistry-style multi-source line `react : A + B --> C @ k * A * B` needs `k`
+declared with dimension `P⁻¹·T⁻¹` so `k·A·B` is `P·T⁻¹`. The `[dim]` annotation
+grammar (§4.1.1) admits `[1] [P] [T] [1/T] [T^-1] [P/T] [P*T^-1]` but none of
+`1/(P*T)`, `P^-1*T^-1`, `1/P/T` parse (E001). Without `k` annotatable, the line is
+E300. Verdict: extend the annotation grammar to compound inverse-population
+dimensions, or drop the chemistry line. (The other multi-source examples —
+`bite`, `infect_v` — compile.)
+
+### G2 ⟳ — `sum(c in compartments, …)` rejected though §10 shows it as user syntax
+§10.1/§10.2 use `sum(c in compartments, c[b,t])` as the stratum-population
+denominator and §10.3 says it is "generated automatically," but the parser only
+accepts `sum(b in age, …)` over declared dimensions — the `compartments` binder is
+E001. Verdict: COMPILER-BUG if it is meant to be user-writable (§10.1 presents it
+as the hand-written primitive), else the spec should not show it as user syntax.
+
+### D5 ⟳ — `p_symp` reused at scalar and indexed arity (§9.1.2)
+The branching example's malaria variant uses `p_symp[a]` while the headline uses
+scalar `p_symp`; one name cannot be both in a model. Rename the indexed one
+(`p_symp_age[a]`). Content edit.
+
+### D6 ⟳ — reserved word `rate` used as a parameter name (§9.3)
+The compound-guard `transfer` example declares `parameters { rate : … }`; `rate`
+is a reserved type keyword (E001). Rename (`tau`). Content edit. (`fertility[a]`
+also needs an indexed declaration.)
+
 ## Other
 
 - ⟳ Spec §11 says the `ode {}` block is "parsed but currently discarded by the
