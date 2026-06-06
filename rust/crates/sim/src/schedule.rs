@@ -64,6 +64,7 @@ pub enum StepPolicy {
 pub struct Cursor {
     pub output_idx: usize,
     pub effect_idx: usize,
+    pub obs_idx: usize,
 }
 
 /// Tolerance for "an output time has been reached" — matches the
@@ -89,6 +90,13 @@ pub struct Schedule {
     /// Sorted, ascending. Scheduled effect (intervention / always-active event)
     /// boundary times.
     effect_times: Vec<f64>,
+    /// Sorted, ascending. Observation times — the boundaries the INFERENCE
+    /// drivers step exactly to (where they score the likelihood). A first-class
+    /// boundary kind alongside output/effect (the proposal's `Boundary::Observation`),
+    /// realized as a parallel list. Empty for the forward backends (`next_obs = ∞`),
+    /// so adding it leaves every forward Schedule byte-identical. Populate via
+    /// [`Schedule::with_obs`].
+    obs_times: Vec<f64>,
 }
 
 impl Schedule {
@@ -96,7 +104,8 @@ impl Schedule {
     /// `dt`, the run window `[t_start, t_end]`, the snap `grid`, the policy, and
     /// the sorted output / effect time vectors (`get_output_times`,
     /// `all_intervention_times`). Times are assumed already sorted ascending (the
-    /// producers guarantee it); debug-asserted.
+    /// producers guarantee it); debug-asserted. Observation boundaries default to
+    /// empty — add them with [`Schedule::with_obs`] for the inference drivers.
     pub fn new(
         dt: f64,
         t_end: f64,
@@ -107,7 +116,15 @@ impl Schedule {
     ) -> Self {
         debug_assert!(output_times.windows(2).all(|w| w[0] <= w[1]), "output_times not sorted");
         debug_assert!(effect_times.windows(2).all(|w| w[0] <= w[1]), "effect_times not sorted");
-        Schedule { dt, t_end, grid, policy, output_times, effect_times }
+        Schedule { dt, t_end, grid, policy, output_times, effect_times, obs_times: Vec::new() }
+    }
+
+    /// Attach observation boundaries (sorted ascending). The inference drivers step
+    /// EXACTLY to each (where they score); folded into the `substep` boundary min.
+    pub fn with_obs(mut self, obs_times: Vec<f64>) -> Self {
+        debug_assert!(obs_times.windows(2).all(|w| w[0] <= w[1]), "obs_times not sorted");
+        self.obs_times = obs_times;
+        self
     }
 
     fn next_output(&self, cursor: &Cursor) -> f64 {
@@ -116,6 +133,10 @@ impl Schedule {
 
     fn next_effect(&self, cursor: &Cursor) -> f64 {
         self.effect_times.get(cursor.effect_idx).copied().unwrap_or(f64::INFINITY)
+    }
+
+    fn next_obs(&self, cursor: &Cursor) -> f64 {
+        self.obs_times.get(cursor.obs_idx).copied().unwrap_or(f64::INFINITY)
     }
 
     /// The substep size to advance from `t`. The SINGLE source of truth for the
@@ -143,9 +164,11 @@ impl Schedule {
             return None;
         }
         let boundary = match self.policy {
-            StepPolicy::Exact => {
-                self.t_end.min(self.next_output(cursor)).min(self.next_effect(cursor))
-            }
+            StepPolicy::Exact => self
+                .t_end
+                .min(self.next_output(cursor))
+                .min(self.next_effect(cursor))
+                .min(self.next_obs(cursor)),
             StepPolicy::Snap => self.t_end,
         };
         Some(self.dt.min(boundary - t))
@@ -196,6 +219,18 @@ impl Schedule {
         self.effect_times.get(cursor.effect_idx).copied()
     }
 
+    /// The current (next un-scored) observation time for `cursor`, or `None` past
+    /// the end. The inference driver steps exactly to this and scores there.
+    pub fn obs_time(&self, cursor: &Cursor) -> Option<f64> {
+        self.obs_times.get(cursor.obs_idx).copied()
+    }
+
+    /// Whether an observation is due at `t` for `cursor` (`<= t + EFFECT_EPS`,
+    /// matching the bootstrap PF's `obs_time - t < 1e-10` step-termination test).
+    pub fn obs_due_at(&self, cursor: &Cursor, t: f64) -> bool {
+        self.next_obs(cursor) <= t + EFFECT_EPS
+    }
+
     pub fn t_end(&self) -> f64 {
         self.t_end
     }
@@ -227,6 +262,11 @@ impl Cursor {
     /// Advance past the current effect (after the backend has applied it).
     pub fn pass_effect(&mut self) {
         self.effect_idx += 1;
+    }
+
+    /// Advance past the current observation (after the inference driver scored it).
+    pub fn pass_obs(&mut self) {
+        self.obs_idx += 1;
     }
 }
 
@@ -364,6 +404,22 @@ mod tests {
         assert_eq!(sdt, 1000.0);
         // window re-anchoring (EXACT steppers): offset by the window start.
         assert_eq!(s.substep_time(2.5, 3), 2.5 + 3.0 * dt);
+    }
+
+    #[test]
+    fn obs_boundary_clips_like_an_effect_and_leaves_forward_untouched() {
+        // Inference: obs at 7.3, dt=1. The Exact substep clips to land on it,
+        // exactly as the bootstrap PF does (dt.min(obs - t)).
+        let s = Schedule::new(1.0, 80.0, 1.0, StepPolicy::Exact, vec![], vec![]).with_obs(vec![7.3]);
+        let cur = Cursor::default();
+        assert_eq!(s.substep(&cur, 0.0).unwrap(), 1.0, "full dt before the obs");
+        assert_eq!(s.substep(&cur, 7.0).unwrap(), 7.3 - 7.0, "clips exactly to the obs at 7.3");
+        assert!(s.obs_due_at(&cur, 7.3));
+        // Forward (no obs): byte-identical — next_obs is ∞, boundary unchanged.
+        let f = exact(1.0, 5.0, vec![], vec![2.5]);
+        let fo = exact(1.0, 5.0, vec![], vec![2.5]).with_obs(vec![]);
+        let cur = Cursor::default();
+        assert_eq!(f.substep(&cur, 2.0).unwrap().to_bits(), fo.substep(&cur, 2.0).unwrap().to_bits());
     }
 
     #[test]

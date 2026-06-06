@@ -11,6 +11,7 @@ use rayon::prelude::*;
 
 use crate::rng::StatefulRng;
 use crate::error::SimError;
+use crate::schedule::{Cursor, Schedule, StepPolicy};
 use super::degeneracy::{check_pf_degeneracy, check_iteration_budget, window_substep_cost, pf_bail_error, pf_wallclock_budget, ITER_BUDGET};
 use super::traits::{ProcessModel, ObservationModel, SMCConfig};
 use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, RESAMPLE_RNG_STREAM, init_particle_rngs};
@@ -139,6 +140,18 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
 
     let mut t = config.t_start;
 
+    // Merged timeline spine for the inference path: the EXACT policy clips each
+    // substep to the next OBSERVATION boundary (the bootstrap PF steps exactly to
+    // obs times, where it scores). The Schedule owns the obs times; a per-particle
+    // `Cursor` (Copy) walks them, so the immutable Schedule is shared across the
+    // parallel swarm without breaking CRN. step_dt = substep(cursor, t) reproduces
+    // dt.min(obs_time - t) exactly. (Substep TIME stays accumulated here — the s*dt
+    // convention for the EXACT steppers is deferred, task #14.)
+    let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+    let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
+    let schedule =
+        Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
+
     // gh#147 (M3.1). Cumulative particle-substep count for the
     // deterministic compute-budget guard. Bounds a single PF evaluation;
     // see `ITER_BUDGET`. Checked BEFORE each window's propagation so a
@@ -219,8 +232,10 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         }
         iters = iters.saturating_add(cost);
 
-        // Propagate all particles from t to obs_time.
+        // Propagate all particles from t to obs_time. The schedule clips each
+        // substep to obs_time; the cursor points at this observation.
         let t_start_interval = t;
+        let cur = Cursor { obs_idx, ..Default::default() };
         let outcomes: Vec<Result<bool, SimError>> = swarm.states.par_iter_mut()
             .zip(rngs.par_iter_mut())
             .zip(scratches.par_iter_mut())
@@ -229,7 +244,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
                 if dead { return Ok(true); }  // already dead; skip
                 let mut t_local = t_start_interval;
                 while t_local < obs_time - 1e-10 {
-                    let step_dt = dt.min(obs_time - t_local);
+                    let step_dt = schedule.substep(&cur, t_local).expect("t_local < t_end in obs window");
                     match process.step(state, params, t_local, step_dt, rng, scratch) {
                         Ok(()) => {}
                         Err(e) if e.is_per_particle_recoverable() => {
@@ -248,7 +263,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         for (i, r) in outcomes.into_iter().enumerate() {
             if r? { particle_dead[i] = true; }
         }
-        while t < obs_time - 1e-10 { t += dt.min(obs_time - t); }
+        while t < obs_time - 1e-10 { t += schedule.substep(&cur, t).expect("t < t_end"); }
 
         // Prediction diagnostics
         if has_predictions {
