@@ -497,11 +497,26 @@ Stage 2).
 
 **Stage 2 — expose the knob; default to the most-accurate alignment each
 algorithm supports.** Add `--obs-alignment exact | snap` (bundled in `fit.toml`).
-The default is **`exact` where the algorithm supports it**: PF/IF2/PMMH are exact
-today, so the default preserves their behaviour byte-for-byte (the PF keeps its
-off-grid exactness — it is *not* snapped away); PGAS supports only `snap`, so it
-falls back to `snap` under the capability gate, and `--obs-alignment exact` + PGAS
-is the one clean "not implemented" error. Nothing regresses. The
+The default is **`exact` where the algorithm supports it**. The support matrix is
+NOT uniform — three classes, not "PF-family vs PGAS":
+- **bootstrap PF / IF2**: exact on any obs (on- or off-grid) — they hold no
+  per-window substep-count assumption. Default exact, byte-identical today.
+- **PMMH / correlated PF**: exact only on **uniform ON-GRID** obs. Its CPM
+  pre-drawn-noise array is sized by a *scalar* `steps_per_obs =
+  interval_steps(0, obs_dt, dt)` and indexed `i*steps_per_obs + substep`
+  (`correlated_pf.rs:185,332`); off-grid obs make the realized substep count
+  exceed `steps_per_obs`, so the index overruns into the next particle's block or
+  trips the `< len` guard and **silently falls back to fresh RNG** — decorrelating
+  the estimator (the leak below). So the gate must classify PMMH as
+  exact-on-grid-or-snap, *not* lump it with the bootstrap PF; `--obs-alignment
+  exact` + PMMH + off-grid obs is a clean capability error, not a silent wrong
+  answer. (A real off-grid PMMH needs the variable-substep-count noise layout —
+  Stage 3.)
+- **PGAS**: `snap` only, falls back to `snap`; `--obs-alignment exact` + PGAS is
+  the clean "not implemented" error.
+
+Nothing regresses (every algorithm's *current, validated* regime keeps its
+behaviour byte-for-byte). The
 `(algorithm, obs_alignment)` capability gate lands here — **consolidating today's
 two scattered checks** (the forward gate in `util.rs` and `check_model_capabilities`
 in `fit/methods.rs`, a hard-coded `match backend`) into one fit-dispatch seam;
@@ -529,12 +544,19 @@ vs snap across the model-feature matrix:
 
 - **Recovery** — plant θ → simulate → fit under both alignments; both must recover
   θ within the MC bracket, on **SIR, an off-grid-obs model, an intervention model,
-  an event model, and a seasonal (time-inhomogeneous) model**. Exact should match
-  or beat snap on the off-grid/seasonal cases (where snap's rounding bites) and tie
-  elsewhere.
-- **exact-PGAS density correctness** — the per-substep transition density under the
-  shortened terminal substep equals a from-scratch recompute using `rec.dt_substep`
-  (never `s*dt`), pinned `gate_pgas_density_baseline`-style on an off-grid model.
+  an event model, a seasonal (time-inhomogeneous) model, and an OVERDISPERSED
+  off-grid model**. The overdispersed case is non-negotiable: the gamma multiplier
+  (`shape = dt/σ²`, `scale = σ²/dt`) is the single most `dt_substep`-sensitive
+  density term, and it only exists for `overdispersed(...)` transitions — without
+  it the density/gradient checks below test the fragile path *vacuously*. Exact
+  should match or beat snap on the off-grid/seasonal cases (where snap's rounding
+  bites) and tie elsewhere.
+- **exact-PGAS density correctness** — on a fixture whose terminal substep is
+  genuinely shortened (`rec.dt_substep ≈ 0.9125 ≠ 1.0`, NOT an on-grid window where
+  it is vacuous), the per-substep transition density equals a from-scratch
+  recompute using `rec.dt_substep` (never `s*dt`), comparing density *values* (not
+  the `(counts, flows, gammas)` tuples). Pin `gate_pgas_density_baseline`-style;
+  the overdispersed off-grid model exercises the gamma term here.
 - **exact-PGAS gradient correctness** — a **finite-difference check** on the NUTS
   gradient under the shortened substep (`|∂L/∂θ_analytic − ∂L/∂θ_FD| < tol`):
   recovery cannot catch a wrong gradient because a wrong gradient mixes and lies.
@@ -665,7 +687,22 @@ iterator.
   canonicalizes this, but rewriting tau/ode to the canonical order is a
   *behaviour change*, so it moves to **Stage 2** (with a re-baseline), NOT
   Stage-1 byte-identical. "Matches `step_one` exactly" holds only for
-  chain-binomial.
+  chain-binomial. **The re-baseline is not self-validating**: it pins the new
+  numbers as truth but does not show the canonical (chain-binomial) order is the
+  *correct* one for tau/ode. Stage 2 needs a hand-computed fixture asserting the
+  *intended* order (a `θ`-dependent intervention coincident with an event, checked
+  against the spec's substep lifecycle), not just a fresh hash.
+- **The correlated-PF (CPM) pre-drawn-noise layout assumes a fixed substep count
+  per window.** The noise arrays are sized by a *scalar* `steps_per_obs =
+  interval_steps(0, obs_dt, dt)` and indexed `i*steps_per_obs + substep`
+  (`correlated_pf.rs:185,332`); the `if noise_idx < len` guard (`:333,345`)
+  *silently* falls back to fresh RNG when the realized substep count exceeds
+  `steps_per_obs` — which `exact` + off-grid obs causes (8 substeps to land on 7.3
+  at `dt=1` vs `steps_per_obs = 7`). Silent decorrelation of the CPM estimator is
+  the camdl-bar leak. Honor it two ways: (1) the capability gate (above) keeps
+  PMMH out of the off-grid-`exact` class; (2) the guard becomes a hard error, not
+  a silent fallback. A true off-grid PMMH needs the noise array sized from the
+  *realized* per-window substep count (Stage 3), not a precomputed scalar.
 
 ## How the pieces relate and flow
 
