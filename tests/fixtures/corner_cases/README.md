@@ -96,10 +96,19 @@ camdl simulate tests/fixtures/corner_cases/off_grid_intervention.camdl \
 
 ## Wiring into the gates
 
-- **Enforced now:** `gate_inference_baseline.rs` pins the off-grid PF loglik via
-  the `sir_incidence_offgrid` reference (obs at 7.3, 14.6, … — a *distinct*
-  loglik, −59.79, vs the on-grid −59.45). The off-grid likelihood path the
-  on-grid corpus cannot reach is now a committed baseline.
-- **Still to wire:** a forward `gate_trajectory_baseline` entry for the
-  fractional-end / lifecycle trajectories, and an off-grid-*intervention*
-  inference reference.
+- **Forward (enforced now):** `gate_corner_case_baseline.rs` loads each model's
+  committed IR (`ir/*.ir.json`, params baked via `--set`; regenerate with `make
+  update-corner-golden`) and pins the FNV trajectory hash under every
+  capability-supported backend at seed=42 — 17 baselines. The snap-vs-exact
+  divergence is now a regression surface: `off_grid_intervention` hashes to
+  *different* values under `chain_binomial` (snap to step 3) and `tau_leap`
+  (exact at 2.5); its `gillespie` baseline pins the `iv_resolution_dt`
+  phantom-grid behaviour; `all_lifecycle` pins the fused transition+event
+  ADVANCE → intervention → balance → observe order.
+- **Inference (enforced now):** `gate_inference_baseline.rs` pins the off-grid PF
+  loglik via the `sir_incidence_offgrid` reference (obs at 7.3, 14.6, … — a
+  *distinct* loglik, −59.79, vs the on-grid −59.45). The off-grid likelihood path
+  the on-grid corpus cannot reach is a committed baseline.
+- **Still to wire:** an off-grid-*intervention* inference reference (PF/PGAS over
+  a model whose intervention fires off the obs grid), and the PGAS/IF2/PMMH +
+  RNG-draw-count harnesses (Stage-0 oracle remainder).
