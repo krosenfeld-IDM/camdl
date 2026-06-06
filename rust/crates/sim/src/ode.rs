@@ -6,6 +6,7 @@ use crate::{
     output::output_times as get_output_times,
     propensity::{eval_propensities, EvalCtx},
     resolved_expr::eval_resolved,
+    schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
     state::{FlowVec, IntState, RealState, Snapshot, Trajectory},
 };
@@ -169,10 +170,18 @@ pub fn run_ode(
     let mut real_vals: Vec<f64> = real_s0.values.clone();
 
     let n_transitions = model.model.transitions.len();
-    let output_times = get_output_times(&model.model.output.times);
-    let mut output_idx = 0;
-    let iv_times = all_intervention_times(model, params);
-    let mut iv_idx = 0;
+    // Merged timeline spine. ODE is dt-independent, so EXACT and snap coincide;
+    // it uses the EXACT policy (land on each output/effect boundary). Firing stays
+    // inline; the schedule owns the sorted times and `cursor` walks them.
+    let schedule = Schedule::new(
+        cfg.dt,
+        cfg.t_end,
+        cfg.dt,
+        StepPolicy::Exact,
+        get_output_times(&model.model.output.times),
+        all_intervention_times(model, params),
+    );
+    let mut cursor = Cursor::default();
 
     // gh#53: fire_steps depend on the runtime cfg.dt, not the
     // compile-time model.simulation.dt. See chain_binomial.rs for the
@@ -190,7 +199,7 @@ pub fn run_ode(
         FlowVec::from_vec(flow_acc.iter().map(|&x| x.round() as u64).collect())
     };
 
-    if output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+    if schedule.output_due_at(&cursor, t) {
         let (is, rs) = to_states(&int_vals, &real_vals);
         traj.push(Snapshot {
             t,
@@ -199,7 +208,7 @@ pub fn run_ode(
             flows: snapshot_flows(&flow_acc),
         });
         for v in flow_acc.iter_mut() { *v = 0.0; }
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     while t < cfg.t_end {
@@ -207,34 +216,33 @@ pub fn run_ode(
         // has no RNG at all).
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        let next_boundary = {
-            let out_t = output_times.get(output_idx).copied().unwrap_or(f64::INFINITY);
-            let iv_t  = iv_times.get(iv_idx).copied().unwrap_or(f64::INFINITY);
-            cfg.t_end.min(out_t).min(iv_t)
-        };
-        let dt = cfg.dt.min(next_boundary - t);
+        // The schedule is the single source of truth for the next stop;
+        // step.t_to - t == cfg.dt.min(next_boundary - t) by construction.
+        let step = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop");
+        let dt = step.t_to - t;
 
         if dt <= 1e-15 {
             // At a boundary — apply intervention or record output
-            if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
+            if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 let (mut is, mut rs) = to_states(&int_vals, &real_vals);
                 apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
                 // gh#67: also fire always_active events at this boundary.
                 apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
                 int_vals = is.counts.iter().map(|&c| c as f64).collect();
                 real_vals = rs.values.clone();
-                while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
+                while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
-            while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+            while schedule.output_due_at(&cursor, t) {
+                let ot = schedule.output_time(&cursor).expect("due implies present");
                 let (is, rs) = to_states(&int_vals, &real_vals);
                 traj.push(Snapshot {
-                    t: output_times[output_idx],
+                    t: ot,
                     int_state: is,
                     real_state: rs,
                     flows: snapshot_flows(&flow_acc),
                 });
                 for v in flow_acc.iter_mut() { *v = 0.0; }
-                output_idx += 1;
+                cursor.pass_output();
             }
             if t >= cfg.t_end { break; }
             continue;
@@ -254,41 +262,42 @@ pub fn run_ode(
         t += dt;
 
         // Apply intervention if now at that time
-        if iv_times.get(iv_idx).copied().is_some_and(|iv| (iv - t).abs() < 1e-10) {
+        if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
             let (mut is, mut rs) = to_states(&int_vals, &real_vals);
             apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
             // gh#67: also fire always_active events at this boundary.
             apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
             int_vals = is.counts.iter().map(|&c| c as f64).collect();
             real_vals = rs.values.clone();
-            while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + 1e-10 { iv_idx += 1; }
+            while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
 
         // Record outputs
-        while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+        while schedule.output_due_at(&cursor, t) {
+            let ot = schedule.output_time(&cursor).expect("due implies present");
             let (is, rs) = to_states(&int_vals, &real_vals);
             traj.push(Snapshot {
-                t: output_times[output_idx],
+                t: ot,
                 int_state: is,
                 real_state: rs,
                 flows: snapshot_flows(&flow_acc),
             });
             for v in flow_acc.iter_mut() { *v = 0.0; }
-            output_idx += 1;
+            cursor.pass_output();
         }
     }
 
     // Flush any remaining output times
-    while output_idx < output_times.len() {
+    while let Some(ot) = schedule.output_time(&cursor) {
         let (is, rs) = to_states(&int_vals, &real_vals);
         traj.push(Snapshot {
-            t: output_times[output_idx],
+            t: ot,
             int_state: is,
             real_state: rs,
             flows: snapshot_flows(&flow_acc),
         });
         for v in flow_acc.iter_mut() { *v = 0.0; }
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     Ok(traj)
