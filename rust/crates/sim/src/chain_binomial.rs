@@ -182,8 +182,8 @@ pub fn run_chain_binomial_with_observer(
         // Progress tick: report current time before drawing this step. RNG-free.
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        // Snap step: t_to = min(t + dt, t_end); dt = cfg.dt.min(t_end - t).
-        let dt = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop").t_to - t;
+        // Snap step: dt = cfg.dt.min(t_end - t), the original formula (bit-exact).
+        let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
         if dt <= 1e-15 { break; }
 
         // Capture start-of-step state for the lineage observer (before RK4 and

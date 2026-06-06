@@ -58,31 +58,6 @@ pub enum StepPolicy {
     Exact,
 }
 
-/// What is due at a stop time. At most one output snapshot coincides (output
-/// times are distinct); `effect_due` is whether ≥1 scheduled effect lands here
-/// (the backend drains its own coincident-effect cursor, preserving today's
-/// ordering). Kept POD (no heap) so `next_boundary` stays alloc-free in the hot
-/// loop.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NextStep {
-    /// The time the integrator advances to from `t` (`> t`, `<= t_end`).
-    pub t_to: f64,
-    /// An output snapshot is due at `t_to`.
-    pub output_due: bool,
-    /// ≥1 scheduled effect is due at `t_to`. Always `false` under `Snap` (effects
-    /// fire inside the backend's substep, not at a schedule boundary — see the
-    /// module header).
-    pub effect_due: bool,
-}
-
-#[cfg(test)]
-impl NextStep {
-    /// Bit-exact tuple for sequence-equality tests (f64 has no `Eq`).
-    fn bits(self) -> (u64, bool, bool) {
-        (self.t_to.to_bits(), self.output_due, self.effect_due)
-    }
-}
-
 /// Per-particle walk position over a shared [`Schedule`]. `Copy` — each particle
 /// holds its own; the schedule is never mutated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -143,42 +118,37 @@ impl Schedule {
         self.effect_times.get(cursor.effect_idx).copied().unwrap_or(f64::INFINITY)
     }
 
-    /// The next time the integrator must stop at or after `t`, and what is due
-    /// there. PURE in `(self, cursor, t)` — does not mutate the cursor (advancing
-    /// is the backend's explicit step via [`Cursor::pass_output`] /
-    /// [`Cursor::pass_effect`] once it has handled what is due). Returns `None`
-    /// when `t >= t_end` (terminated).
+    /// The substep size to advance from `t`. The SINGLE source of truth for the
+    /// time→step mapping, computed the way the original backends did —
+    /// `dt.min(boundary - t)`, NOT `(t + dt).min(boundary) - t`. The two are equal
+    /// in exact arithmetic but NOT bit-identical for large fractional `t`
+    /// (`(t + dt) - t != dt` once `t` is large relative to `dt`). The forward
+    /// integer-count draws are insensitive to that ULP, but the chain-binomial
+    /// transition density (`shape = dt/σ²`) PGAS evaluates is continuous and
+    /// sensitive — so the inference loglik would move. Returning the step size
+    /// directly keeps every consumer bit-exact for all `t`.
     ///
-    /// - `Exact`: `t_to = min(t + dt, t_end, next_output, next_effect)`; `due`
-    ///   flags are set for whichever boundary `t_to` lands on (within the
-    ///   matching epsilon). A clipped-to-boundary step has `t_to == boundary`.
-    /// - `Snap`: `t_to = min(t + dt, t_end)` (never clipped to a boundary);
-    ///   `output_due` iff an output time falls within `(.., t_to + OUTPUT_EPS]`;
-    ///   `effect_due` always `false` (effects fire inside the backend substep).
-    pub fn next_boundary(&self, cursor: &Cursor, t: f64) -> Option<NextStep> {
+    /// PURE in `(self, cursor, t)` — does not mutate the cursor (the backend
+    /// advances it via [`Cursor::pass_output`] / [`Cursor::pass_effect`] after
+    /// handling what is due, using [`Schedule::output_due_at`] /
+    /// [`Schedule::effect_due_at`]). Returns `None` once `t >= t_end`.
+    ///
+    /// - `Exact`: clip to the next boundary —
+    ///   `dt.min(min(t_end, next_output, next_effect) - t)`. A zero/negative
+    ///   result means `t` is already AT a boundary (the backend handles it
+    ///   without stepping).
+    /// - `Snap`: never clip to an output/effect — `dt.min(t_end - t)`.
+    pub fn substep(&self, cursor: &Cursor, t: f64) -> Option<f64> {
         if t >= self.t_end {
             return None;
         }
-        let full = t + self.dt;
-        match self.policy {
+        let boundary = match self.policy {
             StepPolicy::Exact => {
-                let stop = full.min(self.t_end).min(self.next_output(cursor)).min(self.next_effect(cursor));
-                Some(NextStep {
-                    t_to: stop,
-                    output_due: self.next_output(cursor) <= stop + OUTPUT_EPS,
-                    effect_due: (self.next_effect(cursor) - stop).abs() < EFFECT_EPS
-                        && self.next_effect(cursor).is_finite(),
-                })
+                self.t_end.min(self.next_output(cursor)).min(self.next_effect(cursor))
             }
-            StepPolicy::Snap => {
-                let stop = full.min(self.t_end);
-                Some(NextStep {
-                    t_to: stop,
-                    output_due: self.next_output(cursor) <= stop + OUTPUT_EPS,
-                    effect_due: false,
-                })
-            }
-        }
+            StepPolicy::Snap => self.t_end,
+        };
+        Some(self.dt.min(boundary - t))
     }
 
     /// Gillespie's query: the process proposes `t_proposed` (drawn exponential)
@@ -265,29 +235,25 @@ mod tests {
         Schedule::new(dt, t_end, dt, StepPolicy::Snap, out, eff)
     }
 
-    /// Walk the whole schedule into a sequence of `(t_to, output, effect)` tuples,
+    /// Walk the whole schedule into a sequence of substep sizes (bit-exact),
     /// draining cursors exactly as a backend would.
-    fn walk(s: &Schedule) -> Vec<(u64, bool, bool)> {
+    fn walk(s: &Schedule) -> Vec<u64> {
         let mut cur = Cursor::default();
         let mut t = 0.0_f64;
         let mut seq = Vec::new();
         let mut guard = 0;
-        while let Some(step) = s.next_boundary(&cur, t) {
-            seq.push(step.bits());
-            // Drain what is due, as the backend does.
-            if step.output_due {
-                while s.output_due_at(&cur, step.t_to) {
-                    cur.pass_output();
-                }
+        while let Some(step_dt) = s.substep(&cur, t) {
+            seq.push(step_dt.to_bits());
+            t += step_dt;
+            // Drain what is due at the new t, as a backend does.
+            while s.output_due_at(&cur, t) {
+                cur.pass_output();
             }
-            if step.effect_due {
-                while s.effect_due_at(&cur, step.t_to) {
-                    cur.pass_effect();
-                }
+            while s.effect_due_at(&cur, t) {
+                cur.pass_effect();
             }
-            t = step.t_to;
             guard += 1;
-            assert!(guard < 10_000, "walk did not terminate");
+            assert!(guard < 100_000, "walk did not terminate");
         }
         seq
     }
@@ -298,13 +264,10 @@ mod tests {
         let s = exact(1.0, 5.0, vec![], vec![2.5]);
         let cur = Cursor::default();
         // First step from 0 → full dt (no boundary inside (0,1]).
-        let a = s.next_boundary(&cur, 0.0).unwrap();
-        assert_eq!(a.t_to, 1.0);
-        assert!(!a.effect_due);
-        // From t=2, the 2.5 boundary clips the step.
-        let b = s.next_boundary(&cur, 2.0).unwrap();
-        assert_eq!(b.t_to, 2.5, "exact must clip to the off-grid effect time");
-        assert!(b.effect_due);
+        assert_eq!(s.substep(&cur, 0.0).unwrap(), 1.0);
+        // From t=2, the 2.5 boundary clips the step to 0.5 (lands on 2.5).
+        assert_eq!(s.substep(&cur, 2.0).unwrap(), 0.5, "exact must clip to the off-grid effect");
+        assert!(s.effect_due_at(&cur, 2.5), "effect is due at the clipped landing");
     }
 
     #[test]
@@ -313,15 +276,13 @@ mod tests {
         // surface as schedule boundaries (the backend's step_one fires them).
         let s = snap(1.0, 5.0, vec![], vec![2.5]);
         let cur = Cursor::default();
-        let b = s.next_boundary(&cur, 2.0).unwrap();
-        assert_eq!(b.t_to, 3.0, "snap steps a full dt past the off-grid effect");
-        assert!(!b.effect_due, "snap never reports effect boundaries");
+        assert_eq!(s.substep(&cur, 2.0).unwrap(), 1.0, "snap steps a full dt past the off-grid effect");
     }
 
     #[test]
     fn exact_and_snap_diverge_on_off_grid() {
         // The corner-case divergence, at the schedule layer: the two policies
-        // produce DIFFERENT boundary sequences for an off-grid effect.
+        // produce DIFFERENT substep sequences for an off-grid effect.
         let e = walk(&exact(1.0, 5.0, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], vec![2.5]));
         let n = walk(&snap(1.0, 5.0, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], vec![2.5]));
         assert_ne!(e, n, "off-grid snap vs exact must differ (the pinned divergence)");
@@ -332,20 +293,42 @@ mod tests {
         // coincident_obs_intervention: output and effect both at t=10.
         let s = exact(1.0, 12.0, vec![10.0], vec![10.0]);
         let cur = Cursor::default();
-        let step = s.next_boundary(&cur, 9.0).unwrap();
-        assert_eq!(step.t_to, 10.0);
-        assert!(step.output_due && step.effect_due, "coincident kinds both reported");
+        assert_eq!(s.substep(&cur, 9.0).unwrap(), 1.0, "steps to land on 10");
+        assert!(
+            s.output_due_at(&cur, 10.0) && s.effect_due_at(&cur, 10.0),
+            "coincident kinds both due at the landing"
+        );
     }
 
     #[test]
     fn fractional_end_clips_last_step() {
-        // fractional_output_end: t_end = 80.5, dt = 1. The final step clips to
-        // 80.5; stepping terminates there.
+        // fractional_output_end: t_end = 80.5, dt = 1. The final step clips to 0.5
+        // (lands on 80.5); stepping terminates there.
         let s = exact(1.0, 80.5, vec![], vec![]);
         let cur = Cursor::default();
-        let step = s.next_boundary(&cur, 80.0).unwrap();
-        assert_eq!(step.t_to, 80.5);
-        assert!(s.next_boundary(&cur, 80.5).is_none(), "terminates at t_end");
+        assert_eq!(s.substep(&cur, 80.0).unwrap(), 0.5);
+        assert!(s.substep(&cur, 80.5).is_none(), "terminates at t_end");
+    }
+
+    #[test]
+    fn substep_is_bit_exact_dt_min_not_t_to_minus_t() {
+        // The robustness property: at large fractional t the substep is
+        // dt.min(boundary - t) EXACTLY, NOT the FP-fragile (t+dt).min(boundary) - t.
+        // Forward integer draws are insensitive to the ULP, but the PGAS continuous
+        // transition density (shape = dt/σ²) is not — so the inference loglik would
+        // move. This test pins the fix.
+        let dt = 0.1;
+        let s = exact(dt, 5000.0, vec![], vec![]);
+        let cur = Cursor::default();
+        let t = 1095.7275;
+        let got = s.substep(&cur, t).unwrap();
+        assert_eq!(
+            got.to_bits(),
+            dt.min(5000.0 - t).to_bits(),
+            "substep must be the robust dt.min(boundary - t)"
+        );
+        let fragile = (t + dt).min(5000.0) - t;
+        assert_ne!(got.to_bits(), fragile.to_bits(), "the fragile (t+dt)-t formula differs here");
     }
 
     #[test]

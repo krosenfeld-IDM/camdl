@@ -216,10 +216,9 @@ pub fn run_ode(
         // has no RNG at all).
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        // The schedule is the single source of truth for the next stop;
-        // step.t_to - t == cfg.dt.min(next_boundary - t) by construction.
-        let step = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop");
-        let dt = step.t_to - t;
+        // The schedule is the single source of truth for the step size,
+        // dt.min(next_boundary - t) — the original formula, bit-exact.
+        let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
 
         if dt <= 1e-15 {
             // At a boundary — apply intervention or record output

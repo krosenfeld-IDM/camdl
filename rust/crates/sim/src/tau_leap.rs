@@ -117,11 +117,10 @@ pub fn run_tau_leap_with_observer(
         // Progress tick: report current time before drawing this step. RNG-free.
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        // Determine actual step (might be truncated by a boundary). The schedule
-        // is the single source of truth for min(t_end, next_output, next_effect);
-        // step.t_to - t == cfg.dt.min(next_boundary - t) by construction.
-        let step = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop");
-        let dt = step.t_to - t;
+        // The schedule is the single source of truth for the step size:
+        // dt.min(min(t_end, next_output, next_effect) - t) — the original formula,
+        // bit-exact (not (t+dt)-t).
+        let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
         if dt <= 0.0 {
             // At a boundary — handle it
             // Apply intervention if due
