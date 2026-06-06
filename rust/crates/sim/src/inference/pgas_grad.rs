@@ -392,17 +392,20 @@ pub fn complete_data_loglik_grad(
     }
 
     let mut cum_flows = vec![0u64; n_tr];
+    // Exact-tiling invariant (debug): records partition the run contiguously,
+    // each duration in (0, dt]. Replaces the 2b snap invariant (rec.t0 ==
+    // t_start+s·dt) a shortened exact substep violates. Value and gradient must
+    // reconstruct the SAME (t0, dt_substep) — both now read rec, never s·dt.
+    let mut prev_end = t_start;
 
     for s in 0..n_substeps {
         let rec = &trajectory.substeps[s];
-        // Realized substep time/duration — the single source of truth (Stage 3).
-        // Under snap they equal the uniform grid; pinned so a mispopulated record
-        // is caught (relaxes when exact tiling lands in 2c).
         if cfg!(debug_assertions) {
-            assert_eq!(rec.t0, t_start + s as f64 * dt,
-                "snap invariant: rec.t0 != t_start + s*dt at substep {}", s);
-            assert_eq!(rec.dt_substep, dt,
-                "snap invariant: rec.dt_substep != dt at substep {}", s);
+            debug_assert!(rec.dt_substep > 0.0 && rec.dt_substep <= dt + 1e-9,
+                "substep {s}: dt_substep {} not in (0, dt={dt}]", rec.dt_substep);
+            debug_assert!((rec.t0 - prev_end).abs() < 1e-9,
+                "substep {s}: t0 {} not contiguous with previous end {prev_end}", rec.t0);
+            prev_end = rec.t0 + rec.dt_substep;
         }
         let t = rec.t0;
         let dt_s = rec.dt_substep;

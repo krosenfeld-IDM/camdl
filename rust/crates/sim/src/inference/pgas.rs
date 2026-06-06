@@ -679,18 +679,22 @@ pub fn complete_data_loglik(
     // Cumulative flows since last observation (for projection)
     let mut cum_flows = vec![0u64; n_tr];
     let t_start = model.model.simulation.t_start;
+    // Exact-tiling invariant (debug): the realized (t0, dt_substep) records
+    // partition the run contiguously, each duration in (0, dt]. This is the
+    // single source of truth the consumers read; it replaces the 2b snap
+    // invariant (rec.t0 == t_start+s·dt, rec.dt_substep == dt), which a shortened
+    // exact substep violates by design. `dt` is the nominal step (the upper
+    // bound). Contiguity catches a producer that mispopulates a record.
+    let mut prev_end = t_start;
 
     for s in 0..n_substeps {
         let rec = &trajectory.substeps[s];
-        // Realized substep time/duration — the single source of truth (Stage 3).
-        // Consumers read these, never recompute s*dt. Under snap they equal the
-        // uniform grid; pinned here so a producer that mispopulates the record is
-        // caught (this invariant relaxes when exact tiling lands in 2c).
         if cfg!(debug_assertions) {
-            assert_eq!(rec.t0, t_start + s as f64 * dt,
-                "snap invariant: rec.t0 != t_start + s*dt at substep {}", s);
-            assert_eq!(rec.dt_substep, dt,
-                "snap invariant: rec.dt_substep != dt at substep {}", s);
+            debug_assert!(rec.dt_substep > 0.0 && rec.dt_substep <= dt + 1e-9,
+                "substep {s}: dt_substep {} not in (0, dt={dt}]", rec.dt_substep);
+            debug_assert!((rec.t0 - prev_end).abs() < 1e-9,
+                "substep {s}: t0 {} not contiguous with previous end {prev_end}", rec.t0);
+            prev_end = rec.t0 + rec.dt_substep;
         }
         let t = rec.t0;
         let dt_s = rec.dt_substep;
@@ -1233,13 +1237,17 @@ pub fn csmc_as(
     }
     trajectory_substeps.reverse();
 
-    // Verify: density evaluation of each traceback record is finite.
+    // Verify: each traceback record tiles contiguously (durations in (0, dt])
+    // and its density is finite. The exact-tiling invariant — replaces the 2b
+    // snap invariant (rec.t0 == t_start+s·dt) a shortened substep would violate.
     if cfg!(debug_assertions) {
+        let mut prev_end = t_start;
         for (s, rec) in trajectory_substeps.iter().enumerate() {
-            assert_eq!(rec.t0, t_start + s as f64 * dt,
-                "snap invariant: rec.t0 != t_start + s*dt at traceback substep {}", s);
-            assert_eq!(rec.dt_substep, dt,
-                "snap invariant: rec.dt_substep != dt at traceback substep {}", s);
+            debug_assert!(rec.dt_substep > 0.0 && rec.dt_substep <= dt + 1e-9,
+                "traceback substep {s}: dt_substep {} not in (0, dt={dt}]", rec.dt_substep);
+            debug_assert!((rec.t0 - prev_end).abs() < 1e-9,
+                "traceback substep {s}: t0 {} not contiguous with previous end {prev_end}", rec.t0);
+            prev_end = rec.t0 + rec.dt_substep;
             let t = rec.t0;
             let verify_td = log_transition_density_substep(
                 model, &rec.counts_before, &rec.flows, &rec.gammas, params, t, rec.dt_substep,
