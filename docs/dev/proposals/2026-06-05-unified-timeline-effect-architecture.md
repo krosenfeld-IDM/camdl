@@ -587,32 +587,38 @@ run_pgas  (the sweep)        CONDITIONAL PF: particle 0 = reference trajectory; 
                              uniform s*dt grid (snap)
 ```
 
-Proposed — consolidate the **substrate**, keep the **algorithms** distinct:
+Proposed — consolidate the genuinely-shared **spine**, keep the divergent
+**bodies** per-driver. The shared unit is a substep **iterator**, not a
+parameterised filter function:
 
 ```
-propagate_window(schedule, process, particles, obs_idx, noise)        ← the ONE shared unit (all four use it):
-        the Schedule.substep spine + kernel step + per-particle death handling.
-        `noise: Fresh | PreDrawn(&PFRandomState)`. Alignment (exact|snap) is the
+schedule.substeps(cursor, t_start) -> Iterator<Item = (t_local, step_dt)>   ← the ONE shared primitive (all four)
+        yields the inner substep walk: termination at the next obs boundary
+        + Schedule.substep + the t_local advance. Alignment (exact|snap) is the
         Schedule's, so it threads to every caller at once.
 
-run_filter = loop over obs { propagate_window; weight (obs_model); loglik (log_sum_exp); systematic_resample }
-        ├─ bootstrap PF   = run_filter(noise = Fresh)
-        ├─ correlated PF  = run_filter(noise = PreDrawn)            // PMMH's L̂(θ)
-        └─ if2            = for iter { run_filter(perturbed θ); cool }   // WRAPS run_filter; does not reimplement it
-
-run_pgas_sweep = loop over obs { propagate_window(conditional); weight; ANCESTOR resample; record + density }
-        a conditional SIBLING — shares propagate_window, keeps its own resample / conditioning / density / recording.
+each driver keeps its OWN loop body over the iterator, because the bodies differ for real:
+  bootstrap PF    for (t,dt) in substeps { step; recoverable err -> mark DEAD }        + systematic resample
+  correlated PF   for (t,dt) in substeps { inject PreDrawn noise; step; propagate err } + systematic resample
+  if2             the bootstrap body, WRAPPED in  for iter { …; perturb θ; cool }       // optimiser over the filter
+  run_pgas_sweep  for (t,dt) in substeps { conditional step }  + ANCESTOR resample + density + record
 ```
 
-Where consolidation **stops on purpose** (further merging would leak): PGAS's
-conditioning + ancestor sampling + density + trajectory recording are a genuinely
-different filter, not a flag on the bootstrap; collapsing them into one
-`run_filter(strategy: 5 toggles)` would be the leaky god-function. `if2`'s
-iteration/cooling is an optimiser that *wraps* the filter, not a filter mode. So
-the consolidation target is `propagate_window` (the bug-prone substrate, shared by
-all four) and `run_filter` (the three non-conditional filters); PGAS shares the
-propagation and stays its own sweep. That is the "a family of reused functions
-that can't be further merged without leaking is the right answer" shape, applied.
+Where consolidation **stops on purpose** (further merging would leak): the
+iterator shares the spine that is genuinely identical; the bodies are **not**
+folded into a `propagate_window(policy, noise, conditional)` or a
+`run_filter(strategy)`. The death-policy (mark-dead vs propagate), the
+pre-drawn-noise injection, and PGAS's conditioning/ancestor/density/record are
+*real* differences — absorbing them into toggle params is exactly the leaky
+god-function. So the consolidation is: the shared **iterator** (the spine) + the
+already-shared trait spine (`ProcessModel`/`ObservationModel`/`DensityProcess`) +
+the shared helpers (`systematic_resample`, `log_sum_exp`); the four bodies stay
+distinct and honest. (A `run_filter` that wraps the *outer* obs-loop for the three
+non-conditional filters is a candidate further step, but only if it composes
+*without* death/noise toggles — decide at implementation; the iterator is the part
+we're committing to now.) That is "a family of reused functions that can't merge
+further without leaking is the right answer", applied — the natural seam is the
+iterator.
 
 ## Leaky abstractions the types must honour
 
