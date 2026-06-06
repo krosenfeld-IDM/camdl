@@ -272,8 +272,7 @@ pub fn run_ode(
         }
 
         // Record outputs
-        while schedule.output_due_at(&cursor, t) {
-            let ot = schedule.output_time(&cursor).expect("due implies present");
+        schedule.drain_outputs(&mut cursor, t, |ot| {
             let (is, rs) = to_states(&int_vals, &real_vals);
             traj.push(Snapshot {
                 t: ot,
@@ -282,12 +281,11 @@ pub fn run_ode(
                 flows: snapshot_flows(&flow_acc),
             });
             for v in flow_acc.iter_mut() { *v = 0.0; }
-            cursor.pass_output();
-        }
+        });
     }
 
     // Flush any remaining output times
-    while let Some(ot) = schedule.output_time(&cursor) {
+    schedule.drain_outputs(&mut cursor, f64::INFINITY, |ot| {
         let (is, rs) = to_states(&int_vals, &real_vals);
         traj.push(Snapshot {
             t: ot,
@@ -296,8 +294,7 @@ pub fn run_ode(
             flows: snapshot_flows(&flow_acc),
         });
         for v in flow_acc.iter_mut() { *v = 0.0; }
-        cursor.pass_output();
-    }
+    });
 
     Ok(traj)
 }

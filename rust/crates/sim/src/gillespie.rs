@@ -361,8 +361,7 @@ pub fn run_gillespie_with_observer(
         }
 
         // Record output at any output times we've passed
-        while schedule.output_due_at(&cursor, t) {
-            let ot = schedule.output_time(&cursor).expect("due implies present");
+        schedule.drain_outputs(&mut cursor, t, |ot| {
             traj.push(Snapshot {
                 t: ot,
                 int_state: int_s.clone(),
@@ -370,13 +369,12 @@ pub fn run_gillespie_with_observer(
                 flows: current_flows.clone(),
             });
             current_flows.reset();
-            cursor.pass_output();
-        }
+        });
 
     }
 
     // Ensure final output time is recorded
-    while let Some(ot) = schedule.output_time(&cursor) {
+    schedule.drain_outputs(&mut cursor, f64::INFINITY, |ot| {
         traj.push(Snapshot {
             t: ot,
             int_state: int_s.clone(),
@@ -384,8 +382,7 @@ pub fn run_gillespie_with_observer(
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        cursor.pass_output();
-    }
+    });
 
     traj.transition_diagnostics = diag_vec;
     Ok(traj)

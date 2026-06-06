@@ -309,8 +309,7 @@ pub fn run_tau_leap_with_observer(
         }
 
         // Record outputs
-        while schedule.output_due_at(&cursor, t) {
-            let ot = schedule.output_time(&cursor).expect("due implies present");
+        schedule.drain_outputs(&mut cursor, t, |ot| {
             traj.push(Snapshot {
                 t: ot,
                 int_state: int_s.clone(),
@@ -318,12 +317,11 @@ pub fn run_tau_leap_with_observer(
                 flows: current_flows.clone(),
             });
             current_flows.reset();
-            cursor.pass_output();
-        }
+        });
     }
 
     // Flush remaining outputs
-    while let Some(ot) = schedule.output_time(&cursor) {
+    schedule.drain_outputs(&mut cursor, f64::INFINITY, |ot| {
         traj.push(Snapshot {
             t: ot,
             int_state: int_s.clone(),
@@ -331,8 +329,7 @@ pub fn run_tau_leap_with_observer(
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        cursor.pass_output();
-    }
+    });
 
     Ok(traj)
 }

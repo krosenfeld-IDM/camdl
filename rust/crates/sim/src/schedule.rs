@@ -280,6 +280,24 @@ impl Schedule {
     pub fn window_end(&self, cursor: Cursor, t_start: f64) -> f64 {
         self.substeps(cursor, t_start).last().map_or(t_start, |(t0, step_dt)| t0 + step_dt)
     }
+
+    /// Emit a snapshot at every output time due at or before `until`, advancing
+    /// the output cursor. `record(ot)` builds + pushes the per-backend snapshot at
+    /// output time `ot` (the only thing that differs across backends — i64 counts
+    /// vs ODE's f64 state). The "drain the passed output times" walk all four
+    /// forward backends hand-rolled (mid-loop and final flush) is defined ONCE
+    /// here. Pass `until = t` for the mid-loop drain (≡ the old
+    /// `while output_due_at(cursor, t)`), `until = f64::INFINITY` for the final
+    /// flush (≡ the old `while let Some(ot) = output_time(cursor)`).
+    pub fn drain_outputs(&self, cursor: &mut Cursor, until: f64, mut record: impl FnMut(f64)) {
+        while let Some(ot) = self.output_time(cursor) {
+            if ot > until + OUTPUT_EPS {
+                break;
+            }
+            record(ot);
+            cursor.pass_output();
+        }
+    }
 }
 
 /// Iterator over one observation window's substeps; see [`Schedule::substeps`].
