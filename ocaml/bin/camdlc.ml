@@ -1,12 +1,35 @@
+let usage_text = {|camdlc — the camdl compiler. Expands a .camdl model into the JSON
+intermediate representation (IR) the runtime consumes, with unit/dimension
+checking and symbolic gradients.
+
+Usage:
+  camdlc FILE.camdl [--set NAME=VALUE ...]   compile to IR JSON (stdout)
+  camdlc check   FILE.camdl                  parse + type-check; report diagnostics
+  camdlc inspect FILE.camdl [OPTIONS]        print model structure (summary, dims, ...)
+  camdlc doctest [--gate] FILE.md ...        compile the camdl blocks in Markdown docs
+
+Flags (compile):
+  --set NAME=VALUE   override a parameter value
+  --json-errors      emit diagnostics as a JSON array to stderr
+  --no-dim-check     disable dimensional analysis (only for a confirmed false positive)
+  --camdl-version    print the compiler's git hash
+
+To run models — simulate, fit, profile, survey, browse results — use `camdl`,
+which also wraps these compiler commands (camdl compile/check/inspect/doctest).
+Run `camdl --help`.
+|}
+
 let () =
   let args = Array.to_list Sys.argv |> List.tl in
   match args with
   | [] ->
-    print_endline "camdlc FILE.camdl [--set NAME=VALUE ...]  -- compile to IR JSON";
-    print_endline "camdlc inspect FILE.camdl [OPTIONS]       -- inspect model";
-    print_endline "camdlc check FILE.camdl                   -- validate model";
-    print_endline "camdlc doctest [--gate] FILE.md ...       -- compile doc code blocks";
+    print_string usage_text;
     exit 1
+
+  (* ── camdlc --help / -h ───────────────────────────────────────────── *)
+  | "--help" :: _ | "-h" :: _ ->
+    print_string usage_text;
+    exit 0
 
   (* ── camdlc doctest [--gate] [--verbose] FILE.md ... ──────────────── *)
   | "doctest" :: rest ->

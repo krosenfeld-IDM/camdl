@@ -82,7 +82,10 @@ Common workflows:
   Browse cached runs:      camdl list
   Diagnose a fit:          camdl fit summary <fit-dir>
 
-Run `camdl <command> --help` for any subcommand."),
+Run `camdl <command> --help` for any subcommand.
+
+Model compilation is handled by `camdlc`; compile/check/inspect/doctest wrap it.
+Run `camdlc --help` for the raw compiler interface."),
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -204,6 +207,22 @@ Examples:
   camdl check sir.camdl --no-dim-check
 "))]
     Check(Passthrough),
+
+    /// Compile the camdl code blocks in Markdown docs (delegates to camdlc)
+    #[command(after_help = colored_help!("\
+Forwards all arguments verbatim to `camdlc doctest`. Run `camdl doctest` with
+no arguments for usage, or `camdlc --help` for the compiler interface. Extracts
+the ```camdl fenced blocks from Markdown and compiles each against the real
+compiler — classifying pass / skip / fail — so documented examples can't drift.
+
+Examples:
+  # Audit a doc's camdl blocks (pass / skip / fail report, with line numbers)
+  camdl doctest docs/spec.md
+
+  # Gate: exit nonzero if any complete-model block fails to compile
+  camdl doctest --gate docs/spec.md
+"))]
+    Doctest(Passthrough),
 
     /// Offline lineage projections (transmission tree, …) over a line list
     #[command(subcommand)]
@@ -500,6 +519,13 @@ fn main() {
         }
         Command::Inspect(a) => {
             let mut refs = vec!["inspect"];
+            refs.extend(a.args.iter().map(String::as_str));
+            util::delegate_to_camdlc(&refs).unwrap_or_else(|e| {
+                eprintln!("error: {}", e); std::process::exit(1);
+            });
+        }
+        Command::Doctest(a) => {
+            let mut refs = vec!["doctest"];
             refs.extend(a.args.iter().map(String::as_str));
             util::delegate_to_camdlc(&refs).unwrap_or_else(|e| {
                 eprintln!("error: {}", e); std::process::exit(1);
