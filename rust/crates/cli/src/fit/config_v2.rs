@@ -151,14 +151,31 @@ pub struct FitBackendConfig {
     /// identity hash when unset, so existing fits' `run_id`s are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obs_alignment: Option<crate::fit::methods::ObsAlignment>,
+    /// gh#audit-C6 / S1. Treat a numerical collapse in a rate expression
+    /// (div-by-zero, `Pow`→NaN/Inf, `Sqrt` of a negative, any unary→NaN) as
+    /// `0.0` instead of a hard error. Genuinely semantic — it changes the
+    /// trajectory — so it lives in the keyed `[config]` rather than as an
+    /// ephemeral CLI flag (which would bypass the fit-identity hash). Rarely
+    /// needed for fits (the particle filter kills NaN-rate particles via
+    /// per-particle recovery); kept for forward-sim parity and testing.
+    /// `skip_serializing_if` keeps the common `false` out of the identity hash,
+    /// so existing fits don't re-key.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_degenerate_rates: bool,
 }
 fn default_backend() -> crate::args::types::Backend {
     crate::args::types::Backend::ChainBinomial
 }
 fn default_dt() -> f64 { 1.0 }
+fn is_false(b: &bool) -> bool { !*b }
 impl Default for FitBackendConfig {
     fn default() -> Self {
-        FitBackendConfig { backend: default_backend(), dt: default_dt(), obs_alignment: None }
+        FitBackendConfig {
+            backend: default_backend(),
+            dt: default_dt(),
+            obs_alignment: None,
+            allow_degenerate_rates: false,
+        }
     }
 }
 

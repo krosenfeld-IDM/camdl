@@ -45,7 +45,9 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     use config_v2::{FitConfigV2, Stage, StartsFrom};
 
     let _eval_stats_guard = crate::util::EvalStatsReportGuard::start();  // gh#audit-H5
-    sim::eval_stats::set_allow_degenerate_rates(a.allow_degenerate_rates);  // gh#audit-C6
+    // allow_degenerate_rates is set from the loaded `[config]` below (it's a
+    // keyed config field, not a CLI flag — gh#189: a CLI override would bypass
+    // the fit-identity hash).
     // gh#162: a fit nests Rayon parallelism (chains × particle filter) on the
     // global pool, which otherwise defaults to ALL logical cores regardless of
     // `chains`. Cap it from `--parallel` / CAMDL_PARALLEL (0 = all cores) so the
@@ -97,11 +99,9 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
             resolve_starts_from_arg(&s)
         });
     let allow_nonconverged_scout = a.allow_nonconverged_scout;
-    // CLI overrides for clean_eval / gate. clap enforces requires=stage so
-    // these only fire when a single stage is selected, keeping scout and
-    // refine independently overridable.
-    let cli_loglik_eval_particles = a.loglik_eval_particles;
-    let cli_loglik_eval_reps      = a.loglik_eval_reps;
+    // Stage-scoped CLI override for the convergence gate (clap requires --stage
+    // so scout/refine stay independently tunable). loglik_eval has no CLI
+    // override — it is part of the fit identity (gh#189).
     let cli_decibans_thresh      = a.decibans_thresh;
     // Construct the full InitMethod payload from the CLI tag +
     // companion paths. When `--init from_mle` is used the path-bearing
@@ -135,6 +135,10 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
+    // gh#audit-C6 / gh#189: degenerate-rate handling is a keyed `[config]` field
+    // (folds into the fit-identity hash via the config blob), set before any rate
+    // evaluation. Was a CLI flag, which silently bypassed the run_id.
+    sim::eval_stats::set_allow_degenerate_rates(config.config.allow_degenerate_rates);
 
     // Compile `model.camdl` → IR EXACTLY ONCE for the whole fit. Every
     // per-(cell × sweep point × stage) `FitRunConfig::build` then loads this
@@ -776,15 +780,12 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
 
         match stage {
             Stage::IF2 { backend, chains, particles, iterations, cooling, cooling_target_iters, init_method, survey_path, survey_top_k_n, loglik_eval, gate, dt_check, .. } => {
-                // Resolve effective clean_eval / gate: stage TOML, then CLI
-                // override (per Step 4 — overrides are stage-scoped because
-                // clap requires --stage). CLI flags pass `requires = "stage"`
-                // so they cannot be set when running multiple stages, which
-                // would otherwise apply the same value to scout and refine
-                // and defeat independent tuning.
-                let mut effective_loglik_eval = loglik_eval.clone();
-                if let Some(n) = cli_loglik_eval_particles { effective_loglik_eval.n_particles = n; }
-                if let Some(m) = cli_loglik_eval_reps      { effective_loglik_eval.n_replicates = m; }
+                // clean_eval comes straight from the stage TOML — it is part of
+                // the fit's identity (folded into the IF2 stage's whole-serialize
+                // identity_payload), so it has no CLI override (gh#189: a CLI
+                // override bypassed the run_id and silently re-scored under the
+                // same key). The gate still has a stage-scoped CLI override.
+                let effective_loglik_eval = loglik_eval.clone();
                 let mut effective_gate = gate.clone();
                 if let Some(db) = cli_decibans_thresh     { effective_gate.decibans_thresh = db; }
                 let prior_state = effective_starts.as_ref().and_then(|dir| {

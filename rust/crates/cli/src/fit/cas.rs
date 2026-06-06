@@ -519,6 +519,60 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    fn minimal_config(extra: &str) -> FitConfigV2 {
+        toml::from_str(&format!(
+            "[model]\ncamdl = \"models/sir.camdl\"\n\
+             [data.observations]\nweekly_cases = \"data/cases.tsv\"\n\
+             [estimate]\nbeta = {{ bounds = [0.01, 2.0] }}\n\
+             [fixed]\nN0 = 1000000\n\
+             {extra}\
+             [stages.mle]\nalgorithm = \"if2\"\nbackend = \"chain_binomial\"\n\
+             chains = 4\nparticles = 1000\niterations = 50\ncooling = 0.70\n"
+        ))
+        .expect("minimal fit config must parse")
+    }
+
+    fn if2_stage(loglik_particles: usize) -> Stage {
+        toml::from_str(&format!(
+            "algorithm = \"if2\"\nbackend = \"chain_binomial\"\n\
+             chains = 2\nparticles = 100\niterations = 10\ncooling = 0.7\n\
+             loglik_eval = {{ n_particles = {loglik_particles}, n_replicates = 8 }}"
+        ))
+        .expect("minimal IF2 stage toml must parse")
+    }
+
+    /// gh#189: `loglik_eval` determines the reported θ̂/loglik, so it's part of
+    /// the IF2 stage identity (folded via IF2's whole-serialize identity_payload).
+    /// Two stages differing only in it must get distinct hashes — there is no CLI
+    /// override that could silently re-score under the same key (the flag was
+    /// removed; loglik_eval is set in the stage TOML only).
+    #[test]
+    fn loglik_eval_changes_the_if2_stage_identity() {
+        let a = stage_config_hash(&if2_stage(4000)).unwrap();
+        let b = stage_config_hash(&if2_stage(8000)).unwrap();
+        assert_ne!(a, b, "loglik_eval must fold into the IF2 stage identity (gh#189)");
+        assert_eq!(a, stage_config_hash(&if2_stage(4000)).unwrap());
+    }
+
+    /// gh#189: `allow_degenerate_rates` is a keyed `[config]` field (was a CLI
+    /// flag that bypassed the fit-identity hash). It changes collapse handling
+    /// (hard-error → silent-zero), which changes trajectory values, so two fits
+    /// differing only in it must get distinct fit-level hashes.
+    #[test]
+    fn allow_degenerate_rates_changes_the_fit_identity() {
+        let off = fit_config_blob_hash(&minimal_config("")).unwrap();
+        let on = fit_config_blob_hash(
+            &minimal_config("[config]\nallow_degenerate_rates = true\n")).unwrap();
+        assert_ne!(off, on,
+            "allow_degenerate_rates=true must fold into the fit identity (gh#189)");
+        // skip_serializing_if: explicit `false` hashes identically to absent, so
+        // existing fits (which omit it) don't spuriously re-key.
+        let explicit_false = fit_config_blob_hash(
+            &minimal_config("[config]\nallow_degenerate_rates = false\n")).unwrap();
+        assert_eq!(off, explicit_false,
+            "explicit allow_degenerate_rates=false must match the default (no re-key)");
+    }
+
     /// A survey consumed by `init = "survey_top_k"` is folded into the fit
     /// stage's `deps` by its CONTENT, so two surveys with different landscapes
     /// (even written to the same path, one after the other) produce different

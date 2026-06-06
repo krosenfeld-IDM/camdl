@@ -732,15 +732,6 @@ pub struct FitRunArgs {
     #[arg(long)]
     pub seed: Option<u64>,
 
-    /// gh#audit-C6 / S1. See InferenceCore.allow_degenerate_rates.
-    /// Inference runs that explore parameter regions where rate
-    /// expressions hit numerical-collapse paths can use this to keep
-    /// running (per-particle recovery in PF still kills NaN-rate
-    /// particles even under hard-fail mode, so the flag is rarely
-    /// needed for fits — present mainly for forward-sim parity).
-    #[arg(long, default_value_t = false)]
-    pub allow_degenerate_rates: bool,
-
     /// Re-run and overwrite stale cache
     #[arg(long)]
     pub force: bool,
@@ -763,15 +754,6 @@ pub struct FitRunArgs {
     /// Proceed even if prior scout stage failed convergence gate
     #[arg(long)]
     pub allow_nonconverged_scout: bool,
-
-    /// Override [stages.<stage>.loglik_eval] n_particles. Requires --stage
-    /// so scout and refine loglik-eval settings can be overridden independently.
-    #[arg(long, value_name = "N", requires = "stage")]
-    pub loglik_eval_particles: Option<usize>,
-
-    /// Override [stages.<stage>.loglik_eval] n_replicates. Requires --stage.
-    #[arg(long, value_name = "M", requires = "stage")]
-    pub loglik_eval_reps: Option<usize>,
 
     /// Override [stages.<stage>.gate] decibans_thresh (the inter-chain
     /// log-likelihood-spread floor, in decibans). Requires --stage.
@@ -2436,27 +2418,16 @@ mod tests {
         assert_eq!(a._removed_init_method.as_deref(), Some("from_prior"));
     }
 
+    // gh#189: --loglik-eval-particles/-reps removed — loglik_eval is part of the
+    // fit identity (set only in the stage TOML), not a CLI override that bypasses
+    // the run_id. The convergence-gate override (--decibans-thresh) stays.
     #[test]
-    fn fit_run_loglik_eval_overrides_parse_with_stage() {
+    fn fit_run_gate_override_parses_with_stage() {
         let a = try_parse_fit_run(&[
-            "fit.toml",
-            "--stage", "scout",
-            "--loglik-eval-particles", "8000",
-            "--loglik-eval-reps", "16",
-            "--decibans-thresh", "60.0",
+            "fit.toml", "--stage", "scout", "--decibans-thresh", "60.0",
         ]).expect("should parse with --stage");
-        assert_eq!(a.loglik_eval_particles, Some(8000));
-        assert_eq!(a.loglik_eval_reps, Some(16));
         assert_eq!(a.decibans_thresh, Some(60.0));
         assert_eq!(a.stage.as_deref(), Some("scout"));
-    }
-
-    #[test]
-    fn fit_run_loglik_eval_particles_requires_stage() {
-        let err = try_parse_fit_run(&[
-            "fit.toml", "--loglik-eval-particles", "8000",
-        ]).err().expect("should reject without --stage");
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
@@ -2468,10 +2439,8 @@ mod tests {
     }
 
     #[test]
-    fn fit_run_loglik_eval_defaults_are_none() {
+    fn fit_run_gate_override_default_is_none() {
         let a = try_parse_fit_run(&["fit.toml"]).unwrap();
-        assert!(a.loglik_eval_particles.is_none());
-        assert!(a.loglik_eval_reps.is_none());
         assert!(a.decibans_thresh.is_none());
     }
 
