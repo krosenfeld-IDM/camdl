@@ -237,7 +237,30 @@ expression has the named dimension without the dim-checker verifying the
 assertion. Surrounding rate expressions continue to dim-check normally — the
 escape is narrow and visible.
 
-```camdl
+<!-- camdl-doctest-preamble: unchecked-dim
+compartments { S, E, I, R }
+parameters {
+  gamma : rate
+  iota  : count
+  alpha : positive
+}
+forcing {
+  beta : sinusoidal 'per_day {
+    baseline  = 0.5
+    amplitude = 0.0
+    period    = 365.25 'days
+    phase     = 0 'days
+  }
+  pop : sinusoidal 'count {
+    baseline  = 100000.0
+    amplitude = 0.0
+    period    = 365.25 'days
+    phase     = 0 'days
+  }
+}
+-->
+
+```camdl preamble=unchecked-dim
 transitions {
   infection : S --> E
     @ beta(t) * unchecked_dim((I + iota)^alpha,
@@ -275,7 +298,7 @@ References for the canonical case:
 The `date("YYYY-MM-DD")` expression converts an ISO 8601 date to a float offset
 from the model's declared `origin` date, in the model's `time_unit`:
 
-```camdl
+```camdl preamble=sir-basic
 origin = date("2019-01-01")   # top-level declaration (optional)
 
 simulate {
@@ -432,9 +455,26 @@ compartments { S, E, I, R }
 
 Each is an integer-valued population count. For continuous state:
 
-```camdl
+<!-- camdl-doctest-preamble: comp-real
+parameters {
+  beta  : rate
+  gamma : rate
+  xi    : rate
+  delta : rate
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+ode {
+  W = xi * I - delta * W
+}
+-->
+
+```camdl preamble=comp-real
 compartments {
-  S, I, R
+  S, I, R,
   W : real       # continuous-valued (environmental reservoir)
 }
 ```
@@ -670,7 +710,22 @@ stratify(by = patch)
 Each `stratify` declaration applies a dimension to **all** compartments by
 default. Partial stratification restricts to specific compartments:
 
-```camdl
+<!-- camdl-doctest-preamble: partial-strat
+compartments { S, E, I, R }
+parameters {
+  beta  : rate
+  sigma : rate
+  gamma : rate
+}
+let N = S + E + I + sum(m in immunity, R[m])
+transitions {
+  infection : S --> E @ beta * S * I / N
+  progress  : E --> I @ sigma * E
+  recovery  : I --> R[natural] @ gamma * I
+}
+-->
+
+```camdl preamble=partial-strat
 dimensions { immunity = [natural, vaccine] }
 stratify(by = immunity, only = [R])
 ```
@@ -899,7 +954,31 @@ All tables referencing `patch` validate against these derived levels.
 When a file has more columns than `n_dims + 1`, list multiple table names on the
 left of `:`:
 
-```camdl
+<!-- camdl-doctest-preamble: tables-demo
+compartments { S, I, R }
+dimensions {
+  patch = [kano_dala, borno_maiduguri, borno_gwoza]
+}
+stratify(by = patch)
+parameters {
+  beta  : rate
+  gamma : rate
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]
+}
+-->
+
+<!-- camdl-doctest-data: data/demographics.tsv
+patch	pop	init_sus
+kano_dala	485000	0.88
+borno_maiduguri	345000	0.91
+borno_gwoza	78000	0.79
+-->
+
+```camdl preamble=tables-demo
 tables {
   pop, init_sus : patch = read("data/demographics.tsv")
 }
@@ -928,7 +1007,23 @@ entries), binary IR format (msgpack) is recommended over JSON.
 Inline table values can be parameter names or arithmetic expressions, not just
 numeric literals:
 
-```camdl
+<!-- camdl-doctest-preamble: table-bsex
+compartments { S, I, R }
+dimensions { sex = [female, male] }
+stratify(by = sex)
+parameters {
+  beta_mf : rate
+  beta_fm : rate
+  gamma   : rate
+}
+let N_local[s in sex] = S[s] + I[s] + R[s]
+transitions {
+  infection[s in sex] : S[s] --> I[s] @ S[s] * sum(t in sex, B_sex[s,t] * I[t] / N_local[t])
+  recovery[s in sex]  : I[s] --> R[s] @ gamma * I[s]
+}
+-->
+
+```camdl preamble=table-bsex
 tables {
   B_sex : sex × sex = [[0.0,     beta_mf],
                         [beta_fm, 0.0    ]]
@@ -956,7 +1051,30 @@ built-in types cover real-world needs:
 - `piecewise` — non-repeating step function (policy changes, campaign windows)
 - `interpolated` — data-driven time series (empirical covariates)
 
-```camdl
+<!-- camdl-doctest-preamble: forcing-demo
+compartments { S, I, R }
+parameters {
+  beta       : rate
+  gamma      : rate
+  alpha      : probability
+  phi_season : duration
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+<!-- camdl-doctest-data: data/nga_pop.csv
+year,total_pop
+2000,1000000
+2001,1010000
+2002,1020000
+2003,1030000
+-->
+
+```camdl preamble=forcing-demo
 forcing {
   seasonal : sinusoidal 'ratio {
     amplitude = alpha           # can reference parameters (for inference)
@@ -1018,7 +1136,22 @@ The `periodic` type supports two forms:
 
 Forcing functions are used in rate expressions by name or with explicit `(t)`:
 
-```camdl
+<!-- camdl-doctest-preamble: forcing-school
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+}
+let N = S + I + R
+forcing {
+  school : periodic 'ratio {
+    period = 365.25 'days
+    values = [0.7, 1.3, 0.7, 1.0]
+  }
+}
+-->
+
+```camdl preamble=forcing-school
 transitions {
   infection : S --> I  @ beta * school(t) * S * I / N
   #                          ^^^^^^^^ forcing function reference
@@ -1768,7 +1901,28 @@ All coupling structures are expressed through the same mechanism — a rate matr
 | Identity          | Within-stratum only                     | Same as no coupling |
 | All ones          | Homogeneous mixing                      | No structure        |
 
-```camdl
+<!-- camdl-doctest-preamble: table-matrices
+compartments { S, I, R }
+dimensions {
+  age = [child, adult]
+  sex = [female, male]
+}
+stratify(by = age)
+stratify(by = sex)
+parameters {
+  beta_mf : rate
+  beta_fm : rate
+  gamma   : rate
+}
+let N_local[a in age, s in sex] = S[a,s] + I[a,s] + R[a,s]
+transitions {
+  infection[a in age, s in sex] : S[a,s] --> I[a,s]
+    @ S[a,s] * sum(b in age, sum(t in sex, C_age[a,b] * B_sex[s,t] * I[b,t] / N_local[b,t]))
+  recovery[a in age, s in sex] : I[a,s] --> R[a,s] @ gamma * I[a,s]
+}
+-->
+
+```camdl preamble=table-matrices
 tables {
   # Dense: general age mixing
   C_age : age × age = [[12.0, 4.0], [4.0, 8.0]]
@@ -1861,7 +2015,22 @@ safety the rate expression should clamp:
 
 For real-valued compartments:
 
-```camdl
+<!-- camdl-doctest-preamble: ode-demo
+compartments { S, I, R, W : real }
+parameters {
+  beta  : rate
+  gamma : rate
+  xi    : rate
+  delta : rate
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+```camdl preamble=ode-demo
 ode {
   W = xi * I - delta * W      # dW/dt = xi * I - delta * W
 }
@@ -1875,7 +2044,27 @@ compartments, ODE evolution for real compartments between events.
 
 ## 12. Observations
 
-```camdl
+<!-- camdl-doctest-preamble: obs-sir
+compartments { S, I, R }
+parameters {
+  beta     : rate
+  gamma    : rate
+  rho      : probability
+  k        : positive
+  p_detect : probability
+  N        : count
+  N_tested : count
+  rho_sens : probability
+  rho_spec : probability
+}
+let Ntot = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / Ntot
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+```camdl preamble=obs-sir
 observations {
   weekly_cases : {
     projected  = incidence(infection)
@@ -1979,7 +2168,7 @@ and PCR all have sensitivity < 1 and specificity < 1. The `diagnostic_test`
 sugar absorbs the measurement-model correction so the DSL reads like the
 biology:
 
-```camdl
+```camdl preamble=obs-sir
 observations {
   slide_positivity : {
     projected  = prevalence(I)
@@ -2034,7 +2223,26 @@ compiler checks domain.
 
 ### 12.3 Indexed Observations
 
-```camdl
+<!-- camdl-doctest-preamble: obs-patch
+compartments { S, I, R }
+dimensions {
+  patch = [north, south, east]
+}
+stratify(by = patch)
+parameters {
+  beta  : rate
+  gamma : rate
+  rho   : probability
+  k     : positive
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]
+}
+-->
+
+```camdl preamble=obs-patch
 observations {
   cases_by_patch[p in patch] : {
     projected  = incidence(infection[patch = p])
@@ -2137,7 +2345,26 @@ inactive and `every = 1 'months` is fine.
 An intervention can be declared with an **index binder**, creating a **family**
 of interventions — one per stratum — in a single line:
 
-```camdl
+<!-- camdl-doctest-preamble: iv-patch
+compartments { S, V, I, R }
+dimensions {
+  patch = [north, south, east]
+}
+stratify(by = patch)
+parameters {
+  beta     : rate
+  gamma    : rate
+  vacc_eff : probability
+  sia_cov  : probability
+}
+let N[p in patch] = S[p] + V[p] + I[p] + R[p]
+transitions {
+  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]
+}
+-->
+
+```camdl preamble=iv-patch
 interventions {
   # Declares sia_north, sia_south, sia_east (one per patch)
   sia[p in patch] : transfer(fraction = vacc_eff * sia_cov, from = S[p], to = V[p]) at [180, 545]
@@ -2193,7 +2420,35 @@ Use events for structural demographic processes (cohort entry, seasonal
 migration, importation seeding). Use interventions for policy choices (SIA
 campaigns, school closures).
 
-```camdl
+<!-- camdl-doctest-preamble: events-demo
+compartments { S, I, R }
+parameters {
+  beta   : rate
+  gamma  : rate
+  cohort : probability
+}
+let N = S + I + R
+forcing {
+  birthrate : sinusoidal 'per_year {
+    baseline  = 0.03
+    amplitude = 0.0
+    period    = 365.25 'days
+    phase     = 0 'days
+  }
+  pop : sinusoidal 'count {
+    baseline  = 100000.0
+    amplitude = 0.0
+    period    = 365.25 'days
+    phase     = 0 'days
+  }
+}
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+```camdl preamble=events-demo
 events {
   cohort_entry : add(S, cohort * birthrate(t) * pop(t))
     every 365.25 'days at_day 251
@@ -2244,7 +2499,30 @@ Forces one compartment to satisfy a population conservation constraint at every
 substep. After all transitions, clamps, events, and interventions apply, the
 target compartment is overwritten:
 
-```camdl
+<!-- camdl-doctest-preamble: balance-demo
+compartments { S, E, I, R }
+parameters {
+  beta  : rate
+  sigma : rate
+  gamma : rate
+}
+let N = S + E + I + R
+forcing {
+  pop : sinusoidal 'count {
+    baseline  = 100000.0
+    amplitude = 0.0
+    period    = 365.25 'days
+    phase     = 0 'days
+  }
+}
+transitions {
+  infection : S --> E @ beta * S * I / N
+  progress  : E --> I @ sigma * E
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+```camdl preamble=balance-demo
 balance {
   R = pop(t) - S - E - I
 }
@@ -2347,7 +2625,22 @@ ERROR: 't_end' is a reserved identifier and cannot be used as a
 
 ### 15.1 Un-Stratified Models
 
-```camdl
+<!-- camdl-doctest-preamble: init-sir
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+  N0    : count
+  I0    : count
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+```camdl preamble=init-sir
 init {
   S = N0 - I0
   I = I0
@@ -2378,7 +2671,26 @@ init {
 **Indexed parameter references** work in init RHS expressions. If `N0[patch]` is
 an indexed parameter, both the mangled form and the indexed form are accepted:
 
-```camdl
+<!-- camdl-doctest-preamble: init-region
+compartments { S, I, R }
+dimensions {
+  patch = [urban, rural]
+}
+stratify(by = patch)
+parameters {
+  beta  : rate
+  gamma : rate
+  N0[patch] : count
+  I0    : count
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]
+}
+-->
+
+```camdl preamble=init-region
 init {
   S[urban] = N0[urban] - I0   # indexed syntax — preferred
   S[rural] = N0_rural         # mangled form — still accepted
@@ -2387,7 +2699,26 @@ init {
 
 Named indexing works in init:
 
-```camdl
+<!-- camdl-doctest-preamble: init-strat
+compartments { S, I, R }
+dimensions {
+  age   = [child, adult]
+  patch = [p1, p2]
+}
+stratify(by = age)
+stratify(by = patch)
+parameters {
+  beta  : rate
+  gamma : rate
+}
+let N[a in age, p in patch] = S[a,p] + I[a,p] + R[a,p]
+transitions {
+  infection[a in age, p in patch] : S[a,p] --> I[a,p] @ beta * S[a,p] * I[a,p] / N[a,p]
+  recovery[a in age, p in patch]  : I[a,p] --> R[a,p] @ gamma * I[a,p]
+}
+-->
+
+```camdl preamble=init-strat
 init {
   S[age = child, patch = p1] = 100000
 }
@@ -2402,7 +2733,30 @@ initialization from a single-patch seeding event.
 For large spatial models where per-stratum populations come from a CSV, declare
 a table (§6) and reference it directly in init expressions:
 
-```camdl
+<!-- camdl-doctest-preamble: init-table
+compartments { S, I, R }
+dimensions {
+  patch = [north, south]
+}
+stratify(by = patch)
+parameters {
+  beta  : rate
+  gamma : rate
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]
+}
+-->
+
+<!-- camdl-doctest-data: data/population.tsv
+patch	N0
+north	100000
+south	80000
+-->
+
+```camdl preamble=init-table
 tables {
   N0 : patch = read("data/population.tsv")
 }
@@ -2484,7 +2838,24 @@ observation model definitions.
 Patch-based modifications to the baseline. Baseline is the identity patch — the
 model as defined, no modifications.
 
-```camdl
+<!-- camdl-doctest-preamble: scenario-sia
+compartments { S, V, I, R }
+parameters {
+  beta    : rate
+  gamma   : rate
+  sia_cov : probability
+}
+let N = S + V + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+interventions {
+  sia : transfer(fraction = sia_cov, from = S, to = V) at [180]
+}
+-->
+
+```camdl preamble=scenario-sia
 scenarios {
   baseline {
     label = "no SIA (baseline)"
@@ -2553,11 +2924,34 @@ A scenario can inherit from another via `extends = <parent_name>`, which is
 fields layered on top. The IR keeps its flat preset shape — downstream consumers
 see no trace of inheritance.
 
-```camdl
+<!-- camdl-doctest-preamble: scenario-vacc
+compartments { S, V, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+  N0    : count
+  I0    : count
+}
+let N = S + V + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+interventions {
+  vaccination : transfer(fraction = 0.5, from = S, to = V) at [15]
+}
+-->
+
+```camdl preamble=scenario-vacc
 scenarios {
   baseline {
     label = "No intervention"
-    set = { beta = 0.4, gamma = 0.15, N0 = 10_000, I0 = 10 }
+    set = {
+      beta  = 0.4
+      gamma = 0.15
+      N0    = 10_000
+      I0    = 10
+    }
   }
   with_vacc {
     extends = baseline
@@ -2617,7 +3011,20 @@ operations.
 
 ## 18. Simulation Configuration
 
-```camdl
+<!-- camdl-doctest-preamble: sir-basic
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+-->
+
+```camdl preamble=sir-basic
 simulate {
   from = 0 'days
   to   = 2 'years
@@ -3301,7 +3708,7 @@ needed — the matrix structure does all the work.
 time_unit = 'days
 
 compartments {
-  S, I, R
+  S, I, R,
   W : real             # bacteria concentration in water
 }
 
@@ -3338,6 +3745,35 @@ Note: `c in compartments` would NOT iterate over `W` (integer compartments only
 by default).
 
 ### 22.6 Five-Age-Group Model with Consecutive Aging
+
+<!-- camdl-doctest-data: data/polymod_5x5.tsv
+age_i	age_j	contact
+age_0_5	age_0_5	1.5
+age_0_5	age_5_15	1.5
+age_0_5	age_15_50	1.5
+age_0_5	age_50_65	1.5
+age_0_5	age_65p	1.5
+age_5_15	age_0_5	1.5
+age_5_15	age_5_15	1.5
+age_5_15	age_15_50	1.5
+age_5_15	age_50_65	1.5
+age_5_15	age_65p	1.5
+age_15_50	age_0_5	1.5
+age_15_50	age_5_15	1.5
+age_15_50	age_15_50	1.5
+age_15_50	age_50_65	1.5
+age_15_50	age_65p	1.5
+age_50_65	age_0_5	1.5
+age_50_65	age_5_15	1.5
+age_50_65	age_15_50	1.5
+age_50_65	age_50_65	1.5
+age_50_65	age_65p	1.5
+age_65p	age_0_5	1.5
+age_65p	age_5_15	1.5
+age_65p	age_15_50	1.5
+age_65p	age_50_65	1.5
+age_65p	age_65p	1.5
+-->
 
 ```camdl
 time_unit = 'days
