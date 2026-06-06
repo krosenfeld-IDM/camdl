@@ -1,6 +1,11 @@
 # camdl
 
 [![CI](https://github.com/vsbuffalo/camdl/actions/workflows/ci.yml/badge.svg)](https://github.com/vsbuffalo/camdl/actions/workflows/ci.yml)
+[![Docs](https://github.com/vsbuffalo/camdl/actions/workflows/docs.yml/badge.svg)](https://github.com/vsbuffalo/camdl/actions/workflows/docs.yml)
+[![Docs: compiler-verified](https://img.shields.io/badge/docs-compiler--verified-success.svg)](docs/dev/notes/2026-06-05-compiler-testing-the-docs.md)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](VERSIONING.md)
+[![Built with OCaml + Rust](https://img.shields.io/badge/built%20with-OCaml%20%2B%20Rust-informational.svg)](#)
 
 **Compartmental Model Description Language** — a DSL and toolchain for
 stochastic compartmental epidemic models. Write the math, not the code.
