@@ -260,6 +260,27 @@ pub struct StreamSpec {
     pub obs_times: Vec<f64>,
 }
 
+/// Reject non-strictly-increasing observation times (gh#188). A duplicate time
+/// silently drops a likelihood contribution downstream — `build_obs_at_substep`
+/// maps both observations to one substep key (last-wins), and the exact PGAS
+/// grid drops the observation and its entire suffix — and an out-of-order time
+/// would walk an observation window backwards. Reject both at the shared
+/// construction seam with an actionable message rather than score wrong silently.
+fn validate_obs_times_increasing(
+    stream_name: &str,
+    obs_times: &[f64],
+) -> Result<(), crate::error::SimError> {
+    if let Some(w) = obs_times.windows(2).find(|w| w[1] <= w[0]) {
+        return Err(crate::error::SimError::Validation(format!(
+            "observation stream '{stream_name}' has non-increasing observation \
+             times ({} then {}); observation times must be strictly increasing — \
+             remove duplicate rows or sort the --data file by time.",
+            w[0], w[1]
+        )));
+    }
+    Ok(())
+}
+
 impl MultiStreamObsModel {
     /// Create an empty observation model (no streams, no data).
     /// Used when only the transition density is needed (e.g., gradient tests
@@ -309,6 +330,10 @@ impl MultiStreamObsModel {
                 stream_specs[0].ir_model.name
             )));
         }
+        // gh#188: observation times must be strictly increasing. The cross-stream
+        // check below pins every stream to these times, so validating stream 0
+        // here covers all of them.
+        validate_obs_times_increasing(&stream_specs[0].ir_model.name, &obs_times)?;
         for (si, spec) in stream_specs.iter().enumerate().skip(1) {
             if spec.obs_times != obs_times {
                 return Err(crate::error::SimError::Validation(format!(
@@ -516,5 +541,33 @@ impl ObservationModel<ParticleState> for NullObsModel {
     fn n_observations(&self) -> usize { 0 }
     fn obs_time(&self, _obs_idx: usize) -> f64 { 0.0 }
     fn n_streams(&self) -> usize { 0 }
+}
+
+#[cfg(test)]
+mod obs_time_validation_tests {
+    //! gh#188: observation times must be strictly increasing at construction.
+    use super::validate_obs_times_increasing;
+
+    #[test]
+    fn duplicate_times_are_rejected() {
+        // The bug: [3.0, 3.0] previously passed and silently dropped one
+        // likelihood (build_obs_at_substep last-wins; exact grid drops the suffix).
+        let err = validate_obs_times_increasing("cases", &[1.0, 3.0, 3.0, 6.0]);
+        assert!(err.is_err(), "duplicate observation times must be rejected");
+        assert!(format!("{:?}", err.unwrap_err()).contains("strictly increasing"));
+    }
+
+    #[test]
+    fn out_of_order_times_are_rejected() {
+        assert!(validate_obs_times_increasing("cases", &[1.0, 6.0, 3.0]).is_err(),
+            "non-monotone observation times must be rejected");
+    }
+
+    #[test]
+    fn strictly_increasing_times_pass() {
+        assert!(validate_obs_times_increasing("cases", &[1.0, 3.0, 6.0, 9.3]).is_ok());
+        assert!(validate_obs_times_increasing("cases", &[5.0]).is_ok(), "single obs is fine");
+        assert!(validate_obs_times_increasing("cases", &[]).is_ok(), "empty handled upstream");
+    }
 }
 
