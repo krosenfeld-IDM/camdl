@@ -188,6 +188,50 @@ fn gh20_gamma_density_grad_matches_fd_large_sigma() {
     run_gh20_check(1.0, 44, 1.0);
 }
 
+/// Stage-3 magnitude gate (exact-PGAS oracle, magnitude arm).
+///
+/// The gamma-multiplier density `shape = dt/σ²`, `scale = σ²/dt` (and the
+/// binomial `p = 1 - exp(-rate·dt)`) consume `dt` as a MAGNITUDE — the dominant
+/// exact-PGAS exposure: a shortened substep (`dt_substep ≈ 0.9 ≠ 1.0`) is an
+/// O(10%) change to these terms, far larger than the slowly-varying time path
+/// the seasonal gate covers. Every `dt=1.0` test above leaves this partly
+/// vacuous (`shape = 1/σ²`, `p = 1-exp(-rate)`), so a `dt`-magnitude site that
+/// silently used `1.0` instead of the realized `dt_substep` would pass them.
+///
+/// A uniform NON-UNIT `dt` makes the magnitude bite while keeping the snap
+/// invariant intact (`rec.dt_substep == dt` holds for a uniform grid, so the
+/// 2b consumer asserts pass). It exercises exactly the per-substep density and
+/// gradient math that exact-PGAS feeds a shortened `rec.dt_substep` into — the
+/// per-substep math sees one `dt_substep` at a time and is blind to whether
+/// neighbours differ, so uniform-non-unit fully validates the magnitude path.
+/// `dt = 0.9125` is the proposal's named shortened-substep value.
+///
+/// FD-vs-analytic at 1e-4, on σ_se (the new gamma term) plus beta/gamma
+/// (rate-density regression), across σ regimes — the same coverage as the
+/// `dt=1.0` battery, now at `dt≠1`.
+#[test]
+fn stage3_gamma_grad_matches_fd_shortened_dt_small_sigma() {
+    run_gh20_check(0.01, 42, 0.9125);
+}
+
+#[test]
+fn stage3_gamma_grad_matches_fd_shortened_dt_medium_sigma() {
+    run_gh20_check(0.1, 43, 0.9125);
+}
+
+#[test]
+fn stage3_gamma_grad_matches_fd_shortened_dt_large_sigma() {
+    run_gh20_check(1.0, 44, 0.9125);
+}
+
+/// A second non-unit `dt` (half-step) so the magnitude gate is not pinned to a
+/// single value — `shape`/`scale`/`p` all move with `dt`, and two distinct `dt`
+/// values catch a term that is correct at one `dt` by coincidence.
+#[test]
+fn stage3_gamma_grad_matches_fd_half_dt() {
+    run_gh20_check(0.1, 45, 0.5);
+}
+
 /// gh#76 cleanup, concern (D). Multi-overdispersed-transition lockstep.
 ///
 /// The `sir_overdispersion.ir.json` fixture has ONE overdispersed
