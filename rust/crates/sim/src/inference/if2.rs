@@ -415,17 +415,16 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
                 .zip(rngs.par_iter_mut())
                 .zip(scratches.par_iter_mut())
                 .map(|(((state, pp), rng), scratch)| {
-                    let mut t_local = t_start;
-                    while t_local < obs_time - 1e-10 {
-                        let step_dt = schedule.substep(&cur, t_local).expect("t_local < t_end in obs window");
+                    // Shared inner-substep walk (Schedule::substeps); IF2's body is
+                    // just the kernel step with the per-particle perturbed params.
+                    for (t_local, step_dt) in schedule.substeps(cur, t_start) {
                         process.step(state, pp, t_local, step_dt, rng, scratch)?;
-                        t_local += step_dt;
                     }
                     Ok(())
                 })
                 .collect();
             for r in errors { r?; }
-            while t < obs_time - 1e-10 { t += schedule.substep(&cur, t).expect("t < t_end"); }
+            for (t0, step_dt) in schedule.substeps(cur, t) { t = t0 + step_dt; }
 
             // Perturb parameters at observation time (per-step cooling).
             // IVP params and simplex members are skipped — IVP perturbed at t=0 only,

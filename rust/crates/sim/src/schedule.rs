@@ -251,6 +251,49 @@ impl Schedule {
     pub fn substep_time(&self, window_start: f64, s: u64) -> f64 {
         window_start + s as f64 * self.dt
     }
+
+    /// The inner substep walk a fixed-step inference filter performs within ONE
+    /// observation window: starting from `t_start`, yield `(t_local, step_dt)` for
+    /// each substep up to the boundary `cursor` points at (its current obs). The
+    /// step size is [`Schedule::substep`]; `t_local` ACCUMULATES (`t += step_dt`)
+    /// — the EXACT-stepper convention the bootstrap PF / IF2 / correlated PF share
+    /// (the drift-free `substep_time` variant for these is task #14).
+    ///
+    /// This is the single shared primitive behind those three inner loops (the
+    /// proposal's consolidation seam). Each driver keeps its OWN body over the
+    /// iterator — death-on-recoverable-error, pre-drawn-noise injection, the IF2
+    /// θ-perturbation — because those genuinely differ; only the walk is shared.
+    /// `cursor` is taken by value (`Copy`): the iterator walks within the window
+    /// the caller positioned it at and never mutates the caller's cursor, so the
+    /// CRN invariant (N particles, identical boundary sequence) is preserved.
+    pub fn substeps(&self, cursor: Cursor, t_start: f64) -> Substeps<'_> {
+        Substeps { schedule: self, cursor, t: t_start }
+    }
+}
+
+/// Iterator over one observation window's substeps; see [`Schedule::substeps`].
+/// Yields `(t_local, step_dt)`, terminating at the cursor's current observation
+/// boundary (`obs_time(cursor) - EFFECT_EPS`), exactly reproducing the
+/// `while t_local < obs_time - 1e-10 { … }` loops it replaces.
+pub struct Substeps<'a> {
+    schedule: &'a Schedule,
+    cursor: Cursor,
+    t: f64,
+}
+
+impl Iterator for Substeps<'_> {
+    type Item = (f64, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let obs_time = self.schedule.obs_time(&self.cursor)?;
+        if self.t >= obs_time - EFFECT_EPS {
+            return None;
+        }
+        let step_dt = self.schedule.substep(&self.cursor, self.t)?;
+        let t0 = self.t;
+        self.t += step_dt;
+        Some((t0, step_dt))
+    }
 }
 
 impl Cursor {
@@ -465,5 +508,33 @@ mod tests {
             assert_eq!(walk(&s), reference, "per-cursor walk must be byte-identical");
         }
         assert!(!reference.is_empty());
+    }
+
+    #[test]
+    fn substeps_iterator_matches_the_manual_filter_walk() {
+        // The filters' inner loop is `while t_local < obs_time - 1e-10 { step_dt =
+        // substep(cur, t_local); …; t_local += step_dt }`. The iterator must yield
+        // the byte-identical (t_local, step_dt) sequence, per obs window.
+        let s = Schedule::new(1.0, 12.0, 1.0, StepPolicy::Exact, vec![], vec![])
+            .with_obs(vec![3.0, 7.3, 12.0]);
+        let mut window_start = 0.0;
+        for obs_idx in 0..3 {
+            let cur = Cursor { obs_idx, ..Default::default() };
+            let obs_time = s.obs_time(&cur).unwrap();
+            // Manual walk (the loop being replaced).
+            let mut manual = Vec::new();
+            let mut t = window_start;
+            while t < obs_time - 1e-10 {
+                let dt = s.substep(&cur, t).unwrap();
+                manual.push((t.to_bits(), dt.to_bits()));
+                t += dt;
+            }
+            // Iterator walk.
+            let iter: Vec<(u64, u64)> =
+                s.substeps(cur, window_start).map(|(t0, dt)| (t0.to_bits(), dt.to_bits())).collect();
+            assert_eq!(iter, manual, "iterator must reproduce the manual walk for window {obs_idx}");
+            assert!(!manual.is_empty());
+            window_start = obs_time;
+        }
     }
 }

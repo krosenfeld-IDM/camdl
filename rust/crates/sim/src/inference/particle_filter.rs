@@ -242,20 +242,18 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
             .zip(particle_dead.par_iter())
             .map(|(((state, rng), scratch), &dead)| {
                 if dead { return Ok(true); }  // already dead; skip
-                let mut t_local = t_start_interval;
-                while t_local < obs_time - 1e-10 {
-                    let step_dt = schedule.substep(&cur, t_local).expect("t_local < t_end in obs window");
+                // Shared inner-substep walk (Schedule::substeps); this body keeps
+                // the per-particle death-on-recoverable-error policy.
+                for (t_local, step_dt) in schedule.substeps(cur, t_start_interval) {
                     match process.step(state, params, t_local, step_dt, rng, scratch) {
                         Ok(()) => {}
                         Err(e) if e.is_per_particle_recoverable() => {
-                            // Mark dead, advance t_local to break out
-                            // — the caller folds this into the dead vec
+                            // Mark dead — the caller folds this into the dead vec
                             // and the outer loop sets log_weight = −∞.
                             return Ok(true);
                         }
                         Err(e) => return Err(e),
                     }
-                    t_local += step_dt;
                 }
                 Ok(false)
             })
@@ -263,7 +261,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         for (i, r) in outcomes.into_iter().enumerate() {
             if r? { particle_dead[i] = true; }
         }
-        while t < obs_time - 1e-10 { t += schedule.substep(&cur, t).expect("t < t_end"); }
+        for (t0, step_dt) in schedule.substeps(cur, t) { t = t0 + step_dt; }
 
         // Prediction diagnostics
         if has_predictions {

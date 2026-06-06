@@ -310,7 +310,8 @@ pub fn bootstrap_filter_correlated(
     let gamma_scale = sigma_sq / dt;
 
     for obs_idx in 0..n_obs {
-        let obs_time = obs_model.obs_time(obs_idx);
+        // The substep walk terminates at this obs via Schedule::substeps (cursor
+        // points at obs_idx); no explicit obs_time needed.
         let t_start = t;
         let cur = Cursor { obs_idx, ..Default::default() };
 
@@ -323,11 +324,10 @@ pub fn bootstrap_filter_correlated(
             .zip(scratches.par_iter_mut())
             .enumerate()
             .map(|(i, ((state, rng), scratch))| {
-                let mut t_local = t_start;
-                let mut substep = 0;
-                while t_local < obs_time - 1e-10 {
-                    let step_dt = schedule.substep(&cur, t_local).expect("t_local < t_end in obs window");
-
+                // Shared inner-substep walk (Schedule::substeps); the CPM body
+                // injects the pre-drawn correlated noise keyed on the within-window
+                // substep index before each kernel step.
+                for (substep, (t_local, step_dt)) in schedule.substeps(cur, t_start).enumerate() {
                     // Inject pre-drawn Gamma multiplier
                     let noise_idx = i * steps_per_obs + substep;
                     if noise_idx < gamma_row.len() {
@@ -356,14 +356,12 @@ pub fn bootstrap_filter_correlated(
                         params, t_local, step_dt, rng, scratch,
                         &fire_steps,
                     )?;
-                    t_local += step_dt;
-                    substep += 1;
                 }
                 Ok(())
             })
             .collect();
         for r in errors { r?; }
-        while t < obs_time - 1e-10 { t += schedule.substep(&cur, t).expect("t < t_end"); }
+        for (t0, step_dt) in schedule.substeps(cur, t) { t = t0 + step_dt; }
 
         // Compute log-weights
         for (i, state) in swarm.states.iter().enumerate() {
