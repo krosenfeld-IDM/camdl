@@ -9,6 +9,7 @@ use crate::{
     output::output_times as get_output_times,
     propensity::{eval_propensities, EvalCtx},
     resolved_expr::eval_resolved,
+    schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
     state::{FlowVec, IntState, RealState, Snapshot, Trajectory},
 };
@@ -150,28 +151,39 @@ pub fn run_chain_binomial_with_observer(
     let mut scratch = StepScratch::new(model);
     let mut flows = vec![0u64; n_transitions];
 
-    let output_times = get_output_times(&model.model.output.times);
-    let mut output_idx = 0;
-    let iv_times = all_intervention_times(model, params);
-    let mut iv_idx = 0;
+    // Merged timeline spine. chain_binomial is the SNAP policy: it steps a full
+    // dt every substep (never clipped to a boundary) and emits outputs at grid
+    // times; interventions fire inside step_one (keyed on fire_steps), so the
+    // schedule reports only output boundaries and the effect cursor advances with
+    // chain_binomial's own cfg.dt*0.5 snap tolerance, not the schedule's.
+    let schedule = Schedule::new(
+        cfg.dt,
+        cfg.t_end,
+        cfg.dt,
+        StepPolicy::Snap,
+        get_output_times(&model.model.output.times),
+        all_intervention_times(model, params),
+    );
+    let mut cursor = Cursor::default();
 
     let mut traj = Trajectory::new();
     let mut current_flows = FlowVec::new(n_transitions);
     let mut t = cfg.t_start;
 
-    if output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+    if schedule.output_due_at(&cursor, t) {
         traj.push(Snapshot {
             t, int_state: int_s.clone(), real_state: real_s.clone(), flows: current_flows.clone(),
         });
         current_flows.reset();
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     while t < cfg.t_end {
         // Progress tick: report current time before drawing this step. RNG-free.
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        let dt = cfg.dt.min(cfg.t_end - t);
+        // Snap step: t_to = min(t + dt, t_end); dt = cfg.dt.min(t_end - t).
+        let dt = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop").t_to - t;
         if dt <= 1e-15 { break; }
 
         // Capture start-of-step state for the lineage observer (before RK4 and
@@ -218,34 +230,36 @@ pub fn run_chain_binomial_with_observer(
 
         t += dt;
 
-        // Bookkeeping: advance iv_idx past any intervention that fired
-        // in step_one this step. The firing itself happens in step_one.
-        while iv_idx < iv_times.len() && iv_times[iv_idx] <= t + cfg.dt * 0.5 {
-            iv_idx += 1;
+        // Bookkeeping: advance the effect cursor past any intervention that fired
+        // in step_one this step. The firing itself happens in step_one; this snaps
+        // to the nearest step with cfg.dt*0.5 (NOT the schedule's exact tolerance).
+        while schedule.effect_time(&cursor).is_some_and(|iv| iv <= t + cfg.dt * 0.5) {
+            cursor.pass_effect();
         }
 
         // Output
-        while output_idx < output_times.len() && output_times[output_idx] <= t + 1e-12 {
+        while schedule.output_due_at(&cursor, t) {
+            let ot = schedule.output_time(&cursor).expect("due implies present");
             traj.push(Snapshot {
-                t: output_times[output_idx],
+                t: ot,
                 int_state: int_s.clone(),
                 real_state: real_s.clone(),
                 flows: current_flows.clone(),
             });
             current_flows.reset();
-            output_idx += 1;
+            cursor.pass_output();
         }
     }
 
-    while output_idx < output_times.len() {
+    while let Some(ot) = schedule.output_time(&cursor) {
         traj.push(Snapshot {
-            t: output_times[output_idx],
+            t: ot,
             int_state: int_s.clone(),
             real_state: real_s.clone(),
             flows: current_flows.clone(),
         });
         current_flows.reset();
-        output_idx += 1;
+        cursor.pass_output();
     }
 
     Ok(traj)
