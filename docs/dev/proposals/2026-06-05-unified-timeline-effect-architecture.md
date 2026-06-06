@@ -195,7 +195,9 @@ fused stage, not `Transition < Event`). And the accumulator reset is **stage 6**
 a represented per-stream write, not a hidden side effect of an observation. This
 lifecycle belongs in user-facing docs (the language spec / user-features) with a
 polished figure; it is how a modeller reasons about "does my intervention see my
-event."
+event." It ships as its own small documentation PR alongside Stage 0 — it
+canonizes `step_one` as it already is (zero unification risk) and fixes the
+contract everything else refactors against.
 
 ## The concrete types
 
@@ -247,59 +249,80 @@ pub enum Trigger {
 }
 
 /// The inference contracts an effect satisfies. Computed from the effect's
-/// ACTUAL expressions, not the trigger variant — a Mutate whose action or a
-/// balance whose expr is non-differentiable in an estimated param (Mod, a Cond
-/// predicate, Floor) is NOT differentiable even with a time trigger.
+/// ACTUAL expressions, not the trigger variant.
 pub struct EffectCaps { pub differentiable: bool, pub markov: bool }
 
+/// Runs Rust-side at driver construction (after `estimated` is resolved — it is
+/// a fit-time set, not an IR field). A dedicated SMOOTHNESS predicate, NOT a
+/// `differentiate` call: `differentiate` silently returns `Const 0.0` for
+/// Floor/Ceil/comparison ops and leaves Cond predicates undifferentiated
+/// (autodiff.ml:117,161-162,186) — so a param entering only through a Cond
+/// predicate or Floor would pass as differentiable with a wrong ZERO gradient.
+/// Sound rule: differentiable = false iff collect_param_refs(expr) ∩ estimated
+/// ≠ ∅ (the reachability half — it DOES see Cond.pred / TableLookup,
+/// pgas.rs:33-64) AND the expr contains any non-smooth node
+/// (Mod | Floor | Ceil | comparison | Cond-pred). StateCondition forces {false,false}.
 fn effect_caps(effect: &Effect, estimated: &ParamSet) -> EffectCaps;
-// reuses the autodiff reachability check (collect_param_refs + differentiate,
-// pgas.rs:33-64 / autodiff.ml); StateCondition triggers force {false, false}.
 ```
 
-### The Read / Mutate / Constrain split
+### The lifecycle stage and the read/write split — two orthogonal axes
 
-Three types, not one `apply(&mut state)`: the read-only-on-state guarantee is a
-compile-time fact, the lifecycle stage is explicit, and the accumulator reset is
-its own represented effect.
+**Stage** (when in the substep) is the full 6-valued lifecycle order carried by
+*every* effect — it is the sort key the driver uses. **Relation to state**
+(read / mutate / constrain) is the method signature — it is the read/write the
+type system enforces. Keeping them separate is what the round-1 review's
+"lifecycle collapse" leak required: a 3-valued `Stage` that omitted `Observe` and
+`Reset` could not order all six steps.
 
 ```rust
-/// READ — observation. Gets &State, never &mut.
-pub struct Observe {
-    pub trigger:    Trigger,           // ObservationTime
-    pub projection: StreamProjection,  // FlowSum | IntCompSum | Expr (hash-position fixed)
-    pub kind:       TemporalKind,      // Interval | Instant
-    pub likelihood: ResolvedLikelihood,
-    fn project(&self, state: &State, t: f64) -> f64;     // stage 5
-}
+/// The full substep lifecycle as a total order. EVERY effect carries one.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stage { Advance, Intervene, Balance, Observe, Reset }
+//   txn+event FUSED = Advance  <  Intervene  <  Balance  <  Observe  <  Reset
 
-/// MUTATE — intervention, event, reactive. Gets &mut State. No RNG.
-pub struct Mutate {
-    pub trigger:   Trigger,
-    pub stage:     Stage,              // Advance (event) | Intervene
-    pub actions:   Vec<Action>,
-    fn apply(&self, state: &mut State, snapshot: &State, t: f64);   // reads snapshot for events
-}
+/// READ — observation (Stage::Observe). Gets &State, never &mut.
+pub struct Observe { pub trigger: Trigger, pub projection: StreamProjection,
+    pub kind: TemporalKind, pub likelihood: ResolvedLikelihood,
+    fn project(&self, state: &State, t: f64) -> f64; }
 
-/// CONSTRAIN — balance. Stage 4, last; target exempt from the negative check.
+/// EVENT — Stage::Advance. A fused delta CONTRIBUTOR, not an independent &mut:
+/// its delta is computed from the start-of-step snapshot and applied atomically
+/// with the transition draws (chain_binomial.rs:424-433). Hence propose_delta,
+/// not apply — an apply(&mut State) could not be atomic with transitions.
+pub struct Event { pub trigger: Trigger /*EverySubstep*/, pub actions: Vec<Action>,
+    fn propose_delta(&self, snapshot: &State, t: f64) -> Deltas; }
+
+/// INTERVENTION — Stage::Intervene. Applied to the post-transition current
+/// state, after the fused Advance. A genuine &mut. No RNG.
+pub struct Intervene { pub trigger: Trigger, pub actions: Vec<Action>,
+    fn apply(&self, state: &mut State, t: f64); }
+
+/// CONSTRAIN — balance (Stage::Balance), last among writes; target exempt from
+/// the negative-count check.
 pub struct Constrain { pub target: usize, pub expr: ResolvedExpr,
     fn enforce(&self, state: &mut State, t: f64); }
 
-/// RESET — stage 6. The Interval flow-accumulator window close, keyed to the
-/// firing stream's flow indices (NOT global). This is the §5.2.1 per-stream fix,
-/// now a represented effect.
+/// RESET — Stage::Reset. The Interval flow-accumulator window close, keyed to the
+/// firing stream's flow indices (NOT global) — the §5.2.1 per-stream fix.
 pub struct ResetWindow { pub flow_indices: Vec<usize>,
     fn reset(&self, state: &mut State); }
 ```
 
-`Action::Set/Add` carrying a `StreamProjection` must preserve the documented
-hash-position contract (`observation.rs:12-16` — variant index is permanent;
-reshaping churns every stored `run_id`).
+The event/intervention split is *forced* by the fusion: an event contributes a
+delta applied atomically with transitions, so its read-source (the snapshot) is in
+the type via `propose_delta`, while an intervention's is the current state via
+`apply` — not a convention keyed on a `stage` field. `Action::Set/Add` carrying a
+`StreamProjection` must preserve the documented hash-position contract
+(`observation.rs:12-16` — variant index is permanent; reshaping churns every
+stored `run_id`).
 
 ### The drivers — generate, filter, trajectory-match
 
 All consume the same compiled model (kernel + effects + schedule), diverging only
-per-boundary. Three, because the inference question forks on process noise.
+per-boundary. Two ship here — `run_forward` and `run_filter`; `run_trajmatch` is a
+*reserved seam* sketched to show the substrate generalizes to deterministic
+inference (its full design is the deferred ODE-inference proposal), not shipped
+architecture.
 
 ```rust
 pub fn run_forward(model: &Compiled, params: &[f64], seed: u64, cfg: &SimConfig)
@@ -348,49 +371,96 @@ explicit, uniform, user-controllable option: `--obs-alignment snap | exact`
   step). Lossless timing.
 
 For **dt-independent** backends (Gillespie, ODE) the two coincide — there is no
-noise to perturb. For **dt-dependent** backends (chain-binomial, tau-leap) they
-differ at finite `dt` (the rate-freezing granularity changes) and converge as
-`dt → 0`; `exact` is the more accurate, `snap` the more reproducible.
+noise to perturb. (Caveat: Gillespie is dt-independent only for time-*homogeneous*
+rates; gh#95 is exactly the current implementation's inhomogeneous-rate bias, so
+"Gillespie lands exactly for free" is an idealization the code does not yet meet —
+do not lean on it as a clean invariant until gh#95 is fixed.) For **dt-dependent**
+backends (chain-binomial, tau-leap) they differ at finite `dt` (the rate-freezing
+granularity changes) and converge as `dt → 0`; `exact` is the more accurate,
+`snap` the more reproducible.
 
-**Capability gating (your consolidation test).** `exact` is a declared
-*capability*, fitting the existing `Capabilities` pattern (`sim/src/lib.rs`:
-`required_capabilities()` vs each backend's `capabilities()`, mismatch → hard
-error before simulation). Requesting `exact` with PGAS routes through the
-*consolidated* interface and hits one clean error — "not implemented: PGAS
-supports `snap` only; use `--obs-alignment snap`, or `algorithm = if2|pfilter`
-for `exact`" — because PGAS does not declare the `exact` capability. The test
-asserting exactly that error is a positive test that routing is consolidated:
-there is one place the policy is checked, and every backend passes through it.
+**The gate, and the consolidation it forces.** `exact` is **not** a
+`Capabilities` bitflag. The existing `Capabilities` (`sim/src/lib.rs`) is a
+*model × backend* axis (`required_capabilities()` scans the IR; each forward
+backend's `capabilities()` declares support), but `obs-alignment` is a
+*run-option × algorithm* axis — PGAS is an algorithm, has no `capabilities()`, and
+never passes through `Simulate`. And the alignment-relevant gating today is *two*
+separate call sites — `util.rs:1699` (forward) and `check_model_capabilities`
+(`fit/methods.rs`, a hard-coded `match backend { … }`) — neither seeing algorithm
+identity. So the gate is a new `(algorithm, obs_alignment)` support check at the
+fit-dispatch seam, and **consolidating those two existing gates into it is part of
+this work** — otherwise "one clean error / one place" is false today. With that
+done, `exact` + PGAS hits one clean error ("not implemented: PGAS supports `snap`
+only; use `--obs-alignment snap`, or `algorithm = if2|pfilter` for `exact`"), and
+the test asserting it is a positive test that routing is consolidated to a single
+seam. (Verify PGAS genuinely *lacks* the `exact` capability — absent, not
+defaulted-true.)
 
 ## Staging and default policy
 
-The rollout is staged so the risky parts are isolated and the safe parts ship
-first; the default is conservative and only flips after evidence.
+Sequencing is **oracle-first, then gh#175, then extract** — you cannot prove a
+refactor byte-identical against a baseline that never ran the hard case, and you
+cannot trust a PGAS-touching change while the PGAS gradient is broken. The default
+is conservative and only flips after evidence.
+
+**Stage 0 — build the comparison oracle (FIRST, before any extraction).** The
+existing forward ratchet (`gate_trajectory_baseline.rs`: per model × backend ×
+`SEED=42`, FNV-hash the trajectory vs a committed table) is the right *shape* but
+covers only forward simulation on an all-on-grid corpus. Stage 0 closes the gap:
+
+- **Corner-case fixtures** (`tests/fixtures/` → `ocaml/golden/`): an off-grid
+  observation (e.g. `t = 7.3`), a coincident observation+intervention, a
+  `θ`-dependent `set()` at a fractional time, an irregular multi-cadence stream,
+  and a fractional `output.end` (the `seir_vaccine_seasonal` 1095.7275 case).
+- **Forward baselines** — extend `gate_trajectory_baseline.rs`'s `BASELINES`
+  (captured from *current* code on this machine, per its platform caveat).
+- **Inference baselines (the missing piece)** — a new `gate_inference_baseline.rs`:
+  per model × algorithm (PF/IF2/PMMH/PGAS) × `SEED=42`, pin the marginal loglik
+  *and* the per-observation scored contributions, from current code. This is the
+  actual oracle, since the refactor rewrites the inference loops; the existing
+  ratchet only covers forward `Simulate`.
+- **RNG draw-sequence baseline** — a harness logging (kind, count, order) of draws
+  per run, so an inserted/reordered draw fails loudly.
+- **Runtime collision-guard test** — feed two distinct sub-`dt` obs times and
+  assert the *runtime* hard error (not just a proptest generator constraint).
+
+None of this touches production code; it is the ratchet everything else refactors
+against, and the gating deliverable — not a testing footnote. The canonical
+substep-lifecycle doc/figure ships here too (zero-risk; it fixes the contract).
 
 **Stage 1 — spine, byte-identical.** Extract the `Schedule`, route the forward
 backends and the four filter loops through it, install the canonical substep
 lifecycle and the corrected effect types. Each path keeps its *current* boundary
 behaviour (PF exact, PGAS snap, interventions as today). Strictly byte-identical
-— the full golden corpus, including any off-grid model, does not move. This is
-the unification and bug-surface win, proven by parity.
+against the Stage-0 oracle (forward, inference, and RNG-sequence baselines),
+including the off-grid and coincident-boundary fixtures. This is loop
+consolidation and the bug-surface win — it *names* the PF/PGAS divergence and
+deletes the duplicated loops, but does not yet *close* the divergence (that is
+Stage 2).
 
 **Stage 2 — expose the knob, `snap` default.** Add `--obs-alignment`, default
-`snap`. Because `snap` and `exact` *coincide on-grid*, and the golden corpus is
-on-grid, the goldens are unchanged; the only behaviour that changes is the PF's
-*implicit off-grid exactness*, now opt-in via `exact`. Any off-grid fit that
-relied on it is pinned to `exact` to preserve its result (so "reproduces past
-results" is literal, not approximate). The capability gate (above) lands here.
+`snap`. Because `snap` and `exact` *coincide where every obs/output time is an
+exact `dt` multiple*, the on-grid goldens are unchanged; the only behaviour that
+changes is the PF's *implicit off-grid exactness*, now opt-in via `exact`. (Audit
+the corpus for hidden fractional times first — `seir_vaccine_seasonal`'s
+`output.end = 1095.7275` snaps under the default and must be pinned to `exact` or
+re-baselined deliberately.) Any off-grid fit that relied on exactness is pinned to
+`exact`, so "reproduces past results" is literal. The capability gate lands here.
 
-**Stage 3 — future, evidence-gated.** After (a) profiling the performance
-difference between `snap` and `exact`, and (b) validating across a variety of
-models that the adaptive (`exact`) stepping is correct and reproduces references,
-*consider* flipping the default to `exact`. Separately, the **exact-PGAS**
-migration — moving `SubstepRecord` / `build_obs_at_substep` / `csmc_as` /
-`complete_data_loglik_grad` off the uniform grid so each record carries its
-realized `(t0, dt_substep)` and no path recomputes `s*dt` — is gated behind a
-mixing PGAS (gh#175 fixed, so a trustworthy parity baseline exists) and a
-genuine user need for off-grid observations *under PGAS specifically*. Until
-then, `exact` + PGAS is the clean capability error.
+**Stage 3 — future, evidence-gated (the eventual clean interface).** After
+(a) profiling the `snap`-vs-`exact` performance difference, and (b) validating
+across a variety of models that the adaptive (`exact`) stepping is correct and
+reproduces references, *consider* flipping the default to `exact` (or hiding the
+knob) — this is the clean-interface goal, deliberately *after* both modes work and
+match current behaviour, never before. Separately, the **exact-PGAS** migration
+moves the uniform-grid assumption out of PGAS so each record carries its realized
+`(t0, dt_substep)` and **no path recomputes `s*dt`** — eight reconstruction sites
+to convert together (`pgas.rs:568,605,716,869,1079`, `pgas_grad.rs:397`, plus the
+`interval_steps` obs mapping at `pgas.rs:268,704`); a single missed site silently
+reconstructs the wrong time → wrong rate freeze → wrong density. Gated behind a
+mixing PGAS (gh#175 fixed → a trustworthy parity baseline) and a genuine need for
+off-grid observations *under PGAS specifically*. Until then, `exact` + PGAS is the
+clean capability error.
 
 ## Consolidation: substrate, not algorithms
 
