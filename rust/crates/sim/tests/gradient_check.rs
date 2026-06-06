@@ -413,6 +413,157 @@ fn test_nuts_target_gradient_on_z_scale() {
     eprintln!("  max relative error: {:.2e}", max_rel_err);
 }
 
+/// T1-seasonal: cross-function FD gradient check on a TIME-INHOMOGENEOUS model —
+/// the Stage-3 (exact-PGAS) gate's time-reconstruction arm, runnable today
+/// against the current (snap) PGAS.
+///
+/// Every other FD-gradient test runs on a time-HOMOGENEOUS model (sir_basic,
+/// seir_observations), where the gradient never consumes the substep time `t`.
+/// So none can see a gradient site that reconstructs the WRONG time — exactly
+/// the exact-PGAS hazard: the eight `t = t_start + s·dt` / `s·dt` sites
+/// (`pgas.rs:268,568,605,704,716,869,1079`, `pgas_grad.rs:397`) convert to the
+/// realized `(rec.t0, rec.dt_substep)` together; miss one and value and gradient
+/// reconstruct different times, silently shifting the density.
+///
+/// Shape matters. This checks the gradient (`complete_data_loglik_grad`) against
+/// the INDEPENDENT value function (`complete_data_loglik`) — the cross-function
+/// pairing of `test_gradient_vs_finite_differences_sir`. A NUTS-target z-scale
+/// test instead FD-differences `complete_data_loglik_grad`'s own value against
+/// its own gradient, so a `t` that drifts CONSISTENTLY inside that one function
+/// cancels and is invisible. The refactor's eight sites span BOTH functions, so
+/// cross-function drift is the bug to catch; this shape catches it.
+///
+/// In `seir_vaccine_seasonal` the infection rate is `beta · seasonal(t) · S·I/N`,
+/// so `∂L/∂beta` carries a `TimeFunc(seasonal)` factor (verified structurally
+/// below) evaluated at the reconstructed time. Sensitivity is intrinsically
+/// modest: `seasonal` has period 365.25 d, so `|d seasonal/dt| ≈ 2.6e-3 /day`
+/// and a per-substep time error of ~0.5 d perturbs the gradient only ~0.1%.
+/// Hence the 1e-4 tolerance (not the SIR test's 1e-2): correct code matches to
+/// the FD floor (~1e-7), so 1e-4 still flags a systematic time drift of
+/// O(0.05 day). The DOMINANT exposure — the `dt_substep` MAGNITUDE on a
+/// genuinely shortened substep — produces O(10%) density errors and is the
+/// strong gate; it needs exact-PGAS to produce a short substep, so it lands with
+/// that increment, not here.
+///
+/// `alpha`/`phi_season` (seasonal amplitude/phase) are NOT estimated: they enter
+/// only through the `TimeFunc`, which `autodiff.ml:23` differentiates to
+/// `Const 0.0` AND which `compiled_model.rs:685` bakes to a constant from the
+/// default params — a doubly-silent zero gradient, flagged out-of-band. `beta`
+/// threads through the same `seasonal(t)` multiplicatively, so its gradient is
+/// nonzero and time-dependent. `gamma`/`sigma` are time-independent regression
+/// checks that the refactor leaves the homogeneous path intact.
+#[test]
+fn test_gradient_vs_finite_differences_seasonal() {
+    let mut model = load_model("../../../ocaml/golden/seir_vaccine_seasonal.ir.json");
+    let has_grads = model.transitions.iter().any(|t| !t.rate_grad.is_empty());
+    assert!(has_grads, "seasonal model must carry rate_grad (run make update-golden)");
+
+    // Structural non-vacuity guard: ∂(infection)/∂beta MUST reference the
+    // seasonal TimeFunc, or this test does not exercise the time path at all.
+    let beta_grad_uses_timefunc = model.transitions.iter()
+        .filter(|t| t.name == "infection")
+        .filter_map(|t| t.rate_grad.get("beta"))
+        .any(|g| format!("{:?}", g).contains("TimeFunc"));
+    assert!(beta_grad_uses_timefunc,
+        "∂(infection)/∂beta must reference the seasonal TimeFunc — otherwise this \
+         test does not exercise the s·dt time-reconstruction path");
+
+    // Defaults from seir_vaccine_seasonal.params.toml.
+    for p in &mut model.parameters {
+        if p.value.is_none() {
+            p.value = Some(match p.name.as_str() {
+                "beta" => 0.3, "sigma" => 0.2, "gamma" => 0.1,
+                "omega" => 0.003, "reversion_rate" => 1e-6,
+                "alpha" => 0.15, "phi_season" => 90.0,
+                "vacc_frac" => 0.8, "N0" => 1_000_000.0, "I0" => 10.0,
+                _ => 0.5,
+            });
+        }
+    }
+    // Focused window: epidemic growth+peak (infection fires → beta gradient
+    // well-conditioned) + one SIA round (t=180) + ~half a 365.25-day seasonal
+    // period of variation. The natural fractional t_end (1095.7275) is rounded
+    // away under snap; its shortened-substep role is the Stage-3 variant.
+    model.simulation.t_end = 200.0;
+    let compiled = Arc::new(CompiledModel::new(model).unwrap());
+
+    let dt = 1.0;
+    let t_end = compiled.model.simulation.t_end;
+    let n_params = compiled.param_index.len();
+
+    let mut params = vec![0.0; n_params];
+    for p in &compiled.model.parameters {
+        params[compiled.param_index[p.name.as_str()]] = p.value.unwrap();
+    }
+
+    let mut rng = StatefulRng::new(42);
+    let trajectory = simulate_reference(&compiled, &params, t_end, dt, &mut rng).unwrap();
+
+    let observations: Vec<Observation> = vec![];
+    let ivp_mappings: Vec<IVPMapping> = vec![];
+    let obs_model = MultiStreamObsModel::empty(compiled.clone());
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+
+    let model_to_estimated: Vec<Option<usize>> = (0..n_params).map(Some).collect();
+    let rate_grads_for_run = sim::inference::pgas_grad::resolve_rate_grad_for_run(
+        &compiled.resolved.rate_grads_indexed,
+        &model_to_estimated,
+    );
+    let estimated_to_model: Vec<usize> = (0..n_params).collect();
+
+    // Analytic gradient (the rate-density gradient NUTS consumes).
+    let (ll, grad) = complete_data_loglik_grad(
+        &compiled, &trajectory, &params, &observations, dt,
+        &obs_model, &ivp_mappings,
+        n_params, &rate_grads_for_run, &oas,
+        &estimated_to_model,
+    ).unwrap();
+    assert!(ll.is_finite(), "seasonal complete-data LL must be finite");
+    eprintln!("  log-likelihood: {:.4}", ll);
+
+    let beta_idx = compiled.param_index["beta"];
+    assert!(grad[beta_idx].abs() > 1e-6,
+        "∂L/∂beta must be materially nonzero (got {:.3e})", grad[beta_idx]);
+
+    // beta = time-dependent gate; gamma + sigma = time-independent regression.
+    let mut max_rel_err = 0.0_f64;
+    for name in ["beta", "gamma", "sigma"] {
+        let i = compiled.param_index[name];
+        let p_val = params[i];
+        let eps = (1e-5 * p_val.abs()).max(1e-8);
+
+        let mut p_plus = params.clone();
+        let mut p_minus = params.clone();
+        p_plus[i] += eps;
+        p_minus[i] -= eps;
+
+        let ll_plus = complete_data_loglik(
+            &compiled, &trajectory, &p_plus, &observations, dt,
+            &obs_model, &ivp_mappings, &oas,
+        ).unwrap().total;
+        let ll_minus = complete_data_loglik(
+            &compiled, &trajectory, &p_minus, &observations, dt,
+            &obs_model, &ivp_mappings, &oas,
+        ).unwrap().total;
+        let fd = (ll_plus - ll_minus) / (2.0 * eps);
+
+        let rel_err = if fd.abs() > 1e-10 {
+            (grad[i] - fd).abs() / fd.abs()
+        } else {
+            (grad[i] - fd).abs()
+        };
+        max_rel_err = max_rel_err.max(rel_err);
+
+        eprintln!("  d(ll)/d({:8}) = {:14.4} (analytical) vs {:14.4} (fd), rel_err = {:.2e}",
+            name, grad[i], fd, rel_err);
+
+        assert!(rel_err < 1e-4,
+            "seasonal gradient mismatch for {}: analytical={:.6}, fd={:.6}, rel_err={:.2e}",
+            name, grad[i], fd, rel_err);
+    }
+    eprintln!("  max relative error: {:.2e}", max_rel_err);
+}
+
 /// T2: NUTS invariance on a known 2D Gaussian target.
 /// Runs NUTS for 5K steps on N([3, -1], [[1, 0.5], [0.5, 2]]).
 /// Verifies sample mean within 3σ of true mean.
@@ -566,3 +717,4 @@ fn test_nuts_dense_mass_matrix_correlated() {
     assert!((var_1 - 1.0).abs() < 0.3, "var[1]={:.3}, expected ~1.0", var_1);
     assert!((r - 0.95).abs() < 0.1, "correlation={:.3}, expected ~0.95", r);
 }
+
