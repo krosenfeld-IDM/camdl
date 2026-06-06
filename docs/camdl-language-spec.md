@@ -1378,10 +1378,37 @@ typically at a constant or data-driven rate unrelated to the model's own state.
 Unlike births (which depend on the existing population), importation represents
 exogenous exposure — cases entering the modeled region from elsewhere:
 
-```camdl
-# Constant importation rate (exogenous FOI)
-importation[a in age, p in patch] : --> I[a, p]
-  @ import_rate * age_weights[a] * patch_weights[p]
+<!-- camdl-doctest-preamble: importation
+compartments { S, I, R }
+parameters {
+  beta        : rate
+  gamma       : rate
+  import_rate : rate
+}
+dimensions {
+  age   = [child, adult]
+  patch = [north, south]
+}
+tables {
+  age_weights   : age   = [0.4, 0.6]
+  patch_weights : patch = [0.5, 0.5]
+}
+stratify(by = age)
+stratify(by = patch)
+let N_local[a in age, p in patch] = S[a,p] + I[a,p] + R[a,p]
+transitions {
+  infection[a in age, p in patch] : S[a,p] --> I[a,p]
+    @ beta * S[a,p] * I[a,p] / N_local[a,p]
+  recovery[a in age, p in patch] : I[a,p] --> R[a,p] @ gamma * I[a,p]
+}
+-->
+
+```camdl preamble=importation
+transitions {
+  # Constant importation rate (exogenous FOI)
+  importation[a in age, p in patch] : --> I[a, p]
+    @ import_rate * age_weights[a] * patch_weights[p]
+}
 ```
 
 ### 9.1.1 Multi-source transitions (`A + B --> …`)
@@ -1557,10 +1584,23 @@ and `c in compartments`.
 
 The `consecutive(dim)` binding yields adjacent pairs from an ordered dimension:
 
-```camdl
-aging[c in compartments, (a, a_next) in consecutive(age), p in patch]
-  : c[a, p] --> c[a_next, p]
-  @ (1 / age_dur[a]) * c[a, p]
+<!-- camdl-doctest-preamble: consecutive-aging
+compartments { S, I, R }
+dimensions {
+  age   = [a0_5, a5_15, a15_50, a50_65, a65p]
+  patch = [north, south]
+}
+tables { age_dur : age = [5.0, 10.0, 35.0, 15.0, 20.0] }
+stratify(by = age)
+stratify(by = patch)
+-->
+
+```camdl preamble=consecutive-aging
+transitions {
+  aging[c in compartments, (a, a_next) in consecutive(age), p in patch]
+    : c[a, p] --> c[a_next, p]
+    @ (1 / age_dur[a]) * c[a, p]
+}
 ```
 
 For `age = [age_0_5, age_5_15, age_15_50, age_50_65, age_65p]`, this generates
@@ -1572,18 +1612,25 @@ This is a general-purpose primitive for any sequential transfer along an ordered
 dimension. It also handles **Erlang sub-staging** for non-exponential waiting
 times:
 
-```camdl
+<!-- camdl-doctest-preamble: erlang-E
+compartments { E, I }
+parameters { sigma : rate }
+-->
+
+```camdl preamble=erlang-E
 # Erlang-3 latent period: E passes through 3 sub-stages
 dimensions { erlang_E = [e1, e2, e3] }
 stratify(by = erlang_E, only = [E])
 
-progression[(s, s_next) in consecutive(erlang_E)]
-  : E[s] --> E[s_next]
-  @ 3 * sigma * E[s]       # k * sigma for Erlang-k
+transitions {
+  progression[(s, s_next) in consecutive(erlang_E)]
+    : E[s] --> E[s_next]
+    @ 3 * sigma * E[s]       # k * sigma for Erlang-k
 
-# Final sub-stage transitions to I
-progression_final : E[e3] --> I
-  @ 3 * sigma * E[e3]
+  # Final sub-stage transitions to I
+  progression_final : E[e3] --> I
+    @ 3 * sigma * E[e3]
+}
 ```
 
 This gives an Erlang(k=3, rate=sigma) distributed latent period. The mean is the
@@ -1632,16 +1679,33 @@ hand-enumerated transitions, you want this primitive.
 
 The `c in compartments` binding iterates over compartment names:
 
-```camdl
-# Death for all compartments
-death[c in compartments, a in age, p in patch] : c[a,p] -->
-  @ mu * c[a,p]
+<!-- camdl-doctest-preamble: compartment-iter
+compartments { S, I, R }
+parameters { mu : rate }
+dimensions {
+  age   = [child, adult]
+  patch = [north, south]
+}
+tables {
+  mig : patch × patch = [[0.0, 0.1],
+                         [0.1, 0.0]]
+}
+stratify(by = age)
+stratify(by = patch)
+-->
 
-# Migration for all compartments
-migrate[c in compartments, a in age, src in patch, dst in patch]
-  : c[a,src] --> c[a,dst]
-  @ mig[dst,src] * c[a,src]
-  where src != dst
+```camdl preamble=compartment-iter
+transitions {
+  # Death for all compartments
+  death[c in compartments, a in age, p in patch] : c[a,p] -->
+    @ mu * c[a,p]
+
+  # Migration for all compartments
+  migrate[c in compartments, a in age, src in patch, dst in patch]
+    : c[a,src] --> c[a,dst]
+    @ mig[dst,src] * c[a,src]
+    where src != dst
+}
 ```
 
 **`compartments` means integer compartments only** (the safe default). Real-
@@ -2101,7 +2165,23 @@ prevalence(compartment[age = child])     named index on compartment
 parameters, and time. Pooled-group prevalence, prevalence-as-proportion, and
 arbitrary derived observables compose naturally:
 
-```camdl
+<!-- camdl-doctest-preamble: obs-derived
+compartments { S, I_m, I_s, R, x3, y3 }
+parameters {
+  beta     : rate
+  gamma    : rate
+  N_tested : count
+  rho_sens : probability
+  rho_spec : probability
+}
+let Ntot = S + I_m + I_s + R
+transitions {
+  infection : S --> I_m @ beta * S * (I_m + I_s) / Ntot
+  recovery  : I_m --> R @ gamma * I_m
+}
+-->
+
+```camdl preamble=obs-derived
 observations {
   # Pooled-group count (Garki patent prevalence across x3, y3).
   patent_count : {
