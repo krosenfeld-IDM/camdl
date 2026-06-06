@@ -1,0 +1,54 @@
+# Corner case: ALL LIFECYCLE STAGES at a coincident boundary.
+# At t=10 all of the substep lifecycle fires together: transitions -> event
+# (importation, add I) -> intervention (cull S->R) -> balance (R conservation) ->
+# observe (prevalence I). The every-5-day importation and every-substep balance
+# also run throughout. Pins the full substep order — the fused transition+event
+# ADVANCE, then intervene, then balance, then observe — that the unified-timeline
+# refactor must reproduce bit-for-bit.
+time_unit = 'days
+
+compartments { S, I, R }
+
+let N = S + I + R
+
+parameters {
+  beta  : rate        in [0.05, 3.0]
+  gamma : rate        in [0.01, 1.0]
+  cull  : probability in [0.0, 1.0]
+  N0    : count       in [100, 10000]
+}
+
+transitions {
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+}
+
+events {
+  importation : add(I, 5) every 5 'days at_day 5
+}
+
+interventions {
+  cull10 : transfer(fraction = cull, from = S, to = R) at [10]
+}
+
+balance {
+  R = N0 - S - I
+}
+
+observations {
+  prevalence : {
+    projected  = prevalence(I)
+    every      = 10 'days
+    likelihood = poisson(rate = projected)
+  }
+}
+
+init {
+  S = 990
+  I = 10
+}
+
+simulate {
+  from = 0 'days
+  to   = 30 'days
+}

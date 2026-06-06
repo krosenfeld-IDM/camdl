@@ -67,18 +67,39 @@ Under inference the alignment forks: the bootstrap PF steps exactly to each obs;
 PGAS snaps them to the grid (and two sub-`dt` obs could collide on one step).
 Pins the obs-alignment behavior. Run: `--obs <file>`.
 
+## `all_lifecycle.camdl` — all five substep stages at one boundary
+
+At **t = 10** the full substep lifecycle fires together: transitions → event
+(importation, `add(I, 5)`) → intervention (cull S→R) → balance (`R = N0 − S − I`)
+→ observe (`prevalence(I)`). An every-5-day importation and the every-substep
+balance run throughout. Observed (`--enable cull10`, `cull=0.5`, `N0=1000`):
+
+```
+t    S     I     R     total
+9    244   530   226   1000
+10   72    534   394   1000    <- cull fired (S ~halved); balance holds total
+```
+
+The **total stays exactly 1000** at every step — the balance constraint absorbs
+the importation-driven growth (R falls as I rises). S halves at t=10 (the cull,
+after the fused transition+event ADVANCE). Pins the full substep order the
+unified-timeline refactor must reproduce bit-for-bit. Run: `--enable cull10`.
+
 ## Reproduce
 
 ```bash
 camdl simulate tests/fixtures/corner_cases/off_grid_intervention.camdl \
     --params p.toml --backend chain_binomial --seed 1 --enable pulse --stdout
-# p.toml: beta=1.0, gamma=0.2 (+ cull=0.5 for the intervention fixtures)
+# p.toml: beta=1.0, gamma=0.2 (+ cull=0.5 for the intervention fixtures, N0=1000
+# for all_lifecycle)
 ```
 
-## Not yet covered (follow-up)
+## Wiring into the gates
 
-- **all-lifecycle** — transitions + `events {}` + interventions + `balance {}` +
-  a coincident obs, to pin the full substep order (the fused transition+event
-  ADVANCE stage). Needs the `events`/`balance` DSL.
-- Wiring these into `gate_trajectory_baseline` (forward) and
-  `gate_inference_baseline` (the off-grid PF loglik) as committed baselines.
+- **Enforced now:** `gate_inference_baseline.rs` pins the off-grid PF loglik via
+  the `sir_incidence_offgrid` reference (obs at 7.3, 14.6, … — a *distinct*
+  loglik, −59.79, vs the on-grid −59.45). The off-grid likelihood path the
+  on-grid corpus cannot reach is now a committed baseline.
+- **Still to wire:** a forward `gate_trajectory_baseline` entry for the
+  fractional-end / lifecycle trajectories, and an off-grid-*intervention*
+  inference reference.
