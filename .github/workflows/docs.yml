@@ -16,11 +16,21 @@ on:
     branches: [main]
     paths:
       - "docs/camdl-language-spec.md"
+      - "docs/intro.md"
+      - "docs/user-features.md"
+      - "docs/dsl-cheatsheet.md"
+      - "docs/dates.md"
+      - "docs/camdl-run-spec.md"
       - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
     paths:
       - "docs/camdl-language-spec.md"
+      - "docs/intro.md"
+      - "docs/user-features.md"
+      - "docs/dsl-cheatsheet.md"
+      - "docs/dates.md"
+      - "docs/camdl-run-spec.md"
       - ".github/workflows/docs.yml"
 
 jobs:

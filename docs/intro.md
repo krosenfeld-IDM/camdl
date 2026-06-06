@@ -224,6 +224,11 @@ compartments { S, I, R }
 dimensions { age = [child, adult] }
 stratify(by = age)
 
+parameters {
+  beta  : rate
+  gamma : rate
+}
+
 let N[a in age] = S[a] + I[a] + R[a]
 
 tables {

@@ -137,7 +137,8 @@ test-integration: build
 # the compiler's verdict; see `camdlc doctest --help`. Catches code changes
 # (grammar churn) that break documented models; a doc-only-PR gate needs a
 # separate doc-triggered CI job since ci.yml ignores docs/** paths.
-DOCTEST_DOCS := docs/camdl-language-spec.md
+DOCTEST_DOCS := docs/camdl-language-spec.md docs/intro.md docs/user-features.md \
+                docs/dsl-cheatsheet.md docs/dates.md docs/camdl-run-spec.md
 test-docs: build-ocaml
 	$(CAMDLC) doctest --gate $(DOCTEST_DOCS)
 
