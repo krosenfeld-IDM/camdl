@@ -261,7 +261,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         for (i, r) in outcomes.into_iter().enumerate() {
             if r? { particle_dead[i] = true; }
         }
-        for (t0, step_dt) in schedule.substeps(cur, t) { t = t0 + step_dt; }
+        t = schedule.window_end(cur, t);
 
         // Prediction diagnostics
         if has_predictions {

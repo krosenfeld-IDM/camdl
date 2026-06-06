@@ -361,7 +361,7 @@ pub fn bootstrap_filter_correlated(
             })
             .collect();
         for r in errors { r?; }
-        for (t0, step_dt) in schedule.substeps(cur, t) { t = t0 + step_dt; }
+        t = schedule.window_end(cur, t);
 
         // Compute log-weights
         for (i, state) in swarm.states.iter().enumerate() {

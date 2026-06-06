@@ -424,7 +424,7 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
                 })
                 .collect();
             for r in errors { r?; }
-            for (t0, step_dt) in schedule.substeps(cur, t) { t = t0 + step_dt; }
+            t = schedule.window_end(cur, t);
 
             // Perturb parameters at observation time (per-step cooling).
             // IVP params and simplex members are skipped — IVP perturbed at t=0 only,

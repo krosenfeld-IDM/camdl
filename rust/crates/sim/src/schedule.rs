@@ -269,6 +269,17 @@ impl Schedule {
     pub fn substeps(&self, cursor: Cursor, t_start: f64) -> Substeps<'_> {
         Substeps { schedule: self, cursor, t: t_start }
     }
+
+    /// The time the observation window ending at `cursor`'s current obs reaches
+    /// when walked from `t_start` — i.e. where [`Schedule::substeps`] leaves the
+    /// clock. The filters advance their single-threaded reference `t` to the
+    /// window end after the parallel per-particle walk; this is that advance,
+    /// defined ONCE in terms of the same iterator (so it cannot drift from the
+    /// per-particle walk — the divergence hazard of a second hand-rolled copy).
+    /// Returns `t_start` for an empty window (no substep due).
+    pub fn window_end(&self, cursor: Cursor, t_start: f64) -> f64 {
+        self.substeps(cursor, t_start).last().map_or(t_start, |(t0, step_dt)| t0 + step_dt)
+    }
 }
 
 /// Iterator over one observation window's substeps; see [`Schedule::substeps`].
@@ -534,6 +545,11 @@ mod tests {
                 s.substeps(cur, window_start).map(|(t0, dt)| (t0.to_bits(), dt.to_bits())).collect();
             assert_eq!(iter, manual, "iterator must reproduce the manual walk for window {obs_idx}");
             assert!(!manual.is_empty());
+            // window_end is the catch-up advance: byte-identical to the manual
+            // walk's final t (the divergence the 3 filters' re-walk risked).
+            let manual_end = t;
+            assert_eq!(s.window_end(cur, window_start).to_bits(), manual_end.to_bits(),
+                "window_end must equal the manual walk's final t for window {obs_idx}");
             window_start = obs_time;
         }
     }
