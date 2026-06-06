@@ -878,6 +878,38 @@ let test_instant_vector_each_is_time () =
   Alcotest.(check (option (pair int int))) "tau_a is [T]" (Some (0,1)) (dim "tau_a");
   Alcotest.(check (option (pair int int))) "tau_b is [T]" (Some (0,1)) (dim "tau_b")
 
+(* gh#116 follow-up: a DerivedExpr projection that is itself a PROPORTION
+   (`projected = I / N`, dimensionless) used as a binomial `p` must NOT
+   false-fire E304. The `Projected` node must carry the projection
+   expression's inferred dimension, not a hard-coded population count.
+   Counterpart to the count-projection guard (e304_binomial_p_is_count, which
+   uses prevalence(I) — a count — and must still E304). *)
+let test_e304_proportion_projection_ok () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+observations {
+  pos : {
+    projected  = I / N
+    every      = 7 'days
+    likelihood = binomial(n = 100, p = projected)
+  }
+}
+|camdl} in
+  let diags = Compiler.collect_diagnostics ~filename:"<proportion-projection>" src in
+  let has_e304 =
+    List.exists (fun (d : Diagnostics.diagnostic) -> d.code = "E304") diags in
+  Alcotest.(check bool)
+    "proportion projection (I/N) as binomial p must not E304" false has_e304
+
 (* ── Test Registration ─────────────────────────────────────────────────── *)
 
 let () =
@@ -1012,6 +1044,8 @@ let () =
         (test_error_golden "E304" "e304_beta_binomial_alpha_is_count");
       Alcotest.test_case "e304_neg_binomial_dispersion_is_count"  `Quick
         (test_error_golden "E304" "e304_neg_binomial_dispersion_is_count");
+      Alcotest.test_case "e304_proportion_projection_ok"  `Quick
+        test_e304_proportion_projection_ok;
     ];
 
     (* ── Property-based tests (QCheck) ─────────────────────────────── *)

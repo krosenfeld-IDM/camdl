@@ -130,6 +130,13 @@ type state = {
      and sqrt-of-odd-dim are silently absorbed (no E302/E304).
      See gh #4. *)
   mutable permissive_dim : bool;
+  (* Dimension of the projection expression of the observation currently
+     being checked. The `Projected` leaf in a likelihood stands for the
+     projection's value, so it must carry the projection's *inferred*
+     dimension — a count for `prevalence`/`incidence`, but dimensionless
+     for a `DerivedExpr` proportion like `I / N`. None outside an
+     observation, where it falls back to a population count. *)
+  mutable projected_dim : dim option;
 }
 
 let create_state () = {
@@ -144,6 +151,7 @@ let create_state () = {
   binding_dims = Hashtbl.create 16;
   permissive_dim = false;
   subject = None;
+  projected_dim = None;
 }
 
 let fresh_var st =
@@ -293,7 +301,8 @@ let rec infer st ~ctx (e : expr) : dim =
     (match Hashtbl.find_opt st.table_dims name with
      | Some d -> resolve st d
      | None -> fresh_var st)
-  | Projected -> Known population
+  | Projected ->
+    (match st.projected_dim with Some d -> resolve st d | None -> Known population)
   | UncheckedDim u ->
     (* Per-expression dimensional escape. The declared dim is
        authoritative; we do NOT recurse into `u.inner` for unification
@@ -596,7 +605,8 @@ let rec read_dim st (e : expr) : dim =
     (match Hashtbl.find_opt st.table_dims name with
      | Some d -> resolve st d
      | None -> Unknown (-1))
-  | Projected -> Known population
+  | Projected ->
+    (match st.projected_dim with Some d -> resolve st d | None -> Known population)
   | UncheckedDim u -> Known (make u.dim_p u.dim_t)
   | BinOp b -> read_dim_binop st b
   | UnOp u -> read_dim_unop st u
@@ -802,6 +812,16 @@ let check_model (m : model) : result =
     List.iter (fun (obs : observation_model) ->
       st.subject <- Some (SObservation obs.name);
       let ctx = Printf.sprintf "observation '%s'" obs.name in
+      (* The Projected leaf in this likelihood stands for the projection's
+         value, so it carries the projection's dimension: a population count
+         for prevalence/incidence, the inferred dim for a DerivedExpr — e.g.
+         dimensionless for a proportion `I / N`. This is what lets a
+         legitimate proportion-as-probability pass while still catching the
+         missing-`/N` bug (a count used as `p`). *)
+      st.projected_dim <- Some (match obs.projection with
+        | DerivedExpr e -> infer st ~ctx e
+        | CumulativeFlow _ | CurrentPop _ | CurrentPopSum _ | CumulativeFlowSum _ ->
+          Known population);
       (match obs.likelihood with
        | NegBinomial nb ->
          ignore (infer st ~ctx nb.mean);
@@ -847,7 +867,8 @@ let check_model (m : model) : result =
            ~message:(Printf.sprintf
              "%s: Bernoulli `p` must be dimensionless (probability); \
               a count here is almost certainly a missing `/N`." ctx)
-           p_dim dimensionless)
+           p_dim dimensionless);
+      st.projected_dim <- None
     ) m.observations;
     st.permissive_dim <- prev_permissive
   done;
