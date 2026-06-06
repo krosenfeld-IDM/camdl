@@ -74,21 +74,24 @@ camdl eval model.ir.json --params p.toml --expr "pop" --from 0 --to 7665 --every
 
 ## `--trace` — Named Quantities During Simulation _(planned)_
 
-Emit forcing function values and let binding evaluations as additional TSV
-columns alongside trajectory output. Useful for debugging unexpected dynamics by
-seeing what the simulator computed at each step.
+A planned `--trace` flag would emit forcing function values and let binding
+evaluations as additional TSV columns alongside trajectory output. Useful for
+debugging unexpected dynamics by seeing what the simulator computed at each step.
+
+A normal simulation already writes the cumulative `flow_*` columns next to the
+compartment columns; pass `-o` to mirror the trajectory to a file:
 
 ```bash
-camdl simulate model.ir.json --params p.toml --backend chain_binomial --dt 1 --seed 42 --trace
+camdl simulate model.ir.json --params p.toml --backend chain_binomial --dt 1 --seed 42 -o traj.tsv
 ```
 
-Output includes existing columns plus traced columns:
-
 ```
-t   S       E     I     R     flow_infection  ...  school  beta_base
-0   73151   127   127   2.4M  0               ...  0.000   4.540
-1   73080   198   127   2.4M  71              ...  1.000   4.540
+t   S       E     I     R     flow_infection  flow_progression  flow_recovery
+0   73151   127   127   2.4M  0               0                 0
+1   73080   198   127   2.4M  71              0                 0
 ```
 
-Not yet implemented. Use `camdl eval` for time-dependent quantities and post-hoc
-trajectory analysis for state-dependent quantities.
+The planned `--trace` flag would add the remaining traced columns (forcing
+functions and let bindings, e.g. `school`, `beta_base`). It is **not yet
+implemented**. Until then, use `camdl eval` for time-dependent quantities and
+post-hoc trajectory analysis for state-dependent quantities.

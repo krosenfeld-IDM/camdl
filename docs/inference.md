@@ -283,21 +283,25 @@ well-calibrated.
 camdl pfilter model.camdl --params p.toml --data cases.tsv \
     --particles 5000 --dt 1 --seed 42 \
     --flow recovery \
-    --obs-model discretized_normal \
-    --tol 1e-18 \
-    --trace
+    --trace -
 ```
 
 **`--flow recovery`**: Which transition's cumulative flow to use as the
 projected quantity. Must match what the data measures.
 
-**`--obs-model`**: `negbin` (default) or `discretized_normal` (He et al.'s
-observation model with heteroscedastic variance).
+**`--trace -`**: Write per-observation diagnostics (ll increment, ESS, the
+filter's predictive quantiles vs the observed value) as a TSV. Use `-` for
+stdout, or a path to write a file.
 
-**`--tol`**: Likelihood floor. When a particle predicts ~0 cases but the data
-shows 80, both "predicted 0" and "predicted 5" are equally wrong — flooring at
-1e-18 treats them the same. Without the floor, "predicted 0" gets a 650 log-unit
-worse penalty than "predicted 5", collapsing ESS. Default matches pomp.
+**Observation model**: not a CLI flag — it is declared in the model file's
+`observations {}` block (e.g. `likelihood = neg_binomial(...)`). To change the
+observation model, edit the model, not the command line.
+
+**Likelihood floor**: when a particle predicts ~0 cases but the data shows 80,
+both "predicted 0" and "predicted 5" are equally wrong — the filter floors the
+per-particle likelihood so they are treated the same. Without the floor,
+"predicted 0" gets a 650 log-unit worse penalty than "predicted 5", collapsing
+ESS. The default matches pomp.
 
 ### Filtering marginals vs smoothing paths
 
@@ -537,7 +541,7 @@ identifiability, confidence intervals, and parameter correlations.
 
 ```bash
 camdl profile model.camdl --init from_params --params p.toml --data cases.tsv \
-    --focal R0 --grid "10,20,30,40,50,60,70,80" \
+    --sweep "R0=lin(10,80,8)" \
     --rw-sd "sigma=0.01,gamma=0.01" \
     --particles 500 --iterations 30 --starts 3 --parallel 8
 ```
@@ -553,11 +557,10 @@ values).
 
 ```bash
 camdl profile model.camdl --init from_params --params p.toml --data cases.tsv \
-    --focal alpha,gamma \
-    --grid-alpha "0.85,0.90,0.95,0.99" \
-    --grid-gamma "0.06,0.08,0.10,0.12" \
+    --sweep "alpha=0.85,0.90,0.95,0.99" \
+    --sweep "gamma=0.06,0.08,0.10,0.12" \
     --rw-sd "R0=2,sigma=0.01" \
-    --starts 2 --parallel 8
+    --particles 500 --starts 2 --parallel 8
 ```
 
 Shows ridges and correlations between parameters. An elongated contour along the
