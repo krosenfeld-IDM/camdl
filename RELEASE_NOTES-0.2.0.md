@@ -3,9 +3,13 @@ STATUS: DRAFT / preview — a worked example of the /release-notes pipeline.
 SCOPE:  this covers only the documentation-hardening branch (15 commits). The
         actual 0.2.0 is cut from main over v0.1.0-alpha..main and folds in ~423
         more unreleased commits — regenerate over the full range at release time
-        (make changelog → /release-notes). The number 0.2.0 is correct (next
-        feature-bearing release after v0.1.0-alpha, 2026-05-15); the content
-        here is a slice, not the whole release.
+        (make changelog → /release-notes). The content here is a slice, not the
+        whole release.
+VERSION: the only existing tag (v0.1.0-alpha, 2026-05-15) is a PRERELEASE, so
+        `git-cliff --bumped-version` continues it to v0.1.0-alpha.1. To open a
+        clean 0.2.0 line, finalize first — tag a stable v0.1.0 (drop -alpha) or
+        manually tag 0.2.0. "0.2.0" below is the intended first real minor; the
+        tooling won't pick it automatically from a prerelease tag.
 -->
 
 # camdl 0.2.0 — 2026-06-05 (draft / doc-hardening slice)
