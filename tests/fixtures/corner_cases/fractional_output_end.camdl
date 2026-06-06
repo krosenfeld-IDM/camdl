@@ -1,0 +1,22 @@
+# Corner case: FRACTIONAL SIMULATE END.
+# to = 80.5 is off the dt=1 grid -> the final integration/output endpoint snaps
+# (cf. seir_vaccine_seasonal's output.end = 1095.7275). Pins tail-snap behavior.
+time_unit = 'days
+compartments { S, I, R }
+let N = S + I + R
+parameters {
+  beta  : rate in [0.05, 3.0]
+  gamma : rate in [0.01, 1.0]
+}
+transitions {
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+}
+init {
+  S = 990
+  I = 10
+}
+simulate {
+  from = 0 'days
+  to   = 80.5 'days
+}

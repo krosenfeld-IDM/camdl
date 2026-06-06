@@ -1,0 +1,35 @@
+# Corner case: COINCIDENT OBSERVATION + INTERVENTION.
+# An observation at t=10 coincides with a cull firing at t=10. The substep
+# lifecycle (transitions -> events -> interventions -> balance -> observe)
+# decides whether the obs reads PRE- or POST-intervention I. Pins the
+# coincident-boundary ordering (impl-review gap #1).
+time_unit = 'days
+compartments { S, I, R }
+let N = S + I + R
+parameters {
+  beta  : rate        in [0.05, 3.0]
+  gamma : rate        in [0.01, 1.0]
+  cull  : probability in [0.0, 1.0]
+}
+transitions {
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+}
+interventions {
+  cull10 : transfer(fraction = cull, from = I, to = R) at [10]
+}
+observations {
+  prevalence : {
+    projected  = prevalence(I)
+    every      = 10 'days
+    likelihood = poisson(rate = projected)
+  }
+}
+init {
+  S = 990
+  I = 10
+}
+simulate {
+  from = 0 'days
+  to   = 30 'days
+}

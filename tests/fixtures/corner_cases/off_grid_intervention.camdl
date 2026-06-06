@@ -1,0 +1,36 @@
+# Corner case: OFF-GRID INTERVENTION.
+# A pulse cull fires at t = 2.5, off the dt = 1 integrator grid. chain_binomial
+# rounds it to a step boundary (snap); tau_leap truncates a step to land on it
+# exactly. The two backends therefore fire it at *different* times — the
+# cross-backend fire-time divergence (task #9). Stresses the snap-vs-exact
+# boundary policy the unified-timeline refactor must make explicit.
+time_unit = 'days
+
+compartments { S, I, R }
+
+let N = S + I + R
+
+parameters {
+  beta  : rate        in [0.05, 3.0]
+  gamma : rate        in [0.01, 1.0]
+  cull  : probability in [0.0, 1.0]
+}
+
+transitions {
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+}
+
+interventions {
+  pulse : transfer(fraction = cull, from = S, to = R) at [2.5]
+}
+
+init {
+  S = 990
+  I = 10
+}
+
+simulate {
+  from = 0 'days
+  to   = 20 'days
+}
