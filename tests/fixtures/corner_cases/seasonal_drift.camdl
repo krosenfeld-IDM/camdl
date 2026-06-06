@@ -1,0 +1,47 @@
+# Corner case: SUBSTEP-TIME CONVENTION drift (forward accumulation vs PGAS s*dt).
+#
+# A seasonal forcing evaluated at the substep time t exposes the forward/PGAS
+# disagreement the unified Schedule must reconcile: the forward backends advance
+# the clock by accumulation (t += dt), while PGAS reconstructs it as
+# t = t_start + s*dt (s = substep index). At dt=0.1 over three years those two
+# clocks drift apart by ~1e-10 days — a ULP-level shift in seasonal(t) that the
+# CONTINUOUS PGAS transition density sees but the INTEGER forward draws do not.
+#
+# Endemic SIS (recovery returns to S) so noise stays active out to large t, where
+# the accumulation drift is non-trivial. Run at dt=0.1 to exercise the drift:
+#   camdl simulate seasonal_drift.camdl --backend chain_binomial --dt 0.1 ...
+time_unit = 'days
+
+compartments { S, I }
+
+let N = S + I
+
+parameters {
+  beta  : rate        in [0.05, 5.0]
+  gamma : rate        in [0.01, 5.0]
+  alpha : probability in [0.0, 1.0]
+}
+
+forcing {
+  seasonal : sinusoidal 'ratio {
+    amplitude = alpha
+    period    = 365.25
+    phase     = 0.0
+    baseline  = 1.0
+  }
+}
+
+transitions {
+  infection : S --> I  @ beta * seasonal(t) * S * I / N
+  recovery  : I --> S  @ gamma * I
+}
+
+init {
+  S = 900
+  I = 100
+}
+
+simulate {
+  from = 0 'days
+  to   = 1095 'days
+}
