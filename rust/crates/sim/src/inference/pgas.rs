@@ -126,6 +126,17 @@ pub struct SubstepRecord {
     /// Gamma multipliers used at this substep (one per overdispersed
     /// source group, in source_groups order). Empty if no overdispersion.
     pub gammas: Vec<f64>,
+    /// Realized start-time of this substep — the time `step_one` froze
+    /// propensities at. The single source of truth for the density's time
+    /// argument; consumers read this instead of recomputing `t_start + s*dt`.
+    /// Under `snap` alignment it equals `t_start + s*dt`; under `exact`
+    /// (Stage 3) it is the window-tiled realized time.
+    pub t0: f64,
+    /// Realized duration of this substep — the magnitude that enters every
+    /// density/gradient term (`p = 1 - exp(-rate*dt_substep)`,
+    /// `shape = dt_substep/σ²`, …). Under `snap` it equals the run `dt`;
+    /// under `exact` (Stage 3) it is the (possibly shortened) tiled step.
+    pub dt_substep: f64,
 }
 
 /// Full trajectory stored at substep resolution.
@@ -739,6 +750,8 @@ pub fn simulate_reference(
             counts_after: counts.clone(),
             flows,
             gammas: scratch.gamma_used.clone(),
+            t0: t,
+            dt_substep: dt,
         });
     }
 
@@ -1068,6 +1081,8 @@ pub fn csmc_as(
             counts_after: history_counts_after[s][particle].clone(),
             flows: history_flows[s][particle].clone(),
             gammas: history_gammas[s][particle].clone(),
+            t0: t_start + s as f64 * dt,
+            dt_substep: dt,
         });
         particle = ancestors[s][particle];
     }

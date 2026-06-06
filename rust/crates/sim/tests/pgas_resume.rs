@@ -15,12 +15,16 @@ fn test_resume_state_bincode_roundtrip() {
                 counts_after: vec![993, 17, 0],
                 flows: vec![5, 3],
                 gammas: vec![1.02],
+                t0: 0.0,
+                dt_substep: 1.0,
             },
             SubstepRecord {
                 counts_before: vec![990, 18, 2],
                 counts_after: vec![988, 20, 2],
                 flows: vec![5, 2],
                 gammas: vec![0.98],
+                t0: 1.0,
+                dt_substep: 1.0,
             },
         ],
     };
@@ -181,6 +185,8 @@ fn test_resume_state_large_trajectory() {
         counts_before: vec![10000 - i as i64, i as i64, 0, 0], counts_after: vec![10000 - i as i64 - 1, i as i64 + 1, 0, 0],
         flows: vec![1, 0, 0, 0, 0, 0],
         gammas: vec![1.0],
+        t0: i as f64,
+        dt_substep: 1.0,
     }).collect();
 
     let state = ChainResumeState {
