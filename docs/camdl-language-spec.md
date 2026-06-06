@@ -1803,6 +1803,12 @@ dimensions {
 stratify(by = age)
 stratify(by = strain, only = [E, I, R])
 
+parameters {
+  beta  : rate
+  sigma : rate
+  gamma : rate
+}
+
 tables {
   C_age    : age × age       = [[12.0, 4.0], [4.0, 8.0]]
   # X[w,v] = cross-protection against strain v from recovery from strain w

@@ -96,9 +96,9 @@ dev-camdlc: build-ocaml
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
-.PHONY: test test-ocaml test-rust test-integration
+.PHONY: test test-ocaml test-rust test-integration test-docs
 
-test: test-ocaml test-rust test-integration
+test: test-ocaml test-rust test-integration test-docs
 
 # build-ocaml regenerates the gitignored ir_version_generated.ml from
 # ir/VERSION; without this dep, `dune runtest` runs against a stale version
@@ -130,6 +130,16 @@ test-rust: build-ocaml build-rust
 
 test-integration: build
 	CAMDLC="$(CAMDLC)" CAMDL="$(CAMDL)" bash tests/test_ocaml_to_rust.sh
+
+# Compile every ```camdl block in the specs against the real compiler and gate
+# on any complete-model block that fails (drift detector for documented
+# examples). Fragments / legends / data-dependent blocks are auto-skipped by
+# the compiler's verdict; see `camdlc doctest --help`. Catches code changes
+# (grammar churn) that break documented models; a doc-only-PR gate needs a
+# separate doc-triggered CI job since ci.yml ignores docs/** paths.
+DOCTEST_DOCS := docs/camdl-language-spec.md
+test-docs: build-ocaml
+	$(CAMDLC) doctest --gate $(DOCTEST_DOCS)
 
 # ── Golden file management ────────────────────────────────────────────────────
 

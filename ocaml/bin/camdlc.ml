@@ -5,7 +5,12 @@ let () =
     print_endline "camdlc FILE.camdl [--set NAME=VALUE ...]  -- compile to IR JSON";
     print_endline "camdlc inspect FILE.camdl [OPTIONS]       -- inspect model";
     print_endline "camdlc check FILE.camdl                   -- validate model";
+    print_endline "camdlc doctest [--gate] FILE.md ...       -- compile doc code blocks";
     exit 1
+
+  (* ── camdlc doctest [--gate] [--verbose] FILE.md ... ──────────────── *)
+  | "doctest" :: rest ->
+    Doctest.main rest
 
   (* ── camdlc --camdl-version ──────────────────────────────────────── *)
   | ["--camdl-version"] | "--camdl-version" :: _ ->
