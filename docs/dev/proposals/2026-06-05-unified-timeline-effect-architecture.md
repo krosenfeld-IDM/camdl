@@ -501,9 +501,10 @@ The default is **`exact` where the algorithm supports it**. The support matrix i
 NOT uniform — three classes, not "PF-family vs PGAS":
 - **bootstrap PF / IF2**: exact on any obs (on- or off-grid) — they hold no
   per-window substep-count assumption. Default exact, byte-identical today.
-- **PMMH / correlated PF**: exact only on **uniform ON-GRID** obs. Its CPM
-  pre-drawn-noise array is sized by a *scalar* `steps_per_obs =
-  interval_steps(0, obs_dt, dt)` and indexed `i*steps_per_obs + substep`
+- **PMMH**: rho-dependent. Plain PMMH (`rho` unset) is the bootstrap PF →
+  exact on any obs. **Correlated** PMMH (`rho` set → CPM) is exact only on
+  **uniform ON-GRID** obs: its pre-drawn-noise array is sized by a *scalar*
+  `steps_per_obs = interval_steps(0, obs_dt, dt)` and indexed `i*steps_per_obs + substep`
   (`correlated_pf.rs:185,332`); off-grid obs make the realized substep count
   exceed `steps_per_obs`, so the index overruns into the next particle's block or
   trips the `< len` guard and **silently falls back to fresh RNG** — decorrelating
