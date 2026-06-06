@@ -1,11 +1,11 @@
 (* Self-test for the doc-doctest classifier (Doctest module in the compiler lib).
 
-   Drives the real extractor + classifier over a fixture Markdown file whose
-   blocks are ordered to exercise every verdict bucket, and asserts the verdict
-   of each block by position. This is the non-vacuous proof that the gate can
-   both pass the right blocks and FAIL a broken one — a classifier that only
-   ever returned Pass would fail block 5, and one that never skipped would fail
-   blocks 2-4 and 6. *)
+   Drives the real parser + classifier over a fixture Markdown file whose blocks
+   are ordered to exercise every verdict bucket, including a `preamble=` block
+   (hidden HTML-comment preamble) and a `read()` block resolved by inline
+   `camdl-doctest-data`. Non-vacuous: it asserts the FAIL block really reports
+   E300, that the preamble block fails when its preamble is stripped, and that
+   the data block needs its inline data. *)
 
 let spec = "doctest_fixtures/spec.md"
 
@@ -23,44 +23,51 @@ let expected =
   [ "pass"           (* 1. clean model *)
   ; "skip:parse"     (* 2. bare expression *)
   ; "skip:fragment"  (* 3. transitions-only fragment *)
-  ; "skip:data"      (* 4. read() *)
+  ; "skip:data"      (* 4. read(), no inline data *)
   ; "fail"           (* 5. complete model, E300 *)
   ; "skip:ignore"    (* 6. ```camdl ignore *)
-  ; "pass"           (* 7. fragment + context=demo *)
+  ; "pass"           (* 7. fragment + preamble=demo *)
+  ; "pass"           (* 8. read() + inline data *)
   ]
 
 let test_classifications () =
-  let blocks = Doctest.extract_blocks spec in
-  let got = List.map (fun b -> verdict_name (Doctest.classify b)) blocks in
-  Alcotest.(check int) "block count" (List.length expected) (List.length blocks);
+  let doc = Doctest.parse_doc spec in
+  let basedir = Doctest.materialize_data doc.datas in
+  Alcotest.(check int) "block count" (List.length expected) (List.length doc.blocks);
   List.iteri
     (fun i (want, b) ->
-       let g = verdict_name (Doctest.classify b) in
+       let v = verdict_name (Doctest.classify ~preambles:doc.preambles ~basedir b) in
        Alcotest.(check string)
-         (Printf.sprintf "block %d @ L%d" (i + 1) b.Doctest.line) want g)
-    (List.combine expected blocks);
-  ignore got
+         (Printf.sprintf "block %d @ L%d" (i + 1) b.Doctest.line) want v)
+    (List.combine expected doc.blocks);
+  Doctest.rm_rf basedir
 
-(* Negative control: the FAIL block (5) must actually carry an E300 error, and
-   the context block (7) must compile only because the hidden preamble supplied
-   N0/I0/gamma — strip the context and it would fail. *)
-let test_fail_is_real () =
-  let blocks = Doctest.extract_blocks spec in
-  let fail_block = List.nth blocks 4 in
-  (match Doctest.classify fail_block with
+let test_non_vacuous () =
+  let doc = Doctest.parse_doc spec in
+  let basedir = Doctest.materialize_data doc.datas in
+  let nth = List.nth doc.blocks in
+  (* block 5: a genuine E300, not a vacuous pass *)
+  (match Doctest.classify ~preambles:doc.preambles ~basedir (nth 4) with
    | Doctest.Fail errs ->
      let codes = List.map (fun (d : Diagnostics.diagnostic) -> d.code) errs in
-     Alcotest.(check bool) "fail block reports E300" true (List.mem "E300" codes)
-   | other ->
-     Alcotest.failf "expected Fail, got %s" (verdict_name other));
-  (* Same block body without the context must NOT pass. *)
-  let ctx_block = { (List.nth blocks 6) with Doctest.context = None } in
-  Alcotest.(check bool) "context block fails without its preamble" false
-    (match Doctest.classify ctx_block with Doctest.Pass -> true | _ -> false)
+     Alcotest.(check bool) "block 5 reports E300" true (List.mem "E300" codes)
+   | other -> Alcotest.failf "block 5: expected Fail, got %s" (verdict_name other));
+  (* block 7 passes only because of its preamble *)
+  let stripped = { (nth 6) with Doctest.preamble = None } in
+  Alcotest.(check bool) "preamble block fails without its preamble" false
+    (match Doctest.classify ~preambles:doc.preambles ~basedir stripped with
+     | Doctest.Pass -> true | _ -> false);
+  (* block 8 passes only because of its inline data *)
+  let empty = Doctest.make_temp_dir () in
+  Alcotest.(check bool) "data block needs its inline data" true
+    (match Doctest.classify ~preambles:doc.preambles ~basedir:empty (nth 7) with
+     | Doctest.Skip_data -> true | _ -> false);
+  Doctest.rm_rf empty;
+  Doctest.rm_rf basedir
 
 let () =
   Alcotest.run "doctest"
     [ ("classify",
        [ Alcotest.test_case "every verdict bucket" `Quick test_classifications
-       ; Alcotest.test_case "fail and context are non-vacuous" `Quick test_fail_is_real
+       ; Alcotest.test_case "fail / preamble / data are non-vacuous" `Quick test_non_vacuous
        ]) ]

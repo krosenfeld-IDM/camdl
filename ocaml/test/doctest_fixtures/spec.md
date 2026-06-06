@@ -3,6 +3,24 @@
 Block order is load-bearing: `test_doctest.ml` asserts the verdict of each
 block by position. Do not reorder without updating the test.
 
+<!-- camdl-doctest-preamble: demo
+compartments { S, I, R }
+parameters {
+  N0    : positive
+  I0    : positive
+  gamma : rate
+}
+transitions {
+  recovery : I --> R @ gamma * I
+}
+-->
+
+<!-- camdl-doctest-data: data/pop.tsv
+patch	pop
+north	50000
+south	30000
+-->
+
 ## 1. clean complete model → pass
 
 ```camdl
@@ -32,10 +50,10 @@ transitions {
 }
 ```
 
-## 4. external-data dependence → skip:data
+## 4. external-data dependence, no inline data → skip:data
 
 ```camdl
-dimensions { patch = read("data/patches.tsv") }
+dimensions { patch = read("data/missing.tsv", column = "patch") }
 ```
 
 ## 5. complete model with a real dimensional error → fail (E300)
@@ -58,11 +76,25 @@ transitions {
 this block is not even valid camdl and must be skipped
 ```
 
-## 7. fragment + hidden context → pass
+## 7. fragment + hidden preamble → pass
 
-```camdl context=demo
+```camdl preamble=demo
 init {
   S = N0 - I0
   I = I0
+}
+```
+
+## 8. read() resolved by inline data → pass
+
+```camdl
+compartments { S, I, R }
+dimensions {
+  patch = read("data/pop.tsv", column = "patch")
+}
+stratify(by = patch)
+parameters { gamma : rate }
+transitions {
+  recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]
 }
 ```

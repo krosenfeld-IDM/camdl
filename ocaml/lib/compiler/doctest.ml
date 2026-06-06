@@ -1,33 +1,47 @@
 (* Doctest: compile the ```camdl fenced code blocks in Markdown docs against the
    real compiler and classify each block's outcome.
 
-   The oracle is [Compiler.collect_diagnostics] — the same full, non-aborting
-   pipeline the CLI runs (lex -> parse -> expand -> validate -> dimcheck -> lint
-   -> autodiff), returning structured diagnostics as values.
+   Focused fragments that reference declarations made elsewhere in a section can
+   borrow a hidden preamble and inline data that travel WITH the doc as HTML
+   comments — invisible in the rendered page, so the spec stays self-contained
+   with nothing to drift out of sync:
 
-   v1 infers intent from the compiler's verdict plus block shape rather than a
-   directive vocabulary, so the spec needs no mass-tagging:
+     <!-- camdl-doctest-preamble: sir
+     compartments { S, I, R }
+     parameters { gamma : rate }
+     -->
 
-     - no Error diagnostic                 -> Pass
-     - depends on an external file (read()) -> Skip_data
-     - only E001 (syntax)                  -> Skip_parse   (legend / bare expr)
-     - errors but not a model (no compartments) -> Skip_fragment
-     - a complete-model-shaped block that errors -> Fail
-     - an explicit ```camdl ignore fence   -> Skip_ignore  (escape hatch) *)
+     <!-- camdl-doctest-data: data/pop.tsv
+     patch<TAB>pop
+     north<TAB>50000
+     -->
+
+     ```camdl preamble=sir
+     transitions { recovery : I --> R @ gamma * I }   <- compiled as preamble ^ block
+     ```
+
+   A `preamble=LABEL` block is *asserted* to compile, so any residual error is a
+   FAIL, not a skip. `camdl-doctest-data` chunks are materialised into a temp
+   directory that the block's `read("…")` paths resolve against.
+
+   The oracle is [Compiler.collect_diagnostics] — the full, non-aborting
+   pipeline, returning structured diagnostics as values. *)
 
 (* ── string helpers (no Str dependency) ──────────────────────────────────── *)
 
-let contains ~sub s =
-  let ls = String.length s and lsub = String.length sub in
-  if lsub = 0 then true
+let find_sub ~sub s =
+  let ls = String.length s and n = String.length sub in
+  if n = 0 then Some 0
   else begin
     let rec go i =
-      if i + lsub > ls then false
-      else if String.sub s i lsub = sub then true
+      if i + n > ls then None
+      else if String.sub s i n = sub then Some i
       else go (i + 1)
     in
     go 0
   end
+
+let contains ~sub s = find_sub ~sub s <> None
 
 let lstrip s =
   let n = String.length s in
@@ -45,75 +59,163 @@ let tokens s =
   |> String.split_on_char ' '
   |> List.filter (fun t -> t <> "")
 
-(* ── Markdown fence extraction ────────────────────────────────────────────── *)
+let read_file path =
+  let ic = open_in path in
+  let n = in_channel_length ic in
+  let s = really_input_string ic n in
+  close_in ic;
+  s
+
+(* ── filesystem helpers for inline data ───────────────────────────────────── *)
+
+let rec mkdir_p dir =
+  if dir <> "" && dir <> "." && dir <> "/" && not (Sys.file_exists dir) then begin
+    mkdir_p (Filename.dirname dir);
+    (try Sys.mkdir dir 0o755 with Sys_error _ -> ())
+  end
+
+let rec rm_rf path =
+  if Sys.file_exists path then
+    if Sys.is_directory path then begin
+      Array.iter (fun n -> rm_rf (Filename.concat path n)) (Sys.readdir path);
+      (try Sys.rmdir path with Sys_error _ -> ())
+    end
+    else (try Sys.remove path with Sys_error _ -> ())
+
+let write_file path content =
+  mkdir_p (Filename.dirname path);
+  let oc = open_out path in
+  output_string oc content;
+  close_out oc
+
+let make_temp_dir () =
+  let f = Filename.temp_file "camdl-doctest-" "" in
+  Sys.remove f;
+  Sys.mkdir f 0o755;
+  f
+
+(* ── document model ───────────────────────────────────────────────────────── *)
 
 type block = {
-  file    : string;
-  line    : int;        (* 1-based line of the opening fence *)
-  ignore_ : bool;       (* ```camdl ignore directive present *)
-  context : string option;  (* ```camdl context=NAME — hidden preamble to prepend *)
-  source  : string;
+  file     : string;
+  line     : int;            (* 1-based line of the opening fence *)
+  ignore_  : bool;           (* ```camdl ignore *)
+  preamble : string option;  (* ```camdl preamble=LABEL *)
+  source   : string;
 }
 
-(* A directive `context=NAME` names a hidden preamble compiled before the block
-   but never rendered: it supplies the compartments/parameters/dimensions a
-   focused fragment references but does not itself declare. Preambles live in
-   `<dir-of-doc>/doctest-contexts/NAME.camdl`. *)
-let parse_context tokens =
+type doc = {
+  blocks    : block list;
+  preambles : (string * string) list;  (* label -> hidden source *)
+  datas     : (string * string) list;  (* relative path -> file content *)
+}
+
+let parse_preamble toks =
   List.find_map
     (fun t ->
-       if starts_with ~prefix:"context=" t then
-         Some (String.sub t 8 (String.length t - 8))
+       if starts_with ~prefix:"preamble=" t
+       then Some (String.sub t 9 (String.length t - 9))
        else None)
-    tokens
+    toks
 
-(* A two-state scanner. A fence is any line whose first non-blank chars are
-   ```; when not inside a block it opens one, when inside it closes one. Only
-   blocks whose info string's first token is "camdl" are captured; ```bash /
-   bare ``` blocks are consumed-and-discarded so their bodies never leak. CAMDL
-   block bodies do not themselves contain ``` lines. *)
-let extract_blocks file : block list =
+(* Recognise `<!-- camdl-doctest-KIND: ARG` on a line. ARG is everything after
+   the colon, with any trailing `-->` and whitespace stripped. *)
+let comment_open line =
+  let t = lstrip line in
+  let pfx = "<!-- camdl-doctest-" in
+  if starts_with ~prefix:pfx t then
+    let rest = String.sub t (String.length pfx) (String.length t - String.length pfx) in
+    match String.index_opt rest ':' with
+    | Some i ->
+      let kind = String.trim (String.sub rest 0 i) in
+      let arg0 = String.sub rest (i + 1) (String.length rest - i - 1) in
+      let arg = match find_sub ~sub:"-->" arg0 with
+        | Some j -> String.sub arg0 0 j
+        | None -> arg0
+      in
+      Some (kind, String.trim arg)
+    | None -> None
+  else None
+
+(* Single pass: fenced ```camdl blocks + HTML-comment preamble/data chunks.
+   Code-fence bodies and comment bodies are kept verbatim. *)
+let parse_doc file : doc =
   let ic = open_in file in
-  let blocks = ref [] in
-  let in_block = ref false in
-  let capturing = ref false in
-  let buf = Buffer.create 256 in
-  let start = ref 0 in
-  let ign = ref false in
-  let ctx = ref None in
+  let blocks = ref [] and preambles = ref [] and datas = ref [] in
+  let in_block = ref false and capturing = ref false in
+  let buf = Buffer.create 256 and start = ref 0 and ign = ref false and pre = ref None in
+  let in_comment = ref false and ckind = ref "" and carg = ref "" in
+  let cbuf = Buffer.create 256 in
   let lineno = ref 0 in
+  let flush_comment () =
+    (match !ckind with
+     | "preamble" -> preambles := (!carg, Buffer.contents cbuf) :: !preambles
+     | "data"     -> datas := (!carg, Buffer.contents cbuf) :: !datas
+     | _ -> ());
+    in_comment := false;
+    Buffer.clear cbuf
+  in
   (try
      while true do
        let line = input_line ic in
        incr lineno;
        let t = lstrip line in
-       if starts_with ~prefix:"```" t then begin
-         if not !in_block then begin
-           let info = String.trim (String.sub t 3 (String.length t - 3)) in
-           match tokens info with
-           | "camdl" :: rest ->
-             in_block := true; capturing := true;
-             start := !lineno; ign := List.mem "ignore" rest;
-             ctx := parse_context rest;
-             Buffer.clear buf
-           | _ ->
-             in_block := true; capturing := false
-         end else begin
+       if !in_comment then begin
+         (* The closing `-->` must be on its own line. CAMDL transition syntax
+            (`S --> I`) contains `-->`, so matching it mid-line would truncate
+            a preamble at its first transition. *)
+         if String.trim line = "-->" then flush_comment ()
+         else begin
+           Buffer.add_string cbuf line;
+           Buffer.add_char cbuf '\n'
+         end
+       end
+       else if !in_block then begin
+         if starts_with ~prefix:"```" t then begin
            if !capturing then
              blocks :=
-               { file; line = !start; ignore_ = !ign; context = !ctx;
+               { file; line = !start; ignore_ = !ign; preamble = !pre;
                  source = Buffer.contents buf }
                :: !blocks;
            in_block := false; capturing := false
          end
-       end else if !in_block && !capturing then begin
-         Buffer.add_string buf line;
-         Buffer.add_char buf '\n'
+         else if !capturing then begin
+           Buffer.add_string buf line;
+           Buffer.add_char buf '\n'
+         end
+       end
+       else begin
+         match comment_open line with
+         | Some (kind, arg) ->
+           in_comment := true; ckind := kind; carg := arg; Buffer.clear cbuf;
+           (* a single-line `<!-- … --> ` closes immediately with empty body *)
+           if contains ~sub:"-->" line then flush_comment ()
+         | None ->
+           if starts_with ~prefix:"```" t then begin
+             let info = String.trim (String.sub t 3 (String.length t - 3)) in
+             match tokens info with
+             | "camdl" :: rest ->
+               in_block := true; capturing := true;
+               start := !lineno; ign := List.mem "ignore" rest;
+               pre := parse_preamble rest;
+               Buffer.clear buf
+             | _ ->
+               in_block := true; capturing := false
+           end
        end
      done
    with End_of_file -> ());
   close_in ic;
-  List.rev !blocks
+  { blocks = List.rev !blocks;
+    preambles = List.rev !preambles;
+    datas = List.rev !datas }
+
+(* Materialise inline data chunks into a fresh temp dir; returns its path.
+   Block `read("data/x.tsv")` paths resolve against this dir. *)
+let materialize_data datas =
+  let dir = make_temp_dir () in
+  List.iter (fun (path, content) -> write_file (Filename.concat dir path) content) datas;
+  dir
 
 (* ── classification ───────────────────────────────────────────────────────── *)
 
@@ -126,34 +228,25 @@ type verdict =
   | Fail of Diagnostics.diagnostic list
   | Ice of string
 
-let read_file path =
-  let ic = open_in path in
-  let n = in_channel_length ic in
-  let s = really_input_string ic n in
-  close_in ic;
-  s
-
-let classify (b : block) : verdict =
+let classify ~preambles ~basedir (b : block) : verdict =
   if b.ignore_ then Skip_ignore
   else
-    (* Effective source = optional hidden preamble + the block body. *)
-    let eff =
-      match b.context with
-      | None -> Ok b.source
-      | Some name ->
-        let path =
-          Filename.concat
-            (Filename.concat (Filename.dirname b.file) "doctest-contexts")
-            (name ^ ".camdl")
-        in
-        if Sys.file_exists path then Ok (read_file path ^ "\n" ^ b.source)
-        else Error (Printf.sprintf "context '%s' not found (%s)" name path)
+    let prefix =
+      match b.preamble with
+      | None -> Ok ""
+      | Some label ->
+        (match List.assoc_opt label preambles with
+         | Some src -> Ok (src ^ "\n")
+         | None -> Error (Printf.sprintf "preamble '%s' not defined in doc" label))
     in
-    match eff with
+    match prefix with
     | Error msg -> Ice msg
-    | Ok src ->
+    | Ok pre ->
+      let src = pre ^ b.source in
+      (* filename's directory is the data dir, so read("…") resolves there *)
+      let filename = Filename.concat basedir "doc.camdl" in
       (match
-         (try `Ok (Compiler.collect_diagnostics ~filename:b.file src)
+         (try `Ok (Compiler.collect_diagnostics ~filename src)
           with e -> `Raised (Printexc.to_string e))
        with
        | `Raised msg -> Ice msg
@@ -165,10 +258,9 @@ let classify (b : block) : verdict =
          if errors = [] then Pass
          else begin
            let codes = List.map (fun (d : Diagnostics.diagnostic) -> d.code) errors in
-           if contains ~sub:"read(" src || List.mem "E200" codes then Skip_data
-           (* With a named context the block is asserted to compile, so any
-              remaining error is a genuine FAIL, not a fragment to skip. *)
-           else if b.context <> None then Fail errors
+           if List.mem "E200" codes then Skip_data
+           (* a preamble asserts the block compiles — residual error is a FAIL *)
+           else if b.preamble <> None then Fail errors
            else if List.for_all (fun c -> c = "E001") codes then Skip_parse
            else if not (contains ~sub:"compartments" b.source) then Skip_fragment
            else Fail errors
@@ -181,12 +273,13 @@ let run ~gate ~verbose files =
   let n_parse = ref 0 and n_frag = ref 0 and n_data = ref 0 and n_ign = ref 0 in
   List.iter
     (fun file ->
-       let blocks = extract_blocks file in
-       Printf.printf "\n%s — %d camdl block(s)\n" file (List.length blocks);
+       let doc = parse_doc file in
+       let basedir = materialize_data doc.datas in
+       Printf.printf "\n%s — %d camdl block(s)\n" file (List.length doc.blocks);
        List.iter
          (fun b ->
             incr total;
-            match classify b with
+            match classify ~preambles:doc.preambles ~basedir b with
             | Pass -> incr npass; if verbose then Printf.printf "  pass   L%d\n" b.line
             | Skip_ignore ->
               incr n_ign; if verbose then Printf.printf "  skip   L%d  (ignore)\n" b.line
@@ -203,8 +296,9 @@ let run ~gate ~verbose files =
               Printf.printf "  FAIL   L%d  [%s]  %s\n" b.line (String.concat "," codes) msg
             | Ice msg ->
               incr nfail;
-              Printf.printf "  FAIL   L%d  [ICE]  compiler raised: %s\n" b.line msg)
-         blocks)
+              Printf.printf "  FAIL   L%d  [ICE]  %s\n" b.line msg)
+         doc.blocks;
+       rm_rf basedir)
     files;
   let nskip = !n_parse + !n_frag + !n_data + !n_ign in
   Printf.printf "\n── summary ──\n";
