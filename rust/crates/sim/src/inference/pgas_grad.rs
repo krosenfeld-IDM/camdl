@@ -394,13 +394,23 @@ pub fn complete_data_loglik_grad(
     let mut cum_flows = vec![0u64; n_tr];
 
     for s in 0..n_substeps {
-        let t = t_start + s as f64 * dt;
-        let counts_before = &trajectory.substeps[s].counts_before;
         let rec = &trajectory.substeps[s];
+        // Realized substep time/duration — the single source of truth (Stage 3).
+        // Under snap they equal the uniform grid; pinned so a mispopulated record
+        // is caught (relaxes when exact tiling lands in 2c).
+        if cfg!(debug_assertions) {
+            assert_eq!(rec.t0, t_start + s as f64 * dt,
+                "snap invariant: rec.t0 != t_start + s*dt at substep {}", s);
+            assert_eq!(rec.dt_substep, dt,
+                "snap invariant: rec.dt_substep != dt at substep {}", s);
+        }
+        let t = rec.t0;
+        let dt_s = rec.dt_substep;
+        let counts_before = &rec.counts_before;
 
         let (td, td_grad) = log_transition_density_grad(
             model, counts_before, &rec.flows, &rec.gammas,
-            params, t, dt, d, rate_grads_for_run,
+            params, t, dt_s, d, rate_grads_for_run,
         )?;
 
         if !td.is_finite() {
@@ -416,7 +426,7 @@ pub fn complete_data_loglik_grad(
         // an estimated parameter (typical case: a parameter like `sigma_se`
         // appears directly as the σ² of an overdispersed transition).
         let gamma_grad = log_gamma_density_grad_substep(
-            model, counts_before, &rec.gammas, params, t, dt, estimated_to_model,
+            model, counts_before, &rec.gammas, params, t, dt_s, estimated_to_model,
         )?;
         for i in 0..d { grad[i] += gamma_grad[i]; }
 

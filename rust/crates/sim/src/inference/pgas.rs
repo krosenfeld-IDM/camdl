@@ -576,15 +576,26 @@ pub fn complete_data_loglik(
     let t_start = model.model.simulation.t_start;
 
     for s in 0..n_substeps {
-        let t = t_start + s as f64 * dt;
+        let rec = &trajectory.substeps[s];
+        // Realized substep time/duration — the single source of truth (Stage 3).
+        // Consumers read these, never recompute s*dt. Under snap they equal the
+        // uniform grid; pinned here so a producer that mispopulates the record is
+        // caught (this invariant relaxes when exact tiling lands in 2c).
+        if cfg!(debug_assertions) {
+            assert_eq!(rec.t0, t_start + s as f64 * dt,
+                "snap invariant: rec.t0 != t_start + s*dt at substep {}", s);
+            assert_eq!(rec.dt_substep, dt,
+                "snap invariant: rec.dt_substep != dt at substep {}", s);
+        }
+        let t = rec.t0;
+        let dt_s = rec.dt_substep;
         // Use the pre-step snapshot stored in the record — this is the
         // exact state step_one evaluated propensities from.
-        let counts_before = &trajectory.substeps[s].counts_before;
-        let rec = &trajectory.substeps[s];
+        let counts_before = &rec.counts_before;
 
         // Transition density
         let td = log_transition_density_substep(
-            model, counts_before, &rec.flows, &rec.gammas, params, t, dt,
+            model, counts_before, &rec.flows, &rec.gammas, params, t, dt_s,
         )?;
         if !td.is_finite() {
             log::debug!("complete_data_loglik: -inf transition density at substep {} (t={:.1})", s, t);
@@ -613,7 +624,7 @@ pub fn complete_data_loglik(
             let real_s_local = RealState::new(model.real_local_to_global.len());
             let ctx = EvalCtx {
                 model, int_s: &int_s_local, real_s: &real_s_local,
-                params, t: model.model.simulation.t_start + s as f64 * dt, dt,
+                params, t, dt: dt_s,
                 projected: None, int_float_override: None,
             };
             let mut gamma_idx_local = 0;
@@ -626,7 +637,7 @@ pub fn complete_data_loglik(
                     let mut s = IntState::new(n_int_local);
                     s.counts.copy_from_slice(&rec.counts_before);
                     s
-                }, &real_s_local, params, ctx.t, dt, &mut local_props);
+                }, &real_s_local, params, ctx.t, dt_s, &mut local_props);
                 for &tr_idx in group {
                     let rate = local_props[tr_idx];
                     if rate <= RATE_EPSILON { continue; }
@@ -637,8 +648,8 @@ pub fn complete_data_loglik(
                         let sigma_sq = eval_resolved(resolved_od, &ctx);
                         if gamma_idx_local < rec.gammas.len() && sigma_sq > 1e-30 {
                             let g = rec.gammas[gamma_idx_local];
-                            let shape = dt / sigma_sq;
-                            let scale = sigma_sq / dt;
+                            let shape = dt_s / sigma_sq;
+                            let scale = sigma_sq / dt_s;
                             // log Gamma(g; shape, scale) = (shape-1)*ln(g) - g/scale
                             //   - shape*ln(scale) - ln(Gamma(shape))
                             let log_gamma_density = (shape - 1.0) * g.max(LOG_PROB_FLOOR).ln()
@@ -1091,9 +1102,13 @@ pub fn csmc_as(
     // Verify: density evaluation of each traceback record is finite.
     if cfg!(debug_assertions) {
         for (s, rec) in trajectory_substeps.iter().enumerate() {
-            let t = t_start + s as f64 * dt;
+            assert_eq!(rec.t0, t_start + s as f64 * dt,
+                "snap invariant: rec.t0 != t_start + s*dt at traceback substep {}", s);
+            assert_eq!(rec.dt_substep, dt,
+                "snap invariant: rec.dt_substep != dt at traceback substep {}", s);
+            let t = rec.t0;
             let verify_td = log_transition_density_substep(
-                model, &rec.counts_before, &rec.flows, &rec.gammas, params, t, dt,
+                model, &rec.counts_before, &rec.flows, &rec.gammas, params, t, rec.dt_substep,
             );
             if let Ok(td) = verify_td {
                 debug_assert!(td.is_finite(),
