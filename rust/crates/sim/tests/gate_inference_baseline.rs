@@ -82,10 +82,10 @@ fn transition(name: &str, sto: Vec<StoichiometryEntry>, rate: Expr) -> Transitio
 
 /// The `sir` recovery reference: closed SIR, weekly incidence(infection) ~
 /// NegBin(mean = rho·proj, r = k), at truth (β=0.4, γ=0.15, ρ=0.6, k=10),
-/// scored against the committed seed-1 synthetic weekly-case series. Exercises
-/// the FlowSum (incidence) projection + chain-binomial dynamics through the full
-/// bootstrap filter.
-fn sir_incidence() -> (MultiStreamObsModel, Arc<CompiledModel>, Vec<f64>) {
+/// scored against the committed seed-1 synthetic weekly-case series, with the
+/// observations placed at `obs_times`. Exercises the FlowSum (incidence)
+/// projection + chain-binomial dynamics through the full bootstrap filter.
+fn build_sir(obs_times: Vec<f64>) -> (MultiStreamObsModel, Arc<CompiledModel>, Vec<f64>) {
     let n = Expr::PopSum(PopSumExpr { pop_sum: vec!["S".into(), "I".into(), "R".into()] });
     let m = Model {
         name: "sir_weekly_negbin".into(),
@@ -158,20 +158,37 @@ fn sir_incidence() -> (MultiStreamObsModel, Arc<CompiledModel>, Vec<f64>) {
         projection: StreamProjection::FlowSum(vec![inf]),
         // seed-1 synthetic weekly reported cases (see the sir case README).
         observations: vec![16.0, 166.0, 626.0, 1303.0, 1260.0, 1023.0, 327.0, 91.0, 58.0, 6.0, 2.0],
-        obs_times: vec![7.0, 14.0, 21.0, 28.0, 35.0, 42.0, 49.0, 56.0, 63.0, 70.0, 77.0],
+        obs_times,
     };
     let obs_model = MultiStreamObsModel::new(vec![spec], compiled.clone()).unwrap();
     let params = compiled.default_params.clone();
     (obs_model, compiled, params)
 }
 
+/// On-grid weekly observations (the validated `sir` recovery case).
+fn sir_incidence() -> (MultiStreamObsModel, Arc<CompiledModel>, Vec<f64>) {
+    build_sir(vec![7.0, 14.0, 21.0, 28.0, 35.0, 42.0, 49.0, 56.0, 63.0, 70.0, 77.0])
+}
+
+/// Same model + data, observations at OFF-GRID times (dt=1): the PF lands on each
+/// via a shortened final substep. Pins the off-grid likelihood path the on-grid
+/// corpus cannot reach — the round-2 review's vacuity gap, and exactly the path
+/// the unified-timeline refactor's snap-vs-exact policy changes.
+fn sir_incidence_offgrid() -> (MultiStreamObsModel, Arc<CompiledModel>, Vec<f64>) {
+    build_sir(vec![7.3, 14.6, 21.9, 29.2, 36.5, 43.8, 51.1, 58.4, 65.7, 73.0, 79.3])
+}
+
 type RefBuilder = fn() -> (MultiStreamObsModel, Arc<CompiledModel>, Vec<f64>);
-const REFERENCES: &[(&str, RefBuilder)] = &[("sir_incidence_truth", sir_incidence)];
+const REFERENCES: &[(&str, RefBuilder)] = &[
+    ("sir_incidence_truth", sir_incidence),
+    ("sir_incidence_offgrid", sir_incidence_offgrid),
+];
 
 /// Committed baselines: (name) -> PF marginal log-likelihood, captured on the dev
 /// machine. Re-capture with CAMDL_CAPTURE_BASELINE=1 (see the module header).
 const BASELINES: &[(&str, f64)] = &[
     ("sir_incidence_truth", -5.94512991469047165e1),
+    ("sir_incidence_offgrid", -5.97885420281019435e1),
 ];
 
 fn run(builder: RefBuilder) -> f64 {
