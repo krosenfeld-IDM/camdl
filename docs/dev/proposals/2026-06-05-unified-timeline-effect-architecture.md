@@ -37,6 +37,54 @@ observation times while PGAS *snaps* them to the integrator grid. We expose that
 as a single `snap | exact` knob, default `snap`, with a staged path to flipping
 it once it is profiled and validated.
 
+## Terminology
+
+The vocabulary this proposal uses throughout. Defined once here so the design
+sections can stay dense.
+
+- **Process / kernel** — the one legitimately special component: the state-advance
+  that moves the true latent state forward with randomness (the propensity draws).
+  Each backend (Gillespie, tau-leap, ODE, chain-binomial) has its own kernel; this
+  is the part the design does *not* unify.
+- **Substep** — one integrator `dt` step. The process advances substep by substep;
+  many substeps occur between two boundaries.
+- **Boundary** — a point in time where the integrator *must* stop because something
+  is due there: the run end (`t_end`), an output-snapshot time, or a scheduled
+  effect time. Between boundaries the process only advances. The `Boundary` enum
+  names the kinds, and several can coincide at one time (an output and a cull both
+  at t=10).
+- **Effect** — a scheduled modification of, or read from, the state on the
+  timeline: an **observation** (read), an **event** (cohort entry / importation,
+  fired every substep), an **intervention** (cull / vaccinate at scheduled times),
+  a **balance** constraint (population conservation), or a future **reactive**
+  intervention (fired on a state threshold). The typed taxonomy is
+  Observe / Event / Intervene / Constrain / Reset.
+- **Spine / schedule** — the merged, sorted timeline of all boundaries, immutable
+  and shared. Every driver consumes the same spine. Implemented as the `Schedule`
+  type (`sim/src/schedule.rs`).
+- **Cursor** — a small, `Copy`, per-particle *position* in the spine: the indices
+  marking the next un-emitted output (`output_idx`, the **output cursor**) and the
+  next un-applied effect (`effect_idx`). Named for the moving pointer into the
+  sorted times, like a text cursor. Each particle in a swarm carries its own; the
+  spine is never mutated (the CRN invariant below).
+- **Driver** — a top-level loop that turns parameters into a result by walking the
+  spine: `run_forward` (generate a trajectory), `run_filter` (score a likelihood),
+  `run_trajmatch` (deterministic, reserved). Drivers are thin; the kernel and the
+  effects do the work.
+- **snap vs exact** — the two boundary policies. **snap** rounds output/effect
+  times onto the `dt` grid (chain-binomial today; PGAS); **exact** lands the
+  integrator precisely on each boundary (tau-leap / ODE; the bootstrap PF). For
+  dt-independent backends (Gillespie, ODE) they coincide.
+- **fire_steps** — the per-intervention step *indices* (not times) at which an
+  intervention fires, resolved from the run `dt` by `resolve_fire_steps`. This is
+  how chain-binomial snaps an off-grid intervention time onto a step, inside
+  `step_one` — the mechanism the Stage-1 extraction deliberately leaves in place.
+- **CRN** — common random numbers / paired-seed coupling: the same seed must
+  produce the same RNG draw order so paired scenarios stay coupled. Any reorder of
+  draws breaks it. The spine guarantees its half: N particles walk an
+  identically-ordered boundary sequence because the cursor is the only per-particle
+  state and `next_boundary` is pure.
+
 ## The existing infrastructure, and how it is spread
 
 The inventory the design must honour. Citations are to the current tree.
