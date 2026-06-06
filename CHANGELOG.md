@@ -1,0 +1,1482 @@
+# Changelog
+
+All notable changes to camdl. The version covers the DSL + CLI + output/file
+formats (see VERSIONING.md); IR-schema changes (ir/VERSION) are noted under
+their own heading. Pre-1.0: a MINOR bump may include breaking changes.
+## [unreleased]
+
+### Bug Fixes
+
+- *(sim)* Count Gillespie lineage edges in the sub-dt diagnostic
+- *(sim)* Realize batched events against frozen start-of-step pools
+- *(cli)* Infer --event-log format from output extension
+- *(sim)* Gillespie now re-evaluates rates that depend on bare `t`
+- *(compiler)* Preserve negative lower bounds in parameter declarations
+- *(inference)* Thread observation time into obs likelihood/sample/mean
+- *(expander)* Default output schedule covers negative t_start (snap_at obs-only bug)
+- *(profile)* Clean-eval re-pass on IF2 path so mle.toml reports loglik at saved MLE
+- *(events)* Parametric `at [param]` schedules honor the parameter (gh#69)
+- *(events)* Fire always_active events under ode/tau_leap/gillespie (gh#67)
+- *(profile)* Apply gh#34 [estimate].start fall-back before resolver
+- *(profile,if2)* --params trap on inference subcommands no longer shadows --init from_params companion
+- *(profile)* --init from_params/from_mle seeds resolver base values
+- *(scripts)* Review-zip — fix stale paths and curate per-subsystem test lists
+- *(scripts)* Review-zip — exclude docs/dev/{proposals,incidents}/ from all zips
+- *(tree-sitter)* Match hash_lbracket as a node, not a string literal
+- *(parser)* Hint newline-vs-comma in scenario set/scale blocks
+- *(cli)* Skip camdlc version check in test builds
+- *(fit)* IF2 skips degenerate chains instead of aborting the whole fit
+- *(sim)* Clean error for empty observation data instead of a panic
+- *(test)* Collect_table_lookups recurses into Reduce (heal D-inc2 OCaml break)
+- *(parser)* Block-form transition without a rate is E213, not silent rate=0
+- *(sim)* Workload-scale the PF wall-clock watchdog budget + env override (gh#133)
+- *(cli)* Model_hash descends into IR envelope — CAS keys on model (gh#135)
+- *(sim)* Make gh#139 parity test compile (correct IR import paths + trait import)
+- *(golden)* Add scenarios to sia_anchored_dates so it passes the smoke test
+- *(test)* Realign batch fixtures with unified scenario-ref rules
+- *(test)* Match current capability-rejection wording in integration skip
+- *(compiler)* Skip leading # comments in read() data files (closes gh#144)
+- *(pgas_grad)* Add gamma-density gradient w.r.t. σ² (gh#20)
+- *(pgas_grad)* Add obs-density gradient w.r.t. obs-model params (gh#76)
+- *(pgas)* Reintroduce narrowed C1 gate for uncovered gradient arms
+- *(obs_loglik)* Erfc-stable prob in disc-normal grad + corrected audit-H2 branches
+- *(pgas)* Split density-component reporting; demote ancestor-warn noise
+- *(sim)* Gh#81 — structured NonFiniteParameter error replaces misleading DivByZero
+- *(nuts)* Gh#81 — reject non-finite proposals; flag NaN energy as divergent
+- *(inference)* Adapt rescued gh81 PGAS-gradient work to current main
+- *(runid)* Box large Lookup variants + per-attempt staging (M1 review)
+- *(runid)* Ir_version is a String, not u32 (matches ir/VERSION)
+- *(cli)* Fold external --table content into the run identity (gh#147)
+- *(cli)* `fit run` announces the real leaf directory (FitDigest basis) (gh#147)
+- *(cli)* Compile the model once + restore ensemble progress (gh#147)
+- *(cli)* Apply --label on a CAS cache hit so it isn't silently dropped (gh#147)
+- *(fit)* Key PGAS/PMMH identity on init_method + survey (silent-wrong-answer) (gh#147)
+- *(runid)* Reclaim a Mode B `.lock` held by a dead PID (interrupted-fit recovery) (gh#147)
+- *(runid)* Serialize Mode B stale-lock reclaim — close the double-write TOCTOU (gh#147)
+- *(cli)* Fold CAMDL_NO_CONSTANT_FOLD into the IR-cache key (gh#147)
+- *(sim)* Refuse hierarchical priors in PGAS+NUTS (gh#175)
+- *(cli)* Reject unknown fit.toml keys (gh#173)
+- *(dsl)* Incidence() over a stratified transition family sums strata
+- *(dsl)* Resolve let-bound identifiers in observation `projected`
+- *(runid)* Hash CumulativeFlowSum at appended index 4, not 1
+- *(build)* Test phases depend on their builds (gh#178)
+- *(cli)* Reject profile-PMMH steps <= burn-in (gh#102)
+- *(dsl)* E267 accepts expanded intervention-instance names (gh#130)
+- *(dimcheck)* Projected carries its projection's dimension, not P
+
+### Build
+
+- *(make)* Install-camdlc + dev-camdlc for branch dev loops
+- *(make)* Resolve fresh camdlc via PATH-prepend in test-rust
+- Git-cliff config + make changelog + 0.2.0 notes draft
+- *(cliff)* Strict release-tag pattern; note prerelease bump caveat
+
+### CI
+
+- Run rust tests with --no-fail-fast
+- Remove release.yml — unfinished, never-green, no releases needed
+- *(cli)* Gate inference.md + debugging.md now that their drift is fixed
+- Split into per-area workflows for granular status badges
+
+### Documentation
+
+- *(proposal)* Simulate_with_lineages — line lists and trees
+- *(proposal)* Individual sampling layer (supersedes simulate_with_lineages v1)
+- *(proposal)* Note deferred Cond-branch handling for #[lineage]
+- *(proposal)* Park Tier-5 oracle choice pending landscape survey
+- *(proposal)* Fix Tier-4 coalescent rate (was wrong by I^2/N)
+- Add docs/lineages.md — user reference for the lineage layer
+- *(proposal)* Commit the sampling milestone design
+- *(proposal)* Three-layer lineage architecture (resampling + likelihood)
+- *(proposal)* Apply review fixes to the three-layer RFC
+- *(proposal)* Resolve VGsim oracle question; pin MASTER/nosoi; drop all verify markers
+- Rewrite lineages.md for the three-layer event-log workflow
+- *(lineages)* Document all-individuals + stratified sampling
+- *(proposal)* Seed-timing inference for early-outbreak models
+- *(proposal)* Record seed-timing mechanism-B implementation + bug fix
+- *(notes)* Scaling assessment of the lineage workflow
+- *(proposal)* Human vs pathogen migration + deme trajectory
+- *(proposal)* Calendar time — dated I/O boundary translator
+- *(proposal)* Calendar time — verify engine origin-invariance
+- Add docs/dates.md — canonical reference for calendar time
+- *(claude.md)* Alpha-status updates + DSL design principle for agent collaboration
+- *(spec)* Correct §2.1 month/year conversion constants to Gregorian
+- *(proposal)* Typed time — anchored vs unanchored, exact vs calendar durations
+- *(cheatsheet)* One-page DSL surface orientation
+- *(claude.md)* Require reading normative docs and verifying code before structural proposals
+- *(cheatsheet)* Drop reference to deleted incident report
+- *(claude.md)* Require evidence inline with claims; classify discrepancies; tells for self-check
+- *(typed-time)* Address upstream review (A/B/C); land migration walkthrough and bare-numeric warning
+- *(typed-time)* Add date_range generator to Phase 2
+- *(typed-time)* Finalize proposal with corpus check + punch-list fixes
+- *(typed-time)* Fix date_range quarterly example (end now lands on cadence)
+- *(typed-time)* Phase 3 — integrate vocabulary into dates/spec/features/cheatsheet
+- *(claude.md)* Bug fixes follow TDD discipline (red → green → refactor)
+- *(proposals)* Survival-conditioned likelihood, revised after review
+- *(proposals)* Unified diagnostic surface RFC
+- *(proposals)* Gh#71 stuck-chain diagnostics RFC
+- *(proposals)* Gh#74 Option A — warm-chain init mode for camdl profile
+- *(proposals)* Gh#71 — add LHS-on-posterior-sampling-stage warning (Check A')
+- CLI UX proposal — unify chain-start under --init; demote --params
+- CLI UX proposal — revision 2 (post-discussion)
+- CLI UX proposal rev 2 — fold in doc-agent audit feedback
+- Docs: CLI UX proposal rev 2 — split from-point back into
+- CLI UX proposal — add full type design + post-impl audit
+- *(notes)* Gh#83/gh#85 — CLI UX rev 2 implementation status
+- *(notes)* Update CLI UX impl status with pfilter migration
+- CLI UX proposal — fix precedence + add ScenarioOverridden warning + resolve A/B/C/D
+- *(notes)* Update CLI UX impl status — Step 2 (simulate + lineage) done
+- *(notes)* CLI UX impl — audit-checklist snapshot + handoff notes for next session
+- *(notes)* CLI UX impl — session handoff (steps 4-5 done, 6-12 deferred)
+- CLI UX proposal — addendum on partial-resolution mode
+- *(notes)* CLI UX impl — steps 6 + 9 status update
+- *(proposal)* Adaptive PMMH proposal scale via Robbins-Monro tuning
+- *(proposal)* Incorporate downstream-agent review of PMMH RM proposal
+- Docs(proposal): typed-time amendments — reserved-id diag, mode-switch
+- Docs(proposal): priors on time-typed parameters — unit-aware sugar
+- *(review)* 2026-05-26 last-week audit (7C/19H/22M/9L)
+- *(review)* 2026-05-26 upstream OCaml-compiler review + comparison (8C/6H/2M)
+- *(proposal)* Typed indexed-reference resolver for OCaml frontend
+- *(review)* 2026-05-26 upstream Rust-engine review + comparison (6C/9H/2M)
+- *(incident)* Profile-PMMH silently MLE-with-flat-priors before 5f658a16
+- Tidy repo root — move keepables to docs/dev/, prune stale scratch
+- *(types-reference)* Refresh stale claims; update cross-refs after rename
+- Remove agent-channel logs and workspace-rot-scan note
+- *(review)* 2026-05-26 upstream spec review + per-claim assessment
+- *(spec)* Cheap-batch fixes from upstream review (F7, F15, F16, F17, F27, F29, F30)
+- *(review,spec)* Restructure spec review + revise F1 disposition; rewrite §1 to match design
+- *(review,spec)* Revise spec-review assessment per upstream feedback; remove stale --table CLI text
+- *(spec)* Document default output, fix stale observations status
+- *(proposal)* Coordinate-keyed RNG seeding for orchestration determinism
+- Fix E before/after figure, figures index, Expr-deserialize maintenance note
+- *(proposal)* Shared per-coordinate bindings + reduction node in the IR
+- *(proposal)* Revise shared-bindings/reduction after adversarial review
+- *(proposal)* Add scope guard, all-backend landing condition, golden build-out
+- *(proposal)* Sharpen the binding-fill granularity invariant
+- *(perf)* Fix D before/after benchmark (IR size + parse cliff)
+- *(review)* Spec-review F9 is code-protected (E500/E501), downgrade off Critical
+- *(perf)* Fix B before/after scaling figure + sweep data
+- *(perf)* Record the OOM watchdog panic from benchmarking pre-Fix-B compile
+- *(proposal)* Compiler memory guardrail to prevent host OOM
+- *(perf)* Correct the scaling note's Fix D/B status to match what landed
+- *(bench)* In-context README for benchmarking + the PMMH profiling plan
+- *(scaling)* Refresh the assets README to match disk
+- *(perf)* Inference scaling note + national-scale roadmap
+- *(perf)* Revise the national-scale roadmap to PGAS-centric with measured cross-method data
+- *(perf)* De-risk sparse coupling — fold pass + compile-time W, not a sparse-IR rewrite
+- *(proposals)* Unified observation-data surface + pinned t_cond
+- *(proposal)* §5.2 — likelihood seam is unified (gh#139), not "lands at :393"
+- *(run-spec)* Reconcile to shipping code (results/sims, tagged run.json, model_hash contract)
+- *(proposals)* CLI UX rev 3 — CAS-default I/O, nested progress, finish resolver migration
+- *(run-spec)* §4 rewrite — CAS-default output, --stdout opt-out, list/show/cat as primary path
+- Merge run.json contract (§9.5/§9.6) + defer obs-flag work to bca0360
+- *(notes)* Confirm read-tsv comment crash root cause; link gh#144
+- *(perf)* Compiler profiling baseline — serialize is 97%
+- *(perf)* Flambda is a null result; compact-serialization proposal
+- *(perf)* Streaming-pretty after-sweep + before/after RSS figure
+- *(perf)* Compact-format sweep + before/after & progression figures
+- *(proposals)* Document archive epochs + release-tag scheme
+- *(proposals)* Archive 48 implemented/superseded proposals (triage)
+- *(proposals)* Tidy proposals tree — drop INFLIGHT, relocate notes
+- *(proposals)* Archive 5 partial proposals with disposition notes
+- *(proposals)* Split 2 partials, archive 3 (triage pass 3)
+- *(proposals)* Archive inference-minor-cleanup (implemented)
+- *(pgas-grad)* Post-cleanup status on gh#20+gh#76 derivation note
+- *(pgas)* Gh#80 diagnosis — events/density math is correct as-is
+- *(pgas-grad)* Cross-reference gh#80 — no gradient impact
+- *(inference)* Note PGAS support for discrete-event seeding
+- *(proposals)* Archive malaria-model-features; migrate #5/#5b to reactive
+- *(commands)* Add command taxonomy and workflows map
+- *(proposal)* Content-addressed run identity
+- *(proposal)* Harden CAS run-identity against adversarial review
+- *(proposal)* Round-2 hardening + new-subcommand contract
+- *(proposal)* Fold in upstream review (path identity + obs/exact-set)
+- *(proposal)* Round-4 coherence fixes (converged)
+- *(notes)* PF eval-path profiling — what pre-resolution bought
+- *(notes)* Sparse-coupling fold A/B — O(P^2)->O(P*k), byte-identical
+- *(dev)* CAS path-shape contract for downstream consumers (M4, gh#147)
+- Retire `camdl if2` from docs, clear stale module headers + dev-milestone archaeology (gh#147)
+- *(recovery)* Describe the harness as manual compare, not auto-assert
+- *(cas)* Sync path-shape contract to code — add sim_ensemble + missing fields
+- *(proposal)* Camdl docs subcommand (embedded, version-locked)
+- *(spec)* De-stale §21 CLI reference
+- *(spec)* Clarify tables are indexed-only; scalars are parameters
+- *(proposal)* Camdl init subcommand (project scaffolding)
+- De-stale CLI references in AGENTS.md + language-spec
+- *(workflow)* Canonical fit-workflow runbook (camdl docs workflow)
+- *(fit-toml)* Full fit.toml schema reference (camdl docs fit-toml)
+- *(concepts)* The reasoning behind the fit workflow (camdl docs concepts)
+- *(agents)* Slim workflow / fit.toml / where-docs-live to point at camdl docs
+- Document the camdlc<->camdl version guard + make-test workflow
+- *(proposal)* Mark schedule unification A complete; A.3 folds into B
+- *(proposal)* Frame schedule split as two domain objects + the inference join
+- *(ir-spec)* Correct the observation-data join description
+- *(dev)* Verified alpha-issue triage + Gate 3b proposal
+- *(dev)* Batch A inference-gradient triage note
+- *(dev)* Proposal — unify compiler diagnostic/result surface (gh#181)
+- *(dev)* Proposal — observation-data binding (gh#171)
+- *(dev)* Obs-binding — type-flow, malaria scope, summary-stat forward
+- *(dev)* Obs-binding — Counted in scope, column-typing, scorer-in-fit, tests
+- *(dev)* Proposal — unified timeline-effect architecture
+- *(dev)* Unified-arch — ODE in scope (third driver) + type/flow diagram
+- *(dev)* Unified-arch — full Testing section, trait diagram, ODE seam reserved
+- *(dev)* Unified-arch — near-total rewrite to staged three-layer shape
+- *(dev)* Unified-arch — fold round-2 review; oracle-first Stage 0
+- *(spec)* Compiler-verify 21 more blocks; fix 2 doc bugs found
+- Expand doctest gate to 6 docs; fix intro age-SIR drift
+- *(dev)* Capture doctest drift findings + CLI run-gate prototype
+- Fix CLI command drift in inference.md and debugging.md
+- *(dev)* Mark projected bug + CLI drift resolved in findings note
+- *(spec)* Compiler-verify 5 more feature blocks (49 -> 54)
+- *(dev)* Engineering note on the doc compiler-testing effort
+- Versioning policy + agent release-notes pipeline (RFC)
+- *(readme)* Add Docs/license/status/stack badges
+
+### Features
+
+- *(install)* Linux + macOS install script (#63)
+- *(ir)* #[lineage] foundation — DSL attribute, linearity check, IR fields
+- *(ir)* Bump seir_spatial_5 test fixture to ir_version 0.5
+- *(sim)* Lineage runtime — observer seam, identity tracking, line-list writers, offline tree
+- *(cli)* Camdl simulate --lineages + offline camdl lineage tree
+- *(sim)* Stratified parent attribution — real DemeId + parent_deme
+- *(sim)* Lineage tracking on tau-leap + chain-binomial backends
+- *(cli)* Offline lineage sojourn + cohort projections
+- *(sim)* Split lineage tracking into Layer-1 event log + Layer-2 realize
+- *(cli)* Wire event-log recording + `lineage realize`; rework tests
+- *(lineage)* All-individuals sampling with pendant tips at sampling time
+- *(cli)* All-individuals + stratified sampling for lineage tree
+- *(sim)* Smooth-importation seed mechanism + identifiability test
+- *(lineage)* Per-individual deme trajectory; fix migrant sampling
+- *(lineage)* Cross-deme/migration statistics + paired migration goldens
+- *(ir)* Caltime — calendar-date <-> internal-time boundary conversion
+- *(cli)* Dated data loader — calendar-time boundary translator (phase 2)
+- *(ir)* Time parameter-kinds (instant/duration) + numeric origin in IR (phase 3)
+- *(cli)* --dates calendar column in simulate output (phase 4)
+- *(cli)* Render instant-kind estimands as calendar dates in fit summary
+- *(compiler)* Typed-time Phase 1 — Rules 1, 2, 4, 5, 7 + W326
+- *(compiler)* Typed-time Phase 2 — calendar primitives + date_range
+- *(profile)* Add PMMH as a per-cell algorithm
+- *(tree-sitter)* Refresh grammar against current DSL surface, commit
+- *(cli)* Unify simulate and batch under one run_job engine
+- *(ir)* Add inert n-ary Reduce expression node (Fix D, increment 1)
+- *(compiler)* Emit Reduce for Mul-tree sums (Fix D inc. 2 — kills parse cliff)
+- *(ir)* Inert shared-binding IR surface (Fix B, increment 1a)
+- *(expander)* Extract state-only lets into shared bindings (Fix B, increment 1b)
+- *(sim)* Reject param-bearing shared bindings at compile time
+- *(bench)* `make profile-pmmh` — flamegraph the PMMH inference step
+- *(cli,sim)* --pf-wallclock-timeout flag + split PFWallclockTimeout from PFDegenerate (closes gh#133)
+- *(cli)* Compile spinner for blocking camdlc subprocess
+- *(sim,cli)* Per-timestep progress bar for single-run simulate
+- *(dsl)* Instant cell-kind tables accept ISO dates via origin
+- *(compiler)* Env-gated per-pass timing (CAMDL_TIME_PASSES)
+- *(bench)* Compiler-only timing harness (bench-compile)
+- *(ir)* Compact IR JSON serialization — 4.6x faster compile, 5x smaller IR
+- *(dsl)* E222 names the parameter seam for scalar read() (0-dim table)
+- *(dsl)* Wire min(a,b) / max(a,b) to BinOp Min/Max
+- *(sim)* CAMDL_EVAL_UNRESOLVED bench/validation switch
+- *(compiler)* Sparse-coupling constant-fold pass (opt-in)
+- *(compiler)* Run sparse-coupling constant-fold by default
+- *(runid)* Canonical hasher, ContentHash, run_id (M1.1)
+- *(runid)* Hand-written ContentAddressed for the ir tree (M1.2)
+- *(runid)* Derive(RunInput) macro + digest/leaf shapes (M1.3)
+- *(runid)* RunRecord/run.json + CasStore commit modes (M1.4)
+- *(runid)* Factored store-path Layout (M2.1)
+- *(cli)* Wire simulate + batch + reader through the new CAS (M2.3-M2.6)
+- *(runid)* Deterministic substep-cap watchdog for PF (M3.1)
+- *(runid)* Recursive exact-set manifest for nested leaf files
+- *(runid)* Fit-stage CAS writer + readers (M3.2 commit 1)
+- *(runid)* Resume on CAS — base read-only, distinct leaf (M3.2 commit 2)
+- *(cli)* Content-address profile runs — writer + reader + ReplicateSet removal (M3.3)
+- *(cli)* Content-address pfilter evals — writer + reader (M3.3, gh#147)
+- *(cli)* Content-address survey runs — writer + reader + legacy retirement (M3.3, gh#147)
+- *(cli)* Derived run index + `camdl reindex` — fast exact-id lookup, run.json is truth (M4, gh#147)
+- *(cli)* Simulate writes CAS by default + per-cell leaves for multi-run (gh#147)
+- *(cli)* Store the combined ensemble TSV in CAS; simulate/lineage stop writing TSV to stdout (gh#147)
+- *(cli)* Store the lineage event log in CAS alongside traj.tsv (gh#147)
+- *(cli)* Browse-UX — list collapses ensemble members, accepts --root; cached: line is rooted (gh#147)
+- *(cli)* Add simulate --stdout opt-out; sync help to CAS-default; banner shows run_id (gh#147)
+- *(cli)* Consolidated progress — Reporter/Task + multi-cell simulate bar + --no-progress (gh#147)
+- *(cli)* Progress phase 2+3 — fill PGAS/pfilter/survey gaps, migrate IF2/PMMH/profile onto Reporter (gh#147)
+- *(cli)* Label progress rate with units (`0.40 cells/s`); ensemble line shows the full rooted path (gh#147)
+- *(cli)* Tidy unified status messages — status module + compile banner + storing/ensemble/stored (gh#147)
+- *(cli)* Unify the store banner across survey/pfilter/fit (gh#147)
+- *(cli)* Concise compile banner — drop the temp IR path, source shown project-relative (gh#147)
+- *(cli)* Content-addressed compiled-IR cache — compile a .camdl once, reuse across runs (gh#147)
+- *(cli)* Compact byte sizes (no space) + IR-vs-source expansion ratio on the compile banner (gh#147)
+- *(cli)* Add `fit run --parallel N` to cap the Rayon pool (gh#162)
+- *(compiler)* Add model linter pass + L402 dead-compartment lint (gh#168)
+- *(compiler)* --json-errors structures warnings/lints too (gh#170)
+- *(cli)* `camdl docs <topic>` — embedded version-locked usage guides (v1)
+- *(cli)* Docs nudge in `camdl --help` footer (agent discoverability)
+- *(cli)* Serve workflow / fit-toml / concepts topics
+- *(dsl)* Wire output trajectory cadence, at-times, and format
+- *(dsl)* Accept dt in the simulate block (gh#161)
+- *(sim)* BetaBinomial obs-density gradient helper (gh#76)
+- *(sim)* Wire BetaBinomial obs gradient into NUTS (gh#76)
+- *(sim)* Narrow C1 gate to parametric DerivedExpr only (gh#76)
+- *(cli)* Warn on single-init multi-chain posterior fits (gh#71)
+- *(cli)* Warn when instant params have no origin (gh#103)
+- *(cli)* Hint on simulate --fit config-load error (gh#158)
+- *(cli)* Emit draws TSV for simulate --draws (gh#157)
+- *(sim)* Trace all intervention action arms (gh#106)
+- *(doctest)* Camdlc doctest — gate spec code blocks on the compiler
+- *(doctest)* Context= preamble, classifier self-test, doc CI gate
+- *(doctest)* Self-contained in-doc preamble + data via HTML comments
+- *(cli)* Permanent CLI-doc drift gate via parse-only __check-args
+- *(cli)* Camdl doctest subcommand; camdlc --help; cross-pointers
+
+### Miscellaneous
+
+- Purge stale examples/ + output/ ; collapse .gitignore patterns
+- *(scaling)* Ignore all flamegraph_*.svg, not just flamegraph_real
+- *(bench)* Remove stale `inference` criterion bench (superseded by `scaling`)
+- *(golden)* Regenerate sia_anchored_dates in compact IR format
+- *(cli)* Gitignore + untrack committed CAS run output under results/
+- *(golden)* Re-version sir_dt.ir.json to ir 0.9
+
+### Other
+
+- Gh#51 v2: PMMH supports init_method = "survey_top_k"
+- Gh#51 v2: PGAS supports init_method = "survey_top_k"
+- Gh#51 v2 follow-up: align gh#51 comments with the v2 / v3 split
+- Honor priors in profile --algorithm pmmh (precedence + --fit + warning)
+- Integration tests + warning-text polish for profile priors
+- Docs(inference) — profile and priors precedence section
+- Docs(cli) — profile --help PRIORS section
+- Gh#74 Option B: failing integration tests for per-cell diagnostics
+- Gh#74 Option B: per-cell diagnostics infra + PMMH wiring
+- Gh#74 Option B: wire IF2 per-cell diagnostic capture
+- Gh#74 Option B: docs — Per-cell diagnostics in inference.md + --help
+- Extend gh#73 prior-precedence chain to fit run / fit where
+- Integration tests for fit-run prior precedence (TDD red)
+- Lift profile_priors → fit/priors_precedence for sharing
+- Wire three-tier prior precedence + explicit-flat opt-in for fit run
+- Docs — Priors and precedence + camdl fit run --help
+- Install.sh PREFIX env var for per-branch testing
+- Surface per-chain ESS alongside gated joint ESS
+- Params_resolver — unified value-resolution chain (rev 2)
+- Migrate pfilter to params_resolver
+- Fix precedence — scenario must beat --fixed-file per spec §1.3
+- Resolver — ScenarioOverridden + FixedEstimateOverlap warnings
+- Migrate simulate + lineage to params_resolver
+- Migrate survey to params_resolver (step 4)
+- Migrate if2 to params_resolver (step 5a)
+- Migrate profile to params_resolver (step 5b)
+- Document partial-resolution exceptions in main.rs (step 5c)
+- Migrate fit run (fit/runner.rs) to params_resolver (step 5d)
+- Gh#83/gh#85 step 6a: extend InitMethod ADT with warm-start variants
+- Gh#83/gh#85 steps 6b+9: chain_starts loaders + run.json provenance
+- Gh#83/gh#85 step 12a: fit.toml schema — rename init_method/starts_from
+- Gh#83/gh#85 step 12b: align comments + user-facing strings with new toml keys
+- Gh#83/gh#85 step 12c: migrate integration-test inline fit.toml fixtures
+- Gh#83/gh#85 step 7: M-1 break — `--fixed NAME=VALUE`, `--init <mode>`, drop `--params`/`--starts-from`
+- Gh#83/gh#85 step 7: wire warm-start --init through pgas/pmmh stages + IF2 dispatch
+- Gh#83/gh#85 step 8: update after_help examples for new CLI surface
+- Gh#83/gh#85 step 7: parse-layer regression tests for M-1 removed flags
+- Gh#83/gh#85 step 10: doc churn — rename --init-method/starts_from across normative docs
+- Gh#83/gh#85 step 11.1: docs/inference.md — rewrite 4-way precedence list
+- Gh#83/gh#85 step 11.2: camdl-language-spec — name-only --fixed removal
+- Gh#83/gh#85 steps 11.3 + 11.4: handoff notes for camdl-book repo
+- Gh#83/gh#85 step 12d: proposal snake_case alignment
+- Failing tests for --draws prior IR-prior fallback (TDD red)
+- --draws prior honours model-IR `~` priors via precedence fallback
+- Docs(run-spec) — describe --draws prior IR-tier fallback
+- Include --pmmh-steps, --pmmh-particles, --pmmh-rho, --algorithm in profile CAS key
+- InitMethod Display emits snake_case for every variant
+- DataSpec + resolve_data_specs — polymorphic --data flag
+- Wire multi-stream --data into profile + pfilter
+- Integration tests for polymorphic --data on pfilter
+- Expose log_posterior alongside loglik in profile TSV + mle.toml
+- Survey resolver — [estimate].start fall-back (analogue of gh#34/profile)
+- Include focal-parameter priors in profile log_posterior
+- *(init)* Warn loudly that survey_top_k ranks by likelihood, not posterior
+- *(init)* Wire gh#129 issue ref into rank-by-likelihood warning
+- Gh#116 dimcheck: strict dim-check on known-contract observation
+- Gh#115 expander: validate scenario enable/disable/compose/set/scale
+- Add SimError::PFDegenerate + PFDegenerateKind
+- Add check_pf_degeneracy() shared helper
+- Wire PF degeneracy watchdog into bootstrap_filter
+- Wire PF degeneracy watchdog into IF2 inner loop
+- Skip PMMH chains whose init triggers PFDegenerate
+- *(sim)* Eval_ab A/B microbench + end-to-end harness
+- *(sim)* Register eval_ab as a tracked [[bench]]
+- *(dsl)* Remove phantom output sub-blocks and experiment/compare
+- Output trajectory customization (cadence, format, quantities)
+- Unifying the scheduling surfaces
+- Key the camdlc<->camdl guard on IR schema version
+- Gate camdlc guard on schema-surface hash, not ir/VERSION
+- Fold adversarial review into schedule unification
+- *(ir)* Delete dead schedule variants from_data/match_observations/external
+- *(ir)* Remove unselectable table out-of-bounds policies Clamp/Wrap
+
+### Performance
+
+- *(lineage)* Chunk event-log Parquet writer into row groups
+- *(lineage)* Don't retain IDs in write-only identity pools
+- *(lineage)* Stream the event log into realize (bounded memory)
+- *(ir)* Deserialize Expr in one pass, dropping serde untagged buffering
+- *(compiler)* Stream IR JSON to channel, 2.8x less compiler RAM
+
+### Refactor
+
+- *(fit)* Extract resolve_per_chain_starts_from_method for survey_top_k v2
+- *(cli)* Single home for the per-cell seed mix
+- *(dsl)* Remove the unimplemented transition tag field
+- Genericize Kano-specific identifiers introduced by Fix B
+- *(ir)* Delete vestigial ObservationModel.data_stream field
+- *(sim)* Unify the two likelihood loops into one seam (gh#139)
+- *(sim)* Thread wall-clock watchdog disable through config
+- *(cli)* Content-address the synthetic fit-grid — defer roll-ups to M4 (M3.3, gh#150)
+- *(cli)* Remove the `camdl if2` subcommand — IF2 is a one-stage fit (M3.3, gh#147)
+- *(cli)* Retire the legacy Run fit readers — read RunRecord+sidecar via FitView (step F, M3.3, gh#147)
+- *(cli)* Pre-merge CLI cleanup — drop fit where/status, label all kinds, retire manifest.json, sim→fit lineage (gh#147)
+- *(compiler)* Unify the front-end pipeline into one core (gh#170)
+- *(dsl)* Extract shared schedule_core; migrate output onto it
+- *(dsl)* Migrate observations onto schedule_core (A.2)
+- *(compiler)* Route check through collect_diagnostics (gh#170)
+
+### Tests
+
+- *(sim,cli)* Lineage acceptance tiers + end-to-end pipeline
+- *(sim)* Tier 2b — stratified contact-weighted parent attribution
+- *(sim)* Tier 5 external-oracle scaffold for stratified attribution
+- *(sim)* Tier 4 — coalescent-interval validation of the transmission tree
+- *(sim)* Offspring-distribution check vs realized effective-R
+- *(golden)* First anchored fixture exercising Phase 1+2 typed-time surface
+- *(profile-pmmh)* Cross-method log_posterior invariant suite
+- Test(invariants): asymmetric widths + 1e-9 tolerance for the
+- Test(dimcheck): negative goldens for the four remaining observation
+- *(cli)* Heal gh#110-degenerate fit fixtures
+- *(cli)* Rebuild the multitz tz-offset test to be non-vacuous
+- *(sim)* FOI scaling-bench harness + profiling note
+- *(sim)* Byte-identical trajectory baseline gate for the B/D refactor
+- *(golden)* Mixed int/real aggregate gate model (Fix B trap #1)
+- *(ir)* Round-trip coverage for binding-bearing IR; document ir/golden v0.3 pin
+- *(sim)* Pin ODE in the trajectory gate (four-backend landing condition)
+- *(sim)* Characterization test pinning PF/PGAS likelihood-path parity (gh#139)
+- *(cli)* Descend into IR envelope in 3 model_hash test-mirrors (gh#135 follow-up)
+- *(cli)* Finish the model_hash envelope descent in the 2 survey mirrors (gh#135 follow-up)
+- *(gate)* Add sia_anchored_dates trajectory baselines
+- *(pgas)* Integration smoke for gh#20 + gh#76 gradient terms
+- *(pgas)* Multi-overdispersed-transition lockstep FD coverage (gh#76)
+- *(obs)* FD coverage for the Binomial obs dispatch arm (gh#76)
+- *(pgas)* Gh#80 smoke — PGAS+NUTS runs cleanly on SEIR + discrete event
+- *(constant-fold)* A/B gate proving the sparse-coupling fold is byte-identical
+- Collision-free unique_temp_dir for unit tests (gh#153)
+- *(runid)* Re-enable survey top-k tests on CAS (M3.3, gh#151)
+- *(recovery)* Add synthetic-data parameter-recovery harness (tests/recovery/)
+- *(integration)* Count CAS sim leaves, not retired sims/manifest.json (gh#147)
+- *(compiler)* Auto-test every diagnostic via fixture harness (gh#168)
+- *(sim)* Scipy-anchor the gamma multiplier-density value (gh#20)
+- *(cli)* Fail loud when the release camdl binary is missing (gh#105)
+
+## [0.1.0-alpha] - 2026-05-15
+
+### Bug Fixes
+
+- *(spec)* Replace N[a, p] with N_local[a, p] in §9.3 guard example
+- *(ocaml)* Implement coupling sugar, fix unit constants, add unknown-ident error
+- *(ocaml)* Flatten multi-dimensional table indices to single linear index
+- *(golden)* Baseline scenario carries defaults, others inherit via store
+- *(cli)* Update summarize + unused_mut after run_path rename
+- *(cli)* Delegate run_simulate to util::run_simulation; fix enable+disable
+- *(experiment)* Correct point_id tracking; add response curves; refresh golden
+- *(cli)* Consolidate TOML parsing; fix binomial sampler; document LCG
+- *(summarize)* Rename cum_X → integral_X; add polio_es README
+- *(sim)* Use multiplicative overdispersion (He et al. 2010)
+- *(chain-binomial)* Apply overdispersion to rate before probability conversion
+- *(chain-binomial)* Convert total propensity to per-capita rate before p
+- *(chain-binomial)* Use true Binomial draws instead of Poisson approximation
+- *(sim)* Guard NaN propagation in expr eval; validate spline inputs
+- *(test)* Correct statistical test constants to match golden file parameters
+- *(chain-binomial)* Defer state updates until all draws complete
+- *(pfilter)* Match pomp's likelihood tolerance floor (1e-18)
+- *(pfilter)* Add --flow flag for projection selection; fix hardcoded infection projection
+- *(if2)* Match pomp cooling schedule and rw_sd scale semantics
+- *(if2)* Use scaled logit for parameters with finite bounds
+- *(if2)* Parallel multi-chain via std::thread::scope; update todo
+- Interventions fire during pfilter/IF2; fix regime sentinel detection
+- Review #10 bugs — chain output, profiles, fit_state, dedup, ESS
+- Resolve CI warnings-as-errors (clippy -D warnings)
+- *(pfilter)* --trace accepts both bare flag and file path
+- Auto rw_sd uses fixed transformed-scale SD at current value
+- *(fit)* Apply fit.toml parameter values before model compilation
+- *(scout)* Conservative defaults + degenerate filter detection
+- *(scout)* Always write output, even when auto_rw_sd fails
+- Review 10b — RNG isolation, overflow, alloc, fallback removal
+- Gamma sampler handles extreme sigma_se without panicking
+- All RNG samplers handle invalid inputs without panicking
+- NaN panics in MAD, rename ekrng→rng, add sampler stress tests
+- Profile --rw-sd auto; consolidate transform derivation (DRY)
+- Cooling matches pomp's cooling.fraction.50 semantics
+- Review-external batch fixes + loglik naming rename
+- *(if2)* Include loglik column in camdl if2 --output parameter_traces
+- *(chain-binomial)* Match pomp's reulermultinom — fixes 2128 nat loglik gap
+- *(events)* Apply event actions atomically with transitions
+- *(events)* Snap fire times to integer grid at model init
+- *(cpm)* Correlate binomial draws via stored z-values
+- *(pmmh)* Extract dt from config, disambiguate float literal in correlation check
+- *(cpm)* Track particle identity through resampling for z-value sync
+- *(pgas)* Initial proposal SD from parameter bounds, not rw_sd
+- *(pgas)* Revert to exact complete-data LL for θ updates
+- *(pgas)* Use initial_state(params) in complete-data LL for IVP constraint
+- *(pgas)* Correct IVP handling — detect, skip MH, back-solve from trajectory
+- *(nuts)* Three critical bugs from code review
+- Remaining code review items + gradient/NUTS tests
+- Move autodiff pass into Compiler.compile, fixing OCaml golden tests
+- *(ci)* Pin Rust toolchain + fix clippy warnings
+- *(nuts)* Two-phase warmup — re-adapt step size after mass matrix
+- *(ci)* Match local build to CI — warnings-as-errors everywhere
+- *(nuts)* Dense mass matrix momentum draw — L^{-T} not L^{-1}
+- *(ci)* Clean all test warnings — unused imports, dead code, unused vars
+- *(pgas)* Zero-rate flow check + spatial -inf diagnosis
+- *(pgas)* Diagnostic for spatial -inf — zero-rate flow check + init LL warning
+- *(pgas)* Found spatial -inf root cause — n_exit > n_src from clamping
+- *(pgas)* Spatial -inf — clamping fix + gamma density disabled
+- *(pgas)* Snapshot counts_before in SubstepRecord for spatial density
+- *(pgas)* Reference particle counts_before mismatch in CSMC-AS
+- *(pgas)* Handle near-zero rate/flow mismatch gracefully in density
+- *(pgas)* Separate deterministic check from rate check in density
+- *(pgas)* IVP density uses per-patch population for spatial models
+- *(cli)* Multi-stream data loading reads correct column per stream
+- *(pgas)* --resume no longer requires --force, trace overwrite prevented
+- *(pgas)* Validate and recompute transforms on resume
+- *(pgas)* Store param_names in resume state, sort if2_params by name
+- Multi-stream pfilter + extract shared log_jacobian
+- *(pmmh)* Correct log_posterior, remove double-write, fix steps_per_obs
+- *(test)* Update pmmh tests for run_pmmh resume args + steps_per_obs
+- Unused observations param + missing obs_at_substep in gradient test
+- *(compiler)* Unify calendar constant to 365.2425 (Gregorian)
+- *(autodiff)* Apply simplify to fixed point as documented
+- *(pgas)* Disable gamma density gradient to match disabled gamma density
+- *(cpf)* Document σ² state-independence assumption, validate uniform obs spacing
+- *(validate)* Use true PF loglik for profile likelihood evaluation
+- *(pgas)* Re-enable gamma multiplier density
+- *(sim)* Use cached IntState/RealState in log_likelihood_from_flows
+- *(dimcheck)* Union-find linking, read-only check, E303, parser errors
+- *(engine)* Review round 2 quick fixes (#1, #4, #5, #7, #9, #11)
+- *(engine)* Review items #2, #3, #8, #12
+- *(ci)* Add qcheck deps, fix mdBook install, unblock artifacts
+- *(ci)* Continue-on-error for OCaml tests, debug artifact packaging
+- *(ci)* Regenerate golden files with param_dim, build cli explicitly
+- Diagnostics.report_and_exit raises exception instead of exit(1)
+- Add param_dim: None to all Parameter struct literals
+- *(lexer)* Warn on 10_00 digit grouping (was only catching 3+ groups)
+- *(expander)* Extend is_const_expr and eval_const_expr for arithmetic
+- *(parser)* Error on unit literal as right operand of division
+- Restore standalone camdl pfilter command
+- *(fit)* Trailing-tab bug in draws.tsv + tolerant reader (review #4/#5/#25)
+- Hash/seed review items (#6/#7/#14/#15)
+- Design and UX review items (#8/#10/#11/#13/#16/#18/#22/#23/#24)
+- Unify provenance + robust rename (review #1/#2/#3/#17)
+- Remaining review items (#12/#20/#21)
+- Re-review items N1-N8 (all 8 minor issues)
+- *(compiler)* Indexed observation expansion + resolve_float_expr (review #1/#2)
+- *(compiler)* ProjDerived disambiguates compartment vs transition (#4)
+- *(compiler)* Hashtbl for keyword lookup (review #6)
+- *(compiler)* Convert failwith calls to Diagnostics.error (review #3)
+- *(compiler)* Drain lexer pending_warnings at compilation start (review #7)
+- *(cli)* Error on unknown --param, info-level override logging
+- *(cli)* Validate --params files, info-log stacked overrides
+- *(compiler)* Const-eval log/exp/sqrt/abs/floor/ceil as EFuncCall
+- *(compiler)* Strict prior arg validation + param-qualified diagnostics
+- *(prior)* Normal normalization + fit.toml parse_prior covers all 7 dists
+- *(cli)* Rejection-sample priors to bounds instead of silent clamping
+- *(cli)* --scenario pins parameter values for --draws prior coverage
+- *(sim)* Sort source_groups to eliminate HashMap nondeterminism
+- *(cas)* Pin VERSION_SHORT into scen_hash + compute_config_hash
+- *(cli)* Clean error when a flag is missing its value, not a panic
+- *(cas)* Sweep_point in run.json + manifest; camdl list shows values
+- *(inference)* Intervention off by default in fit + pfilter (spec §14.4)
+- *(sim)* Chain_binomial no longer fires scheduled interventions twice
+- *(ci)* Update integration script for simulate batch; upgrade pre-push
+- *(docs)* Relative symlinks in docs/book/src; add mdbook to pre-push
+- *(compiler)* Prevalence(X) on stratified X sums over all strata
+- *(compiler)* Poisson(rate = expr) parses; silent 0.0 defaults are errors
+- *(cli)* Unify SEED_MIX_OBS between --obs-only and [synthetic]
+- *(fit)* Starts_from = "scout" was silently discarded at iter 0
+- *(if2)* Per-chain random starts actually reach IF2
+- *(fit)* Resolve upstream stage hash for StartsFromRef
+- Record wall_time_seconds + reuse parent fit hash across stages
+- *(cas)* Hash-aware simulate cache check
+- *(fit)* Guard PGAS rename with error-on-collision instead of silent clobber
+- *(run_meta)* StartsFromRef.stage_hash → Option<String>, stop silent chain corruption
+- *(hashing)* Widen fit_content_hash + fit_input_hash to full 64-char hex
+- *(fit)* Mle_params.toml.input_hash uses full fit Run.hash
+- *(hashing)* Canonicalise TOML before hashing fit_content_hash + fit_input_hash
+- *(run_meta)* Atomic run.json write via .tmp + rename
+- *(ocaml)* Diagnostics order + CLI hygiene + pp_expr integer rendering
+- *(compiler)* Emit ODE equations + wire Validate.validate (C5, M1)
+- *(expander)* Validate overdispersed/deterministic/transfer kwarg shapes (C1, C6)
+- *(expander, autodiff)* Stop silent 0/"?" fallbacks on bad inputs (C2, C7, M4)
+- *(expander)* Stop silent 0.0 fallbacks for UnOp in eval_const and list/range in rates (M14, m17)
+- *(expander)* Under-indexed stoich + longest-prefix base match (C3, M15)
+- *(expander)* Shape_index length mismatch emits diagnostic, not stack trace (M20)
+- *(compiler)* Fd leak, multi-dim param panic, read() kwarg check, IR cleanup
+- *(expander)* Numerator_pops descent + diag-channel info + positional path arg (M7, M16, m22)
+- *(dimcheck)* Allow any-dim Cond predicates + Pow read-phase parity (M18, M19)
+- *(inspect, camdlc)* Delete dead --expansion + inspect fixups (M22-M26, M30, m28, n11-n13)
+- *(compiler)* Don't double-render expansion warnings (M3)
+- *(compiler)* Don't re-print 'Error: Compile_error(...)' after diagnostics (m5)
+- *(autodiff)* Emit finite derivative for |f| at f=0 (n1)
+- *(expander)* Scrub NaN sentinels from table arrays after dense-check (M6)
+- *(compiler)* Propagate Compile_error payload to callers (m5 follow-up)
+- *(compiler)* E266 on missing obs block fields instead of silent defaults (m12)
+- *(parser)* Buffer action errors as diagnostics instead of failwith (n3)
+- *(sim)* Hard-fail on FromDistribution initial conditions (RC3)
+- *(tau_leap)* Multinomial competing-risks for shared sources (RM1)
+- *(ode)* Use fractional int state during RK4 substeps (RM8)
+- *(ode_integrator)* Cap RK4 step to dt_max, sub-step longer gaps (RM7)
+- *(eval)* Align evaluators on edge cases + eval_stats counters (RM2/RM3/RM6)
+- *(cli)* Rewire camdl profile subcommand (agent-channel Issue 1)
+- *(fit)* Sweep continues past per-cell gate failures (agent-channel Issue 2)
+- *(obs)* Document Normal-as-count + warn on fractional data (IC2)
+- *(inference)* Per-particle RNGs via ChaCha8 stream counter (IM1)
+- *(if2)* Skip non-finite ll_inc instead of poisoning iteration (IM4)
+- *(pgas_grad)* Gamma_idx per transition + RATE_EPSILON threshold (IM7, IM9)
+- *(prior)* TransformedNormal returns natural-scale density — no more double-Jacobian (IC3)
+- *(fit)* Hash starts_from in legacy compute_config_hash (IM10)
+- *(pmmh)* Geyer pair-sum ESS truncation (IM11)
+- *(fit)* Gate ESS on R-hat + equal-chain-length check (IM12, IM13, Im24)
+- *(seeds)* Full u64 default seed + decorrelated replicate seeding (Im19, Im20)
+- *(log_sum_exp)* Distinguish +inf from -inf (Im2)
+- *(rhat)* Per-chain last-half window instead of uniform n_iterations (Im25)
+- *(pgas)* Correct CSMC-AS ancestor sampling weights (IM6)
+- *(cli)* Align integration tests + Backend enum with clap 4 API
+- *(fit)* Build_v1_fit_run / build_fit_run panic on .camdl sources (gh #3)
+- *(expander)* Table unit annotations now actually convert values
+- *(cli)* Scenario set/scale must override --params, not vice versa
+- *(spec)* Restore 53 malformed fenced-block closers
+- *(batch)* Default output_dir now matches canonical root ("results/")
+- *(obs)* Evaluate likelihood arg expressions against actual state (GH #5, #6)
+- *(obs)* Actually fix GH #6 — compile_obs_sample_pf was the wrong path
+- *(obs)* Third-strike GH #6 — pfilter log_likelihood trait impl path
+- *(dim)* Camdl check runs Dimcheck; duration unit literals carry T
+- *(sim)* Clear gamma_used inside step_one (GH #10)
+- *(harness)* Deterministic summary, regen round-trip passes
+- *(harness)* Don't commit local renv symlink in he2010_pfilter_loglik
+- *(cli)* --progress plain auto-bumps --verbosity to info (GH #14)
+- *(cli)* --progress plain now emits for pmmh/validate/profile too (GH #14)
+- *(evidence)* Correct attribution of dB tier scale
+- *(fit)* Mle/start_values use clean-eval winner θ̂; final_params under [provenance] (closes #16, #17)
+- *(test)* Repo_root path + brace-aware path truncator + stage rename
+- *(cli)* List / show / cat / simulate-cas defaults follow DEFAULT_OUTPUT_ROOT
+- *(cli)* Output_root honors CAMDL_OUTPUT_DIR (fit run + profile)
+- *(fit)* Resolve toml-relative paths against the toml's directory (closes #22)
+- *(fit)* Summary prose — clean-eval → loglik-eval; "winner" → "selected"
+- *(compare)* Direction suffix on evidence; sort table by Δelpd ascending
+- *(fit/list)* Clean_ll/winner → loglik/selected in md+latex; --parent expands ReplicateSet umbrellas; loglik-eval progress prose
+- *(sim)* Clamp Bernoulli p to [0,1] before log/sample (review C1)
+- *(fit)* Validate tempering ladder β ∈ (0, 1] (review H4)
+- *(fit)* SeedsSpec::to_vec returns Result, fail loud on malformed range
+- *(ir)* Enforce prior ⊕ hierarchical invariant in deserializer + validate
+- *(inference)* Unify log-weight normalization, repair NaN-poison path
+- *(cli)* Detect shadowed `camdl` install in version-mismatch error
+- *(make)* Warn at install time when another camdl shadows on PATH
+- *(review)* Resolve M2/M3/M5 design findings from 2026-04-30
+- *(ir)* Move validate.rs test module to end of file
+- *(profile)* Adopt option-A schema for cross-seed summary.tsv (gh#30)
+- *(cli)* Validate parameter values against declared bounds (gh#31)
+- *(cli)* Camdl fit where runs the same validation depth as camdl fit run (gh#35)
+- *(profile)* Walk full indexed observation family for joint loglik (gh#38)
+- *(profile)* Include --data file contents in cache hash (gh#39)
+- *(fit)* Suppress chain_agreement Â when W collapses under cold cooling
+- *(survey)* Pair-plot color-by miscalibration for loglik and loglik_se
+- *(survey)* Smaller pair-plot points + lower default top-K cutoff (10% → 5%)
+- *(ode-inference)* Cumulative flow accumulation + downstream renderers
+- *(profile)* Wire NLopt orchestration for --algorithm nl-* --backend ode (closes gh#47)
+- *(ode-inference)* Close model-capability silent-fail at three dispatch sites
+- *(parser)* Accept transfer(count = EXPR, ...) as documented
+- *(ir)* Hand-write bitwise PartialEq on ConstExpr (audit M9)
+- *(sim)* Drop Trajectory::default — empty trajectory is degenerate (audit M10)
+- *(if2)* Mle = last_iter, not argmax(perturbed_loglik) (audit C2)
+- *(cli)* Error on --record-prequential off PFilter; wire --parallel into pfilter (audit H12+H13)
+- *(pgas)* Surface NUTS divergent / treedepth / swap-rate diagnostics (audit C7+M18+H4)
+- *(cli)* Wire H4 unwired DiagnosticKind variants (DegenerateAS, LowESSAtMLE, ParamNearBound, LowTrajectoryRenewal)
+- *(cli)* Surface EvalStats counters at end of every cmd_* run (audit H5)
+- *(sim)* Typed errors for numerical-collapse rate paths (audit C6+S1)
+- *(sim)* Negative-count clamp → typed SimError::NegativeCount (audit C5+S2)
+- *(sim)* BALANCE capability stops silent balance{} drop on tau-leap/gillespie/ode (audit C3)
+- *(pgas)* Refuse to run with implicit improper-uniform priors (audit C4)
+- *(pgas)* Preflight gate for obs-likelihood / σ² gradient coverage (audit C1)
+- *(nuts)* Outer-tree combine matches H&G Algorithm 6 (audit H1)
+- *(obs_loglik)* Libm::erfc + tail-stable interval (audit H2)
+- *(sim)* Stable prob_q_from_rate_dt primitive (audit H3)
+- *(pgas)* Ancestor sampling uses pre-resample state cache (audit H8)
+- *(inference)* IF2 cooling off-by-one + PMMH post-burn acceptance (audit M2+M4)
+
+### Build
+
+- Add Makefile; fix parser warnings and make install
+- Add nlopt dep behind ode feature (Phase 1 prep)
+
+### CI
+
+- Update integration shim + artifact paths for batch/binary renames
+- Gate mac/win runs behind tags; skip CI on doc-only changes
+- Disable docs.yml workflow (Pages deployments handled in camdl-book)
+
+### Documentation
+
+- Rewrite README with DSL examples, camdlc commands, and test instructions
+- *(CLAUDE.md)* Update RNG/CRN section to reflect current EkRng status
+- *(web)* Add README explaining web app role and agent handoff
+- Rename --set/--set-vec to --param/--param-vec in specs
+- *(experiment)* Update spec to v0.5 with sweep, design, and analyze sections
+- *(experiment)* Replace VOI framing with sensitivity characterization
+- Add 'no loose semantics' design principle to CLAUDE.md
+- Add user-features.md — catalog of DSL ergonomics and capabilities
+- Add side-by-side pomp vs camdl comparison to user-features.md
+- Inference guide — PF, IF2, profiles, diagnostics, future directions
+- Update language spec and experiment spec to match code
+- Close profiling session — summary, deferred items, final scan
+- Update benchmark plot with post-optimization numbers
+- Rewrite README to reflect current capabilities
+- Provenance system implementation plan
+- Explain numerical fallback rationale in sampler guards
+- Explain design rationale in code comments
+- Update all specs for OOS validation, prediction quantiles, new CLI features
+- Simplex plan — all members explicit, match pomp barycentric
+- Complete dev blog post — all three bugs documented
+- Add proposals directory and events-block proposal
+- Mark events-block proposal as implemented
+- Add events, add(), at_day, and balance to language spec (§14.5-14.8)
+- Add integer-grid fire times and final result to blog post
+- Add PGAS proposal (Particle Gibbs with Ancestor Sampling)
+- Update agent channel with adaptive proposal SD
+- Update agent channel with random starts
+- Update channel with initial SD fix analysis
+- Update channel with PF-based θ update + trajectory renewal diagnostic
+- Update channel — reverted to exact complete-data LL for θ updates
+- Update channel with IVP fix for s0 bound saturation
+- Update channel — corrected IVP fix, previous was mathematically wrong
+- Update channel — stochastic IVP for true s0 estimation
+- Update autodiff proposal with implementation status + gradient gaps
+- Update README, CLAUDE.md, inference guide for PGAS/NUTS/autodiff
+- Dense mass matrix bug writeup + agent channel notification
+- Update channel — prior specification implemented
+- File review #17 (resume/multi-stream/alpha) + architecture review
+- Marginal split density proposal for spatial PGAS
+- Channel update — spatial density test passes, bug is model-specific
+- Channel — Gamma hypothesis debunked, requesting I[p5] counts at failing substep
+- Channel — disambiguating initial vs CSMC trajectory -inf
+- Channel — requesting compiled IR to reproduce spatial -inf
+- Channel — downstream model PASSES round-trip, -inf is config issue
+- Channel — same code path, difference is params not simulation
+- Channel — sanity check added, three possible outcomes
+- Channel — 100/100 seeds pass, requesting indexed param dump
+- Incident report for spatial PGAS -inf bug
+- Channel — gamma density confirmed disabled, rebuild from 19ac52c
+- Channel — found CSMC reference counts_before mismatch (b15cb39)
+- Update incident report with second bug (CSMC reference mismatch)
+- Channel — analysis of remaining -inf sources, debug assertions added
+- Channel — near-zero rate fix and iota detection (faffe8f)
+- Spatial iota guidance in inference.md + incident report updated
+- Channel — deterministic check fix + upgraded assertions (9547ef9)
+- Channel — fix already in, verify build is current
+- Dev idea — step_one returning SubstepRecord for pairing safety
+- Channel — IVP density fix + iota requirement for spatial model
+- Channel — observation density is the -inf source, not transitions
+- Channel — root cause was data loader column mismatch
+- Complete incident report — six bugs, full resolution
+- Applicability analysis — which fixes generalize beyond spatial
+- Channel — resume fix and log_posterior column
+- Channel — s0 bounds enforced, request clarification on which model
+- Channel — resume transform validation fix
+- Channel — resume z-value ordering fix
+- Update incident hardening checklist with remaining TODOs
+- Channel — parallel tempering ready for testing
+- Channel — tempering diagnosis, informative priors recommended
+- Channel — max_treedepth and swap rate clarification
+- Channel — tempering test plan approved with caveats
+- Channel — treedepth warnings and async rungs answer
+- Channel — proposed cross-basin tempering test options
+- Channel — spatial tempering analysis + standardized logging request
+- Channel — kill tempering, IF2 test, wrong-basin finding
+- Channel — trajectory diagnostics + warm-up coming
+- Channel — LL decomposition + trajectory warm-up ready
+- Channel — csmc_sweeps_per_nuts ready
+- Document eval_table_expr construction-time constraint
+- Add standardized YAML frontmatter to all review and proposal files
+- Add frontmatter to inference review (10/13 items done)
+- Algorithm relationship overview in inference.md
+- Clarify PMMH can produce trajectories (low quality)
+- Add MCMC initialization strategy section
+- Update dimensional analysis proposal
+- Document dimensional analysis in language spec
+- Add mdBook setup with GitHub Pages deployment
+- Add MathJax for math rendering in mdBook
+- Add round 2 compiler review (18 items)
+- Add error quality philosophy to CLAUDE.md
+- Update compiler review frontmatter (8/18 done)
+- Compiler review complete (11/18 done, 7 deferred)
+- Add round 2 engine review (12 items)
+- Engine review complete (10/12 done, 2 by-design)
+- Add round 2 inference CLI review (8 items, reformatted)
+- Inference review complete (6/8 done, 2 deferred)
+- Add Windows support proposal, replace 'special user' with 'Windows user'
+- Revise experiment spec → unified run spec (v0.4-draft)
+- *(run-spec)* Fix review items — ObsOutput enum, ConfigHasher, SBC, designs
+- Add run system review (25 items, 5 critical)
+- Mark run system review 23/25 complete, 2 deferred
+- Add compiler review (8 items, 1 critical — indexed observations)
+- Update compiler review — 4/8 fixed (#1/#2/#4/#6)
+- *(spec)* Mark coupling sugar §10 as not yet implemented (review #8)
+- *(review)* Mark compiler review as complete (8/8 items done)
+- Priors belong with parameter declarations, not in fit.toml
+- Docs + test(cas): run-spec §4.4/§4.5 + end-to-end integration tests
+- Docs + diagnostic: observation semantics for state-snapshot projections
+- *(proposal)* Mark Erlang implicit-sum as shipped in initial review
+- *(proposal)* Synthetic-data fits + fit-seed replicates
+- *(proposal)* Unify fit output shape under fit_<seed>/
+- *(proposal)* Add real/ subdirectory, analogous to synthetic/
+- *(proposal)* Incorporate downstream feedback + LOC comparison record
+- Docs + test: replicate fits section + end-to-end grid tests
+- Update for `simulate batch` rename + synthetic fit fields
+- Drop migration guidance; file future-model-overrides stub
+- *(proposal)* IC-free inference (conditioning on y_1)
+- *(proposal)* Gate refine on scout convergence
+- *(proposal)* Unify simulate and fit output trees
+- Update output-path references to unified tree
+- Cleanup.md — audit of unified-output-tree shipping
+- *(fit/provenance)* Clarify hash vocabulary boundaries
+- Update to content-hashed output tree (D1-D4)
+- *(inference)* Filtering-vs-smoothing section + 'the diagnostic plot' guide
+- Single-writer-per-fit-dir contract + mark hardening proposal implemented
+- *(review)* Clean up 2026-04-19 compiler review + add front matter
+- *(ir-spec)* Align wire format with emitter (M12, M13, m15)
+- *(review)* Mark 2026-04-19 compiler review mostly addressed
+- *(review)* Mark 2026-04-19 compiler review fully addressed
+- *(review)* Reformat 2026-04-19 engine review + front matter
+- *(review)* Mark 2026-04-19 engine review addressed
+- Align docs with current CLI + cleanups (RC2/M17/m24 followup)
+- *(review)* Reformat 2026-04-19 inference review + front matter
+- *(inference)* Cooling approximation, reset_flows invariant, likelihood corner tests (IM5/Im5/In4 + IC1 regression)
+- *(review)* Mark 2026-04-19 inference batch 1 addressed
+- *(review)* Append batch 2 (NUTS, pgas_grad, correlated_pf, PMMH)
+- *(review)* Batch 2 resolution status
+- *(review)* Append batch 3 inference review (diagnostics + CLI)
+- *(review)* Batch 3 resolution status
+- Pfilter single-stream note + Hinnant link (Im22, Im23)
+- *(pgas)* Clarify heated-rung re-warmup on resume (Im18)
+- *(review)* Follow-up pass resolution status (IM6, Im18, Im22, Im23, Im25, Im2)
+- *(reviews)* Add 2026-04-20 design review suite
+- *(spec)* Fix IR spec drift — Sd1-Sd14 (compartmental-ir-spec.md)
+- *(proposal)* REPL/inspector mode for IR exploration (proposed, deferred)
+- *(book)* Add cross-dimension features guide with seir_cross_dim example
+- *(proposal)* Prequential out-of-sample evaluation
+- *(spec)* Tag camdl fenced blocks + remove deferred data {} block
+- *(spec)* Fix tagging misses + projection indexing comment
+- *(cli)* Add Examples block to every subcommand's --help
+- *(cli)* Note camdlc delegation + real flag set in compile/check/inspect help
+- *(review)* Audit spec claims vs test coverage
+- Docs/dev/testing.md — test architecture + runbook
+- *(dev)* Rewrite observations-system.md to reflect shipped reality
+- *(spec)* Add §2.3 three-tier dimensional overview; flag GH #8 in §7
+- Incident report for iota TOML unit miscast (GH #11, #12)
+- Incident report for forcing rescale double-conversion (GH #11, #13)
+- *(testing)* Add L9 external validation layer
+- *(testing)* Book now external at ../camdl-book
+- *(harness)* Sabotage-procedure section in tests/external/README.md
+- Correct IF2 cooling semantics; create docs/methods/ + cooling.md
+- Stage cooling work + inflight proposal index
+- *(dev)* If2 unit a handoff note for session resume
+- Rhat → chain_agreement (Â) in MLE-pipeline spec; document clean-eval keys + compound gate (unit a step 9 follow-up)
+- *(channel)* Bring downstream up to date on Unit A + summary proposal; rename effective→resolved gate config
+- *(channel)* Summary command shipped — schema + migration notes for downstream
+- Fit-command audit + sharpen CLAUDE.md "delete dead code" policy
+- Workspace dead-code scan inventory (pre-cleanup)
+- *(inference-spec)* Delete <stage>_summary.json claims; per-stage JSON files no longer exist
+- *(methods)* Particle-methods.md — bootstrap PF, IF2, CSMC-AS, correlated PF
+- Fit experiment-management audit + proposal
+- Clean-eval strip rationale + audit trail
+- Post-strip sweep — audit table + particle-methods §7
+- *(typed-cas)* Check off camdl list profile surfacing in proposal
+- *(types)* Regenerate TYPES-REFERENCE.md for post-v1-cleanup state
+- *(types)* Mark four-PriorSpec smell resolved; delete CLEANUP note
+- *(proposal)* Prior types consolidation, 2026-04-30
+- *(review)* 2026-04-30 full-codebase correctness and design audit
+- *(review)* Mark M1-M5 resolved in 2026-04-30-design.md
+- *(cli)* Help-text quality sweep — umbrella examples, top-level workflows, fixed `fit new` bug
+- *(language-spec)* Surface consecutive(dim) as the aging-across-stratified-models primitive
+- Reply on typhoid-issues.md — three of four shipped, one was a docs gap
+- Per-chain init_method (gh#42)
+- Restore camdl survey proposal lost in PR #44 squash
+- ODE inference proposal — three phases (NLopt / MH / NUTS)
+- Refine ODE inference proposal — round 2 review feedback
+- ODE proposal — integrate survey rewiring into Phase 1
+- ODE proposal — clarify stage names are user-chosen
+- ODE proposal — fold in tuple schema, METHODS registry, nl-* renaming
+- CLAUDE.md — book handoff note for the fit.toml schema rename
+- *(review)* 2026-05-12 full-codebase audit (8C/14H/21M)
+- *(handoff)* Camdl-book agent briefing for audit remediation
+- AGENTS.md + README updates + EVSI proposal
+- *(readme)* Add Prerequisites + fix dune test-stanza ambiguity
+- *(readme)* IDM/Gates attribution; honest about ir/VERSION + schema.json
+- *(readme)* Fix quickstart so commands actually run from fresh clone (closes gh#61)
+
+### Features
+
+- *(ir)* Implement IR layer — types, golden files, schema, tests
+- *(rust)* Implement sim runtime against real ir crate
+- *(ocaml)* Implement camdl DSL compiler + CLI; extend Rust CLI with simulate command
+- *(ocaml)* Implement inspect commands and accurate error diagnostics
+- Implement IR expression extensions and full compile-to-simulate pipeline
+- *(compiler)* Add indexed parameters (R0[patch] : positive = 2.5)
+- Strip param defaults from DSL; add layered --params TOML files
+- Add parameter bounds (in [lo, hi]) to DSL, IR, and spec
+- Browser-based visual editor (web app + WASM sim crate)
+- Add scenarios {} block and embed presets in IR
+- *(web)* Experiment redesign with multi-scenario ensemble visualization
+- *(web)* Three-column experiment layout, consistent ensemble modes
+- *(ir)* Add model_structure field for structural view building
+- *(web)* Base model canvas with swim lanes and birth/death stubs
+- *(web)* Add preset scenario menu to experiment sidebar
+- *(web)* Dark/light/auto theme, dynamic brush window, golden t_end updates
+- *(web)* Split pane, run all button, brush margin, Monaco keyboard fix
+- Scenario enable/disable, infectious_compartments fix, Layer 2 model
+- *(ocaml/golden)* Add Phase 1 model ladder — Layers 1, 3, 4
+- Rename IR field presets → scenarios, add new models to web
+- *(cli)* Add camdl experiment run/status with content-addressed output
+- *(cli)* Add camdl serve — static file server for experiment output
+- Remote experiment connect — load camdl serve results in web editor
+- *(cli)* Add camdl experiment summarize — per-seed scalar summaries
+- *(web)* Add MapPanel — choropleth for patch-stratified models
+- Add sir_patches_5 golden model + example for map panel demo
+- *(cli)* Geo pipeline for experiment serve; suppress flow cols by default
+- Indexed interventions, typed scenarios, family enable resolution
+- Add bernoulli likelihood, fix observations syntax, per-patch timing
+- *(sim)* Add ODE/RK4 backend; add intro.md and runtimes.md docs
+- *(compiler)* Fix time_unit normalization; add underscore literals + W100
+- *(compiler)* Replace read_csv/read_tsv with read_long + defines()
+- *(compiler)* Dimensions{} block, read(), origin/date(), indexed time functions
+- *(experiment)* Add sweep, design sampling, and analyze subcommand (v0.5)
+- Add camdl-analysis Python package and seir_age_sobol golden example
+- *(voi)* Add prior spec to design parameters; add VOI specification
+- *(voi)* Add camdl voi run command; add polio_es EVSI example
+- *(sim)* Add overdispersed() rate syntax and backend capabilities system
+- *(dsl)* Make t (simulation time) available in expressions
+- Wire math functions into expander; add cubic spline interpolation
+- *(cli)* Add camdl eval command for expression inspection
+- *(cli)* Add eval to unified camdl script; support .camdl input
+- *(chain-binomial)* Multinomial competing risks for shared source compartments
+- *(inference)* Stage 0-1 — module structure, obs loglik, resampling, PF
+- *(inference)* Stage 2 — step_one(), ChainBinomialProcess, camdl pfilter CLI
+- *(inference)* Stage 3 — IF2 (iterated filtering for MLE)
+- *(inference)* Discretized Normal observation model (He et al. 2010)
+- *(dsl)* Range-based periodic forcing (on = [7:100, 115:199, ...])
+- *(pfilter)* One-step-ahead prediction diagnostics in --trace output
+- *(dsl)* W301 warning for misaligned periodic range endpoints
+- *(pfilter)* Expose likelihood tolerance as --tol CLI flag
+- *(inference)* Camdl if2 CLI + fix iteration feedback loop
+- *(inference)* Camdl profile — parallel profile likelihoods with indicatif
+- *(if2)* Multi-chain with Rhat diagnostics and regime presets
+- *(profile)* 2D profile likelihood grids
+- *(if2)* IVP support + 3 integration tests
+- Camdl fit workflow, auto rw_sd, indicatif progress, --save-final-state
+- *(golden)* Add sir_spatial_sum — 4-patch spatial coupling via compile-time sum() expansion
+- *(profile)* Add --output/-o flag for file output
+- --output/-o on all data subcommands; clippy clean; CI
+- *(if2)* Variance ratio diagnostic (r_k) and --trace long-format output
+- Compile observation model from IR; remove --obs-model flag
+- *(pfilter)* Observation-space predictive quantiles via rmeasure
+- *(fit)* Per-stage configuration in fit.toml
+- Pfilter --replicates N; validate writes pfilter_trace.tsv
+- Provenance system — input_hash in fit_state, output manifest, experiment audit
+- Param_kind in IR; type-driven transforms replace bounds heuristic
+- Transform carries bounds; cooling_target = n_iterations; /20 log auto rw_sd
+- Boundary-hit diagnostic, preflight transform report, plan update
+- *(profile)* Add --fixed flag to exclude params from optimization
+- Deny_unknown_fields on fit.toml; Rhat basin-finding diagnostic
+- *(scout)* Seeded chains from start values + start_chains config
+- Out-of-sample validation via [holdout] in fit.toml + camdl data split
+- *(data split)* --fraction, --time-col, auto-detect time column
+- Warn when cooling exhausts before run ends
+- True (unperturbed) loglik evaluation in IF2 trace
+- Simplex (barycentric) parameter groups — softmax transform
+- Add balance compartment support (IR + runtime + OCaml)
+- *(dsl)* Add balance {} block parser
+- Add method = "constant" for piecewise-constant covariate interpolation
+- Add CAMDL_TRACE_STEPS=1 env var for per-substep diagnostics
+- Embed git hash + build date in all outputs, detect stale binaries
+- Add events {} block with add() action and at_day scheduling
+- Add PMMH posterior sampling (camdl fit pmmh)
+- Correlated pseudo-marginal MCMC (Deligiannidis et al. 2018)
+- *(pmmh)* Streaming traces + non-TTY progress
+- *(pmmh)* --check-variance now includes CPM correlation diagnostic
+- *(pgas)* Implement Particle Gibbs with Ancestor Sampling
+- *(pgas)* Add Robbins-Monro adaptive proposal SD
+- *(pgas)* Parallelize chains via rayon
+- *(pgas)* Random starts for chains (overdispersed initialization)
+- *(pgas)* PF marginal likelihood for θ updates + trajectory renewal diagnostic
+- *(pgas)* Stochastic initial states for IVP posterior sampling
+- *(autodiff)* Symbolic differentiation pass + rate_grad in IR
+- *(autodiff)* Rust gradient evaluation + compiler wiring
+- *(autodiff)* NUTS sampler + PGAS integration
+- *(pgas)* Add --no-nuts flag for MH-within-Gibbs fallback
+- *(autodiff)* Close gradient gaps — gamma density, obs model, eval_expr_deriv
+- *(nuts)* Diagonal mass matrix adaptation from burn-in samples
+- *(pgas)* Posterior trajectory output
+- *(nuts)* Dense mass matrix for correlated posteriors
+- *(fit)* Prior specification in fit.toml [estimate] section
+- *(fit)* Add Beta prior support
+- *(pgas)* Chain resume infrastructure — serializable state + bincode
+- *(pgas)* --resume flag with config hash safety + bincode state
+- *(fit)* Multi-stream observation support
+- *(cli)* --verbosity flag for structured logging
+- TraceWriter + shared config hash, PGAS refactored
+- PMMH --resume + FitState loglik_type/acceptance_rate
+- *(sim)* Add ResolvedExpr — pre-resolved expression trees for hot-path eval
+- *(sim)* Add ResolvedModel to CompiledModel, resolve all Expr at construction
+- *(pgas)* Parallel tempering (replica exchange) for NUTS parameter updates
+- *(pgas)* Periodic swap rate logging during tempering
+- *(pgas)* Configurable max_treedepth for NUTS
+- *(pgas)* NUTS treedepth/divergence warnings + configurable max_treedepth
+- *(pgas)* LL decomposition in trace + trajectory warm-up
+- *(pgas)* Csmc_sweeps_per_nuts — multiple trajectory updates per param step
+- Review-zip.sh — targeted zips for external code review
+- *(sim)* Typed inference diagnostics — DiagnosticKind + DiagnosticCollector
+- *(cli)* Migrate inference diagnostics to typed DiagnosticCollector
+- *(inference)* Add ProcessModel, DensityProcess, ObservationModel traits
+- *(compiler)* Dimensional analysis checker
+- *(dimcheck)* Promote dimension errors to compilation errors
+- *(dimcheck)* Phase 2 — explicit [dim] annotations on parameters
+- *(ir)* Add param_dim field to Rust Parameter struct
+- *(dsl)* Support indexed syntax in scenario set/scale blocks
+- *(compiler)* Inspect --dims, W200 guard warning, seasonal docs
+- Windows support + single entry point (Phase 1+2)
+- Add pre-push hook for cargo check + dune build
+- Add clippy + OCaml tests to pre-push hook
+- *(dsl)* Typed let bindings for dimensional constants
+- *(parser)* Support (expr) 'unit syntax, error on ambiguous division
+- *(cli)* Synthetic observations for camdl simulate
+- *(fit)* New FitConfigV2 types + camdl fit run command
+- *(fit)* Provenance.json + config_hash staleness detection
+- *(fit)* Wire PGAS/PMMH dispatch through camdl fit run
+- *(cli)* --draws flag for posterior/prior predictive simulation
+- *(fit)* --sweep on camdl fit run for profile likelihood and grids
+- *(fit)* Camdl fit status for v2 configs and result directories
+- *(cli)* --batch flag on simulate, delegates to experiment runner
+- *(fit)* Write draws.tsv with complete parameter vectors (PGAS + PMMH)
+- *(cli)* --seeds and --scenario batch flags on simulate
+- *(cli)* --draws uniform for space-filling exploration
+- *(fit)* PFilter dispatch through camdl fit run
+- *(fit)* Camdl fit diff and camdl fit new utilities
+- *(cli)* Help system with examples and dim comments
+- *(cli)* --dry-run for simulate shows resolved parameters with provenance
+- *(dsl)* ~ prior syntax for parameter declarations
+- *(prior)* Wire IR priors through Rust runtime + simulate --draws prior
+- *(dsl)* Recurring intervention syntax — `{ every, from, until }` block
+- *(cas)* New cas module — canonical CAS layout + meta types
+- *(cas)* --cas flag on `camdl simulate` — opt-in trajectory caching
+- *(cas)* Camdl list / show / cat — browse the content-addressable store
+- *(wrapper)* Route list/show/cat through camdl-sim + update --help
+- *(dsl)* `extends` for scenario inheritance (single-parent)
+- *(cli)* Simulate batch subcommand, retire --batch flag and experiment
+- *(inference)* State-snapshot projections in the particle filter
+- *(fit)* Add [synthetic] block + fit_seeds to FitConfigV2
+- *(fit)* Wrap all fit outputs under real/fit_<seed>/
+- *(fit)* Synthetic-data generator for [synthetic] fit configs
+- *(fit)* Replicate-grid dispatch for synthetic + fit_seeds
+- *(fit)* Summary.tsv + coverage.tsv for grid runs
+- *(fit)* Warn when priors are declared but no stage consumes them
+- *(fit)* Record pre-filter chain starts in chain_starts.tsv
+- *(fit)* IC-free inference via [fit] ic_free = true
+- *(fit)* Gate refine on scout convergence + loglik regression
+- *(run_meta)* Add unified Run/RunKind ADT types
+- *(run_paths)* Canonical output-path construction module
+- Unify output tree — output/sims/ and output/fits/
+- *(cas)* Human-readable dir names — <stem>-<hash[:8]> for fits and sims
+- *(fit,list)* Write Run::Fit at fit root + surface fits in camdl list
+- *(list)* --kind sim|fit|both filter (cleanup.md L2)
+- *(fit,batch)* V1 fit writes unified tree + manifest moves to sims/
+- *(show,cat)* Resolve fits by path or short-hash prefix
+- *(sim/inference)* Ancestor-trace primitive + opt-in recording in bootstrap PF
+- *(cli/pfilter)* --save-paths + --save-filtering flags
+- *(fit)* `camdl fit where FIT.toml [--seed N]`
+- *(fit)* --starts-from accepts short-hash prefix in addition to path
+- *(simulate)* Backend-provenance guardrail for --params from a fit MLE
+- *(diagnostics)* Add Info severity level (M5)
+- *(expander)* Warn when indexed obs has no data_stream (W203, m25)
+- *(expander)* E265 on intervention ASet to unknown compartment (m13)
+- *(expander)* E233 hints at mean/mu typo in priors (m19/C4/C10)
+- *(compiler)* Thread source locations into decl-level diagnostics (M9)
+- *(cli)* Run ir::validate on model load (RC1)
+- *(inference)* Implement BetaBinomial observation likelihood (IC1)
+- *(correlated_pf)* Preflight-reject multi-overdispersion CPM (IM8)
+- *(fit)* Prior × transform compatibility validator (IC4)
+- *(compiler)* Thread obs_decl.oloc + intervention_decl.ivloc into diagnostics (M9)
+- *(compiler)* Add init_entry.iloc field (M9 continuation)
+- *(inspect)* Add --tables flag to show loaded table values
+- *(book+inspect)* Add dimensions/data guide with working examples
+- *(inference)* Prequential trace + scoring kernels (Part I scaffolding)
+- *(sim)* SMCConfig.record_prequential flag
+- *(sim)* PF prequential sample recording + trace builder
+- *(cli)* Default backend is now chain_binomial
+- *(pfilter)* --save-prequential / --no-save-samples
+- *(fit)* Prequential trace for PFilter stage
+- *(cli)* Camdl compare — multi-model prequential table
+- *(compare)* E_T column + column-definition block in --help
+- *(wave1/#1)* Multi-source transitions — `A + B --> C + D` DSL syntax
+- *(wave1/#4)* Diagnostic_test likelihood sugar
+- *(wave2/#2)* Probabilistic branching `X --> {A:p, B:1-p} @ r`
+- *(wave2/#3 gate 1)* Hierarchical priors — parse + IR classification
+- *(wave2/#3 gate 2)* Hierarchical log-prior evaluator + scipy-oracle tests
+- *(wave2/#3 gate 3a)* Wire hierarchical priors into PMMH log-posterior
+- *(obs)* Multi-compartment prevalence() — GH #7 + proposal update
+- *(inspect)* Kind-grouped parameter summary + --parameters detail view
+- *(forcing)* Required tier-3 unit literal on every forcing declaration (GH #8)
+- *(dim)* Unchecked_dim per-expression dimensional escape
+- *(cli)* --progress {auto,pretty,plain,none} flag (GH #14)
+- *(harness)* External-validation harness v1 with sir_analytical case
+- *(harness)* He2010_forward case with R+pomp reference (regen path)
+- *(harness)* Boarding_school_sir case — pomp canonical SIR
+- *(harness)* Run-all mode + cargo test integration (L9 gate)
+- *(harness)* He2010_pfilter_loglik case + batch-replicated mode
+- *(run_meta)* Add RunKind::Profile + FitStage profile backrefs
+- *(run_paths)* Profile_run_dir / profile_point_dir / profile_point_start_dir
+- *(profile)* CAS integration for resume/mid-run-plotting (GH #15, v1)
+- *(list)* --parent HASH to enumerate a profile's grid-point runs
+- *(compare)* Evidence in decibans alongside nats (item 1 of 4)
+- *(evidence)* Add logmeanexp + sample_sd helpers for clean-eval PF replicates
+- *(fit)* Add CleanEvalConfig + GateConfig to IF2 stage (unit A step 3)
+- *(fit)* Plumb clean_eval / gate config through CLI + FitRunConfig (unit A step 4)
+- *(fit)* Clean_eval module — candidate construction + replicate scoring (unit A step 5)
+- *(fit)* Wire clean_eval into chain selection (unit A step 6)
+- *(fit)* Chain_evaluations.tsv + run-root final_params.toml (unit A step 7)
+- *(fit)* Compound scout-convergence gate (Â + decibans-spread, SE-aware floor) (unit A step 8)
+- *(fit)* Per-chain clean-eval keys in summary JSON + status decibans line (unit A step 9)
+- *(fit)* Persist resolved gate / clean-eval config in fit_state.toml (phase 3)
+- *(fit)* Camdl fit summary — single-fit interpretation surface (phase 1, closes #18)
+- *(fit)* Plumb ESS through clean-eval into chain_evaluations.tsv + summary JSON (phase 2)
+- *(fit)* Summary --format json|md|latex + --params-only (phases 4 + 5); spec docs
+- *(fit)* Foundation walker, MethodResult ADT, and v2 summary swap
+- *(evidence)* Add logmeanexp_with_se — delta-method SE on log scale
+- *(fit)* Cmd_fit_summary method-aware refactor + fit table + ConfigDiff + Deliverable C
+- *(fit)* Step 6 — archive fit.toml.original; fit table reads from archive
+- *(fit)* Step 8 — labels (--label, fit label, fit table/list integration)
+- *(camdlc)* -o / --output FILE writes IR JSON to file (closes #23)
+- *(profile)* --sweep accepts lin(min,max,n) and log10(min,max,n)
+- *(cas)* Typed CasInputs trait + ReplicateSet + profile migration with --seeds
+- *(cas)* Migrate simulate --cas to CasInputs
+- *(cas)* Migrate batch run to CasInputs; delete legacy run_hash
+- *(cas)* Migrate fit run to CasInputs (FitInputs + StageInputs)
+- *(cas)* Camdl show/cat handle RunKind::ReplicateSet umbrellas
+- *(list)* Surface profiles + replicate-set umbrellas in camdl list
+- *(fit/config_v2)* Add Gamma + Exponential to PriorSpec (parity with IR + sim)
+- *(fit)* --resume for PGAS / PMMH; identity vs. extension hash split
+- *(fit)* IF2 cooling_target_iters + simplex_groups (top-level)
+- *(fit)* Surface lost PGAS / PMMH / PFilter knobs in v2 schema + CLI
+- *(fit)* Default record_prequential = true for Stage::PFilter
+- *(cli)* Styled --help output (colorize after_help, clap structural styles, term-width cap)
+- *(fit)* [data] file = "..." shorthand for stratified models with one wide TSV
+- *(fit)* [estimate] start = defaults from bounds when omitted (gh#34)
+- *(dsl)* :rate (and other dim) cell-type annotations on tables (gh#32)
+- *(fit)* [fixed] from_scenario = "name" shorthand (gh#33)
+- *(fit)* Stream IF2 parameter_traces.tsv during run for tail -f diagnostics
+- *(pfilter)* Include observation projections in --save-paths output
+- Phase 1 ODE-inference — NLopt MLE + tuple-schema migration
+- *(fit)* Make [estimate.X].bounds optional, defaulting from model file
+- *(fit)* Default init_method = "lhs" across IF2 / PGAS / PMMH / NLopt
+- *(fit)* Transform-aware uniform start when [estimate] omits start
+
+### Miscellaneous
+
+- Gitignore output/ and diagnostics.tsv artifacts
+- Docs refresh, golden file cleanup, web formatter pass
+- Move proposals to docs/dev/proposals/
+- Move dev-blog to docs/dev/blog/
+- Tidy pass — trace OnceLock, remove stale dead_code, wire PMMH status
+- *(pmmh)* Add experimental warning for long time series
+- Clean up root — 65 .md files → 3
+- Add zip-for-review-with-docs.sh for comprehensive review packages
+- Add Apache 2.0 license + NOTICE
+- Remove dead compile_joint_obs_loglik + dead_code suppression
+- Move web/ to web-archive branch — not a priority, eats context
+- Update golden files for autodiff simplifier fixpoint
+- *(fit)* Drop the 3-line iter-0 preamble from parameter_traces.tsv
+- *(compiler)* Delete dead Source_cache.load (m6)
+- *(parser)* Delete empty tag_opt from inline transition (m14)
+- *(inference)* Batch 2 minor cleanups (Im14, Im15, Im17)
+- Delete observe/ crate (stub, never built out)
+- *(gitignore)* Fix .claire/ → .claude/ typo; untrack settings.local.json
+- *(harness)* Re-bootstrap pfilter_loglik MANIFEST after .gitignore edit
+- *(ci)* Untrack stray .claude/worktrees/* gitlinks
+- *(fit)* Delete v1 FitToml schema; v2 is the only fit-config path
+- *(fit)* Silence too_many_arguments on run_stage entry points
+- Remove camdl-wasm crate + web-editor Makefile targets
+- *(cli)* Clean up stale doc-string references after RunStatus + run_meta migrations
+- Remove dead camdl-analysis / VOI / sensitivity-experiment subgraph
+
+### Other
+
+- Initial import
+- Normalize formatting across IR schema, spec, golden files, and Cargo configs
+- Merge inference-v0: particle filter, IF2, profiles, DSL improvements
+- Merge worktree-profile: 3-4x inference speedup via scratch buffers + rayon particles
+- Remove EkRng dead code + ahash dependency
+- Add CAMDL_TRACE_STEPS logging to event Add actions
+- Revert "fix(cpm): track particle identity through resampling for z-value sync"
+- *(pgas)* Sanity check LL immediately after simulate_reference
+- *(pgas)* Enhanced spatial -inf diagnostics + targeted step_one test
+- *(pgas)* Definitive diagnostics for spatial -inf
+- *(pgas)* Add consistency assertions for counts_before/flows pairing
+- *(pgas)* Observation density is the -inf source, not transitions
+- IF2Param → EstimatedParam throughout
+- Remove ObsStreamSpec and joint_obs_weight
+- *(pgas)* Pre-allocate ancestor weights, swap gamma buffers
+- Remove resolved issue file, gitignore parser artifacts
+- Camdl experiment and camdl profile with migration notes
+- Remove camdl experiment analyze, deprecation notes
+- Remove deprecated CLI commands, tidy dispatch
+- *(ir)* Remove dead error variants WrongIndexCount and UnknownCompartmentInInitialConditions (review #5)
+- *(prior)* Self-review of prior-syntax PR with bugs + test gaps
+- Spec wording + PIndexed catch-all is an internal invariant
+- *(list)* Switch to borderless layout for readability at scale
+- *(browse,fit)* Drop dead shim, mark incomplete stages explicitly
+- Tick L5 (book fit paths migrated to stem-glob helpers)
+- Three-stage review zip bundlers for external code-review agent
+- Drop diff-scoped review zips in favor of canonical scripts/review-zip.sh
+- Canonical review-zip.sh + scripts/README.md
+- Review-request.md — paste-ready reviewer prompt + staging order
+- Expose PF latent trajectories + the (1-vs-2) diagnostic
+- *(pf)* Reframe --save-filtering as PF-diagnostic tool, not 'less-useful alternative'
+- *(pf-traj)* Mark implemented + record shipping commits
+- Output-tree hardening (addresses post-ship review findings)
+- Default output root back to 'results/' (post-ship review)
+- Proposal + incident: backend-provenance guardrail for simulate --params
+- *(backend-provenance)* Mark implemented, record shipping commit
+- *(sim)* Minor review cleanups (RM10, Rm4, Rm5, Rm8, Rn2)
+- Permissive mode inside observation likelihoods (gh #4)
+- Scrub remaining experiment / --batch references (gh #2)
+- Scrub stale CLI refs for alpha (sweep)
+- DSL features for first-class malaria modelling
+- *(malaria)* Add verified pre-proposal fixture + show inspect output
+- *(demography)* Split vital dynamics into separate proposal
+- *(malaria)* Document already-shipped features; add #5b state-read
+- *(malaria)* Waves + checkboxes; #3 stays in parameters{}
+- *(wave1/#1)* Design note + failing TDD tests for multi-source
+- *(wave1)* Check off #1 multi-source — landed d88eb7f
+- *(wave1)* Check off #4 diagnostic_test — landed 674c451
+- Request Ross-Macdonald fit vignette (Wave 1 demo)
+- *(wave2)* Check off #2 branching — landed 9c6530a
+- *(wave2/#3 gate 2)* Hierarchical log-prior evaluation — risk catalog + test battery
+- Check off Wave 2 #3 Gates 1+2+3a; notify book agent
+- Obs sampler evaluated likelihood args against zero scratch (GH #5, #6)
+- Update with meta-incident (first fix missed the actual path)
+- Update with third strike + audit-technique lesson
+- Verify perf intact after helper deletion
+- *(note)* Defer --no-dim-check hardening (require reason + loud warn)
+- *(note)* Defer unchecked_dim per-expression dimensional escape
+- External validation harness (post-GH #11 lessons)
+- Revise external-validation harness after design review
+- Nightly external-validation regen CI (deferred)
+- Evidence in decibans for model-comparison output
+- Camdl profile CAS integration (supersedes GH #15 approach)
+- IF2 scout findings + remediation (silent-wrong-answer class)
+- Camdl fit summary — single-fit interpretation surface
+- Clean_eval → loglik_eval (file, types, fields, CLI flags, TOML key)
+- Typed CAS runs, replicate sets, profile-as-stage (2026-04-28)
+- *(typed-cas)* Scope to single push; drop migration tool; Phase 2 → future work
+- *(typed-cas)* Mark Implemented; check off implementation checklist
+- Init_method = single | uniform | lhs for IF2 chain starts
+- Extend init_method to PGAS and PMMH
+- Per-start init draws in camdl profile
+- Gh42 follow-up: honour fit.toml [estimate].bounds in IF2/LHS/transform
+- Camdl survey — likelihood-landscape diagnostic (#44)
+- Gh43 follow-up: --eval auto picks pfilter/simulate from model capabilities
+- Gh43 follow-up: bound-clustering + start-rank silent-miss diagnostics
+- Gh43 follow-up: auto-scale --n-points and bump --eval-replicates 3 → 5
+- Gh43 fix: pairplot subplot axis assignment off-by-one
+- Gh43 fix: pair-plot diagonal histograms — overlay subsets, not partitions
+- Gh43 fix: pair-plot 1:1 aspect ratio
+- Gh43 fix: color-coord normalisation uses displayed top-K, not all rows
+- Merge Phase 1 ODE-inference into main
+- Add InitMethod::SurveyTopK variant + proposal
+- Stage config fields survey_path + survey_top_k_n
+- SurveyTopK reader + IF2 dispatch wiring
+- CLI overrides --survey-path and --survey-top-k
+- Chain_init_source provenance + chain_starts.tsv sidecar
+- Cross_check + end-to-end survey-top-k unit tests
+- Richardson dt-convergence check at θ̂ + IF2 wiring
+- CLI overrides --no-dt-check / --dt-check-strict / --dt-check-halvings
+- Render dt-check verdict in `camdl fit summary`
+- Proposal — record v1 ship status + deferred work
+- Gh#53: dt-check verdict text — flag high-magnitude failures (≥100·τ) as
+- Gh#53 fix: store dt-invariant fire_times on CompiledModel; resolve
+- Gh#53 incident report — cohort fire-step dt misalignment
+- Gh#53 audit: consolidate the 5 remaining inline time-to-step
+- Gh#53 incident report — seed-resampling test results + audit findings
+- Gh#53 audit: 2 new ladder-dimension regression tests
+- Proposal for dt primitive + L401 lint + warning catalog
+- OCaml side — Ir.Dt variant + reserved name + dim/expander wiring
+- Rust side — Expr::Dt + EvalCtx threading
+- L401 lint — Euler-correction with fixed time literal
+- Round-trip + runtime tests for dt primitive
+- Mark proposal v1 complete + cross-repo hand-off
+- Proposal — trig primitives (sin/cos/tanh + pi/e)
+- Add Sin / Cos / Tanh + pi / e (trig primitives)
+- Tests + end-to-end smoke for trig primitives
+- Proposal + forcing-kinds taxonomy doc
+- Add Fourier + PeriodicSpline forcings
+- Tests + DSL smoke for Fourier + PeriodicSpline forcings
+- Gh#59 follow-up: proposal — proper periodic B-spline algorithm
+- Gh#59 v2: proper periodic B-spline algorithm (de Boor)
+- Gh#59 v2: cross-validate periodic B-spline + Fourier against external oracles
+- Bump to 0.4 with envelope + version handshake (audit C8)
+
+### Performance
+
+- *(sim)* Add sparse incremental propensity updates to Gillespie
+- *(web)* Fix Connect hang + Map tab crash for slug-based patch models
+- Add criterion benchmark suite for simulation and inference
+- Pre-allocate scratch buffers in step_one, eliminating 4.2M allocs/run
+- Rayon parallel particle propagation in bootstrap_filter and IF2
+- Cache check, double-buffer resampling, initial_loglik pfilter
+- *(cpm)* Parallelize correlated PF + seed RNG from gamma noise
+- *(sim)* Migrate eval_propensities to pre-resolved expressions
+- *(sim)* Migrate chain_binomial overdispersion to pre-resolved expressions
+- *(sim)* Migrate gillespie, tau-leap, ODE backends to pre-resolved expressions
+- *(sim)* Migrate all inference code to pre-resolved expressions
+- *(expander)* Fix O(n^2) list append in collect_declarations
+- *(expander)* Add Hashtbl lookups in resolve_expr for O(1) name resolution
+- *(expander)* Incremental scenario bindings fold, O(N) not O(N²) (m23)
+- *(obs)* Thread-local scratch IntState eliminates hot-loop alloc (IM2)
+
+### Refactor
+
+- Restructure defaults/ presets and update experiment spec
+- *(web)* Auto-discover golden examples via import.meta.glob
+- *(cli)* Extract resolve_ir_path; add enable/disable to experiments
+- *(experiment)* Hierarchical run dirs + correct cache invalidation
+- *(sim)* Introduce EvalCtx; replace 6-arg eval_expr signature
+- *(dsl)* Rename functions {} to forcing {}
+- *(ir)* Replace overdispersion field with DrawMethod enum; add deterministic() and mod()
+- Unify threading — one rayon pool for all parallelism
+- *(if2)* Replace r_k with weighted-variance ratio + q_ratio diagnostics
+- *(pfilter)* Predictions are Option; state quantiles on obs scale
+- ParamSpec + build_if2_params_from_specs (Phase 0-1)
+- If2 + profile use compiled dmeasure from IR (Phase 5)
+- Reuse compute_rhat (Phase 6); scout_best_params.toml (Phase 7)
+- Unify model loading + flow resolution + error handling (Phase 3-4, 8)
+- Remove MAD auto-calibration; loud auto rw_sd with source tracking
+- Rename dmeasure → obs_loglik, rmeasure → obs_sample
+- *(obs)* ObsStreamSpec + joint_obs_weight — one function for all pipelines
+- *(pgas)* Centralize RATE_EPSILON, clean up debug diagnostics
+- Shared mcmc_diagnostics + rename if2_params → estimated_params
+- Run_chain_binomial calls step_one instead of inline copy
+- *(pgas)* Extract patch_population helper
+- *(inference)* Extract restore_z_values helper
+- *(pgas)* Extract sample_categorical_log helper
+- *(inference)* Consolidate transform_deriv into EstimatedParam
+- *(pgas)* Delegate prior density to Prior::log_density
+- *(pgas)* Precompute obs_at_substep mapping
+- *(pgas)* Extract RungState struct for parallel tempering
+- *(inspect)* Remove dead code — pp_one and unused neq binding
+- *(expander)* Deduplicate strides computation in load_table_data
+- *(inspect)* Extract read_file helper, eliminating duplicate file reads
+- *(expander)* Extract read_csv_rows helper for CSV/TSV file loading
+- *(ir)* Merge serialize.ml + deserialize.ml into serde.ml
+- *(expander)* Make expanded_comp_cache non-optional
+- *(inference)* Extract shared cholesky_lower to linalg.rs, add log::warn
+- *(obs_model)* Use binom_logpmf for Binomial observation likelihood
+- *(runner)* Extract median/MAD utility functions
+- *(inference)* Rewrite PF + IF2 to use trait-based API
+- *(pgas)* Replace ObsStreamSpec with MultiStreamObsModel
+- *(cli)* Build helpers, collector non-optional, auto_rw_sd dedup
+- Trait-ify correlated PF, finish PMMH migration, delete compat fields
+- *(sim)* Extract Prior to shared inference/prior.rs
+- *(list)* Use comfy-table + strip model path to basename
+- *(hashing)* Consolidate hash helpers into crate::hashing
+- *(cas)* Simulate writes Run/RunKind::Simulate, drop cas::RunMeta
+- *(fit)* Stage writes Run::FitStage, drop StageProvenance
+- *(cas)* Wire run_paths helpers into production, drop duplicated path code
+- *(run_meta,browse)* Collapse duplicated loader + drop redundant stage_hash
+- Delete dead data_contract field (m20)
+- Delete dead simplex parameter_groups plumbing (M17/m24)
+- Scrub stale EKRNG design references (RC2)
+- *(inference)* Propagate resolve_likelihood errors (IM3) + reject mismatched obs_times (Im3)
+- *(cli)* Delete dead legacy fit entry points (cmd_fit_scout/refine/validate/pmmh/pgas)
+- *(ocaml)* Design quality fixes from 2026-04-20 review
+- *(cli)* Migrate to clap 4 derive API and consolidate inference types
+- Cargo clippy --fix sweep across sim + cli
+- *(cli)* Util helpers for chain-seed derive, dir-create, die
+- *(obs)* Revert prevalence(x,y) sugar; support DerivedExpr emission (GH #7)
+- *(progress)* Extract DEFAULT_THROTTLE constant + Throttle::default
+- *(fit)* Rename rhat → chain_agreement (Â) in MLE pipeline only
+- *(cli)* Collapse duplicate args::Cli/Command/FitCommand into main.rs's tree
+- *(fit)* Delete v1 stage entry points + helpers (~2,000 lines)
+- *(fit)* Delete fit/status.rs — dead v1 status printer (~360 lines)
+- *(fit)* Rename fit/summary.rs → fit/grid_summary.rs
+- *(fit)* Remove all #[allow(dead_code)] in fit/; delete fields and methods that aren't read
+- Workspace-wide dead-code cleanup (~1,400 lines + 0 #[allow(dead_code)])
+- *(fit)* Strip clean-eval to FinalIter + clean re-evaluation
+- *(fit)* Typed-prior helpers; resolve_prior takes v2 estimate map
+- *(fit)* FitRunConfig::build + build_if2_params take v2 types
+- *(fit)* Pgas/pmmh as v2-native run_stage; drop to_legacy_toml + compute_config_hash
+- *(run)* Lift label from FitMeta to Run; add --label to simulate/profile
+- *(cli)* Rename `camdl fit label` → `camdl label`; add HASH column
+- *(profile)* Collapse single-seed Profile into ReplicateSet-of-1
+- *(browse)* Collapse Resolved enum; cover all kinds in show
+- *(types)* Swap stringly-typed backend / method for typed enums
+- *(run)* Replace wall_time_seconds==0.0 sentinel with RunStatus
+- *(cli)* Replace v2 PriorSpec enum with re-export of ir::PriorDist
+- *(cli)* Delete prior_spec_to_prior; resolve_prior calls Prior::from_ir directly
+- *(cli)* Replace sampling::PriorSpec with ir::PriorDist
+- *(ir)* Replace stringly-typed HierarchicalPrior.kind with enum (M1)
+- *(fit)* Rename internal format-dispatch helpers cmd_* → format_*
+- *(run-meta)* Drop legacy empty-string stage_hash deserialize shim
+
+### Tests
+
+- Add experiment pipeline integration tests + fixture TOMLs
+- *(cli)* Extract plan_runs ADT + cache invalidation tests
+- *(sim)* Add unit tests for all UnOp variants (neg, log, sqrt, abs, floor, ceil)
+- *(chain-binomial)* Add invariant tests (conservation, non-negativity, large-N regression)
+- *(sim)* Validate CubicSpline against scipy.interpolate.CubicSpline
+- *(sim)* Add external validation tests
+- *(inference)* Particle filter validation tests
+- *(if2)* Tighten convergence test with loglik stability check
+- *(autodiff)* Gradient check — analytical vs finite differences
+- Resume hash + multi-stream observation tests
+- Joint_obs_weight tests with actual ObsStreamSpec
+- Spatial density reproduction tests — all pass
+- Downstream SEIR spatial model round-trip — PASSES with realistic params
+- Multi-seed spatial density — 0/100 seeds produce -inf
+- Golden spatial SEIR model for inference density round-trip
+- *(sim)* Add resolved_expr unit tests — 13 tests covering all variants
+- Diagnostic collector severity + JSON round-trip
+- Update all sim tests for trait-based inference API
+- Add obs-level parameter tests
+- *(dimcheck)* 56 tests + 6 negative golden files
+- *(dimcheck)* Add QCheck property-based tests
+- Add 25 tests for run system (65 → 90 total)
+- 14 parameter precedence tests (90 → 104 total)
+- *(compiler)* 7 prior-syntax tests + sir_priors golden fixture
+- *(cli)* Prior-draws integration + resolve_prior precedence chain
+- *(compiler)* E230–E235 prior validation error codes
+- *(compiler)* Uniform/normal/exponential parse + const arithmetic in prior args
+- *(cli)* Prior draws bounds/scenarios/seeds + parse_prior coverage
+- *(cli)* Moment-matching sanity check for sample_from_prior_raw
+- *(cli)* End-to-end prior round-trip through golden IR
+- *(inference)* Regression tests for state-snapshot projections
+- Close gaps around prevalence-on-stratified-compartment fix
+- Regression guards for unified output tree + show-for-fits
+- *(pfilter)* Integration tests for --save-paths and --save-filtering
+- *(backend_provenance)* Behavior tests that read run.json, not just stderr
+- *(compiler)* Register 12 unlisted golden fixtures (C8)
+- Assert W310 actually fires in extends-dedup test (T4)
+- *(golden)* Regenerate IR golden files after OcM3 zero-grad filter
+- *(compiler)* P1.5 + P3.1 / P3.2 / P3.5 spec-claim regression tests
+- *(compiler)* P3.4 consecutive(k) → k-1 adjacent pairs
+- *(sim)* Numpy/scipy-reference tests for linear + constant interp
+- *(sim)* P1.3 Erlang-k statistical test + runtime-test design doc
+- *(wave1/#1)* Close multi-source coverage gaps
+- *(fit)* Spec sweep + Deliverables A & B for the v2 layout bug
+- *(fit)* Empirical anchor for clean-eval's bias-reduction claim
+- Add 11 missing tests + fix 3 bugs surfaced by them
+- *(fit)* Unit tests for nlopt_stage convergence gate + config extraction
+- Fix make test post-audit (envelope + degenerate-rates fallout)
+
+

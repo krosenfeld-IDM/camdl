@@ -43,6 +43,18 @@ const TOPICS: &[Topic] = &[
         body: include_str!("../../../../docs/camdl-language-spec.md"),
     },
     Topic {
+        slug: "language-changes",
+        aliases: &["lang-changes", "migrations", "breaking", "what-changed"],
+        summary: "Breaking DSL changes with migrations (old → new) — check here when a model that should compile is rejected",
+        body: include_str!("../../../../docs/language-changes.md"),
+    },
+    Topic {
+        slug: "changelog",
+        aliases: &["release-notes", "releases", "history"],
+        summary: "Full changelog (all changes by version): DSL, CLI, inference, formats",
+        body: include_str!("../../../../CHANGELOG.md"),
+    },
+    Topic {
         slug: "inference",
         aliases: &["fit", "fitting", "mcmc"],
         summary: "Fitting: particle filter, IF2, PGAS, profiles, diagnostics",

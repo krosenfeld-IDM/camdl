@@ -148,6 +148,11 @@ progress."
 
 Compile-time errors (from `camdlc`):
 
+> If a construct looks correct but still errors — especially a bare `E001` syntax
+> error on a forcing, a block keyword, or a likelihood — the **DSL may have
+> changed since the model (or doc) was written**. Check `camdl docs
+> language-changes` for the migration (old → new) before "fixing" the model.
+
 | Code   | What it says                                                  | What it usually means                                                 | What to do                                                                                                                   |
 | ------ | ------------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `E100` | undeclared name 'X'                                           | Typo, or use of a name not declared in compartments/parameters/let    | Add the declaration. Don't introduce a new symbol just to make the error go away.                                            |

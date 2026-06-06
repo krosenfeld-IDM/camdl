@@ -218,7 +218,8 @@ changelog:
 	@command -v git-cliff >/dev/null || { \
 	  echo "git-cliff not found — install it: brew install git-cliff (or cargo install git-cliff)"; \
 	  exit 1; }
-	git-cliff --unreleased
+	git-cliff -o CHANGELOG.md
+	@echo "wrote CHANGELOG.md (embedded into \`camdl docs changelog\`; regenerate before a release/build)"
 
 # Print the SemVer version git-cliff recommends from the unreleased commits.
 version-bump:

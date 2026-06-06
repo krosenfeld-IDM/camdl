@@ -488,6 +488,23 @@ rename it everywhere atomically. When a format changes, update all golden files.
 Clean design beats legacy support — at alpha a clean break with updated golden
 files is preferred over a compatibility shim.
 
+### Breaking language changes must signpost the migration
+
+Backwards compatibility is a non-goal, but a *silent* break is a bug. When you
+change the DSL surface in a breaking way — rename or remove a keyword, require
+new syntax, tighten a semantic rule — the compiler must reject the old form with
+a diagnostic that **names the replacement (old → new)**, not a bare `E001`
+syntax error. A model written against last month's grammar should fail with a
+migration, not a mystery. This is the error-quality bar from "Error messages are
+a feature" applied to language evolution: the diagnostic is the migration tool.
+
+And every breaking language change gets an entry — newest first, with the
+old → new migration — in `docs/language-changes.md`, which is embedded into
+`camdl docs language-changes` so an agent on any binary can see what changed.
+The diagnostic should point there (`… see \`camdl docs language-changes\``) until
+the targeted hint exists. Backfilling old changes into that log is welcome; not
+adding new ones is a regression.
+
 ### Delete dead code on sight
 
 Same principle, enforcement mechanism. Unused functions, unused modules, "v1"
