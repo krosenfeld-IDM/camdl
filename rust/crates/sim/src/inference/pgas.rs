@@ -816,8 +816,11 @@ pub fn complete_data_loglik(
 // Forward simulation (initial trajectory)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Simulate a forward trajectory recording per-substep detail.
-/// Used to initialize the reference trajectory for PGAS.
+/// Simulate a forward trajectory recording per-substep detail, on the uniform
+/// `dt` grid over `[t_start, t_end]`. Used to initialize the reference trajectory
+/// for snap-aligned PGAS and by the gradient/density gates. Thin wrapper over
+/// [`simulate_reference_on_grid`] with the uniform grid — byte-identical to the
+/// pre-2c loop (`t0 = t_start + s·dt`, `dt_substep = dt`).
 pub fn simulate_reference(
     model: &CompiledModel,
     params: &[f64],
@@ -825,10 +828,29 @@ pub fn simulate_reference(
     dt: f64,
     rng: &mut StatefulRng,
 ) -> Result<PGASTrajectory, SimError> {
-    let (init_int, _) = model.initial_state(params)?;
-    let n_tr = model.model.transitions.len();
     let t_start = model.model.simulation.t_start;
     let n_substeps = crate::time::interval_steps(t_start, t_end, dt);
+    let grid: Vec<(f64, f64)> = (0..n_substeps).map(|s| (t_start + s as f64 * dt, dt)).collect();
+    simulate_reference_on_grid(model, params, dt, &grid, rng)
+}
+
+/// Simulate a forward reference trajectory over an explicit substep grid
+/// (`(t0, dt_substep)` per substep, from [`build_substep_grid`]). Each substep
+/// freezes propensities at `t0` and advances by `dt_substep`; the realized times
+/// are recorded so the density consumers (and CSMC free particles, via the
+/// reference) tile against the same grid. `dt` is the nominal step, used only to
+/// resolve `fire_steps` (event step indices). The substep loop and RNG draw
+/// order are identical to the legacy uniform loop, so a uniform grid produces a
+/// byte-identical trajectory.
+pub fn simulate_reference_on_grid(
+    model: &CompiledModel,
+    params: &[f64],
+    dt: f64,
+    grid: &[(f64, f64)],
+    rng: &mut StatefulRng,
+) -> Result<PGASTrajectory, SimError> {
+    let (init_int, _) = model.initial_state(params)?;
+    let n_tr = model.model.transitions.len();
 
     // gh#53: resolve fire_steps once at the runtime dt; passed into
     // step_one rather than read off `model.fire_steps` (which no
@@ -837,27 +859,26 @@ pub fn simulate_reference(
 
     let mut counts = init_int.counts.clone();
     let mut scratch = StepScratch::new(model);
-    let mut substeps = Vec::with_capacity(n_substeps);
+    let mut substeps = Vec::with_capacity(grid.len());
 
-    for s in 0..n_substeps {
-        let t = t_start + s as f64 * dt;
+    for (s, &(t0, dt_s)) in grid.iter().enumerate() {
         let mut flows = vec![0u64; n_tr];
         scratch.gamma_used.clear();
 
         let counts_before = counts.clone();
-        step_one(model, &mut counts, &mut flows, params, t, dt, rng, &mut scratch, &fire_steps)?;
+        step_one(model, &mut counts, &mut flows, params, t0, dt_s, rng, &mut scratch, &fire_steps)?;
 
         // Verify: density evaluation of this record won't produce k > n.
         // This catches state/flow mismatches before they cause -inf later.
         if cfg!(debug_assertions) {
             let verify_td = log_transition_density_substep(
-                model, &counts_before, &flows, &scratch.gamma_used, params, t, dt,
+                model, &counts_before, &flows, &scratch.gamma_used, params, t0, dt_s,
             );
             if let Ok(td) = verify_td {
                 debug_assert!(td.is_finite(),
-                    "simulate_reference: density is -inf at substep {} (t={:.1}) \
+                    "simulate_reference: density is -inf at substep {} (t={:.3}, dt={:.3}) \
                      despite matching state. counts_before={:?}, flows={:?}",
-                    s, t, &counts_before, &flows);
+                    s, t0, dt_s, &counts_before, &flows);
             }
         }
 
@@ -866,8 +887,8 @@ pub fn simulate_reference(
             counts_after: counts.clone(),
             flows,
             gammas: scratch.gamma_used.clone(),
-            t0: t,
-            dt_substep: dt,
+            t0,
+            dt_substep: dt_s,
         });
     }
 
@@ -995,7 +1016,12 @@ pub fn csmc_as(
     let mut ancestor_log_w = vec![f64::NEG_INFINITY; n_particles];
 
     for s in 0..n_substeps {
-        let t = t_start + s as f64 * dt;
+        // Tile against the grid carried by the reference trajectory (built once
+        // in run_pgas); every particle shares it, so free particles and the
+        // reference advance over identical (t0, dt_substep). Under snap these are
+        // (t_start + s·dt, dt) — byte-identical to the pre-2c loop.
+        let t = reference.substeps[s].t0;
+        let step_dt = reference.substeps[s].dt_substep;
 
         // gh#audit-H8. Cache the pre-resample particle state for
         // ancestor sampling. The previous code saved prev_counts AFTER
@@ -1053,7 +1079,7 @@ pub fn csmc_as(
 
             step_one(
                 model, &mut counts[j], &mut substep_flows[j],
-                params, t, dt, &mut rngs[j], &mut scratches[j],
+                params, t, step_dt, &mut rngs[j], &mut scratches[j],
                 &fire_steps,
             )?;
 
@@ -1122,7 +1148,7 @@ pub fn csmc_as(
                     &ref_rec.gammas,
                     params,
                     t,
-                    dt,
+                    step_dt,
                 )?;
                 // Post-resample slot j carries uniform weight (1/N);
                 // the categorical is driven by td alone.
@@ -1197,8 +1223,11 @@ pub fn csmc_as(
             counts_after: history_counts_after[s][particle].clone(),
             flows: history_flows[s][particle].clone(),
             gammas: history_gammas[s][particle].clone(),
-            t0: t_start + s as f64 * dt,
-            dt_substep: dt,
+            // The realized (t0, dt_substep) are grid properties shared by every
+            // particle at substep s — read them from the reference, which carries
+            // the grid the swarm tiled against. Under snap == (t_start+s·dt, dt).
+            t0: reference.substeps[s].t0,
+            dt_substep: reference.substeps[s].dt_substep,
         });
         particle = ancestors[s][particle];
     }
