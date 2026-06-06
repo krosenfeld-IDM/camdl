@@ -1,5 +1,8 @@
-# Claude Code
-.claude/
+# Claude Code — keep local settings and worktrees out of git, but DO track
+# shared, version-controlled skills and slash-commands so the team gets them.
+.claude/*
+!.claude/skills/
+!.claude/commands/
 
 # Rust
 rust/target/
