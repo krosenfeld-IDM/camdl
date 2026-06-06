@@ -144,13 +144,22 @@ pub struct FitBackendConfig {
     pub backend: crate::args::types::Backend,
     #[serde(default = "default_dt")]
     pub dt: f64,
+    /// How observation times relate to the `dt` grid. `None` = "exact where the
+    /// algorithm supports it" (today's behaviour). Gated per algorithm by
+    /// `crate::fit::methods::resolve_obs_alignment`. See the unified-timeline
+    /// proposal (Stage 2). `skip_serializing_if None` keeps it OUT of the fit
+    /// identity hash when unset, so existing fits' `run_id`s are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obs_alignment: Option<crate::fit::methods::ObsAlignment>,
 }
 fn default_backend() -> crate::args::types::Backend {
     crate::args::types::Backend::ChainBinomial
 }
 fn default_dt() -> f64 { 1.0 }
 impl Default for FitBackendConfig {
-    fn default() -> Self { FitBackendConfig { backend: default_backend(), dt: default_dt() } }
+    fn default() -> Self {
+        FitBackendConfig { backend: default_backend(), dt: default_dt(), obs_alignment: None }
+    }
 }
 
 // ─── Data ───────────────────────────────────────────────────────────────────

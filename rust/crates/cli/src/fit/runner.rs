@@ -322,6 +322,40 @@ impl FitRunConfig {
         // Canonical observations (from first stream)
         let observations = streams[0].data.clone();
 
+        // (algorithm × obs-alignment) support gate — the fit-dispatch seam.
+        // Converts today's SILENT fallbacks into clean errors: `exact` + PGAS
+        // would silently snap to a uniform grid; `exact` + off-grid correlated
+        // PMMH would silently fall back to fresh RNG, decorrelating the CPM
+        // estimator (#17). For valid runs the default resolves to today's
+        // behaviour ("exact where supported"), so nothing changes; threading the
+        // resolved policy into the filters is Stage 3. (Fires per build; cheap.)
+        {
+            use crate::run_meta::MethodKind;
+            let t_start = compiled.model.simulation.t_start;
+            let obs_on_grid = observations.iter().all(|o| {
+                let k = ((o.time - t_start) / dt).round();
+                ((t_start + k * dt) - o.time).abs() < 1e-9
+            });
+            for stage in fit.stages.values() {
+                if matches!(
+                    stage.method_kind(),
+                    MethodKind::If2 | MethodKind::Pgas | MethodKind::Pmmh | MethodKind::Pfilter
+                ) {
+                    let correlated = matches!(
+                        stage,
+                        crate::fit::config_v2::Stage::PMMH { rho: Some(_), .. }
+                    );
+                    crate::fit::methods::resolve_obs_alignment(
+                        stage.method_name(),
+                        correlated,
+                        fit.config.obs_alignment,
+                        obs_on_grid,
+                    )
+                    .map_err(|e| format!("{} stage: {e}", stage.method_name()))?;
+                }
+            }
+        }
+
         if streams.len() > 1 {
             eprintln!("  {} observation streams: {}",
                 streams.len(),

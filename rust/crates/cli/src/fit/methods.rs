@@ -321,6 +321,84 @@ fn render_invalid_combo(algorithm: &str, backend: &str) -> String {
 /// Call from every dispatch site that resolves a (algorithm, backend,
 /// model) triple. For backends whose capability set covers everything
 /// the model needs, this is a no-op.
+/// How observation times relate to the integrator's `dt` grid — the
+/// `obs_alignment` choice (`fit.toml [backend]`, alongside `dt`). See
+/// docs/dev/proposals/2026-06-05-unified-timeline-effect-architecture.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ObsAlignment {
+    /// Step exactly to each observation time (shortened final substep).
+    Exact,
+    /// Round observation times onto the `dt` grid (uniform stepping).
+    Snap,
+}
+
+/// The single `(algorithm × obs-alignment)` support gate at the fit-dispatch seam.
+/// Returns the resolved alignment, or a clean error for an unsupported
+/// combination — converting today's *silent* fallbacks into loud errors:
+/// `exact` + PGAS silently snaps to a uniform grid, and `exact` + off-grid
+/// correlated-PMMH silently falls back to fresh RNG (decorrelating the CPM
+/// estimator). The threading of the resolved alignment into the filters'
+/// `Schedule` policy, and the unimplemented modes (PF-snap, PGAS-exact), are
+/// Stage 3; today this is the validation seam.
+///
+/// * `requested = None` is the default: "exact where the algorithm supports it".
+/// * `correlated` — a PMMH run with `rho` set (CPM); its pre-drawn-noise layout
+///   assumes a fixed substep count per observation window, so `exact` requires
+///   on-grid obs.
+/// * `obs_on_grid` — every observation time is an integer multiple of `dt`.
+pub fn resolve_obs_alignment(
+    algorithm: &str,
+    correlated: bool,
+    requested: Option<ObsAlignment>,
+    obs_on_grid: bool,
+) -> Result<ObsAlignment, String> {
+    use ObsAlignment::{Exact, Snap};
+    match algorithm {
+        // Exact-steppers: land exactly on any obs. No `snap` inference path exists.
+        "if2" | "pfilter" => match requested {
+            None | Some(Exact) => Ok(Exact),
+            Some(Snap) => Err(format!(
+                "{algorithm}: obs_alignment = \"snap\" is not implemented — it steps \
+                 exactly to observation times. Use \"exact\" (the default)."
+            )),
+        },
+        "pmmh" => match (requested, correlated, obs_on_grid) {
+            // Plain PMMH (no `rho`) is the bootstrap PF: exact on any obs.
+            (None | Some(Exact), false, _) => Ok(Exact),
+            // Correlated PMMH (CPM, `rho` set): exact only on-grid.
+            (None | Some(Exact), true, true) => Ok(Exact),
+            (None, true, false) => Err(
+                "pmmh with rho (correlated pseudo-marginal): observations are off the \
+                 dt grid, but the correlated-PF noise layout assumes a fixed substep \
+                 count per observation window. Put observations on the dt grid, or \
+                 unset rho (plain PMMH steps exactly to any obs)."
+                    .into(),
+            ),
+            (Some(Exact), true, false) => Err(
+                "pmmh: obs_alignment = \"exact\" with rho (correlated) requires \
+                 on-grid observations — the correlated-PF noise layout assumes a \
+                 fixed substep count per observation window."
+                    .into(),
+            ),
+            (Some(Snap), _, _) => {
+                Err("pmmh: obs_alignment = \"snap\" is not implemented.".into())
+            }
+        },
+        // PGAS uses a uniform grid; exact-PGAS is planned but not yet built.
+        "pgas" => match requested {
+            None | Some(Snap) => Ok(Snap),
+            Some(Exact) => Err(
+                "pgas: obs_alignment = \"exact\" is not yet implemented (PGAS uses a \
+                 uniform grid; exact-PGAS is planned). Use \"snap\", or algorithm = \
+                 if2 / pfilter for exact alignment."
+                    .into(),
+            ),
+        },
+        other => Err(format!("resolve_obs_alignment: unknown algorithm '{other}'")),
+    }
+}
+
 pub fn check_model_capabilities(
     backend: &str,
     compiled: &sim::CompiledModel,
@@ -440,6 +518,44 @@ mod tests {
                 "expected ({a}, {b}) in METHODS"
             );
         }
+    }
+
+    #[test]
+    fn obs_alignment_exact_steppers_any_obs() {
+        use ObsAlignment::{Exact, Snap};
+        // if2/pfilter are exact on any obs; default and explicit exact both ok.
+        for algo in ["if2", "pfilter"] {
+            assert_eq!(resolve_obs_alignment(algo, false, None, true), Ok(Exact));
+            assert_eq!(resolve_obs_alignment(algo, false, None, false), Ok(Exact));
+            assert_eq!(resolve_obs_alignment(algo, false, Some(Exact), false), Ok(Exact));
+            // snap is not implemented for the exact-steppers.
+            assert!(resolve_obs_alignment(algo, false, Some(Snap), true).is_err());
+        }
+    }
+
+    #[test]
+    fn obs_alignment_pmmh_is_rho_dependent() {
+        use ObsAlignment::Exact;
+        // Plain PMMH (uncorrelated) = bootstrap PF: exact on any obs.
+        assert_eq!(resolve_obs_alignment("pmmh", false, None, false), Ok(Exact));
+        // Correlated PMMH (rho set): exact OK on-grid...
+        assert_eq!(resolve_obs_alignment("pmmh", true, None, true), Ok(Exact));
+        // ...but off-grid + correlated is a CLEAN ERROR (was silent fresh-RNG
+        // decorrelation, #17), under both default and explicit exact.
+        assert!(resolve_obs_alignment("pmmh", true, None, false).is_err());
+        assert!(resolve_obs_alignment("pmmh", true, Some(Exact), false).is_err());
+    }
+
+    #[test]
+    fn obs_alignment_pgas_snap_only_exact_is_clean_error() {
+        use ObsAlignment::{Exact, Snap};
+        // PGAS defaults to snap (its only mode today)...
+        assert_eq!(resolve_obs_alignment("pgas", false, None, true), Ok(Snap));
+        assert_eq!(resolve_obs_alignment("pgas", false, Some(Snap), true), Ok(Snap));
+        // ...and exact is a CLEAN ERROR (was a silent snap), naming the fix.
+        let err = resolve_obs_alignment("pgas", false, Some(Exact), true).unwrap_err();
+        assert!(err.contains("not yet implemented"), "should name exact-PGAS as unimplemented: {err}");
+        assert!(err.contains("if2") || err.contains("snap"), "should suggest a fix: {err}");
     }
 
     #[test]
