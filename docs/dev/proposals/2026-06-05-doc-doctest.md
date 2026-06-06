@@ -1,8 +1,9 @@
 ---
 date: 2026-06-05
-status: accepted (implementing v1)
-related: ../../ocaml/lib/compiler/compiler.ml, ../../ocaml/bin/camdlc.ml, ../../docs/camdl-language-spec.md
+status: accepted (v1 + CI shipped)
+related: ../../ocaml/lib/compiler/doctest.ml, ../../ocaml/bin/camdlc.ml, ../../docs/camdl-language-spec.md
 forward-compatible-with: 2026-06-05-compiler-diagnostic-surface.md (gh#181; consumes collect_diagnostics, which that refactor preserves)
+implemented: camdlc doctest + context= preamble + make test-docs + .github/workflows/docs.yml + test_doctest self-test. Spec gates green (28 pass, 87 skip, 0 fail). Bucket-B fragment conversion (context= per block) and bucket-C data fixtures remain incremental follow-ups.
 ---
 
 # Doctest the CAMDL specs: compile the spec's code blocks against the real compiler

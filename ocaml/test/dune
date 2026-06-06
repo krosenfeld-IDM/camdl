@@ -3,6 +3,15 @@
  (modules test_ir_roundtrip)
  (libraries ir alcotest))
 
+; Doc-doctest classifier self-test (camdlc doctest). Drives Doctest.extract_blocks
+; + Doctest.classify over a fixture Markdown whose blocks exercise every verdict
+; bucket, including a context= block resolved from doctest_fixtures/doctest-contexts/.
+(test
+ (name test_doctest)
+ (modules test_doctest)
+ (libraries compiler ir alcotest)
+ (deps (source_tree doctest_fixtures)))
+
 (test
  (name test_compiler)
  (modules test_compiler)

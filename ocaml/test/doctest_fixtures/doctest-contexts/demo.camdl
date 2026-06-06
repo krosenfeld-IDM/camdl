@@ -1,0 +1,9 @@
+compartments { S, I, R }
+parameters {
+  N0    : positive
+  I0    : positive
+  gamma : rate
+}
+transitions {
+  recovery : I --> R @ gamma * I
+}

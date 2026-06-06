@@ -1,0 +1,43 @@
+name: Docs
+
+# Gates the documented CAMDL code blocks against the real compiler.
+#
+# ci.yml carries `paths-ignore: docs/**`, so it never fires on doc-only PRs —
+# exactly the changes that can rot a documented example. This workflow covers
+# that gap: it triggers on changes to the spec, builds only camdlc (OCaml, a
+# ~1s build), and runs `camdlc doctest --gate`.
+#
+# The complementary direction — a *code* change (grammar churn) that breaks a
+# documented model — is already caught by ci.yml, whose `make test` runs the
+# same `test-docs` gate plus the doctest classifier self-test (dune runtest).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/camdl-language-spec.md"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/camdl-language-spec.md"
+      - ".github/workflows/docs.yml"
+
+jobs:
+  doctest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+
+      - name: Install OCaml dependencies
+        run: |
+          cd ocaml
+          opam install . --deps-only --yes
+
+      - name: Doctest the language spec
+        run: opam exec -- make test-docs

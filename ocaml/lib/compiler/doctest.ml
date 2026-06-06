@@ -51,8 +51,21 @@ type block = {
   file    : string;
   line    : int;        (* 1-based line of the opening fence *)
   ignore_ : bool;       (* ```camdl ignore directive present *)
+  context : string option;  (* ```camdl context=NAME — hidden preamble to prepend *)
   source  : string;
 }
+
+(* A directive `context=NAME` names a hidden preamble compiled before the block
+   but never rendered: it supplies the compartments/parameters/dimensions a
+   focused fragment references but does not itself declare. Preambles live in
+   `<dir-of-doc>/doctest-contexts/NAME.camdl`. *)
+let parse_context tokens =
+  List.find_map
+    (fun t ->
+       if starts_with ~prefix:"context=" t then
+         Some (String.sub t 8 (String.length t - 8))
+       else None)
+    tokens
 
 (* A two-state scanner. A fence is any line whose first non-blank chars are
    ```; when not inside a block it opens one, when inside it closes one. Only
@@ -67,6 +80,7 @@ let extract_blocks file : block list =
   let buf = Buffer.create 256 in
   let start = ref 0 in
   let ign = ref false in
+  let ctx = ref None in
   let lineno = ref 0 in
   (try
      while true do
@@ -80,13 +94,15 @@ let extract_blocks file : block list =
            | "camdl" :: rest ->
              in_block := true; capturing := true;
              start := !lineno; ign := List.mem "ignore" rest;
+             ctx := parse_context rest;
              Buffer.clear buf
            | _ ->
              in_block := true; capturing := false
          end else begin
            if !capturing then
              blocks :=
-               { file; line = !start; ignore_ = !ign; source = Buffer.contents buf }
+               { file; line = !start; ignore_ = !ign; context = !ctx;
+                 source = Buffer.contents buf }
                :: !blocks;
            in_block := false; capturing := false
          end
@@ -110,26 +126,53 @@ type verdict =
   | Fail of Diagnostics.diagnostic list
   | Ice of string
 
+let read_file path =
+  let ic = open_in path in
+  let n = in_channel_length ic in
+  let s = really_input_string ic n in
+  close_in ic;
+  s
+
 let classify (b : block) : verdict =
   if b.ignore_ then Skip_ignore
   else
-    match
-      (try `Ok (Compiler.collect_diagnostics ~filename:b.file b.source)
-       with e -> `Raised (Printexc.to_string e))
-    with
-    | `Raised msg -> Ice msg
-    | `Ok diags ->
-      let errors =
-        List.filter (fun (d : Diagnostics.diagnostic) -> d.severity = Diagnostics.Error) diags
-      in
-      if errors = [] then Pass
-      else begin
-        let codes = List.map (fun (d : Diagnostics.diagnostic) -> d.code) errors in
-        if contains ~sub:"read(" b.source || List.mem "E200" codes then Skip_data
-        else if List.for_all (fun c -> c = "E001") codes then Skip_parse
-        else if not (contains ~sub:"compartments" b.source) then Skip_fragment
-        else Fail errors
-      end
+    (* Effective source = optional hidden preamble + the block body. *)
+    let eff =
+      match b.context with
+      | None -> Ok b.source
+      | Some name ->
+        let path =
+          Filename.concat
+            (Filename.concat (Filename.dirname b.file) "doctest-contexts")
+            (name ^ ".camdl")
+        in
+        if Sys.file_exists path then Ok (read_file path ^ "\n" ^ b.source)
+        else Error (Printf.sprintf "context '%s' not found (%s)" name path)
+    in
+    match eff with
+    | Error msg -> Ice msg
+    | Ok src ->
+      (match
+         (try `Ok (Compiler.collect_diagnostics ~filename:b.file src)
+          with e -> `Raised (Printexc.to_string e))
+       with
+       | `Raised msg -> Ice msg
+       | `Ok diags ->
+         let errors =
+           List.filter
+             (fun (d : Diagnostics.diagnostic) -> d.severity = Diagnostics.Error) diags
+         in
+         if errors = [] then Pass
+         else begin
+           let codes = List.map (fun (d : Diagnostics.diagnostic) -> d.code) errors in
+           if contains ~sub:"read(" src || List.mem "E200" codes then Skip_data
+           (* With a named context the block is asserted to compile, so any
+              remaining error is a genuine FAIL, not a fragment to skip. *)
+           else if b.context <> None then Fail errors
+           else if List.for_all (fun c -> c = "E001") codes then Skip_parse
+           else if not (contains ~sub:"compartments" b.source) then Skip_fragment
+           else Fail errors
+         end)
 
 (* ── report / entry point ─────────────────────────────────────────────────── *)
 
