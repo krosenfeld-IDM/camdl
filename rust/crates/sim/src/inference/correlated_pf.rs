@@ -12,6 +12,7 @@ use serde::{Serialize, Deserialize};
 use crate::chain_binomial::StepScratch;
 use crate::rng::StatefulRng;
 use crate::error::SimError;
+use crate::schedule::{Cursor, Schedule, StepPolicy};
 use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, LOG_PROB_FLOOR};
 use super::particle_filter::PFilterResult;
 use super::chain_binomial_process::ChainBinomialProcess;
@@ -197,6 +198,16 @@ pub fn bootstrap_filter_correlated(
         }
     }
 
+    // Merged timeline spine: the EXACT policy clips each substep to the next
+    // observation boundary (same as the bootstrap PF). The Schedule reproduces
+    // dt.min(obs_time - t) exactly, so the per-window substep COUNT is preserved
+    // and the pre-drawn-noise indexing (noise_idx = i*steps_per_obs + substep)
+    // is unaffected. Substep TIME stays accumulated (s*dt deferred, task #14).
+    let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+    let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
+    let schedule =
+        Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
+
     // Gamma shape/scale for the overdispersed transition (precompute).
     //
     // ASSUMPTION: σ² is state-independent (typically a bare parameter like
@@ -301,6 +312,7 @@ pub fn bootstrap_filter_correlated(
     for obs_idx in 0..n_obs {
         let obs_time = obs_model.obs_time(obs_idx);
         let t_start = t;
+        let cur = Cursor { obs_idx, ..Default::default() };
 
         // Propagate particles with pre-drawn correlated noise (parallel)
         let gamma_row = &randoms.gamma_noise[obs_idx];
@@ -314,7 +326,7 @@ pub fn bootstrap_filter_correlated(
                 let mut t_local = t_start;
                 let mut substep = 0;
                 while t_local < obs_time - 1e-10 {
-                    let step_dt = dt.min(obs_time - t_local);
+                    let step_dt = schedule.substep(&cur, t_local).expect("t_local < t_end in obs window");
 
                     // Inject pre-drawn Gamma multiplier
                     let noise_idx = i * steps_per_obs + substep;
@@ -351,7 +363,7 @@ pub fn bootstrap_filter_correlated(
             })
             .collect();
         for r in errors { r?; }
-        while t < obs_time - 1e-10 { t += dt.min(obs_time - t); }
+        while t < obs_time - 1e-10 { t += schedule.substep(&cur, t).expect("t < t_end"); }
 
         // Compute log-weights
         for (i, state) in swarm.states.iter().enumerate() {

@@ -19,6 +19,7 @@ use rayon::prelude::*;
 
 use crate::rng::StatefulRng;
 use crate::error::SimError;
+use crate::schedule::{Cursor, Schedule, StepPolicy};
 use super::degeneracy::{check_pf_degeneracy, check_iteration_budget, window_substep_cost, pf_bail_error, pf_wallclock_budget, ITER_BUDGET};
 use super::traits::{ProcessModel, ObservationModel};
 use super::types::{ParticleState, log_sum_exp, normalize_log_weights, LOG_PROB_FLOOR, init_particle_rngs};
@@ -232,6 +233,17 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
     let n_tr = process.n_transitions();
     let n_obs = obs_model.n_observations();
 
+    // Merged timeline spine: the EXACT policy clips each substep to the next
+    // observation boundary (same idiom as the bootstrap PF). Constant across IF2
+    // iterations, so built once; reproduces dt.min(obs_time - t) exactly. Substep
+    // TIME stays accumulated (s*dt deferred, task #14).
+    let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+    let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
+    let schedule = Schedule::new(
+        config.dt, sched_t_end, config.dt, StepPolicy::Exact, Vec::new(), Vec::new(),
+    )
+    .with_obs(obs_times);
+
     // Mutable copy of params — updated each iteration with the filter mean.
     // Start from `base_params` for non-estimated slots, then overwrite each
     // estimated slot with that `EstimatedParam`'s `.initial`. For
@@ -387,6 +399,7 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
             let obs_time = obs_model.obs_time(obs_idx);
             let t_start = t;
             let dt = config.dt;
+            let cur = Cursor { obs_idx, ..Default::default() };
 
             // gh#147 (M3.1). Deterministic compute-budget guard, PRE-window
             // (same closed-form scalar cost + placement as bootstrap_filter):
@@ -404,7 +417,7 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
                 .map(|(((state, pp), rng), scratch)| {
                     let mut t_local = t_start;
                     while t_local < obs_time - 1e-10 {
-                        let step_dt = dt.min(obs_time - t_local);
+                        let step_dt = schedule.substep(&cur, t_local).expect("t_local < t_end in obs window");
                         process.step(state, pp, t_local, step_dt, rng, scratch)?;
                         t_local += step_dt;
                     }
@@ -412,7 +425,7 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
                 })
                 .collect();
             for r in errors { r?; }
-            while t < obs_time - 1e-10 { t += config.dt.min(obs_time - t); }
+            while t < obs_time - 1e-10 { t += schedule.substep(&cur, t).expect("t < t_end"); }
 
             // Perturb parameters at observation time (per-step cooling).
             // IVP params and simplex members are skipped — IVP perturbed at t=0 only,
