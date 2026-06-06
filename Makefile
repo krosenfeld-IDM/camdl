@@ -133,7 +133,7 @@ test-integration: build
 
 # ── Golden file management ────────────────────────────────────────────────────
 
-.PHONY: update-golden update-ocaml-golden
+.PHONY: update-golden update-ocaml-golden update-corner-golden
 
 # Recompile all DSL fixtures → ocaml/golden/*.ir.json
 update-ocaml-golden: build-ocaml
@@ -145,6 +145,20 @@ update-ocaml-golden: build-ocaml
 	done
 
 update-golden: update-ocaml-golden
+
+# Recompile the corner-case fixtures (params baked via --set) →
+# tests/fixtures/corner_cases/ir/*.ir.json. These pin the off-grid /
+# coincident / fractional / lifecycle FORWARD trajectories in
+# gate_corner_case_baseline.rs. Re-run after a schema bump, then re-capture
+# the gate (CAMDL_CAPTURE_BASELINE=1).
+CORNER_DIR := tests/fixtures/corner_cases
+update-corner-golden: build-ocaml
+	@echo "Recompiling corner-case fixtures..."
+	@$(CAMDLC) $(CORNER_DIR)/off_grid_intervention.camdl       --set beta=1.0 --set gamma=0.2 --set cull=0.5               -o $(CORNER_DIR)/ir/off_grid_intervention.ir.json
+	@$(CAMDLC) $(CORNER_DIR)/coincident_obs_intervention.camdl --set beta=1.0 --set gamma=0.2 --set cull=0.5               -o $(CORNER_DIR)/ir/coincident_obs_intervention.ir.json
+	@$(CAMDLC) $(CORNER_DIR)/fractional_output_end.camdl       --set beta=1.0 --set gamma=0.2                              -o $(CORNER_DIR)/ir/fractional_output_end.ir.json
+	@$(CAMDLC) $(CORNER_DIR)/off_grid_obs.camdl                --set beta=1.0 --set gamma=0.2                              -o $(CORNER_DIR)/ir/off_grid_obs.ir.json
+	@$(CAMDLC) $(CORNER_DIR)/all_lifecycle.camdl               --set beta=1.0 --set gamma=0.2 --set cull=0.5 --set N0=1000 -o $(CORNER_DIR)/ir/all_lifecycle.ir.json
 
 # ── Quick simulation helpers ──────────────────────────────────────────────────
 
