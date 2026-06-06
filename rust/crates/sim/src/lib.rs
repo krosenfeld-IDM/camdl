@@ -9,6 +9,7 @@ pub mod resolved_expr;
 pub mod eval_stats;
 pub mod output;
 pub mod rng;
+pub mod schedule;
 pub mod ode_integrator;
 pub mod gillespie;
 pub mod tau_leap;
