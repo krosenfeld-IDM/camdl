@@ -1,0 +1,57 @@
+# git-cliff configuration for camdl — https://git-cliff.org
+#
+# Renders the deterministic changelog spine from Conventional Commits. The
+# /release-notes skill turns this into user-facing notes. Versioning policy:
+# VERSIONING.md (SemVer over the DSL + CLI + output-format surface; the IR
+# schema is versioned separately via ir/VERSION).
+#
+# Usage:  make changelog                 # unreleased spine, last tag -> HEAD
+#         git-cliff --bumped-version     # recommended next version from commits
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to camdl. The version covers the DSL + CLI + output/file
+formats (see VERSIONING.md); IR-schema changes (ir/VERSION) are noted under
+their own heading. Pre-1.0: a MINOR bump may include breaking changes.
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim | upper_first }}
+    {% for commit in commits %}
+        - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+            {{ commit.message | split(pat="\\n") | first | upper_first }}\
+    {% endfor %}
+{% endfor %}\n
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+# Order is significant: first match wins. Breaking changes are surfaced by the
+# `!`/`BREAKING CHANGE:` marker, which git-cliff treats as MINOR while 0.x.
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^refactor", group = "Refactor" },
+  { message = "^test", group = "Tests" },
+  { message = "^ci", group = "CI" },
+  { message = "^build", group = "Build" },
+  { message = "^chore", group = "Miscellaneous" },
+  { body = ".*", group = "Other" },
+]
+protect_breaking_commits = false
+filter_commits = false
+tag_pattern = "v[0-9]*"
+topo_order = false
+sort_commits = "oldest"

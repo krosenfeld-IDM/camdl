@@ -190,6 +190,24 @@ update-corner-golden: build-ocaml
 	@$(CAMDLC) $(CORNER_DIR)/event_intervention_agree.camdl    --set k=0.0 --set keep=0.5 -o $(CORNER_DIR)/ir/event_intervention_agree.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/event_drain_fusion.camdl          --set k=0.3 --set f=0.2 -o $(CORNER_DIR)/ir/event_drain_fusion.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/dt_rate.camdl                     --set beta=1.0 --set gamma=0.2 --set tau=1.0 -o $(CORNER_DIR)/ir/dt_rate.ir.json
+# ── Release / changelog ───────────────────────────────────────────────────────
+
+.PHONY: changelog version-bump
+
+# Deterministic changelog spine from Conventional Commits (last tag -> HEAD).
+# git-cliff is the renderer: `brew install git-cliff` or `cargo install git-cliff`.
+# The /release-notes skill turns this spine into user-facing notes. See
+# VERSIONING.md and cliff.toml.
+changelog:
+	@command -v git-cliff >/dev/null || { \
+	  echo "git-cliff not found — install it: brew install git-cliff (or cargo install git-cliff)"; \
+	  exit 1; }
+	git-cliff --unreleased
+
+# Print the SemVer version git-cliff recommends from the unreleased commits.
+version-bump:
+	@command -v git-cliff >/dev/null || { echo "install git-cliff first"; exit 1; }
+	@git-cliff --bumped-version
 
 # ── Quick simulation helpers ──────────────────────────────────────────────────
 
