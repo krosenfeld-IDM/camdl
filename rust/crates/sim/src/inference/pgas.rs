@@ -103,6 +103,13 @@ pub struct PGASConfig {
     /// sampling is the bottleneck. Each extra CSMC sweep renovates
     /// more of the trajectory before the next NUTS step.
     pub csmc_sweeps_per_nuts: usize,
+    /// Observation-time alignment for the substep grid (Stage 3).
+    /// `Snap` (default): round observation times onto the uniform `dt` grid
+    /// — the historical PGAS behavior. `Exact`: tile each observation window
+    /// with full-`dt` steps plus a shortened remainder landing exactly on the
+    /// obs time (`build_substep_grid`). The CLI keeps this `Snap` until the
+    /// exact path's recovery evidence lands and the default is flipped.
+    pub step_policy: StepPolicy,
 }
 
 impl super::traits::InferenceConfig for PGASConfig {
@@ -1454,15 +1461,30 @@ pub fn run_pgas(
 
     let mut rng = StatefulRng::new(seed);
     let mut current_params = base_params.to_vec();
-    let t_end = observations.last().map_or(
-        model.model.simulation.t_start,
-        |o| o.time,
-    );
+    let t_start = model.model.simulation.t_start;
 
-    // Precompute observation→substep mapping once for the entire run.
-    let obs_at_substep = build_obs_at_substep(
-        observations, model.model.simulation.t_start, config.dt,
-    );
+    // exact-PGAS does not yet support always-active events: their firing keys on
+    // round(t/dt) (intervention.rs::inject_event_deltas), which a shortened exact
+    // substep shifts off the intended step. Refuse loudly rather than silently
+    // misfire. (Scheduled non-active interventions are already not applied in the
+    // PGAS producer path under either policy.)
+    if config.step_policy == StepPolicy::Exact
+        && model.model.interventions.iter().any(|iv| iv.always_active)
+    {
+        return Err(SimError::Validation(
+            "exact obs-alignment is not yet supported for models with always-active \
+             events (their firing keys on round(t/dt), which a shortened substep \
+             shifts). Use obs_alignment = \"snap\", or place observations on the dt grid."
+                .into(),
+        ));
+    }
+
+    // The realized substep grid (uniform under Snap; window-tiled with shortened
+    // remainders under Exact) and its obs→substep map — the single grid every
+    // producer and density consumer tiles against. Under Snap this is
+    // byte-identical to the legacy uniform grid + build_obs_at_substep.
+    let grid = build_substep_grid(t_start, config.dt, observations, config.step_policy);
+    let obs_at_substep = grid.obs_at_substep;
 
     // Resume or fresh start
     let start_sweep;
@@ -1492,8 +1514,8 @@ pub fn run_pgas(
         }
     } else {
         eprintln!("  initializing reference trajectory...");
-        trajectory = simulate_reference(
-            model, &current_params, t_end, config.dt, &mut rng,
+        trajectory = simulate_reference_on_grid(
+            model, &current_params, config.dt, &grid.steps, &mut rng,
         )?;
         eprintln!("  reference: {} substeps, initial S={}",
             trajectory.substeps.len(),

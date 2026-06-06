@@ -486,6 +486,9 @@ pub fn run_stage(
                 max_tree_depth: pgas_opts.max_tree_depth,
                 trajectory_warmup: pgas_opts.trajectory_warmup,
                 csmc_sweeps_per_nuts: pgas_opts.csmc_sweeps_per_nuts,
+                // Stage 3: PGAS keeps snap alignment until exact-PGAS recovery
+                // evidence lands and resolve_obs_alignment flips the default.
+                step_policy: sim::schedule::StepPolicy::Snap,
             };
 
             // Build multi-stream observation model (evaluates with params at call time)

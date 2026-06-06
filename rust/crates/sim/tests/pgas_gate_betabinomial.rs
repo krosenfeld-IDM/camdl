@@ -202,6 +202,7 @@ fn gh76_pgas_runs_betabinomial_routed_param_with_nuts() {
         tempering: vec![1.0],
         trajectory_warmup: 0,
         csmc_sweeps_per_nuts: 1,
+        step_policy: sim::schedule::StepPolicy::Snap,
     };
 
     let result = run_pgas(
@@ -306,6 +307,7 @@ fn gh76_pgas_refuses_parametric_derived_projection_param() {
         tempering: vec![1.0],
         trajectory_warmup: 0,
         csmc_sweeps_per_nuts: 1,
+        step_policy: sim::schedule::StepPolicy::Snap,
     };
 
     let result = run_pgas(

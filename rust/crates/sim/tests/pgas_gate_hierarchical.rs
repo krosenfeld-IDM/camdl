@@ -157,6 +157,7 @@ fn gh175_pgas_refuses_hierarchical_prior_with_clear_error() {
         tempering: vec![1.0],
         trajectory_warmup: 0,
         csmc_sweeps_per_nuts: 1,
+        step_policy: sim::schedule::StepPolicy::Snap,
     };
 
     let result = run_pgas(

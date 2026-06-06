@@ -412,6 +412,7 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
         tempering: vec![1.0],
         trajectory_warmup: 0,
         csmc_sweeps_per_nuts: 1,
+        step_policy: sim::schedule::StepPolicy::Snap,
     };
 
     let result = run_pgas(
@@ -437,4 +438,47 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
     assert!(result.resume_state.nuts_step_size > 1e-8,
         "adapted step size must be > 1e-8 (got {:.2e})",
         result.resume_state.nuts_step_size);
+}
+
+/// Stage 3 (2c): exact obs-alignment is REFUSED on models with always-active
+/// events. Their firing keys on `round(t/dt)` (intervention.rs), which a
+/// shortened exact substep would shift off the intended step — a silent
+/// mis-fire. `run_pgas` returns a clean error before doing any work. (The guard
+/// fires ahead of the grid build, so empty observations suffice to reach it.)
+#[test]
+fn exact_alignment_rejected_on_always_active_event_model() {
+    let model = seir_with_seed_event(5, 10.0); // founders_arrive: always_active
+    let compiled = Arc::new(CompiledModel::new(model).unwrap());
+    assert!(compiled.model.interventions.iter().any(|iv| iv.always_active),
+        "fixture precondition: model has an always-active event");
+    let params = compiled.default_params.clone();
+
+    let if2_params = vec![EstimatedParam {
+        name: "beta".into(),
+        index: compiled.param_index["beta"],
+        initial: 0.5, rw_sd: 0.05,
+        transform: Transform::Log { lo: 0.1, hi: 2.0 },
+        lower: 0.1, upper: 2.0, rw_sd_auto: false, ivp: false,
+    }];
+    let priors = vec![Prior::Flat];
+    let obs_model = MultiStreamObsModel::empty(compiled.clone());
+
+    let config = PGASConfig {
+        n_particles: 10, n_sweeps: 1, burn_in: 0, thin: 1, dt: 0.5,
+        use_nuts: false, dense_mass: false, max_tree_depth: 4,
+        tempering: vec![1.0], trajectory_warmup: 0, csmc_sweeps_per_nuts: 1,
+        step_policy: sim::schedule::StepPolicy::Exact,
+    };
+
+    match run_pgas(
+        &compiled, &if2_params, &priors, &params, &config,
+        &[], &obs_model, 1, None, None, "exact_event_guard".into(),
+    ) {
+        Ok(_) => panic!("exact + always-active event must be refused"),
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(msg.contains("always-active"),
+                "guard error should name always-active events, got: {msg}");
+        }
+    }
 }
