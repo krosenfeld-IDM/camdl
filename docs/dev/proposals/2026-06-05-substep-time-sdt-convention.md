@@ -28,13 +28,27 @@ nil (multiply vs add). It is purely an accuracy + consistency improvement.
 
 ## Blast radius
 
-- **Changes:** time-inhomogeneous models (`forcing {}`, any `t`-dependent rate) at
-  **fractional `dt`** over long horizons. Their forward trajectories and the
-  EXACT-stepper inference results shift by the drift (ULP-scale per substep).
-- **Unchanged:** time-homogeneous models (`t` never enters a rate — the two
-  conventions are identical). Integer-`dt` runs (accumulation == `s·dt` exactly).
-  PGAS / pgas_grad (already `s·dt`). Gillespie (continuous SSA, absolute event
-  times — no grid). NUTS leapfrog (its `dt` is the HMC step size, not a sim grid).
+Sharper than first thought: the `s·dt` rate shift is ~1e-12 relative, and a
+~1e-12 shift in a rate **never flips an integer draw**. So the only things that
+move are **continuous** quantities of time-inhomogeneous models at fractional
+`dt`:
+
+- **Observably changes:** **ODE forward** trajectories (continuous state). That is
+  the *only* observable forward change in the whole effort (verified: chain_binomial
+  on `seasonal_drift@dt=0.1` is byte-identical before/after — integer draws are
+  insensitive).
+- **Byte-identical (consistency-only):** chain_binomial, tau_leap, gillespie
+  forward (integer counts); the bootstrap PF / IF2 / correlated-PF / PMMH
+  likelihoods (functions of the integer trajectory + obs density on integer
+  projections). These adopt `s·dt` for robustness + to agree with PGAS, but the
+  output does not move.
+- **Already correct, hence unchanged:** PGAS / pgas_grad (use `s·dt` today). PGAS's
+  transition density *is* continuous and *would* move under accumulation — which is
+  exactly why the forward backends adopt `s·dt`: to remove the latent (and, in
+  integer trajectories, invisible) forward/PGAS disagreement, not to change PGAS.
+- **N/A:** time-homogeneous models (`t` never enters a rate); integer-`dt` runs
+  (`accumulation == s·dt` exactly); gillespie (absolute event times); NUTS leapfrog
+  (its `dt` is the HMC step size, not a sim grid).
 
 ## Exhaustive site inventory (verified by grep + read, 2026-06-05)
 

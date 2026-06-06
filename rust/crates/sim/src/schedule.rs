@@ -203,6 +203,19 @@ impl Schedule {
     pub fn grid(&self) -> f64 {
         self.grid
     }
+
+    /// The start time of the `s`-th substep within a window beginning at
+    /// `window_start`: `window_start + s*dt`. The SINGLE source of truth for the
+    /// time passed to rate / forcing evaluation. Computed by multiplication (one
+    /// rounding, O(1) error) rather than accumulation (`t += dt`, O(s) drift), so
+    /// the same model samples time-inhomogeneous forcing at identical times in the
+    /// forward simulator and in PGAS — which already uses `t_start + s*dt`. SNAP
+    /// steppers anchor `window_start = t_start` (global grid); EXACT steppers
+    /// re-anchor `window_start` to each boundary/obs they clip to.
+    /// See docs/dev/proposals/2026-06-05-substep-time-sdt-convention.md.
+    pub fn substep_time(&self, window_start: f64, s: u64) -> f64 {
+        window_start + s as f64 * self.dt
+    }
 }
 
 impl Cursor {
@@ -329,6 +342,28 @@ mod tests {
         );
         let fragile = (t + dt).min(5000.0) - t;
         assert_ne!(got.to_bits(), fragile.to_bits(), "the fragile (t+dt)-t formula differs here");
+    }
+
+    #[test]
+    fn substep_time_is_sdt_drift_free() {
+        // window_start + s*dt is bit-exact (one multiply), while accumulating
+        // dt over s steps drifts. At dt=0.1, s=10000 the two diverge.
+        let dt = 0.1;
+        let s = snap(dt, 5000.0, vec![], vec![]);
+        let n: u64 = 10_000;
+        // s*dt form:
+        let sdt = s.substep_time(0.0, n);
+        assert_eq!(sdt.to_bits(), (n as f64 * dt).to_bits());
+        // accumulation drifts away from it:
+        let mut acc = 0.0_f64;
+        for _ in 0..n {
+            acc += dt;
+        }
+        assert_ne!(acc.to_bits(), sdt.to_bits(), "accumulation must drift from s*dt by s=10000");
+        // and s*dt equals the true grid point exactly (1000.0):
+        assert_eq!(sdt, 1000.0);
+        // window re-anchoring (EXACT steppers): offset by the window start.
+        assert_eq!(s.substep_time(2.5, 3), 2.5 + 3.0 * dt);
     }
 
     #[test]

@@ -169,6 +169,13 @@ pub fn run_chain_binomial_with_observer(
     let mut traj = Trajectory::new();
     let mut current_flows = FlowVec::new(n_transitions);
     let mut t = cfg.t_start;
+    // Robust substep clock: rate/forcing is evaluated at t_start + s*dt (s*dt,
+    // bit-exact) rather than the accumulated `t`, which drifts at fractional dt.
+    // `t` still drives the loop/output bookkeeping unchanged, so time-homogeneous
+    // and integer-dt models stay byte-identical; only time-inhomogeneous models
+    // at fractional dt shift — and then agree with PGAS, which already uses
+    // t_start + s*dt. See docs/dev/proposals/2026-06-05-substep-time-sdt-convention.md.
+    let mut s: u64 = 0;
 
     if schedule.output_due_at(&cursor, t) {
         traj.push(Snapshot {
@@ -185,6 +192,8 @@ pub fn run_chain_binomial_with_observer(
         // Snap step: dt = cfg.dt.min(t_end - t), the original formula (bit-exact).
         let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
         if dt <= 1e-15 { break; }
+        // Robust grid time for rate/forcing evaluation (drift-free vs `t`).
+        let t_grid = schedule.substep_time(cfg.t_start, s);
 
         // Capture start-of-step state for the lineage observer (before RK4 and
         // step_one mutate it). Only when an observer is attached — zero cost
@@ -197,7 +206,7 @@ pub fn run_chain_binomial_with_observer(
 
         // Euler step for real compartments (before binomial draws)
         if n_real > 0 {
-            rk4_step(model, &int_s, &mut real_s, params, t, dt)?;
+            rk4_step(model, &int_s, &mut real_s, params, t_grid, dt)?;
             real_s.clamp_nonneg();
         }
 
@@ -208,7 +217,7 @@ pub fn run_chain_binomial_with_observer(
         // (once at t_end inside step_one, once at the new t here).
         // See docs/dev/incidents/2026-04-17-chain-binomial-double-fire.md.
         flows.fill(0);
-        step_one(model, &mut int_s.counts, &mut flows, params, t, dt, &mut rng, &mut scratch, &fire_steps)?;
+        step_one(model, &mut int_s.counts, &mut flows, params, t_grid, dt, &mut rng, &mut scratch, &fire_steps)?;
 
         // Lineage observer: feed each transition's per-step flow count against
         // the frozen start-of-step state. step_one has already drawn from the
@@ -217,7 +226,7 @@ pub fn run_chain_binomial_with_observer(
             obs.begin_batch_step();
             for (tr_idx, &count) in flows.iter().enumerate() {
                 if count > 0 {
-                    obs.on_fired(tr_idx, 0, count, t, pre_int, pre_real, params)?;
+                    obs.on_fired(tr_idx, 0, count, t_grid, pre_int, pre_real, params)?;
                 }
             }
             obs.end_batch_step();
@@ -229,6 +238,7 @@ pub fn run_chain_binomial_with_observer(
         }
 
         t += dt;
+        s += 1;
 
         // Bookkeeping: advance the effect cursor past any intervention that fired
         // in step_one this step. The firing itself happens in step_one; this snaps
