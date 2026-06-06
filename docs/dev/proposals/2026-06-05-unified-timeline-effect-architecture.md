@@ -173,7 +173,9 @@ The within-substep order is a first-class, documented object — the analogue of
 SLiM's published tick/generation cycle, whose defining virtue is that a modeller
 can reason precisely about *when* their script runs relative to reproduction and
 selection (Haller & Messer 2019, *MBE* 36:632; the SLiM manual's lifecycle
-diagrams). camdl's substep lifecycle, stated to match `step_one` exactly:
+diagrams). camdl's substep lifecycle, matching `chain_binomial`'s `step_one`
+(forward `tau_leap`/`ode` currently *invert* event vs intervention — canonicalizing
+them is a Stage-2 behaviour change, see the cross-backend leak note):
 
 ```
   ┌─ start of substep: snapshot x_t ───────────────────────────────┐
@@ -214,10 +216,17 @@ pub enum Boundary {
     Effect(EffectId),        // a scheduled Mutate/Constrain fires here
 }
 
-/// Merged sorted boundary timeline. Cheaply Clone-able / immutable with an
-/// external cursor, so the parallel alloc-free hot loop is not serialized
-/// behind a &mut cursor.
-pub struct Schedule { /* arithmetic dt-grid + sorted obs/effect cursors */ }
+/// Merged sorted boundary timeline. INVARIANT (the actual contract the spine
+/// sells, and the one place a regression breaks CRN *silently*): `Schedule: Sync`
+/// immutable; the per-particle `Cursor: Copy`; `next_boundary` is a PURE function
+/// of (Schedule, cursor, t) with no interior mutability — so N particles in the
+/// parallel swarm hit IDENTICALLY ordered boundaries (paired-seed/CRN coupling
+/// depends on this; a shared-mutable cursor would corrupt it without failing any
+/// on-grid golden). Pinned by a proptest: N independent cursors over one Schedule
+/// yield byte-identical boundary sequences. The snap-vs-exact grid is an explicit
+/// FIELD here, the single source of truth for every time→step mapping — NOT a
+/// per-call-site convention (see the snap-grid leak note below).
+pub struct Schedule { /* immutable dt-grid + sorted obs/effect cursors + snap policy */ }
 
 impl Schedule {
     /// Fixed-step drivers: the next boundary at or after t, and what is due.
@@ -501,6 +510,34 @@ live.
 - **Off-grid under a dt-dependent kernel** — handled by the `snap | exact` policy
   and the staging, never silently: `snap` is byte-identical on-grid; `exact` is a
   validated behaviour change, not a refactor.
+- **The snap grid must be ONE field, not three disagreeing call-site conventions
+  (the leak the spine exists to seal, and the one this list previously missed).**
+  Today interventions snap via `fire_steps` at `cfg.dt` (forward chain/tau/ode),
+  via `iv_resolution_dt = model.simulation.dt.unwrap_or(1.0)` (Gillespie — a
+  *phantom* grid the integrator never walks, so Gillespie's interventions and
+  observations snap to *different* grids on one run), and obs via `interval_steps`
+  (PGAS, `pgas.rs:268`). The merged `Schedule` owns the snap grid explicitly: the
+  realized `(t0, dt_substep)` record is the single source `time_to_step` /
+  `interval_steps` / `resolve_fire_steps` all read, and a dt-independent backend
+  snaps interventions to the boundary set it clips obs to (kill the
+  `unwrap_or(1.0)`). Oracle fixture: off-grid intervention + on-grid obs on
+  Gillespie, asserting the exact fire time — exposes the disagreement today.
+- **The realized `dt_substep` threads into the density *magnitude*, not only the
+  time.** `p = 1 − exp(−rate·dt)`, the gamma/overdispersion density
+  (`shape = dt/σ²`, `scale = σ²/dt`, so `Var = σ²/dt` is dt-dependent,
+  `pgas.rs:629`), and the gradient (`∂/∂θ` through `rate·dt`) all consume `dt` as
+  a magnitude. exact-PGAS must use `rec.dt_substep` in *every* density/gradient
+  call, or a 0.9125-vs-1.0 substep gives a finite-but-wrong density → a silently
+  shifted posterior. The byte-identical record check must compare density
+  *values*, not just the `(counts, flows, gammas)` tuples, or it passes vacuously.
+- **Coincident-boundary order is non-canonical across backends today** —
+  `chain_binomial` fuses events with transitions then applies interventions, but
+  forward `tau_leap`/`ode` apply interventions *then* events
+  (`apply_interventions_at` then `apply_events_at`). The `Stage` order
+  canonicalizes this, but rewriting tau/ode to the canonical order is a
+  *behaviour change*, so it moves to **Stage 2** (with a re-baseline), NOT
+  Stage-1 byte-identical. "Matches `step_one` exactly" holds only for
+  chain-binomial.
 
 ## How the pieces relate and flow
 
