@@ -79,7 +79,7 @@ fn fd_check(
         &model_to_estimated,
     );
     let ivp_mappings: Vec<IVPMapping> = vec![];
-    let oas = build_obs_at_substep(observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(observations, compiled.model.simulation.t_start, dt).unwrap();
     let estimated_to_model: Vec<usize> = estimated_indices.to_vec();
 
     let (ll, grad) = complete_data_loglik_grad(

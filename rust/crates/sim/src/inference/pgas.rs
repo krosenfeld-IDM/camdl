@@ -276,18 +276,43 @@ pub struct ChainResumeState {
 /// to avoid rebuilding each call.
 pub type ObsAtSubstep = std::collections::HashMap<usize, usize>;
 
-/// Build the substep→observation index mapping.
+/// Build the substep→observation index mapping (Snap policy).
+///
+/// Rejects sub-`dt` observation collisions (M2). Two distinct, strictly-
+/// increasing observation times closer together than `dt` round to the same
+/// substep index (`interval_steps` is round-to-nearest), so they would collide
+/// on the same `ObsAtSubstep` key — and the last-wins `map.insert` would
+/// silently drop one observation from the PGAS likelihood, biasing the
+/// posterior. The dt-independent increasing-times guard
+/// (`validate_obs_times_increasing`) does not catch this, so we detect the
+/// collision here, at grid construction, with an actionable message.
 pub fn build_obs_at_substep(
     observations: &[Observation],
     t_start: f64,
     dt: f64,
-) -> ObsAtSubstep {
+) -> Result<ObsAtSubstep, crate::error::SimError> {
     let mut map = ObsAtSubstep::new();
+    // Track which observation last claimed each substep so a collision can
+    // name BOTH offending times in the diagnostic.
+    let mut claimant: std::collections::HashMap<usize, f64> =
+        std::collections::HashMap::new();
     for (obs_idx, obs) in observations.iter().enumerate() {
         let s = crate::time::interval_steps(t_start, obs.time, dt);
-        if s > 0 { map.insert(s - 1, obs_idx); }
+        if s > 0 {
+            if let Some(prev_time) = claimant.insert(s - 1, obs.time) {
+                return Err(crate::error::SimError::Validation(format!(
+                    "observation times {} and {} are closer than dt = {} and round \
+                     to the same substep ({}); under snap obs-alignment they collide \
+                     and one observation would be silently dropped from the \
+                     likelihood. Use a dt finer than the smallest observation gap, \
+                     run with --obs-alignment exact, or remove the closer observation.",
+                    prev_time, obs.time, dt, s - 1
+                )));
+            }
+            map.insert(s - 1, obs_idx);
+        }
     }
-    map
+    Ok(map)
 }
 
 /// The realized substep grid for one PGAS run: per-substep `(t0, dt_substep)`
@@ -336,14 +361,14 @@ pub fn build_substep_grid(
     dt: f64,
     observations: &[Observation],
     policy: StepPolicy,
-) -> SubstepGrid {
+) -> Result<SubstepGrid, SimError> {
     let last_obs = observations.last().map(|o| o.time).unwrap_or(t_start);
     match policy {
         StepPolicy::Snap => {
             let n = crate::time::interval_steps(t_start, last_obs, dt);
             let steps = (0..n).map(|s| (t_start + s as f64 * dt, dt)).collect();
-            let obs_at_substep = build_obs_at_substep(observations, t_start, dt);
-            SubstepGrid { steps, obs_at_substep }
+            let obs_at_substep = build_obs_at_substep(observations, t_start, dt)?;
+            Ok(SubstepGrid { steps, obs_at_substep })
         }
         StepPolicy::Exact => {
             let obs_times: Vec<f64> = observations.iter().map(|o| o.time).collect();
@@ -367,7 +392,15 @@ pub fn build_substep_grid(
                 let t_next = t0 + step_dt;
                 if schedule.obs_due_at(&cur, t_next) {
                     let obs_t = schedule.obs_time(&cur).expect("obs due ⇒ present");
-                    obs_at_substep.insert(idx, cur.obs_idx);
+                    // Each obs gets its own window/substep idx under the Exact
+                    // walk, and coincident obs are rejected upstream
+                    // (validate_obs_times_increasing), so the key is always
+                    // fresh. Defensive: keep both arms uniformly collision-safe.
+                    let prev = obs_at_substep.insert(idx, cur.obs_idx);
+                    debug_assert!(
+                        prev.is_none(),
+                        "exact grid: substep {idx} claimed twice (obs collision)"
+                    );
                     cur.pass_obs();
                     window_start = obs_t; // re-anchor at the obs landed on
                     s_in_window = 0;
@@ -376,7 +409,7 @@ pub fn build_substep_grid(
                 }
                 idx += 1;
             }
-            SubstepGrid { steps, obs_at_substep }
+            Ok(SubstepGrid { steps, obs_at_substep })
         }
     }
 }
@@ -1470,7 +1503,7 @@ pub fn run_pgas(
     // remainders under Exact) and its obs→substep map — the single grid every
     // producer and density consumer tiles against. Under Snap this is
     // byte-identical to the legacy uniform grid + build_obs_at_substep.
-    let grid = build_substep_grid(t_start, config.dt, observations, config.step_policy);
+    let grid = build_substep_grid(t_start, config.dt, observations, config.step_policy)?;
     let obs_at_substep = grid.obs_at_substep;
 
     // Resume or fresh start
@@ -2272,17 +2305,17 @@ mod grid_tests {
     #[test]
     fn snap_grid_is_the_legacy_uniform_grid() {
         let observations = obs(&[3.0, 7.0, 10.0]);
-        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap).unwrap();
         let expect: Vec<(f64, f64)> = (0..10).map(|s| (s as f64, 1.0)).collect();
         assert_eq!(g.steps, expect);
-        assert_eq!(g.obs_at_substep, build_obs_at_substep(&observations, 0.0, 1.0));
+        assert_eq!(g.obs_at_substep, build_obs_at_substep(&observations, 0.0, 1.0).unwrap());
         assert_eq!(sorted_map(&g), vec![(2, 0), (6, 1), (9, 2)]);
     }
 
     #[test]
     fn exact_tiles_off_grid_obs_with_remainder() {
         let observations = obs(&[3.5, 7.0, 10.5]);
-        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact).unwrap();
         assert_eq!(g.steps.len(), 12);
         let dts: Vec<f64> = g.steps.iter().map(|&(_, d)| d).collect();
         assert_eq!(dts, vec![1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 0.5]);
@@ -2301,8 +2334,8 @@ mod grid_tests {
     fn exact_on_grid_equals_snap_dt_one() {
         // On-grid obs at dt=1.0: Exact and Snap grids are identical.
         let observations = obs(&[3.0, 7.0, 10.0]);
-        let snap = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap);
-        let exact = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact);
+        let snap = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap).unwrap();
+        let exact = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact).unwrap();
         assert_eq!(exact, snap);
     }
 
@@ -2314,8 +2347,8 @@ mod grid_tests {
         // EXACT-stepper drift (substep-time proposal). The obs MAP is identical,
         // and EXACT lands exactly on each obs (the property SNAP lacks).
         let observations = obs(&[3.0, 5.0]);
-        let snap = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Snap);
-        let exact = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Exact);
+        let snap = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Snap).unwrap();
+        let exact = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Exact).unwrap();
         assert_eq!(exact.obs_at_substep, snap.obs_at_substep, "obs map must be identical");
         assert_eq!(exact.steps.len(), snap.steps.len());
         for (i, (&(et, ed), &(st, sd))) in exact.steps.iter().zip(&snap.steps).enumerate() {
@@ -2336,7 +2369,7 @@ mod grid_tests {
         // value (window_start + s·dt), never an accumulation. The window's final
         // step is the clipped remainder that lands on the obs.
         let observations = obs(&[5.0]);
-        let g = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Exact);
+        let g = build_substep_grid(0.0, 0.1, &observations, StepPolicy::Exact).unwrap();
         let n = g.steps.len();
         for (s, &(t0, d)) in g.steps.iter().enumerate() {
             assert_eq!(t0.to_bits(), (s as f64 * 0.1).to_bits(), "t0 not drift-free at {s}");
@@ -2355,7 +2388,7 @@ mod grid_tests {
         // Σ dt_substep within each obs window equals the window length, and each
         // t0 is monotone — the relaxed invariant the consumers assert under exact.
         let observations = obs(&[2.5, 6.0, 9.3]);
-        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Exact).unwrap();
         let mut prev_end = 0.0;
         for &(t0, d) in &g.steps {
             assert!(t0 >= prev_end - 1e-12, "t0 must be monotone (got {t0} after {prev_end})");
@@ -2369,7 +2402,49 @@ mod grid_tests {
 
     #[test]
     fn empty_obs_yields_empty_grid() {
-        let g = build_substep_grid(0.0, 1.0, &[], StepPolicy::Exact);
+        let g = build_substep_grid(0.0, 1.0, &[], StepPolicy::Exact).unwrap();
         assert!(g.steps.is_empty() && g.obs_at_substep.is_empty());
+    }
+
+    // ── M2: sub-dt observation collision under Snap ──────────────────────
+    //
+    // Two DISTINCT, strictly-increasing obs closer than dt round to the same
+    // substep index (interval_steps is round-to-nearest), collide on the same
+    // `ObsAtSubstep` key, and the last-wins `map.insert` silently drops one
+    // from the PGAS likelihood → biased posterior. The increasing-times guard
+    // (`validate_obs_times_increasing`) is dt-independent and does NOT catch
+    // this. The fix makes grid construction collision-detecting.
+
+    #[test]
+    fn snap_sub_dt_colliding_obs_is_rejected_by_build_obs_at_substep() {
+        // t=3.0 and t=3.4 at dt=1, t_start=0 both round to substep index 2.
+        let observations = obs(&[3.0, 3.4]);
+        let result = build_obs_at_substep(&observations, 0.0, 1.0);
+        assert!(
+            result.is_err(),
+            "two distinct obs within dt must be rejected, not silently collapsed"
+        );
+    }
+
+    #[test]
+    fn snap_sub_dt_colliding_obs_is_rejected_by_build_substep_grid() {
+        let observations = obs(&[3.0, 3.4]);
+        let result = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap);
+        assert!(
+            result.is_err(),
+            "Snap grid must reject sub-dt-colliding observation times"
+        );
+    }
+
+    #[test]
+    fn snap_non_colliding_obs_builds_grid_with_both_present() {
+        // t=3.0 and t=6.0 at dt=1 land on distinct substeps (2 and 5).
+        let observations = obs(&[3.0, 6.0]);
+        let g = build_substep_grid(0.0, 1.0, &observations, StepPolicy::Snap)
+            .expect("non-colliding obs must build fine");
+        assert_eq!(sorted_map(&g), vec![(2, 0), (5, 1)]);
+        let map = build_obs_at_substep(&observations, 0.0, 1.0)
+            .expect("non-colliding obs must build fine");
+        assert_eq!(map.len(), 2, "both observations must be present");
     }
 }

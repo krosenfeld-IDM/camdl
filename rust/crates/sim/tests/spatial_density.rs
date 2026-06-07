@@ -48,7 +48,7 @@ fn test_density_matches_step_one_sir() {
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let observations: Vec<Observation> = vec![];
 
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
     let ll = complete_data_loglik(
         &compiled, &trajectory, &params, &observations, dt,
         &obs_model, &ivp_mappings, &oas,
@@ -95,7 +95,7 @@ fn test_density_matches_step_one_sir_demography() {
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let observations: Vec<Observation> = vec![];
 
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
     let ll = complete_data_loglik(
         &compiled, &trajectory, &params, &observations, dt,
         &obs_model, &ivp_mappings, &oas,
@@ -128,7 +128,7 @@ fn test_density_matches_step_one_two_patch() {
     let t_end = compiled.model.simulation.t_end;
     let trajectory = simulate_reference(&compiled, &params, t_end, dt, &mut rng).unwrap();
     let empty_obs: Vec<Observation> = vec![];
-    let oas = build_obs_at_substep(&empty_obs, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&empty_obs, compiled.model.simulation.t_start, dt).unwrap();
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
     let ll = complete_data_loglik(
         &compiled, &trajectory, &params, &empty_obs, dt, &obs_model, &[], &oas,
@@ -184,7 +184,7 @@ fn test_density_matches_step_one_polio_spatial_5() {
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let observations: Vec<Observation> = vec![];
 
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
     let ll = complete_data_loglik(
         &compiled, &trajectory, &params, &observations, dt,
         &obs_model, &ivp_mappings, &oas,
@@ -289,7 +289,7 @@ fn test_density_seir_spatial_5_vignette_regression() {
     }
 
     let empty_obs: Vec<Observation> = vec![];
-    let oas = build_obs_at_substep(&empty_obs, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&empty_obs, compiled.model.simulation.t_start, dt).unwrap();
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
     let ll = complete_data_loglik(
         &compiled, &trajectory, &params, &empty_obs, dt, &obs_model, &[], &oas,

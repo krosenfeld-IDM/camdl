@@ -74,7 +74,7 @@ fn test_gradient_vs_finite_differences_sir() {
 
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
 
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
 
     // Analytical gradient
     let estimated_to_model: Vec<usize> = (0..n_params).collect();
@@ -192,7 +192,7 @@ fn test_gradient_vs_finite_differences_spatial_bindings() {
     let observations: Vec<Observation> = vec![];
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
     // gh#76: complete_data_loglik_grad gained estimated_to_model (estimated→model
     // param index). This test estimates all params in model order → identity map.
     let estimated_to_model: Vec<usize> = (0..n_params).collect();
@@ -284,7 +284,7 @@ fn test_nuts_target_gradient_on_z_scale() {
     let observations: Vec<Observation> = vec![];
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
 
     // Build EstimatedParams with Log transforms (like real inference)
     let if2_params: Vec<EstimatedParam> = compiled.model.parameters.iter().enumerate()
@@ -502,7 +502,7 @@ fn test_gradient_vs_finite_differences_seasonal() {
     let observations: Vec<Observation> = vec![];
     let ivp_mappings: Vec<IVPMapping> = vec![];
     let obs_model = MultiStreamObsModel::empty(compiled.clone());
-    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt);
+    let oas = build_obs_at_substep(&observations, compiled.model.simulation.t_start, dt).unwrap();
 
     let model_to_estimated: Vec<Option<usize>> = (0..n_params).map(Some).collect();
     let rate_grads_for_run = sim::inference::pgas_grad::resolve_rate_grad_for_run(
