@@ -113,6 +113,10 @@ impl ProcessModel for ChainBinomialProcess {
     fn new_scratch(&self) -> StepScratch {
         StepScratch::new(&self.compiled)
     }
+
+    fn has_always_active_events(&self) -> bool {
+        self.compiled.model.interventions.iter().any(|iv| iv.always_active)
+    }
 }
 
 impl DensityProcess for ChainBinomialProcess {

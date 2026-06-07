@@ -16,7 +16,7 @@ use crate::schedule::{Cursor, Schedule, StepPolicy};
 use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, LOG_PROB_FLOOR};
 use super::particle_filter::PFilterResult;
 use super::chain_binomial_process::ChainBinomialProcess;
-use super::traits::{ObservationModel, SMCConfig};
+use super::traits::{ObservationModel, ProcessModel, SMCConfig};
 
 /// Pre-drawn random state for one PF evaluation.
 ///
@@ -241,6 +241,9 @@ pub fn bootstrap_filter_correlated(
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
     let schedule =
         Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
+    // #1-interim: under Exact, off-grid obs shorten the final substep, which
+    // misfires always-active events (they key on round(t/dt)). Refuse loudly.
+    schedule.reject_event_misfire(process.has_always_active_events(), config.t_start)?;
 
     // Gamma shape/scale for the overdispersed transition (precompute).
     //

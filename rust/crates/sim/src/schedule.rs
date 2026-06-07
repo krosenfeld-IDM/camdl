@@ -127,6 +127,55 @@ impl Schedule {
         self
     }
 
+    /// Reject the one inference configuration where `Exact` obs-stepping
+    /// silently misfires always-active events.
+    ///
+    /// Under `Exact` the substep clips to land on each observation time. When a
+    /// window length is not a multiple of `dt`, the final substep of that window
+    /// is shortened, so its end lands OFF the `round(t/dt)` step grid that
+    /// always-active events key their firing on
+    /// (`intervention.rs::inject_event_deltas` → `time_to_step`). The event then
+    /// fires on the wrong step — or not at all — a silent likelihood error. The
+    /// misfire-free condition is that `t_start` and every observation time lie on
+    /// the `dt` grid (then every substep end is a multiple of `dt`).
+    ///
+    /// No-op under `Snap` (every substep is a full `dt`, always landing on grid)
+    /// and for models without always-active events. This is the interim gate;
+    /// the full fix is a `StepClock` separating the evaluation grid from the
+    /// observation-alignment grid.
+    pub fn reject_event_misfire(
+        &self,
+        has_always_active_events: bool,
+        t_start: f64,
+    ) -> Result<(), crate::error::SimError> {
+        if self.policy != StepPolicy::Exact || !has_always_active_events {
+            return Ok(());
+        }
+        // On the `round(t/dt)` grid within a small relative tolerance (the firing
+        // key rounds, so anything that does not round back to itself misfires).
+        let off_grid = |t: f64| {
+            let k = (t / self.dt).round();
+            (t - k * self.dt).abs() > 1e-9 * self.dt.max(1.0)
+        };
+        let offender = std::iter::once(t_start)
+            .chain(self.obs_times.iter().copied())
+            .find(|&t| off_grid(t));
+        if let Some(t) = offender {
+            return Err(crate::error::SimError::Validation(format!(
+                "this model has always-active events, but t = {t} does not lie on \
+                 the dt = {} integration grid (t_start = {t_start}). Inference steps \
+                 exactly to each observation, which shortens the final substep of \
+                 that window; always-active events fire on the round(t/dt) step grid, \
+                 so the shortened step lands off-grid and the event fires on the \
+                 wrong step — a silent likelihood error. Place observations (and \
+                 t_start) on the dt grid (e.g. integer-day observations with dt = 1), \
+                 or choose a dt that divides the observation spacing.",
+                self.dt
+            )));
+        }
+        Ok(())
+    }
+
     fn next_output(&self, cursor: &Cursor) -> f64 {
         self.output_times.get(cursor.output_idx).copied().unwrap_or(f64::INFINITY)
     }
@@ -570,5 +619,58 @@ mod tests {
                 "window_end must equal the manual walk's final t for window {obs_idx}");
             window_start = obs_time;
         }
+    }
+
+    // --- reject_event_misfire (#1-interim) ---------------------------------
+
+    #[test]
+    fn reject_event_misfire_allows_on_grid() {
+        // Exact + always-active events + obs all on the dt grid → no shortened
+        // substep → every substep end lands on round(t/dt) → events fire
+        // correctly → allowed.
+        let s = exact(1.0, 5.0, vec![], vec![]).with_obs(vec![2.0, 4.0, 5.0]);
+        assert!(s.reject_event_misfire(true, 0.0).is_ok());
+    }
+
+    #[test]
+    fn reject_event_misfire_rejects_off_grid_obs() {
+        // 3.5 with dt=1 shortens its window's final substep → its end lands off
+        // the round(t/dt) grid → event fires on the wrong step.
+        let s = exact(1.0, 5.0, vec![], vec![]).with_obs(vec![2.0, 3.5, 5.0]);
+        let err = s.reject_event_misfire(true, 0.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("3.5"), "message should name the off-grid time: {msg}");
+        assert!(msg.contains("always-active"), "message should name the cause: {msg}");
+    }
+
+    #[test]
+    fn reject_event_misfire_rejects_off_grid_t_start() {
+        // t_start off the dt grid mis-aligns the first window's full-dt substeps.
+        let s = exact(1.0, 5.0, vec![], vec![]).with_obs(vec![2.0, 4.0]);
+        assert!(s.reject_event_misfire(true, 0.3).is_err());
+    }
+
+    #[test]
+    fn reject_event_misfire_ignores_models_without_events() {
+        // Off-grid obs but no always-active events → nothing to misfire.
+        let s = exact(1.0, 5.0, vec![], vec![]).with_obs(vec![2.0, 3.5]);
+        assert!(s.reject_event_misfire(false, 0.0).is_ok());
+    }
+
+    #[test]
+    fn reject_event_misfire_noop_under_snap() {
+        // Snap takes full dt substeps that always land on grid; the guard is a
+        // no-op even with off-grid obs + events.
+        let s = snap(1.0, 5.0, vec![], vec![]).with_obs(vec![2.0, 3.5]);
+        assert!(s.reject_event_misfire(true, 0.0).is_ok());
+    }
+
+    #[test]
+    fn reject_event_misfire_fractional_dt() {
+        // dt = 0.5: obs at multiples of 0.5 are on grid; 1.3 is off.
+        let ok = exact(0.5, 3.0, vec![], vec![]).with_obs(vec![1.0, 2.5, 3.0]);
+        assert!(ok.reject_event_misfire(true, 0.0).is_ok());
+        let bad = exact(0.5, 3.0, vec![], vec![]).with_obs(vec![1.0, 1.3]);
+        assert!(bad.reject_event_misfire(true, 0.0).is_err());
     }
 }
