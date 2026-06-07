@@ -27,7 +27,7 @@ fn action_label(action: &Action) -> String {
 /// a non-finite effect amount is a structural/config defect in the action
 /// expression, not a stochastic exploration artifact, so it surfaces
 /// regardless of caller (forward-sim or inference).
-fn finite_action_value(
+pub(crate) fn finite_action_value(
     value: f64,
     iv_name: &str,
     action: &Action,
