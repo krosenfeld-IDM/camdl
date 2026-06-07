@@ -151,17 +151,12 @@ pub fn apply_intervention_effects(
 ) -> Result<(), SimError> {
     let mut out = EffectDeltas::default();
     for (action_idx, action) in iv.actions.iter().enumerate() {
-        let v = {
-            let ctx = EvalCtx {
-                model, int_s, real_s, params, t, dt,
-                projected: None, int_float_override: None,
-            };
-            eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx)
-        };
-        let v = crate::intervention::finite_action_value(v, &iv.name, action, t)?;
-        trace_action(EffectKind::Intervention, &iv.name, action, v, t);
         out.clear();
-        resolve_action(model, action, v, StateRef { int: int_s, real: real_s }, t, &mut out)?;
+        resolve_one(
+            model, iv_idx, action_idx, &iv.name, action,
+            StateRef { int: int_s, real: real_s }, params, t, dt,
+            EffectKind::Intervention, &mut out,
+        )?;
         apply_effects(&out, StateMut { int: int_s, real: real_s });
     }
     Ok(())
@@ -189,11 +184,38 @@ fn resolve_target(model: &CompiledModel, name: &str) -> Result<Arena, SimError> 
     }
 }
 
-/// Resolve every action of one intervention/event against `snap`, appending the
-/// typed deltas to `out`. PURE: no mutation of state, no RNG. The amount
-/// expression is evaluated against the (read-only) snapshot via the existing
-/// `eval_resolved`; the per-action arithmetic below turns that value into a
-/// snapshot-relative delta.
+/// Resolve one action against `snap`: evaluate its amount expression, finite-
+/// check it, trace it, and append the typed delta(s) to `out`. The single
+/// per-action path shared by the intervention (sequential) and event (parallel)
+/// resolvers. PURE w.r.t. state — no mutation, no RNG.
+#[allow(clippy::too_many_arguments)]
+fn resolve_one(
+    model: &CompiledModel,
+    iv_idx: usize,
+    action_idx: usize,
+    iv_name: &str,
+    action: &Action,
+    snap: StateRef<'_>,
+    params: &[f64],
+    t: f64,
+    dt: f64,
+    kind: EffectKind,
+    out: &mut EffectDeltas,
+) -> Result<(), SimError> {
+    let ctx = EvalCtx {
+        model, int_s: snap.int, real_s: snap.real, params, t, dt,
+        projected: None, int_float_override: None,
+    };
+    let v = eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx);
+    let v = crate::intervention::finite_action_value(v, iv_name, action, t)?;
+    trace_action(kind, iv_name, action, v, t);
+    resolve_action(model, action, v, snap, t, out)
+}
+
+/// Resolve every action of one intervention/event against the SAME `snap`,
+/// appending the typed deltas to `out` (the parallel idiom — every action sees
+/// the same frozen snapshot, used by the event path). PURE.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_intervention(
     model: &CompiledModel,
     iv_idx: usize,
@@ -202,22 +224,42 @@ pub fn resolve_intervention(
     params: &[f64],
     t: f64,
     dt: f64,
+    kind: EffectKind,
     out: &mut EffectDeltas,
 ) -> Result<(), SimError> {
-    let ctx = EvalCtx {
-        model,
-        int_s: snap.int,
-        real_s: snap.real,
-        params,
-        t,
-        dt,
-        projected: None,
-        int_float_override: None,
-    };
     for (action_idx, action) in iv.actions.iter().enumerate() {
-        let v = eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx);
-        let v = crate::intervention::finite_action_value(v, &iv.name, action, t)?;
-        resolve_action(model, action, v, snap, t, out)?;
+        resolve_one(model, iv_idx, action_idx, &iv.name, action, snap, params, t, dt, kind, out)?;
+    }
+    Ok(())
+}
+
+/// Resolve all always-active events firing at this step into typed deltas. The
+/// EVENT path: every action of every firing event resolves against the frozen
+/// pre-advance snapshot at `t_end = t + dt` (so events fuse with the kernel
+/// draw). PURE — the caller fuses `out.int` into the draw and applies `out.real`
+/// to the real reservoir. Replaces the historical int-only `inject_event_deltas`
+/// (which silently dropped real-targeted events).
+pub fn resolve_events(
+    model: &CompiledModel,
+    fire_steps: &[std::collections::BTreeSet<i64>],
+    snapshot: &IntState,
+    real_snapshot: &RealState,
+    params: &[f64],
+    t: f64,
+    dt: f64,
+    out: &mut EffectDeltas,
+) -> Result<(), SimError> {
+    let t_end = t + dt;
+    let current_step = crate::time::time_to_step(t_end, dt);
+    let snap = StateRef { int: snapshot, real: real_snapshot };
+    for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
+        if !iv.always_active {
+            continue;
+        }
+        if !fire_steps[iv_idx].contains(&current_step) {
+            continue;
+        }
+        resolve_intervention(model, iv_idx, iv, snap, params, t_end, dt, EffectKind::Event, out)?;
     }
     Ok(())
 }
@@ -406,7 +448,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         resolve_intervention(model, 0, &model.model.interventions[0], snap(&int_s, &real_s),
-                             &model.default_params, 1.0, 1.0, &mut out).unwrap();
+                             &model.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap();
         out
     }
 
@@ -432,7 +474,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
-                                       &m.default_params, 1.0, 1.0, &mut out).unwrap_err();
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap_err();
         assert!(matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionAddNegative, .. }));
     }
 
@@ -479,7 +521,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
-                                       &m.default_params, 1.0, 1.0, &mut out).unwrap_err();
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap_err();
         assert!(matches!(err, SimError::Validation(_)));
     }
 

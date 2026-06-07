@@ -144,103 +144,6 @@ pub fn apply_interventions_at(
     Ok(any_fired)
 }
 
-/// Inject always_active event actions as deltas into `pending_deltas`.
-///
-/// All action types are expressed as deltas from the snapshot state:
-///   Add(n)        → (+n, target)
-///   Transfer(f)   → (-delta, src), (+delta, dst) where delta = floor(src * f)
-///   Set(v)        → (v - old, target) where old is from snapshot
-///
-/// Called from both `step_one` and `run_chain_binomial` to ensure events
-/// are applied atomically with transitions, matching pomp's ordering.
-pub fn inject_event_deltas(
-    model: &CompiledModel,
-    fire_steps: &[std::collections::BTreeSet<i64>],
-    snapshot: &IntState,
-    real_s: &RealState,
-    params: &[f64],
-    t: f64,
-    dt: f64,
-    pending_deltas: &mut Vec<(usize, i64)>,
-) -> Result<(), SimError> {
-    let t_end = t + dt;
-    let ctx = EvalCtx {
-        model, int_s: snapshot, real_s, params, t: t_end, dt, projected: None, int_float_override: None,
-    };
-    let current_step = crate::time::time_to_step(t_end, dt);
-    for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
-        if !iv.always_active { continue; }
-        if !fire_steps[iv_idx].contains(&current_step) { continue; }
-        for (action_idx, action) in iv.actions.iter().enumerate() {
-            let resolved_val = eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx);
-            let resolved_val = finite_action_value(resolved_val, &iv.name, action, t_end)?;
-            match action {
-                Action::Add(aa) => {
-                    let raw = resolved_val;
-                    let n = raw.round() as i64;
-                    if crate::chain_binomial::trace_enabled() {
-                        eprintln!("EVENT '{}' at t={:.1}: add {} += {} (raw={:.2})",
-                            iv.name, t_end, aa.compartment, n, raw);
-                    }
-                    if let Some(&global) = model.comp_index.get(aa.compartment.as_str()) {
-                        if let Some(local) = model.global_to_int[global] {
-                            pending_deltas.push((local, n));
-                        }
-                    }
-                }
-                Action::FractionTransfer(ft) => {
-                    let frac = resolved_val.clamp(0.0, 1.0);
-                    if let (Some(&sg), Some(&dg)) = (
-                        model.comp_index.get(ft.src.as_str()),
-                        model.comp_index.get(ft.dst.as_str()),
-                    ) {
-                        if let (Some(sl), Some(dl)) = (model.global_to_int[sg], model.global_to_int[dg]) {
-                            let delta = (snapshot.counts[sl] as f64 * frac).floor() as i64;
-                            if crate::chain_binomial::trace_enabled() {
-                                eprintln!("EVENT '{}' at t={:.1}: transfer {} -> {} of {} (frac={:.2})",
-                                    iv.name, t_end, ft.src, ft.dst, delta, frac);
-                            }
-                            pending_deltas.push((sl, -delta));
-                            pending_deltas.push((dl, delta));
-                        }
-                    }
-                }
-                Action::AbsoluteTransfer(at) => {
-                    let n = resolved_val.round() as i64;
-                    if let (Some(&sg), Some(&dg)) = (
-                        model.comp_index.get(at.src.as_str()),
-                        model.comp_index.get(at.dst.as_str()),
-                    ) {
-                        if let (Some(sl), Some(dl)) = (model.global_to_int[sg], model.global_to_int[dg]) {
-                            let transfer = n.min(snapshot.counts[sl]);
-                            if crate::chain_binomial::trace_enabled() {
-                                eprintln!("EVENT '{}' at t={:.1}: transfer {} -> {} of {} (raw={})",
-                                    iv.name, t_end, at.src, at.dst, transfer, n);
-                            }
-                            pending_deltas.push((sl, -transfer));
-                            pending_deltas.push((dl, transfer));
-                        }
-                    }
-                }
-                Action::Set(sa) => {
-                    let new_val = resolved_val.round() as i64;
-                    if let Some(&global) = model.comp_index.get(sa.compartment.as_str()) {
-                        if let Some(local) = model.global_to_int[global] {
-                            let old_val = snapshot.counts[local];
-                            if crate::chain_binomial::trace_enabled() {
-                                eprintln!("EVENT '{}' at t={:.1}: set {} = {} (was {})",
-                                    iv.name, t_end, sa.compartment, new_val, old_val);
-                            }
-                            pending_deltas.push((local, new_val - old_val));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Apply always_active event actions directly to `int_s` / `real_s`.
 ///
 /// gh#67: ode/tau_leap/gillespie do not have a `pending_deltas` pipeline
@@ -263,16 +166,18 @@ pub fn apply_events_at(
             "apply_events_at: non-finite t = {}", t_event
         )));
     }
-    let mut pending: Vec<(usize, i64)> = Vec::new();
-    // `inject_event_deltas` uses `t_end = t + dt` for both the EvalCtx and
-    // the step-index lookup, so pass `t = t_event - dt` to land on
-    // `t_end = t_event`.
-    inject_event_deltas(
-        model, fire_steps, int_s, real_s, params, t_event - dt, dt, &mut pending,
+    // `resolve_events` uses `t_end = t + dt` for both the EvalCtx and the
+    // step-index lookup, so pass `t = t_event - dt` to land on `t_end = t_event`.
+    let mut ev = crate::effects::EffectDeltas::default();
+    crate::effects::resolve_events(
+        model, fire_steps, int_s, real_s, params, t_event - dt, dt, &mut ev,
     )?;
-    let fired = !pending.is_empty();
-    for (local, delta) in pending {
-        int_s.counts[local] += delta;
+    let fired = !ev.is_empty();
+    for d in &ev.int {
+        int_s.counts[d.idx] += d.delta;
+    }
+    for d in &ev.real {
+        real_s.values[d.idx] += d.delta;
     }
     Ok(fired)
 }

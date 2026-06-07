@@ -52,6 +52,10 @@ pub struct StepScratch {
     /// callers may read it after the call to retrieve the draws from the
     /// most recent step. Pre-clearing by the caller is redundant but harmless.
     pub gamma_used: Vec<f64>,
+    /// Reusable buffer for resolved always-active event deltas (PROPOSE stage).
+    /// `int` deltas are fused into the draw via `pending_deltas`; `real` deltas
+    /// apply to the real reservoir. Cleared per `step_one`.
+    event_deltas: crate::effects::EffectDeltas,
 }
 
 /// How event counts are drawn — resolved from the IR at step start.
@@ -74,6 +78,7 @@ impl StepScratch {
             binomial_z_values: Vec::new(),
             binomial_z_idx: 0,
             gamma_used: Vec::new(),
+            event_deltas: crate::effects::EffectDeltas::default(),
             probs: Vec::with_capacity(n_tr),
         }
     }
@@ -456,12 +461,20 @@ pub fn step_one(
 
     // PROPOSE (stage 1): always_active event deltas from the start-of-step
     // snapshot (`scratch.int_s`/`scratch.real_s`, captured at the top of this
-    // function before any draws). Fused into ADVANCE — applied atomically with
-    // the transition deltas below.
-    crate::lifecycle::propose_event_deltas(
+    // function before any draws). The integer deltas are fused into ADVANCE —
+    // applied atomically with the transition deltas below; the real deltas apply
+    // to the snapshot reservoir, which is written back to `real` at the end.
+    scratch.event_deltas.clear();
+    crate::effects::resolve_events(
         model, fire_steps, &scratch.int_s, &scratch.real_s, params, t, dt,
-        &mut scratch.pending_deltas,
+        &mut scratch.event_deltas,
     )?;
+    for d in &scratch.event_deltas.int {
+        scratch.pending_deltas.push((d.idx, d.delta));
+    }
+    for d in &scratch.event_deltas.real {
+        scratch.real_s.values[d.idx] += d.delta;
+    }
 
     // Apply all deltas atomically (transitions + events)
     for &(local, delta) in &scratch.pending_deltas {

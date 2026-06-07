@@ -131,13 +131,16 @@ pub fn run_tau_leap_with_observer(
             // already the boundary; pass `t - cfg.dt` so the shared seam's
             // `t_end = t + dt` lands on the boundary with the cfg.dt step key.
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-                let mut event_deltas: Vec<(usize, i64)> = Vec::new();
-                crate::lifecycle::propose_event_deltas(
+                let mut ev = crate::effects::EffectDeltas::default();
+                crate::effects::resolve_events(
                     model, &fire_steps, &int_s, &real_s, params, t - cfg.dt, cfg.dt,
-                    &mut event_deltas,
+                    &mut ev,
                 )?;
-                for (local, delta) in event_deltas.drain(..) {
-                    int_s.counts[local] += delta;
+                for d in &ev.int {
+                    int_s.counts[d.idx] += d.delta;
+                }
+                for d in &ev.real {
+                    real_s.values[d.idx] += d.delta;
                 }
                 crate::lifecycle::apply_post_advance(
                     model, &fire_steps, &mut int_s, &mut real_s, params,
@@ -309,10 +312,17 @@ pub fn run_tau_leap_with_observer(
         // READ-SOURCE changes: snapshot, not post-drain state).
         let boundary = t + dt;
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - boundary).abs() < 1e-10) {
-            crate::lifecycle::propose_event_deltas(
+            let mut ev = crate::effects::EffectDeltas::default();
+            crate::effects::resolve_events(
                 model, &fire_steps, &snap_int, &snap_real, params,
-                boundary - cfg.dt, cfg.dt, &mut pending_deltas,
+                boundary - cfg.dt, cfg.dt, &mut ev,
             )?;
+            for d in &ev.int {
+                pending_deltas.push((d.idx, d.delta));
+            }
+            for d in &ev.real {
+                real_s.values[d.idx] += d.delta;
+            }
         }
 
         for (local, delta) in pending_deltas.drain(..) {

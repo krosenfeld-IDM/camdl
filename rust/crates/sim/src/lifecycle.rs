@@ -24,35 +24,11 @@
 use crate::{
     compiled_model::{CompiledModel, ResolvedBalance},
     error::SimError,
-    intervention::{apply_interventions_at, inject_event_deltas},
+    intervention::apply_interventions_at,
     propensity::EvalCtx,
     resolved_expr::eval_resolved,
     state::{IntState, RealState},
 };
-
-/// → `FixedStepLifecycle::propose_event_deltas` once the {Int|Real}Delta apply-seam lands.
-/// PROPOSE (stage 1): event deltas from the START-OF-STEP SNAPSHOT. Takes `&snapshot`,
-/// never `&mut` — an event physically cannot read post-advance state. The kernel FUSES
-/// the returned deltas into ADVANCE. RNG-free. i64-only this cycle (the f64 apply-seam is next).
-///
-/// Appends `(local_int_idx, delta)` entries onto `pending_deltas`; the caller
-/// applies the fused (transition + event) deltas atomically. Wraps
-/// [`inject_event_deltas`] — the single delta-producing definition.
-#[allow(clippy::too_many_arguments)]
-pub fn propose_event_deltas(
-    model: &CompiledModel,
-    fire_steps: &[std::collections::BTreeSet<i64>],
-    snapshot: &IntState,
-    real_snapshot: &RealState,
-    params: &[f64],
-    t: f64,
-    dt: f64,
-    pending_deltas: &mut Vec<(usize, i64)>,
-) -> Result<(), SimError> {
-    inject_event_deltas(
-        model, fire_steps, snapshot, real_snapshot, params, t, dt, pending_deltas,
-    )
-}
 
 /// → `FixedStepLifecycle::apply_post_advance`. Stages 3-4: INTERVENE then BALANCE on the
 /// CURRENT post-advance state, in fixed order. One function so no backend can reorder them.
