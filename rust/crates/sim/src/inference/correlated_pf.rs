@@ -422,8 +422,17 @@ pub fn bootstrap_filter_correlated(
                     // schedules (gh#69) carry params; each particle
                     // can have a different schedule.
                     let fire_steps = process.compiled.resolve_fire_steps(process.dt, params);
+                    // KNOWN LIMITATION (docs/dev/incidents/2026-06-07-chain-
+                    // binomial-stale-real-state.md, §inference scope): the
+                    // correlated PF tracks integer counts only — no real
+                    // reservoir is advanced. A zeroed RealState makes a rate
+                    // coupling to a real compartment read 0. For real-free
+                    // models (n_real == 0) this is empty and byte-identical.
+                    let mut real = crate::state::RealState::new(
+                        process.compiled.real_local_to_global.len());
                     crate::chain_binomial::step_one(
                         model, &mut state.counts, &mut state.flow_accumulators,
+                        &mut real,
                         params, t_local, step_dt, rng, scratch,
                         &fire_steps,
                     )?;

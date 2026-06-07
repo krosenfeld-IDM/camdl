@@ -891,13 +891,20 @@ pub fn simulate_reference_on_grid(
     let mut counts = init_int.counts.clone();
     let mut scratch = StepScratch::new(model);
     let mut substeps = Vec::with_capacity(grid.len());
+    // KNOWN LIMITATION (docs/dev/incidents/2026-06-07-chain-binomial-stale-
+    // real-state.md, §inference scope): PGAS tracks integer counts only — it
+    // does not advance the real reservoir (no RK4 step here). We pass a zeroed
+    // RealState so rates that couple to a real compartment see 0. For real-free
+    // models (n_real == 0) this is empty and byte-identical to before. Fitting
+    // real-coupled models on PGAS is part of the separate, larger inference fix.
+    let mut real = crate::state::RealState::new(model.real_local_to_global.len());
 
     for (s, &(t0, dt_s)) in grid.iter().enumerate() {
         let mut flows = vec![0u64; n_tr];
         scratch.gamma_used.clear();
 
         let counts_before = counts.clone();
-        step_one(model, &mut counts, &mut flows, params, t0, dt_s, rng, &mut scratch, &fire_steps)?;
+        step_one(model, &mut counts, &mut flows, &mut real, params, t0, dt_s, rng, &mut scratch, &fire_steps)?;
 
         // Verify: density evaluation of this record won't produce k > n.
         // This catches state/flow mismatches before they cause -inf later.
@@ -1007,6 +1014,17 @@ pub fn csmc_as(
         .map(|_| Vec::new())
         .collect();
 
+    // KNOWN LIMITATION (docs/dev/incidents/2026-06-07-chain-binomial-stale-
+    // real-state.md, §inference scope): CSMC free particles track integer
+    // counts only — no real reservoir is advanced (no RK4 step in the loop
+    // below). Per-particle zeroed RealStates make rates coupling to a real
+    // compartment read 0. For real-free models (n_real == 0) these are empty
+    // and byte-identical to before. Real-coupled fits need the larger fix.
+    let n_real = model.real_local_to_global.len();
+    let mut particle_reals: Vec<crate::state::RealState> = (0..n_particles)
+        .map(|_| crate::state::RealState::new(n_real))
+        .collect();
+
     // Cumulative flows since last observation (for projection)
     let mut cum_flows: Vec<Vec<u64>> = (0..n_particles)
         .map(|_| vec![0u64; n_tr])
@@ -1110,6 +1128,7 @@ pub fn csmc_as(
 
             step_one(
                 model, &mut counts[j], &mut substep_flows[j],
+                &mut particle_reals[j],
                 params, t, step_dt, &mut rngs[j], &mut scratches[j],
                 &fire_steps,
             )?;

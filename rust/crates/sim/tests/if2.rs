@@ -143,12 +143,13 @@ fn generate_data(compiled: &CompiledModel, params: &[f64]) -> (Vec<f64>, Vec<f64
     state.counts.copy_from_slice(&init.counts);
 
     let mut scratch = StepScratch::new(compiled);
+    let mut real = sim::state::RealState::new(compiled.real_local_to_global.len());
     let mut obs_times = Vec::new();
     let mut obs_values = Vec::new();
     let mut t = 0.0;
     while t < 77.0 {
         for _ in 0..7 {
-            step_one(compiled, &mut state.counts, &mut state.flow_accumulators, params, t, 1.0, &mut rng, &mut scratch, &compiled.resolve_fire_steps(1.0, params)).unwrap();
+            step_one(compiled, &mut state.counts, &mut state.flow_accumulators, &mut real, params, t, 1.0, &mut rng, &mut scratch, &compiled.resolve_fire_steps(1.0, params)).unwrap();
             t += 1.0;
         }
         // Project: recovery flow (index 1)

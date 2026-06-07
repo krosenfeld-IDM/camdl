@@ -217,7 +217,7 @@ pub fn run_chain_binomial_with_observer(
         // (once at t_end inside step_one, once at the new t here).
         // See docs/dev/incidents/2026-04-17-chain-binomial-double-fire.md.
         flows.fill(0);
-        step_one(model, &mut int_s.counts, &mut flows, params, t_grid, dt, &mut rng, &mut scratch, &fire_steps)?;
+        step_one(model, &mut int_s.counts, &mut flows, &mut real_s, params, t_grid, dt, &mut rng, &mut scratch, &fire_steps)?;
 
         // Lineage observer: feed each transition's per-step flow count against
         // the frozen start-of-step state. step_one has already drawn from the
@@ -291,6 +291,7 @@ pub fn step_one(
     model: &CompiledModel,
     counts: &mut [i64],
     flows: &mut [u64],
+    real: &mut RealState,
     params: &[f64],
     t: f64,
     dt: f64,
@@ -301,6 +302,17 @@ pub fn step_one(
     // Copy current counts into scratch IntState for propensity evaluation.
     // This is a memcpy into pre-allocated memory, not a heap allocation.
     scratch.int_s.counts.copy_from_slice(counts);
+
+    // Copy the caller's real compartment state into scratch RealState so the
+    // propensity evaluator (and the pre-evaluated draw-method context below)
+    // see the *current* real values, not scratch.real_s's zero init. Without
+    // this, any integer transition whose rate couples to a real compartment
+    // (e.g. cholera SIWR's water-borne infection term `beta_W*W/(W+kappa)`)
+    // evaluates that real value as 0 — silently wrong. The caller advances
+    // `real` (RK4) before this call; `step_one` reads it here and writes back
+    // any real-compartment intervention mutations (apply_post_advance) below.
+    // See docs/dev/incidents/2026-06-07-chain-binomial-stale-real-state.md.
+    scratch.real_s.values.copy_from_slice(&real.values);
 
     // Reset per-step output buffer. Without this, overdispersed() models
     // accumulate one f64 per source-group per substep per particle for the
@@ -520,6 +532,14 @@ pub fn step_one(
         params, t, dt, dt * 0.5, model.balance.as_ref(),
     )?;
     counts.copy_from_slice(&scratch.int_s.counts);
+
+    // Write back real-compartment mutations from apply_post_advance (e.g.
+    // `set()`/`transfer()`/`add()` interventions targeting a real reservoir).
+    // Previously these landed in scratch.real_s and were dropped — the run's
+    // `real` never saw them, so real-compartment interventions were silently
+    // ignored on the chain-binomial backend. Same incident as the rate-read
+    // bug above: scratch.real_s was disconnected from the run's real state.
+    real.values.copy_from_slice(&scratch.real_s.values);
 
     Ok(())
 }

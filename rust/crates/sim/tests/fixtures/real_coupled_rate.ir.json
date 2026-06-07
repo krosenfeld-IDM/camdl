@@ -1,0 +1,81 @@
+{
+  "ir_version": "0.9",
+  "validated_by": "hand-curated-incident-fixture",
+  "model": {
+    "name": "real_coupled_rate",
+    "version": "0.1",
+    "time_unit": "days",
+    "description": "Minimal reproduction for the chain-binomial stale-real-state incident (2026-06-07). Integer transition S->I has rate beta * (W/(W+kappa)) * S, where W is a REAL compartment held constant by dW/dt = 0. With W large the saturation term W/(W+kappa) ~ 1 and the rate is ~beta*S; with W=0 the rate is exactly 0 (no infections). A correct backend therefore produces different integer dynamics for W>0 vs W=0. Chain-binomial that ignores the real state evaluates W==0 in the rate regardless of W's init, so its S->I dynamics are independent of W -- the bug.",
+    "compartments": [
+      { "name": "S", "kind": "integer" },
+      { "name": "I", "kind": "integer" },
+      { "name": "W", "kind": "real" }
+    ],
+    "transitions": [
+      {
+        "name": "infection",
+        "stoichiometry": [["S", -1], ["I", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": {
+              "bin_op": {
+                "op": "mul",
+                "left": { "param": "beta" },
+                "right": {
+                  "bin_op": {
+                    "op": "div",
+                    "left": { "pop": "W" },
+                    "right": {
+                      "bin_op": {
+                        "op": "add",
+                        "left": { "pop": "W" },
+                        "right": { "param": "kappa" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "right": { "pop": "S" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "transmission",
+          "source_compartment": "S",
+          "dest_compartment": "I"
+        }
+      }
+    ],
+    "ode_equations": [
+      {
+        "compartment": "W",
+        "derivative": { "const": 0.0 }
+      }
+    ],
+    "time_functions": [],
+    "tables": [],
+    "interventions": [],
+    "observations": [],
+    "parameters": [
+      { "name": "beta", "value": 0.5, "prior": null, "transform": null, "initial_value": null },
+      { "name": "kappa", "value": 1.0, "prior": null, "transform": null, "initial_value": null }
+    ],
+    "initial_conditions": {
+      "explicit": { "S": 1000, "I": 0, "W": 0.0 }
+    },
+    "output": {
+      "times": { "regular": { "start": 0.0, "step": 1.0, "end": 20.0 } },
+      "format": "tsv",
+      "trajectory": true,
+      "observations": false
+    },
+    "simulation": {
+      "t_start": 0.0,
+      "t_end": 20.0,
+      "time_semantics": "continuous",
+      "dt": null,
+      "rng_seed": 42
+    }
+  }
+}

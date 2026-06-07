@@ -89,10 +89,22 @@ impl ProcessModel for ChainBinomialProcess {
         // compared to a chain-binomial step's per-transition
         // propensity eval and multinomial draws.
         let fire_steps = self.compiled.resolve_fire_steps(self.dt, params);
+        // KNOWN LIMITATION (docs/dev/incidents/2026-06-07-chain-binomial-
+        // stale-real-state.md, §inference scope): inference particles
+        // (`ParticleState`) track integer counts only — there is no real
+        // compartment state being advanced anywhere in the filter. We pass a
+        // freshly-zeroed `RealState` here, so a model whose rate couples to a
+        // real compartment is fit with that real value pinned at 0 (== its
+        // init for cholera SIWR). For real-free models (`n_real == 0`) this is
+        // an empty vector and the step is byte-identical to before. Fitting
+        // real-coupled models on chain-binomial is a separate, larger fix
+        // (the particle state must carry and RK4-advance the real reservoir).
+        let mut real = crate::state::RealState::new(self.compiled.real_local_to_global.len());
         step_one(
             &self.compiled,
             &mut state.counts,
             &mut state.flow_accumulators,
+            &mut real,
             params, t, dt, rng, scratch,
             &fire_steps,
         )

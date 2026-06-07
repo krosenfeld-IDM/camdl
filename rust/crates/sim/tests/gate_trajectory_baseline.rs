@@ -191,7 +191,7 @@ const BASELINES: &[(&str, &str, u64)] = &[
     // extraction that reassociates the MixedPopSum fold order changes these.
     ("sir_reservoir_mixed", "gillespie", 0xa3b890243e0932a5),
     ("sir_reservoir_mixed", "tau_leap", 0xccb85e8f9b693a1e),
-    ("sir_reservoir_mixed", "chain_binomial", 0x0bacf4e75cfcb7fc),
+    ("sir_reservoir_mixed", "chain_binomial", 0x0597d93ff326fb1b),
     ("sir_spatial_sum", "gillespie", 0x65d363618fc40fb4),
     ("sir_spatial_sum", "tau_leap", 0xd38ed3b3bfe9c9fa),
     ("sir_spatial_sum", "chain_binomial", 0xd38ed3b3bfe9c9fa),

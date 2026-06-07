@@ -362,11 +362,12 @@ fn snapshot_reads_post_intervention_state() {
     let mut flows = vec![0u64; 0];
     let mut rng = StatefulRng::new(42);
     let mut scratch = StepScratch::new(&compiled);
+    let mut real = sim::state::RealState::new(compiled.real_local_to_global.len());
 
     let fire_steps = compiled.resolve_fire_steps(1.0, &[]);
     for k in 0..5 {
         let t = k as f64;
-        step_one(&compiled, &mut counts, &mut flows, &params, t, 1.0, &mut rng, &mut scratch, &fire_steps)
+        step_one(&compiled, &mut counts, &mut flows, &mut real, &params, t, 1.0, &mut rng, &mut scratch, &fire_steps)
             .unwrap();
     }
 
