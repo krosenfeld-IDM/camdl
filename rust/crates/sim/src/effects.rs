@@ -89,6 +89,84 @@ pub fn apply_effects(d: &EffectDeltas, s: StateMut<'_>) {
     }
 }
 
+/// Whether the actions came from a scheduled intervention (post-advance,
+/// applied in place) or an always-active event (pre-advance snapshot, fused
+/// with the draw). Used only for the `CAMDL_TRACE_STEPS` label today.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EffectKind {
+    Intervention,
+    Event,
+}
+
+impl EffectKind {
+    fn label(self) -> &'static str {
+        match self {
+            EffectKind::Intervention => "INTERVENTION",
+            EffectKind::Event => "EVENT",
+        }
+    }
+}
+
+/// `CAMDL_TRACE_STEPS` observability for one action. Stderr-only, env-gated, no
+/// effect on results — kept out of the pure resolver and emitted at the wiring.
+fn trace_action(kind: EffectKind, iv_name: &str, action: &Action, v: f64, t: f64) {
+    if !crate::chain_binomial::trace_enabled() {
+        return;
+    }
+    let k = kind.label();
+    match action {
+        Action::Add(a) => eprintln!(
+            "{k} '{iv_name}' at t={t:.1}: add {} += {} (raw={v:.2})",
+            a.compartment, v.round() as i64
+        ),
+        Action::Set(a) => {
+            eprintln!("{k} '{iv_name}' at t={t:.1}: set {} = {v:.2}", a.compartment)
+        }
+        Action::FractionTransfer(ft) => eprintln!(
+            "{k} '{iv_name}' at t={t:.1}: transfer {} -> {} (frac={:.2})",
+            ft.src, ft.dst, v.clamp(0.0, 1.0)
+        ),
+        Action::AbsoluteTransfer(at) => eprintln!(
+            "{k} '{iv_name}' at t={t:.1}: transfer {} -> {} (raw={v:.2})",
+            at.src, at.dst
+        ),
+    }
+}
+
+/// The scheduled-intervention path: resolve + apply each action **sequentially**
+/// against the live post-advance state, so action `i+1` sees action `i`'s effect
+/// (the historical `apply_intervention` semantics — distinct from the event
+/// path, which resolves every action against one frozen pre-advance snapshot).
+/// Byte-identical to the prior in-place apply.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_intervention_effects(
+    model: &CompiledModel,
+    iv_idx: usize,
+    iv: &Intervention,
+    int_s: &mut IntState,
+    real_s: &mut RealState,
+    params: &[f64],
+    t: f64,
+    dt: f64,
+) -> Result<(), SimError> {
+    let mut out = EffectDeltas::default();
+    for (action_idx, action) in iv.actions.iter().enumerate() {
+        let v = {
+            let ctx = EvalCtx {
+                model, int_s, real_s, params, t, dt,
+                projected: None, int_float_override: None,
+            };
+            eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx)
+        };
+        let v = crate::intervention::finite_action_value(v, &iv.name, action, t)?;
+        trace_action(EffectKind::Intervention, &iv.name, action, v, t);
+        out.clear();
+        resolve_action(model, action, v, StateRef { int: int_s, real: real_s }, t, &mut out)?;
+        apply_effects(&out, StateMut { int: int_s, real: real_s });
+    }
+    Ok(())
+}
+
 /// Which arena a compartment lives in, plus its local index.
 enum Arena {
     Int(usize),

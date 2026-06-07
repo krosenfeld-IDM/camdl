@@ -5,7 +5,7 @@ use crate::{
     resolved_expr::{eval_resolved, ResolvedExpr},
     state::{IntState, RealState},
 };
-use ir::intervention::{Action, Intervention, InterventionSchedule};
+use ir::intervention::{Action, InterventionSchedule};
 
 /// Short human label for an action, for diagnostics (`"set V"`,
 /// `"transfer S -> I (fraction)"`). Error-path only.
@@ -135,7 +135,9 @@ pub fn apply_interventions_at(
     for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
         if iv.always_active { continue; }
         if fire_steps[iv_idx].contains(&current_step) {
-            apply_intervention(iv, iv_idx, model, int_s, real_s, params, t, dt)?;
+            crate::effects::apply_intervention_effects(
+                model, iv_idx, iv, int_s, real_s, params, t, dt,
+            )?;
             any_fired = true;
         }
     }
@@ -291,130 +293,6 @@ pub fn all_intervention_times(model: &CompiledModel, params: &[f64]) -> Vec<f64>
     times.sort_by(|a, b| a.total_cmp(b));
     times.dedup();
     times
-}
-
-fn apply_intervention(
-    iv: &Intervention,
-    iv_idx: usize,
-    model: &CompiledModel,
-    int_s: &mut IntState,
-    real_s: &mut RealState,
-    params: &[f64],
-    t: f64,
-    dt: f64,
-) -> Result<(), SimError> {
-    for (action_idx, action) in iv.actions.iter().enumerate() {
-        let resolved_val = eval_resolved(
-            &model.resolved.intervention_exprs[iv_idx][action_idx],
-            &EvalCtx { model, int_s, real_s, params, t, dt, projected: None, int_float_override: None },
-        );
-        let resolved_val = finite_action_value(resolved_val, &iv.name, action, t)?;
-        let trace = crate::chain_binomial::trace_enabled();
-        match action {
-            Action::FractionTransfer(ft) => {
-                let frac = resolved_val.clamp(0.0, 1.0);
-                if trace {
-                    eprintln!("INTERVENTION '{}' at t={:.1}: transfer {} -> {} (frac={:.2})",
-                        iv.name, t, ft.src, ft.dst, frac);
-                }
-                let src_global = *model.comp_index.get(ft.src.as_str())
-                    .ok_or_else(|| SimError::UnknownCompartment(ft.src.clone()))?;
-                let dst_global = *model.comp_index.get(ft.dst.as_str())
-                    .ok_or_else(|| SimError::UnknownCompartment(ft.dst.clone()))?;
-
-                if let (Some(s_local), Some(d_local)) = (
-                    model.global_to_int[src_global],
-                    model.global_to_int[dst_global],
-                ) {
-                    let transfer = ((int_s.counts[s_local] as f64) * frac).floor() as i64;
-                    int_s.counts[s_local] -= transfer;
-                    int_s.counts[d_local] += transfer;
-                } else if let (Some(s_local), Some(d_local)) = (
-                    model.global_to_real[src_global],
-                    model.global_to_real[dst_global],
-                ) {
-                    let transfer = real_s.values[s_local] * frac;
-                    real_s.values[s_local] -= transfer;
-                    real_s.values[d_local] += transfer;
-                }
-            }
-
-            Action::AbsoluteTransfer(at) => {
-                let n = resolved_val;
-                if trace {
-                    eprintln!("INTERVENTION '{}' at t={:.1}: transfer {} -> {} (raw={:.2})",
-                        iv.name, t, at.src, at.dst, n);
-                }
-                let src_global = *model.comp_index.get(at.src.as_str())
-                    .ok_or_else(|| SimError::UnknownCompartment(at.src.clone()))?;
-                let dst_global = *model.comp_index.get(at.dst.as_str())
-                    .ok_or_else(|| SimError::UnknownCompartment(at.dst.clone()))?;
-
-                if let (Some(s_local), Some(d_local)) = (
-                    model.global_to_int[src_global],
-                    model.global_to_int[dst_global],
-                ) {
-                    let transfer = (n.round() as i64).min(int_s.counts[s_local]);
-                    int_s.counts[s_local] -= transfer;
-                    int_s.counts[d_local] += transfer;
-                } else if let (Some(s_local), Some(d_local)) = (
-                    model.global_to_real[src_global],
-                    model.global_to_real[dst_global],
-                ) {
-                    let transfer = n.min(real_s.values[s_local]);
-                    real_s.values[s_local] -= transfer;
-                    real_s.values[d_local] += transfer;
-                }
-            }
-
-            Action::Set(sa) => {
-                let v = resolved_val;
-                if trace {
-                    eprintln!("INTERVENTION '{}' at t={:.1}: set {} = {:.2}",
-                        iv.name, t, sa.compartment, v);
-                }
-                let global = *model.comp_index.get(sa.compartment.as_str())
-                    .ok_or_else(|| SimError::UnknownCompartment(sa.compartment.clone()))?;
-                if let Some(local) = model.global_to_int[global] {
-                    int_s.counts[local] = v.round() as i64;
-                } else if let Some(local) = model.global_to_real[global] {
-                    real_s.values[local] = v;
-                }
-            }
-
-            Action::Add(aa) => {
-                let n = resolved_val;
-                let count = n.round() as i64;
-                if trace {
-                    eprintln!("INTERVENTION '{}' at t={:.1}: add {} += {} (raw={:.2})",
-                        iv.name, t, aa.compartment, count, n);
-                }
-                if count < 0 {
-                    // gh#audit-C5 / S2. Action::Add resolving to a
-                    // negative value is a config bug — the user wrote
-                    // a fit.toml or DSL expression that produces a
-                    // negative add. There's no inference scenario
-                    // where you "discover" that an intervention should
-                    // remove individuals via Add. Always hard error,
-                    // regardless of caller (forward-sim or inference).
-                    return Err(SimError::NegativeCount {
-                        compartment: aa.compartment.clone(),
-                        attempted_value: count,
-                        t,
-                        cause: crate::error::NegativeCountCause::InterventionAddNegative,
-                    });
-                }
-                let global = *model.comp_index.get(aa.compartment.as_str())
-                    .ok_or_else(|| SimError::UnknownCompartment(aa.compartment.clone()))?;
-                if let Some(local) = model.global_to_int[global] {
-                    int_s.counts[local] += count;
-                } else if let Some(local) = model.global_to_real[global] {
-                    real_s.values[local] += n;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
