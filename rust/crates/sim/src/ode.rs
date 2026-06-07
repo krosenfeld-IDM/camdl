@@ -2,7 +2,7 @@ use crate::{
     compiled_model::CompiledModel,
     config::{OdeConfig, SimConfig},
     error::SimError,
-    intervention::{all_intervention_times, apply_events_at},
+    intervention::all_intervention_times,
     output::output_times as get_output_times,
     propensity::{eval_propensities, EvalCtx},
     resolved_expr::eval_resolved,
@@ -223,24 +223,14 @@ pub fn run_ode(
         if dt <= 1e-15 {
             // At a boundary — apply intervention or record output
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-                let (mut is, mut rs) = to_states(&int_vals, &real_vals);
-                // Canonical lifecycle (matches chain_binomial): always_active
-                // events read the start-of-step snapshot — here `is`/`rs`, which
-                // interventions have not yet modified — and fire BEFORE
-                // interventions, which then run on the post-event state.
-                // ODE event-fusion deferred to the {Int|Real}Delta apply-seam
-                // (step 3): ODE is f64, so an i64 event delta from a rounded
-                // snapshot would re-introduce the mid-trajectory quantization the
-                // ODE backend exists to avoid. Events stay on the stepped state.
-                apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
-                // INTERVENE (stage 3) via the shared seam (byte-identical):
-                // `t - cfg.dt` lands the seam's `t_end` on the boundary `t`.
-                crate::lifecycle::apply_post_advance(
-                    model, &fire_steps, &mut is, &mut rs, params,
-                    t - cfg.dt, cfg.dt, 1e-10, None,
+                // Continuous lifecycle: events (frozen snapshot) fire before
+                // interventions (sequential, post-event). Applied EXACTLY to the
+                // f64 vectors — no `to_states` round-trip — so the fractional
+                // integrator state survives the boundary (the de-quantization the
+                // ODE backend exists to provide).
+                crate::effects::apply_boundary_effects_continuous(
+                    model, &fire_steps, &mut int_vals, &mut real_vals, params, t, cfg.dt,
                 )?;
-                int_vals = is.counts.iter().map(|&c| c as f64).collect();
-                real_vals = rs.values.clone();
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
             while schedule.output_due_at(&cursor, t) {
@@ -277,18 +267,11 @@ pub fn run_ode(
         // BEFORE interventions, which read the post-event state. Matches
         // chain_binomial.
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-            let (mut is, mut rs) = to_states(&int_vals, &real_vals);
-            // ODE event-fusion deferred to the {Int|Real}Delta apply-seam
-            // (step 3): f64 ODE state, so the i64 event delta from a rounded
-            // snapshot stays separate to avoid mid-trajectory quantization.
-            apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
-            // INTERVENE (stage 3) via the shared seam (byte-identical).
-            crate::lifecycle::apply_post_advance(
-                model, &fire_steps, &mut is, &mut rs, params,
-                t - cfg.dt, cfg.dt, 1e-10, None,
+            // Continuous lifecycle (events then interventions), applied EXACTLY
+            // to the f64 vectors so the fractional integrator state survives.
+            crate::effects::apply_boundary_effects_continuous(
+                model, &fire_steps, &mut int_vals, &mut real_vals, params, t, cfg.dt,
             )?;
-            int_vals = is.counts.iter().map(|&c| c as f64).collect();
-            real_vals = rs.values.clone();
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
 

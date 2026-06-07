@@ -264,6 +264,158 @@ pub fn resolve_events(
     Ok(())
 }
 
+// ── Continuous (ODE) effect application ─────────────────────────────────────
+//
+// ODE holds its INTEGER compartments as f64 (`int_vals`) and integrates them
+// with RK4. The discrete resolver above rounds the integer arena to i64; routing
+// ODE through it would discard the fractional state the integrator accumulated
+// at every effect boundary (the historical `to_states` round-trip). The
+// continuous path below applies effects to the f64 vectors EXACTLY — same action
+// structure, but no rounding and no `.floor()` — reading integer compartments as
+// f64 via `int_float_override` (the same mechanism `eval_propensities` uses for
+// ODE rates). The discrete backends keep the i64 resolver untouched.
+
+/// Evaluate one action's amount expression against f64 compartment values (the
+/// ODE read path: integer compartments via `int_float_override`).
+fn eval_amount_f64(
+    model: &CompiledModel,
+    iv_idx: usize,
+    action_idx: usize,
+    int_f64: &[f64],
+    real_f64: &[f64],
+    params: &[f64],
+    t: f64,
+    dt: f64,
+) -> f64 {
+    let placeholder = IntState::new(model.int_local_to_global.len());
+    let rs = RealState::from_vec(real_f64.to_vec());
+    let ctx = EvalCtx {
+        model, int_s: &placeholder, real_s: &rs, params, t, dt,
+        projected: None, int_float_override: Some(int_f64),
+    };
+    eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx)
+}
+
+/// Apply one action exactly in f64. `read_int`/`read_real` supply the values the
+/// snapshot-relative arithmetic reads (the frozen snapshot for events; the live
+/// state for sequential interventions); the result is written to
+/// `int_vals`/`real_vals`.
+#[allow(clippy::too_many_arguments)]
+fn apply_action_f64(
+    model: &CompiledModel,
+    action: &Action,
+    v: f64,
+    read_int: &[f64],
+    read_real: &[f64],
+    int_vals: &mut [f64],
+    real_vals: &mut [f64],
+) -> Result<(), SimError> {
+    match action {
+        Action::Add(aa) => {
+            if v.round() < 0.0 {
+                return Err(SimError::NegativeCount {
+                    compartment: aa.compartment.clone(),
+                    attempted_value: v.round() as i64,
+                    t: 0.0,
+                    cause: NegativeCountCause::InterventionAddNegative,
+                });
+            }
+            match resolve_target(model, &aa.compartment)? {
+                Arena::Int(i) => int_vals[i] += v,
+                Arena::Real(i) => real_vals[i] += v,
+            }
+        }
+        Action::Set(sa) => match resolve_target(model, &sa.compartment)? {
+            Arena::Int(i) => int_vals[i] = v,
+            Arena::Real(i) => real_vals[i] = v,
+        },
+        Action::FractionTransfer(ft) => {
+            let frac = v.clamp(0.0, 1.0);
+            match (resolve_target(model, &ft.src)?, resolve_target(model, &ft.dst)?) {
+                (Arena::Int(s), Arena::Int(d)) => {
+                    let x = read_int[s] * frac;
+                    int_vals[s] -= x;
+                    int_vals[d] += x;
+                }
+                (Arena::Real(s), Arena::Real(d)) => {
+                    let x = read_real[s] * frac;
+                    real_vals[s] -= x;
+                    real_vals[d] += x;
+                }
+                _ => return Err(mixed_arena_err(&ft.src, &ft.dst)),
+            }
+        }
+        Action::AbsoluteTransfer(at) => {
+            match (resolve_target(model, &at.src)?, resolve_target(model, &at.dst)?) {
+                (Arena::Int(s), Arena::Int(d)) => {
+                    let x = v.min(read_int[s]);
+                    int_vals[s] -= x;
+                    int_vals[d] += x;
+                }
+                (Arena::Real(s), Arena::Real(d)) => {
+                    let x = v.min(read_real[s]);
+                    real_vals[s] -= x;
+                    real_vals[d] += x;
+                }
+                _ => return Err(mixed_arena_err(&at.src, &at.dst)),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply all boundary effects to ODE's continuous compartment vectors, exactly
+/// (no rounding). Order matches the discrete lifecycle: always-active EVENTS
+/// fire first, every action reading the frozen pre-intervention snapshot; then
+/// scheduled INTERVENTIONS apply sequentially on the post-event state. ODE
+/// carries no balance. `t_boundary` is the effect time; `dt` is the step that
+/// built `fire_steps`.
+pub fn apply_boundary_effects_continuous(
+    model: &CompiledModel,
+    fire_steps: &[std::collections::BTreeSet<i64>],
+    int_vals: &mut [f64],
+    real_vals: &mut [f64],
+    params: &[f64],
+    t_boundary: f64,
+    dt: f64,
+) -> Result<(), SimError> {
+    let current_step = crate::time::time_to_step(t_boundary, dt);
+    let t = t_boundary;
+
+    // EVENTS — frozen snapshot, every firing event's actions resolve against it.
+    if model.model.interventions.iter().any(|iv| iv.always_active) {
+        let snap_int = int_vals.to_vec();
+        let snap_real = real_vals.to_vec();
+        for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
+            if !iv.always_active || !fire_steps[iv_idx].contains(&current_step) {
+                continue;
+            }
+            for (action_idx, action) in iv.actions.iter().enumerate() {
+                let v = eval_amount_f64(model, iv_idx, action_idx, &snap_int, &snap_real, params, t, dt);
+                let v = crate::intervention::finite_action_value(v, &iv.name, action, t)?;
+                trace_action(EffectKind::Event, &iv.name, action, v, t);
+                apply_action_f64(model, action, v, &snap_int, &snap_real, int_vals, real_vals)?;
+            }
+        }
+    }
+
+    // INTERVENTIONS — sequential, each action reads the live state.
+    for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
+        if iv.always_active || !fire_steps[iv_idx].contains(&current_step) {
+            continue;
+        }
+        for (action_idx, action) in iv.actions.iter().enumerate() {
+            let live_int = int_vals.to_vec();
+            let live_real = real_vals.to_vec();
+            let v = eval_amount_f64(model, iv_idx, action_idx, &live_int, &live_real, params, t, dt);
+            let v = crate::intervention::finite_action_value(v, &iv.name, action, t)?;
+            trace_action(EffectKind::Intervention, &iv.name, action, v, t);
+            apply_action_f64(model, action, v, &live_int, &live_real, int_vals, real_vals)?;
+        }
+    }
+    Ok(())
+}
+
 /// The pure arithmetic core: one action + its resolved `f64` value + the
 /// snapshot → typed deltas. No model state is read except the snapshot and the
 /// arena map. Mirrors the historical `apply_intervention` / `inject_event_deltas`
@@ -536,5 +688,40 @@ mod tests {
         apply_effects(&d, StateMut { int: &mut int_s, real: &mut real_s });
         assert_eq!(int_s.counts, vec![70, 30]);
         assert_eq!(real_s.values, vec![52.5]);
+    }
+
+    // ── Continuous (ODE) path — exact f64, no rounding ──────────────────────
+    // These are the de-quantization oracle at the f64 level (before the output
+    // contract rounds integer compartments for display): the continuous apply
+    // must carry the fractional integrator state exactly.
+
+    /// A fraction-transfer on a FRACTIONAL integer compartment moves the exact
+    /// fraction — no `.floor()`, unlike the discrete path. S = 704.69, transfer
+    /// 0.5 → both ends = 352.345.
+    #[test]
+    fn continuous_fraction_transfer_is_exact() {
+        let m = model_with(vec![Action::FractionTransfer(FractionTransfer {
+            src: "S".into(), dst: "I".into(), fraction: Expr::const_(0.5),
+        })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![704.69_f64, 0.0]; // S (local int 0), I (local int 1)
+        let mut real_vals = vec![50.0_f64];        // W
+        apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0).unwrap();
+        assert_eq!(int_vals[0], 704.69 - 352.345);
+        assert_eq!(int_vals[1], 352.345);
+        // Discrete would floor(704*0.5)=352 after rounding S to 704 — different.
+    }
+
+    /// A `set` on an integer compartment lands the exact f64 (no round).
+    #[test]
+    fn continuous_set_int_is_exact() {
+        let m = model_with(vec![Action::Set(SetAction {
+            compartment: "S".into(), value: Expr::const_(70.4),
+        })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![100.0_f64, 0.0];
+        let mut real_vals = vec![50.0_f64];
+        apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0).unwrap();
+        assert_eq!(int_vals[0], 70.4); // exact, not round(70.4)=70
     }
 }

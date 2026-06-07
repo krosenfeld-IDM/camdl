@@ -83,7 +83,7 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("coincident_obs_intervention", "gillespie", 0xc95855be016faa2e),
     ("coincident_obs_intervention", "tau_leap", 0x2e85be37a9e66603),
     ("coincident_obs_intervention", "chain_binomial", 0x268779bebe644754),
-    ("coincident_obs_intervention", "ode", 0x67869e7c6ce2f0e2),
+    ("coincident_obs_intervention", "ode", 0x8e4f3e32f11b6c80), // ODE de-quant (exact fraction-transfer)
     // event_drain_fusion (cycle 2a): a live transition DRAINS A every substep
     // while an always_active value-dependent event (transfer fraction=f of A)
     // ALSO reads A. The event delta floor(A*f) is read from the START-OF-STEP
@@ -96,7 +96,13 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("event_drain_fusion", "gillespie", 0xa793914cfeab7c40),
     ("event_drain_fusion", "tau_leap", 0x3c3bd007a8255322),
     ("event_drain_fusion", "chain_binomial", 0x9f09ba4bd868112c),
-    ("event_drain_fusion", "ode", 0x9c9d32826bfb3905),
+    // ode moved with the effect-purity seam's ODE de-quantization: a
+    // fraction_transfer on integer compartments now applies the exact fraction
+    // of the f64 integrator state (src*frac) instead of floor(round(src)*frac).
+    // The recurring every-step leak compounds the fractional carry. Verified
+    // exact by effects::tests::continuous_fraction_transfer_is_exact; discrete
+    // backends byte-identical.
+    ("event_drain_fusion", "ode", 0xf6cc6cd7b95392ac),
     // event_intervention_agree: a coincident always_active event + intervention
     // where the intervention reads the compartment the event modified. The
     // canonical (M1) lifecycle makes chain_binomial / tau_leap / ode byte-
@@ -114,7 +120,7 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("off_grid_intervention", "gillespie", 0xe967c235c5278b90),
     ("off_grid_intervention", "tau_leap", 0x2e2b9abfab6c62b1),
     ("off_grid_intervention", "chain_binomial", 0x4f96d41fadd2c78a),
-    ("off_grid_intervention", "ode", 0xc041e8b69d145f54),
+    ("off_grid_intervention", "ode", 0x0bad82f510c7fca4), // ODE de-quant (exact fraction-transfer)
     ("off_grid_obs", "gillespie", 0x3a47fe1458a43c93),
     ("off_grid_obs", "tau_leap", 0x9dec41aee58acb15),
     ("off_grid_obs", "chain_binomial", 0x38f9706bf047cf25),
