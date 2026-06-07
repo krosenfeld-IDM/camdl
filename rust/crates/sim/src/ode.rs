@@ -224,9 +224,12 @@ pub fn run_ode(
             // At a boundary — apply intervention or record output
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 let (mut is, mut rs) = to_states(&int_vals, &real_vals);
-                apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
-                // gh#67: also fire always_active events at this boundary.
+                // Canonical lifecycle (matches chain_binomial): always_active
+                // events read the start-of-step snapshot — here `is`/`rs`, which
+                // interventions have not yet modified — and fire BEFORE
+                // interventions, which then run on the post-event state.
                 apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
+                apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
                 int_vals = is.counts.iter().map(|&c| c as f64).collect();
                 real_vals = rs.values.clone();
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
@@ -260,12 +263,14 @@ pub fn run_ode(
         rk4_step(model, &mut int_vals, &mut real_vals, params, t, dt)?;
         t += dt;
 
-        // Apply intervention if now at that time
+        // Apply intervention if now at that time. Canonical lifecycle: events
+        // (reading the start-of-step snapshot `is`/`rs`, pre-intervention) fire
+        // BEFORE interventions, which read the post-event state. Matches
+        // chain_binomial.
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
             let (mut is, mut rs) = to_states(&int_vals, &real_vals);
-            apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
-            // gh#67: also fire always_active events at this boundary.
             apply_events_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params)?;
+            apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut is, &mut rs, params, 1e-10)?;
             int_vals = is.counts.iter().map(|&c| c as f64).collect();
             real_vals = rs.values.clone();
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }

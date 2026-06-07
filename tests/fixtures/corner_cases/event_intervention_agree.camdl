@@ -1,0 +1,53 @@
+# Corner case: CROSS-BACKEND LIFECYCLE AGREEMENT (M1 canonicalization).
+#
+# An always-active event (importation, add(A, 100)) is coincident at t=5 with a
+# theta-dependent intervention (transfer fraction=keep of A into B) that READS
+# the compartment the event just modified. This is the one configuration where
+# the within-substep effect order is observable: event-before-intervention vs
+# intervention-before-event give DIFFERENT counts, because the transfer reads
+# the post-event A.
+#
+# The transition rate is identically zero (drain @ k*A with k=0), so NO
+# stochastic flow occurs on any backend and the only state change at t=5 is the
+# event + intervention. This makes the post-substep counts integer-exact and
+# hand-checkable, so chain_binomial / tau_leap / ode / gillespie must all agree.
+#
+# Hand computation of the canonical lifecycle (event from snapshot, applied
+# BEFORE the intervention, which reads the post-event state):
+#   start of step at t=5:                 A = 50,  B = 0
+#   event  add(A, 100):                   A = 150, B = 0
+#   intervention transfer 0.5*A, A -> B:  delta = floor(150 * 0.5) = 75
+#                                         A = 75,  B = 75   (reads post-event A)
+#   => A = 75, B = 75 at t >= 5
+# The INVERTED (pre-M1) order would give transfer first (floor(50*0.5)=25:
+# A=25, B=25) then add (A=125, B=25).
+time_unit = 'days
+
+compartments { A, B }
+
+parameters {
+  k    : rate        in [0.0, 1.0]
+  keep : probability in [0.0, 1.0]
+}
+
+transitions {
+  drain : A --> B  @ k * A
+}
+
+events {
+  importation : add(A, 100) at [5]
+}
+
+interventions {
+  pull : transfer(fraction = keep, from = A, to = B) at [5]
+}
+
+init {
+  A = 50
+  B = 0
+}
+
+simulate {
+  from = 0 'days
+  to   = 10 'days
+}

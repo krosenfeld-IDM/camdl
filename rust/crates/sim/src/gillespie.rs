@@ -185,9 +185,14 @@ pub fn run_gillespie_with_observer(
             if let Some(iv_t) = schedule.effect_time(&cursor).filter(|&iv| iv > t) {
                 if iv_t <= cfg.t_end {
                     t = iv_t;
-                    apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
-                    // gh#67: also fire always_active events at this boundary.
+                    // Canonical lifecycle (matches chain_binomial): always_active
+                    // events fire FIRST, then interventions on the post-event
+                    // state. Gillespie is event-driven with no transition step at
+                    // a boundary, so the start-of-step snapshot is the current
+                    // `int_s`/`real_s`; events read it before interventions touch
+                    // it.
                     apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
+                    apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
                     while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                     // Full recompute after intervention
                     eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;
@@ -225,9 +230,12 @@ pub fn run_gillespie_with_observer(
             // Apply intervention if at intervention boundary
             let at_iv = next_eff_after_t.is_some_and(|iv_t| (iv_t - t).abs() < 1e-10);
             if at_iv {
-                apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
-                // gh#67: also fire always_active events at this boundary.
+                // Canonical lifecycle (matches chain_binomial): events fire FIRST
+                // (reading the start-of-step snapshot = current `int_s`/`real_s`
+                // at this boundary, since gillespie has no transition step here),
+                // then interventions on the post-event state.
                 apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
+                apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                 // Full recompute after intervention (integer state changed)
                 eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;

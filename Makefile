@@ -160,6 +160,7 @@ update-corner-golden: build-ocaml
 	@$(CAMDLC) $(CORNER_DIR)/off_grid_obs.camdl                --set beta=1.0 --set gamma=0.2                              -o $(CORNER_DIR)/ir/off_grid_obs.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/all_lifecycle.camdl               --set beta=1.0 --set gamma=0.2 --set cull=0.5 --set N0=1000 -o $(CORNER_DIR)/ir/all_lifecycle.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/seasonal_drift.camdl              --set beta=0.6 --set gamma=0.4 --set alpha=0.4 -o $(CORNER_DIR)/ir/seasonal_drift.ir.json
+	@$(CAMDLC) $(CORNER_DIR)/event_intervention_agree.camdl    --set k=0.0 --set keep=0.5 -o $(CORNER_DIR)/ir/event_intervention_agree.ir.json
 
 # ── Quick simulation helpers ──────────────────────────────────────────────────
 

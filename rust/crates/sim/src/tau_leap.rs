@@ -123,11 +123,14 @@ pub fn run_tau_leap_with_observer(
         let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
         if dt <= 0.0 {
             // At a boundary — handle it
-            // Apply intervention if due
+            // Apply intervention if due. Canonical within-substep lifecycle
+            // (matches chain_binomial): always_active events fire FIRST, reading
+            // the start-of-step snapshot — here `int_s`/`real_s`, which the
+            // interventions have not yet touched — then interventions run on the
+            // post-event state.
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-                apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
-                // gh#67: also fire always_active events at this boundary.
                 apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
+                apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
             // Record output if due
@@ -300,11 +303,13 @@ pub fn run_tau_leap_with_observer(
 
         t += dt;
 
-        // Apply intervention if now at that time
+        // Apply intervention if now at that time. Canonical lifecycle: events
+        // (reading the start-of-step snapshot, i.e. the pre-intervention
+        // `int_s`/`real_s`) fire BEFORE interventions, which then read the
+        // post-event state. Matches chain_binomial.
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-            apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
-            // gh#67: also fire always_active events at this boundary.
             apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
+            apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
 

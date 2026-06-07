@@ -84,6 +84,16 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("coincident_obs_intervention", "tau_leap", 0x2e85be37a9e66603),
     ("coincident_obs_intervention", "chain_binomial", 0x268779bebe644754),
     ("coincident_obs_intervention", "ode", 0x67869e7c6ce2f0e2),
+    // event_intervention_agree: a coincident always_active event + intervention
+    // where the intervention reads the compartment the event modified. The
+    // canonical (M1) lifecycle makes chain_binomial / tau_leap / ode byte-
+    // identical (same hash); gillespie differs only in its absorbing-state
+    // output cadence, not the terminal state. The cross-backend AGREEMENT on the
+    // terminal counts is asserted directly in cross_backend_lifecycle_agreement.rs.
+    ("event_intervention_agree", "gillespie", 0x178b6b9b28a16bca),
+    ("event_intervention_agree", "tau_leap", 0x17be41f06b7e1f78),
+    ("event_intervention_agree", "chain_binomial", 0x17be41f06b7e1f78),
+    ("event_intervention_agree", "ode", 0x17be41f06b7e1f78),
     ("fractional_output_end", "gillespie", 0x12ea70a5ebfd6189),
     ("fractional_output_end", "tau_leap", 0xc672043aa47092ef),
     ("fractional_output_end", "chain_binomial", 0x28067d22b8adc1b3),
