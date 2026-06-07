@@ -126,8 +126,7 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("off_grid_obs", "chain_binomial", 0x38f9706bf047cf25),
     ("off_grid_obs", "ode", 0xfb342768c44ea834),
     // seasonal_drift runs here at dt=1 (integer), where s*dt == accumulated, so
-    // these pin the integer-dt behaviour; the s*dt CHANGE is exercised at dt=0.1
-    // by gate_substep_time_sdt.rs.
+    // these pin the integer-dt behaviour.
     ("seasonal_drift", "gillespie", 0x3ebeed379edb8107),
     ("seasonal_drift", "tau_leap", 0x3c916f5a28ca853c),
     ("seasonal_drift", "chain_binomial", 0xf8db0999aa8fe812),

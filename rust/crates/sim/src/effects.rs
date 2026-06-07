@@ -724,4 +724,132 @@ mod tests {
         apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0).unwrap();
         assert_eq!(int_vals[0], 70.4); // exact, not round(70.4)=70
     }
+
+    // ── Real-source transfers (the two L1 arithmetic holes) ─────────────────
+    // The `model_with` helper has a single real compartment (W). A transfer
+    // needs two same-arena endpoints, so these use a dedicated model with TWO
+    // real reservoirs W1, W2 (no integer transfer endpoints) to pin the real
+    // arms of `apply_action_f64`: AbsoluteTransfer = `v.min(src)` (no round),
+    // FractionTransfer = `src*frac` (no floor). Both exercised through the same
+    // scheduled-intervention path as the existing continuous tests.
+
+    /// A small model with two REAL reservoirs W1, W2 (local real 0, 1) plus the
+    /// integer S/I scaffold so it compiles. The single scheduled intervention
+    /// carries `actions`, fired at t=1 by `apply_boundary_effects_continuous`.
+    fn model_two_real(actions: Vec<Action>) -> CompiledModel {
+        let m = Model {
+            name: "effects_two_real".into(),
+            version: "0.1".into(),
+            time_unit: "days".into(),
+            description: None,
+            origin: None,
+            origin_rata_die: None,
+            compartments: vec![
+                Compartment { name: "S".into(), kind: CompartmentKind::Integer },
+                Compartment { name: "I".into(), kind: CompartmentKind::Integer },
+                Compartment { name: "W1".into(), kind: CompartmentKind::Real },
+                Compartment { name: "W2".into(), kind: CompartmentKind::Real },
+            ],
+            transitions: vec![Transition {
+                name: "decay".into(),
+                stoichiometry: vec![StoichiometryEntry("S".into(), -1), StoichiometryEntry("I".into(), 1)],
+                rate: Expr::const_(0.0),
+                metadata: None,
+                draw_method: DrawMethod::Poisson,
+                rate_grad: Default::default(),
+                lineage: None,
+            }],
+            ode_equations: vec![],
+            time_functions: vec![],
+            tables: vec![],
+            interventions: vec![Intervention {
+                name: "iv".into(),
+                base_name: None,
+                schedule: InterventionSchedule::AtTimes(vec![1.0]),
+                actions,
+                always_active: false,
+            }],
+            observations: vec![],
+            bindings: vec![],
+            parameters: vec![Parameter {
+                name: "p".into(), value: Some(1.0), bounds: None, prior: None,
+                transform: None, initial_value: None, param_kind: None,
+                param_dim: None, hierarchical: None,
+            }],
+            initial_conditions: InitialConditions::Explicit({
+                let mut h = HashMap::new();
+                h.insert("S".into(), 100.0);
+                h.insert("I".into(), 0.0);
+                h.insert("W1".into(), 10.0);
+                h.insert("W2".into(), 0.0);
+                h
+            }),
+            output: OutputConfig {
+                times: OutputSchedule::AtTimes(vec![0.0, 1.0]),
+                format: "tsv".into(),
+                trajectory: true,
+                observations: false,
+            },
+            simulation: SimulationConfig {
+                t_start: 0.0, t_end: 1.0, time_semantics: "continuous".into(),
+                dt: Some(1.0), rng_seed: Some(1),
+            },
+            presets: vec![],
+            model_structure: None,
+            balance: None,
+            identity_tracked_compartments: vec![],
+        };
+        CompiledModel::new(m).unwrap()
+    }
+
+    /// AbsoluteTransfer on a REAL source: exact `v.min(src)`, NO round.
+    /// W1=10.0, W2=0.0. Two interventions can't share a model here (the helper
+    /// has one), so we run two separate models:
+    ///   - transfer 3.5: x = min(3.5, 10.0) = 3.5 → W1=6.5, W2=3.5 (exact, no round)
+    ///   - transfer 20.0: x = min(20.0, 10.0) = 10.0 (clamp) → W1=0.0, W2=10.0
+    #[test]
+    fn continuous_absolute_transfer_real_is_exact_and_clamps() {
+        // Sub-source amount: moves exactly 3.5, no rounding of the .5.
+        let m = model_two_real(vec![Action::AbsoluteTransfer(AbsoluteTransfer {
+            src: "W1".into(), dst: "W2".into(), count: Expr::const_(3.5),
+        })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![100.0_f64, 0.0];
+        let mut real_vals = vec![10.0_f64, 0.0]; // W1=10, W2=0
+        apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0).unwrap();
+        assert_eq!(real_vals[0], 6.5, "W1 = 10.0 - 3.5"); // NOT round(3.5)
+        assert_eq!(real_vals[1], 3.5, "W2 = 0.0 + 3.5");
+
+        // Over-source amount: clamps to src = 10.0, drains W1 to exactly 0.
+        let m = model_two_real(vec![Action::AbsoluteTransfer(AbsoluteTransfer {
+            src: "W1".into(), dst: "W2".into(), count: Expr::const_(20.0),
+        })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![100.0_f64, 0.0];
+        let mut real_vals = vec![10.0_f64, 0.0];
+        apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0).unwrap();
+        assert_eq!(real_vals[0], 0.0, "W1 drained, clamped to src");
+        assert_eq!(real_vals[1], 10.0, "W2 received the clamped 10.0, not 20.0");
+    }
+
+    /// FractionTransfer whose SOURCE is a real compartment: exact `src*frac`,
+    /// NO floor. W1=10.0, frac=0.337 → x = 10.0*0.337 (the exact f64 product,
+    /// ≈3.3699999999999997, NOT the discrete floor(3.37)=3). Assert against the
+    /// same f64 product, not the decimal literal, so the test is bit-exact.
+    #[test]
+    fn continuous_fraction_transfer_real_source_is_exact() {
+        let m = model_two_real(vec![Action::FractionTransfer(FractionTransfer {
+            src: "W1".into(), dst: "W2".into(), fraction: Expr::const_(0.337),
+        })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![100.0_f64, 0.0];
+        let mut real_vals = vec![10.0_f64, 0.0]; // W1=10, W2=0
+        apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0).unwrap();
+        let moved = 10.0_f64 * 0.337; // exact f64 product, no floor
+        assert_eq!(real_vals[0], 10.0 - moved, "W1 = 10.0 - 10.0*0.337 (exact, no floor)");
+        assert_eq!(real_vals[1], moved, "W2 = 10.0*0.337 (exact, no floor)");
+        // Discriminating control: the discrete int path would floor(10*0.337)=3;
+        // the real path moves ≈3.37, strictly more than 3.
+        assert!(moved > 3.0 && moved < 3.4, "moved ≈3.37, not the floored 3: {moved}");
+    }
 }
