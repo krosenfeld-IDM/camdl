@@ -184,17 +184,51 @@ pub fn bootstrap_filter_correlated(
     };
     let steps_per_obs = crate::time::interval_steps(0.0, obs_dt, dt);
 
-    // Validate uniform spacing
-    if n_obs > 2 {
-        for i in 0..n_obs - 1 {
-            let gap = obs_model.obs_time(i + 1) - obs_model.obs_time(i);
-            if (gap - obs_dt).abs() > dt * 0.5 {
+    // Validate uniform spacing — EXACTLY, by substep COUNT.
+    //
+    // The pre-drawn-noise indexing (noise_idx = particle*steps_per_obs + substep,
+    // binom_idx = particle*steps_per_obs*n_groups + substep*n_groups + group) is a
+    // flat block of `steps_per_obs` substeps per particle per window. It is sound
+    // ONLY if EVERY window has exactly `steps_per_obs` substeps — INCLUDING the
+    // first window [t_start, obs(0)], which is sized from obs(1)-obs(0) above and
+    // is *not* guaranteed to match (data starting mid-period, e.g. obs at
+    // [5,12,19] with t_start=0 → first window 5 substeps but steps_per_obs=7).
+    //
+    // A window whose substep count exceeds `steps_per_obs` overruns its noise
+    // block and (under the guards below) silently falls through to fresh
+    // per-particle RNG, decorrelating the estimator with no diagnostic. Compare
+    // the EXACT integer substep count per window (via interval_steps) — not a
+    // dt*0.5 time-gap slack — so the indexing is provably valid for every window.
+    {
+        let mut window_start = config.t_start;
+        for i in 0..n_obs {
+            let obs_t = obs_model.obs_time(i);
+            let window_steps = crate::time::interval_steps(window_start, obs_t, dt);
+            if window_steps != steps_per_obs {
+                let which = if i == 0 {
+                    format!(
+                        "the FIRST window [t_start={:.4}, obs(0)={:.4}]",
+                        window_start, obs_t,
+                    )
+                } else {
+                    format!(
+                        "the window [obs({})={:.4}, obs({})={:.4}]",
+                        i - 1, window_start, i, obs_t,
+                    )
+                };
                 return Err(SimError::Validation(format!(
-                    "correlated PF requires uniformly-spaced observations, \
-                     but found gap {:.4} (expected {:.4}) between t={:.4} and t={:.4}",
-                    gap, obs_dt, obs_model.obs_time(i), obs_model.obs_time(i + 1),
+                    "correlated PF requires every observation window to have the \
+                     same number of dt-substeps (the pre-drawn-noise arrays are \
+                     sized at {steps_per_obs} substeps/window from obs(1)-obs(0)), \
+                     but {which} has {window_steps} substep(s) at dt={dt:.4}. CPM \
+                     needs uniform spacing INCLUDING the first window \
+                     [t_start, obs(0)] — data starting mid-period breaks the \
+                     indexing. Drop to vanilla PMMH (rho = None), or align the \
+                     observation grid so every window (the first included) spans \
+                     the same number of substeps."
                 )));
             }
+            window_start = obs_t;
         }
     }
 
@@ -328,13 +362,35 @@ pub fn bootstrap_filter_correlated(
                 // injects the pre-drawn correlated noise keyed on the within-window
                 // substep index before each kernel step.
                 for (substep, (t_local, step_dt)) in schedule.substeps(cur, t_start).enumerate() {
-                    // Inject pre-drawn Gamma multiplier
+                    // Inject pre-drawn Gamma multiplier.
+                    //
+                    // After the uniform-window gate above, every window has exactly
+                    // `steps_per_obs` substeps, so noise_idx is always in range. A
+                    // miss here would mean the gate regressed and we are about to
+                    // silently fall through to fresh per-particle RNG, decorrelating
+                    // the estimator with no diagnostic — fail LOUDLY instead.
                     let noise_idx = i * steps_per_obs + substep;
-                    if noise_idx < gamma_row.len() {
-                        let z = gamma_row[noise_idx];
-                        let g = normal_to_gamma(z, gamma_shape, gamma_scale);
-                        scratch.gamma_override = Some(g);
+                    debug_assert!(
+                        noise_idx < gamma_row.len(),
+                        "CPM gamma noise overrun: noise_idx {noise_idx} >= {} \
+                         (particle {i}, substep {substep}, steps_per_obs \
+                         {steps_per_obs})",
+                        gamma_row.len(),
+                    );
+                    if noise_idx >= gamma_row.len() {
+                        return Err(SimError::Validation(format!(
+                            "correlated PF gamma-noise overrun: index {noise_idx} \
+                             out of {} (particle {i}, substep {substep}, \
+                             steps_per_obs {steps_per_obs}, obs window {obs_idx}). \
+                             This means a window had more substeps than the noise \
+                             array was sized for — the uniform-window gate should \
+                             have rejected this run. Report as a bug.",
+                            gamma_row.len(),
+                        )));
                     }
+                    let z = gamma_row[noise_idx];
+                    let g = normal_to_gamma(z, gamma_shape, gamma_scale);
+                    scratch.gamma_override = Some(g);
 
                     // Inject pre-drawn binomial z-values per source group.
                     // step_one converts z → count after computing (n, p).
@@ -342,9 +398,24 @@ pub fn bootstrap_filter_correlated(
                     scratch.binomial_z_idx = 0;
                     for group in 0..n_groups {
                         let binom_idx = i * steps_per_obs * n_groups + substep * n_groups + group;
-                        if binom_idx < binom_row.len() {
-                            scratch.binomial_z_values.push(binom_row[binom_idx]);
+                        debug_assert!(
+                            binom_idx < binom_row.len(),
+                            "CPM binomial noise overrun: binom_idx {binom_idx} >= \
+                             {} (particle {i}, substep {substep}, group {group})",
+                            binom_row.len(),
+                        );
+                        if binom_idx >= binom_row.len() {
+                            return Err(SimError::Validation(format!(
+                                "correlated PF binomial-noise overrun: index \
+                                 {binom_idx} out of {} (particle {i}, substep \
+                                 {substep}, group {group}, obs window {obs_idx}). \
+                                 A window had more substeps than the noise array \
+                                 was sized for — the uniform-window gate should \
+                                 have rejected this run. Report as a bug.",
+                                binom_row.len(),
+                            )));
                         }
+                        scratch.binomial_z_values.push(binom_row[binom_idx]);
                     }
 
                     // Re-resolve per-particle: parametric event

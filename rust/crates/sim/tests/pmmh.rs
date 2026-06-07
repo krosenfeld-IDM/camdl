@@ -23,6 +23,7 @@ use sim::{
         particle_filter::bootstrap_filter,
         if2::{EstimatedParam, Transform},
         pmmh::{run_pmmh, Prior, PMMHConfig, mcmc_ess},
+        correlated_pf::{bootstrap_filter_correlated, PFRandomState},
         ChainBinomialProcess,
         traits::{ObservationModel, SMCConfig},
         ParticleState,
@@ -386,4 +387,115 @@ fn test_pmmh_different_seeds_differ() {
     let any_differ = r1.steps.iter().zip(r2.steps.iter())
         .any(|(s1, s2)| s1.params != s2.params || s1.accepted != s2.accepted);
     assert!(any_differ, "different seeds should produce different chains");
+}
+
+// ── Correlated PF (CPM) uniform-window gate (M6) ───────────────────────────
+//
+// CPM pre-draws random numbers into per-window blocks of `steps_per_obs`
+// substeps and indexes them with `particle*steps_per_obs + substep`. That
+// indexing is sound ONLY if EVERY observation window — INCLUDING the first
+// window [t_start, obs(0)] — has exactly `steps_per_obs` substeps. The first
+// window is the reachable hole: `steps_per_obs` is sized from obs(1)-obs(0),
+// but the first window spans [t_start, obs(0)], which differs when data start
+// mid-period (e.g. t_start=0, obs at [5,12,19]). The old gate only ran for
+// n_obs > 2 and used a dt*0.5 time-gap slack, so it missed the first-window
+// offset entirely — the first window's substeps overran their noise block and
+// silently fell through to fresh per-particle RNG, decorrelating the estimator
+// the PMMH acceptance ratio depends on, with no diagnostic.
+
+/// Build the smallest CPM harness: pure-death `ChainBinomialProcess` + a
+/// `PoissonPrevalenceObs` at the given obs times, run `bootstrap_filter_correlated`.
+fn run_cpm(obs_times: Vec<f64>, dt: f64) -> Result<f64, sim::error::SimError> {
+    let (compiled, params) = pure_death_model();
+    let process = ChainBinomialProcess::new(Arc::new(compiled), dt);
+    let n_obs = obs_times.len();
+    let obs_model = PoissonPrevalenceObs {
+        observations: vec![50.0; n_obs],
+        obs_times: obs_times.clone(),
+    };
+    let n_particles = 64;
+    let config = SMCConfig {
+        n_particles,
+        dt,
+        t_start: 0.0,
+        skip_first_obs_from_loglik: false,
+        record_ancestry: false,
+        record_prequential: false,
+        pf_wallclock_disabled: false,
+    };
+    // Size the noise arrays the way bootstrap_filter_correlated computes
+    // steps_per_obs internally, so the harness matches the filter's own block
+    // size: obs(1)-obs(0) for n_obs>=2, else obs(0)-t_start for a single obs.
+    // (run_pmmh uses 1 for the single-obs case, but the filter's gate sizes from
+    // the actual first window — the harness mirrors the filter so the positive
+    // single-obs test exercises the gate, not a sizing mismatch.)
+    let steps_per_obs = if n_obs >= 2 {
+        sim::time::interval_steps(obs_times[0], obs_times[1], dt)
+    } else {
+        sim::time::interval_steps(0.0, obs_times[0], dt)
+    };
+    let n_source_groups = 1;
+    let mut rng = StatefulRng::new(7);
+    let randoms = PFRandomState::draw_fresh(
+        n_particles, n_obs, steps_per_obs, n_source_groups, &mut rng,
+    );
+    bootstrap_filter_correlated(&process, &obs_model, &params, &config, &randoms, 7)
+        .map(|r| r.log_likelihood)
+}
+
+#[test]
+fn cpm_rejects_first_window_offset() {
+    // t_start=0, obs at [5,12,19], dt=1: uniform gap 7 (steps_per_obs=7) but the
+    // FIRST window [0,5] is only 5 substeps. Under the OLD gate (n_obs>2 + dt*0.5
+    // slack) this passed and ran to a finite loglik via silent decorrelation; the
+    // tightened gate must reject it.
+    let res = run_cpm(vec![5.0, 12.0, 19.0], 1.0);
+    let err = res.expect_err(
+        "CPM must reject a first-window offset (first window 5 substeps vs \
+         steps_per_obs=7) — running it silently decorrelates the estimator",
+    );
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("FIRST window"),
+        "rejection must name the first window; got: {msg}",
+    );
+}
+
+#[test]
+fn cpm_rejects_two_obs_non_uniform_first_window() {
+    // n_obs <= 2 case (the old gate's `n_obs > 2` hole): two obs at [5,12],
+    // t_start=0. steps_per_obs sized from obs(1)-obs(0)=7, but the first window
+    // [0,5] is 5 substeps. Old gate never ran (n_obs not > 2) → silent
+    // decorrelation; tightened gate rejects.
+    let res = run_cpm(vec![5.0, 12.0], 1.0);
+    let err = res.expect_err(
+        "CPM must reject a non-uniform first window even with only 2 observations",
+    );
+    assert!(
+        format!("{err}").contains("FIRST window"),
+        "rejection must name the first window",
+    );
+}
+
+#[test]
+fn cpm_accepts_genuinely_uniform_windows() {
+    // Positive regression: first obs at exactly obs_dt from t_start=0, uniform
+    // gaps. obs at [7,14,21], dt=1 → every window (first included) is 7 substeps.
+    // Must run and return a finite loglik.
+    let ll = run_cpm(vec![7.0, 14.0, 21.0], 1.0)
+        .expect("genuinely-uniform CPM windows must run");
+    assert!(ll.is_finite(), "uniform CPM run must return a finite loglik, got {ll}");
+}
+
+#[test]
+fn cpm_accepts_uniform_single_obs() {
+    // Single observation: first window [t_start=0, obs(0)=10] is the only window;
+    // steps_per_obs falls back to 1 in the sizing, but the window has 10 substeps.
+    // This is the degenerate n_obs==1 case — the gate must agree with how the
+    // noise is sized. With steps_per_obs sized at obs(0)-t_start, it is uniform.
+    // Here we use the matching sizing (single obs uses obs(0)-t_start in the gate
+    // via obs_dt fallback), so it must accept.
+    let ll = run_cpm(vec![10.0], 1.0)
+        .expect("single-observation CPM (window == whole run) must run");
+    assert!(ll.is_finite(), "single-obs CPM run must return a finite loglik, got {ll}");
 }
