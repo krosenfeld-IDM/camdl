@@ -5691,6 +5691,102 @@ let test_simulate_unknown_key_errors () =
     simulate { from = 0 'days  to = 100 'days  step = 0.5 }
   |})
 
+(* ── gh#181 step 1: structured, non-raising compile_outcome ──────────────────
+   compile_outcome returns every diagnostic as a value and never raises —
+   including on a POST-EXPANSION error (Validate E507) that the blocking
+   `compile` aborts on via Compile_error. The two SEIR models differ by one
+   character: the observation projects `incidence(infection)` (a real
+   transition) vs `incidence(infektion)` (a typo). A bare unknown name in
+   `incidence(...)` falls through expansion to a dangling CumulativeFlow
+   (expander.ml ~4001), caught by Validate as E507 (validate.ml:112) — a
+   front-end E100 would instead catch a name used in a rate/likelihood, so
+   the dangling-projection route is what exercises the late path. *)
+
+let outcome_model_ok = {|
+    time_unit = 'days
+    compartments { S, E, I, R }
+    let N = S + E + I + R
+    parameters {
+      beta  : rate        in [0.001, 0.5]
+      sigma : rate        in [0.01,  1.0]
+      gamma : rate        in [0.01,  1.0]
+      rho   : probability in [0.0,   1.0]
+      k     : real        in [0.1,  100.0]
+    }
+    transitions {
+      infection   : S --> E  @ beta * S * I / N
+      progression : E --> I  @ sigma * E
+      recovery    : I --> R  @ gamma * I
+    }
+    observations {
+      weekly_cases : {
+        projected  = incidence(infection)
+        every      = 7 'days
+        likelihood = neg_binomial(mean = rho * projected, r = k)
+      }
+    }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
+let outcome_model_late_err = {|
+    time_unit = 'days
+    compartments { S, E, I, R }
+    let N = S + E + I + R
+    parameters {
+      beta  : rate        in [0.001, 0.5]
+      sigma : rate        in [0.01,  1.0]
+      gamma : rate        in [0.01,  1.0]
+      rho   : probability in [0.0,   1.0]
+      k     : real        in [0.1,  100.0]
+    }
+    transitions {
+      infection   : S --> E  @ beta * S * I / N
+      progression : E --> I  @ sigma * E
+      recovery    : I --> R  @ gamma * I
+    }
+    observations {
+      weekly_cases : {
+        projected  = incidence(infektion)
+        every      = 7 'days
+        likelihood = neg_binomial(mean = rho * projected, r = k)
+      }
+    }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
+let test_compile_outcome_clean_returns_value () =
+  let o = Compiler.compile_outcome ~name:"oc_clean" outcome_model_ok in
+  (match o.Compiler.value with
+   | Some _ -> ()
+   | None   -> Alcotest.failf "clean model: expected Some value, got None");
+  let n_err =
+    List.length
+      (List.filter
+         (fun (d : Diagnostics.diagnostic) -> d.severity = Diagnostics.Error)
+         o.Compiler.diagnostics)
+  in
+  Alcotest.(check int) "clean model: no Error-severity diagnostics" 0 n_err
+
+let test_compile_outcome_late_error_is_value_not_raise () =
+  (* Pin that this is the LATE path: `compile` aborts via Compile_error rather
+     than returning Error (json mode keeps the rendered diagnostic compact). *)
+  Diagnostics.json_errors_mode := true;
+  let compile_raised =
+    try ignore (Compiler.compile ~name:"oc_err" outcome_model_late_err); false
+    with Diagnostics.Compile_error _ -> true
+  in
+  Diagnostics.json_errors_mode := false;
+  Alcotest.(check bool)
+    "compile RAISES Compile_error on a post-expansion error" true compile_raised;
+  (* compile_outcome surfaces the same error as a value, without raising. *)
+  let o = Compiler.compile_outcome ~name:"oc_err" outcome_model_late_err in
+  Alcotest.(check bool) "compile_outcome: value is None on error"
+    true (o.Compiler.value = None);
+  Alcotest.(check bool) "compile_outcome: E507 surfaced as a value"
+    true (count_diags_with_code o.Compiler.diagnostics "E507" >= 1)
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -5855,6 +5951,10 @@ let () =
       Alcotest.test_case "L401 fires on fixed time literal"          `Quick test_l401_fires_on_fixed_time_literal;
       Alcotest.test_case "L401 quiet when dt primitive used"         `Quick test_l401_no_fire_when_dt_used;
       Alcotest.test_case "L401 quiet on unit conversion (no exp)"    `Quick test_l401_no_fire_on_unit_conversion;
+    ];
+    "compile_outcome", [
+      Alcotest.test_case "clean model returns Some value, no errors" `Quick test_compile_outcome_clean_returns_value;
+      Alcotest.test_case "late error is a value, not a raise"        `Quick test_compile_outcome_late_error_is_value_not_raise;
     ];
     "trig_primitives", [
       Alcotest.test_case "pi resolves to Const ≈ π"                 `Quick test_trig_pi_resolves_to_const;

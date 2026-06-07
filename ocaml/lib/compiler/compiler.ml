@@ -7,6 +7,28 @@ type compile_detail = {
   source  : Source_cache.t;
 }
 
+(** Structured, non-raising compile outcome (gh#181 step 1).
+
+    A value-typed surface over [collect_detail]: every diagnostic — errors,
+    warnings, infos — is returned as a [diagnostic list] rather than rendered
+    and raised. [value] is [Some] exactly when no [Error]-severity diagnostic
+    was produced. Nothing here raises ([compile]'s [report_and_exit] /
+    [Compile_error] path is bypassed entirely).
+
+    This is the accumulating shape the gh#181 proposal targets — structurally
+    [MaybeT (Writer (diagnostic list))]: the diagnostic log is always present;
+    the value is present only on success. Step 1 deliberately carries the
+    expanded [compile_detail] (not a fully-finished [Ir.model]) — promoting
+    [value] to a gradient-attached, constant-folded model and routing
+    [simulate]/[fit]/CLI through this one surface is steps 2–4 of the
+    migration. Keeping it a pure addition here means no existing caller
+    changes behaviour. *)
+type 'a outcome = {
+  value       : 'a option;
+  diagnostics : Diagnostics.diagnostic list;
+  source      : Source_cache.t;
+}
+
 (* ── Front-end core ───────────────────────────────────────────────────────
 
    The single, non-aborting lex/parse/expand front end. It runs the
@@ -403,3 +425,21 @@ let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
   let (_detail, diags, _source) = collect_detail ~name ~filename src in
   (* diags accumulates newest-first via [emit]; reverse to source order. *)
   List.rev diags.Diagnostics.diags
+
+(** [compile_outcome] (gh#181 step 1): the non-raising projection of
+    [collect_detail] into the structured {!outcome}. [collect_detail] runs the
+    full pipeline (expand → validate → dimcheck → lint → autodiff),
+    accumulating into [diags] without rendering or aborting; this wraps it.
+
+    [value] is the expanded [compile_detail] exactly when no Error-severity
+    diagnostic fired. A structural lex/parse/expand failure already yields
+    [detail = None] (with the E001 in [diags]), so the [has_errors] gate
+    subsumes that case. Unlike [compile], a late-phase error (validate E5xx,
+    autodiff E600) arrives here as a value in [diagnostics] rather than a
+    raised [Compile_error]. *)
+let compile_outcome ?(name = "model") ?(filename = "<input>") (src : string)
+    : compile_detail outcome =
+  let (detail, diags, source) = collect_detail ~name ~filename src in
+  { value       = (if Diagnostics.has_errors diags then None else detail);
+    diagnostics = List.rev diags.Diagnostics.diags;
+    source }
