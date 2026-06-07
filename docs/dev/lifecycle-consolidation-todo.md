@@ -137,9 +137,12 @@ to off-grid obs.
 
 Each behind a byte-identical A/B gate (these touch CRN / PGAS-density invariants).
 
-- [ ] **Write the v2 superseding proposal** — the 4-seam target architecture
-  (`Schedule/Clock` · `EffectAgenda` · `Lifecycle` · `Kernel`), specified against the
-  Tier-1/2 implementation. Supersedes the topology proposal.
+- [x] **v2 superseding proposal written** — `2db81ba`,
+  [`proposals/2026-06-07-scheduling-spine-v2.md`](proposals/2026-06-07-scheduling-spine-v2.md).
+  Two-dt model (`dt_actual` physics+eval vs `grid_dt` scheduling) via `StepClock`;
+  `TimelineStop`/`StopReason` + `EffectBatch`; closure-driver; drop-tau (chosen-winners
+  gate); forward `Target=Parameter`. Step-0 oracles first. Sub-agent reviewed; `EvalCtx.dt
+  = dt_actual` settled (byte-identical w/ chain+PGAS). The items below are its sub-steps.
 - [ ] **`StepClock` (#1 full).** Separate `dt_actual` / `schedule_dt` / `eval_dt`;
   decide `EvalCtx.dt` meaning explicitly. Removes the `dt`-overload class.
 - [ ] **`TimelineStop` / `StopReason` (#2, A).** Schedule returns the next stop +
