@@ -187,12 +187,25 @@ pub enum CollapseKind {
 
 /// gh#audit-C5. Cause discriminator for NegativeCount.
 /// BinomialOvershoot is expected during inference exploration and
-/// gets caught by the inference layer; InterventionAddNegative is
-/// always a config bug and propagates regardless of caller.
+/// gets caught by the inference layer; InterventionAddNegative and
+/// InterventionNegative are always config bugs and propagate regardless
+/// of caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NegativeCountCause {
+    /// A chain-binomial split drew more exits than the source held
+    /// (rate·dt → 1). Transient during inference parameter exploration;
+    /// the inference layer catches it and kills the offending particle.
     BinomialOvershoot,
+    /// An `add()` action resolved to a negative amount — caught eagerly
+    /// at the action site (you cannot add a negative number of
+    /// individuals). Config bug; propagates regardless of caller.
     InterventionAddNegative,
+    /// A compartment was left negative *after* the INTERVENE/BALANCE
+    /// stage — e.g. a `set()` to a value below zero, or a transfer that
+    /// overdrew — caught by the centralized post-INTERVENE scan. The
+    /// balance target is exempt (its negativity is a separate, warned
+    /// signal). Config bug; propagates regardless of caller.
+    InterventionNegative,
 }
 
 /// gh#110. Specific degeneracy mode that triggered the bail.
@@ -311,6 +324,12 @@ mod tests {
             attempted_value: -1,
             t: 1.0,
             cause: NegativeCountCause::InterventionAddNegative,
+        }.is_per_particle_recoverable());
+        assert!(!SimError::NegativeCount {
+            compartment: "S".into(),
+            attempted_value: -1,
+            t: 1.0,
+            cause: NegativeCountCause::InterventionNegative,
         }.is_per_particle_recoverable());
         assert!(!SimError::AbsorbingState(0.0).is_per_particle_recoverable());
         assert!(!SimError::PFDegenerate {

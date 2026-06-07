@@ -506,15 +506,8 @@ pub fn step_one(
     for (i, c) in counts.iter_mut().enumerate() {
         if Some(i) == bal_idx { continue; }
         if *c < 0 {
-            // Look up the compartment name by walking comp_index for
-            // the matching local int slot. This is O(n) but only
-            // executed in the error path.
-            let name = model.comp_index.iter()
-                .find(|(_, &g)| model.global_to_int.get(g).copied().flatten() == Some(i))
-                .map(|(n, _)| n.clone())
-                .unwrap_or_else(|| format!("(local-int-{i})"));
             return Err(crate::error::SimError::NegativeCount {
-                compartment: name,
+                compartment: model.int_compartment_name(i),
                 attempted_value: *c,
                 t: t + dt,
                 cause: crate::error::NegativeCountCause::BinomialOvershoot,

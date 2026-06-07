@@ -101,5 +101,23 @@ pub fn apply_post_advance(
         current.counts[bal.local_int_idx] = bal_count;
     }
 
+    // Post-INTERVENE/BALANCE negative-count check. The pre-advance scan in
+    // each kernel catches negatives from the transition draws (and fused event
+    // deltas), but it runs *before* this function — so an INTERVENE `set` to a
+    // value below zero slips past it. Catch it here, after the canonical
+    // INTERVENE+BALANCE tail. The balance target is exempt: its negativity is a
+    // separate, already-warned signal (above), not a count error.
+    let balance_target = balance.map(|b| b.local_int_idx);
+    for (local, &count) in current.counts.iter().enumerate() {
+        if count < 0 && Some(local) != balance_target {
+            return Err(SimError::NegativeCount {
+                compartment: model.int_compartment_name(local),
+                attempted_value: count,
+                t: t_end,
+                cause: crate::error::NegativeCountCause::InterventionNegative,
+            });
+        }
+    }
+
     Ok(())
 }

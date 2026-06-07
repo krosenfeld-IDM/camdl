@@ -1,0 +1,78 @@
+{
+  "ir_version": "0.9",
+  "validated_by": "hand-curated-guard-fixture",
+  "model": {
+    "name": "intervention_nonfinite",
+    "version": "0.1",
+    "time_unit": "days",
+    "description": "Guard fixture (D-finite): a scheduled intervention sets compartment V to `c / z` with z = 0, which eval_resolved evaluates to NaN (div-by-zero sentinel). V appears in no transition rate, so on the pre-guard code the NaN casts silently to 0 (`NaN as i64 == 0`) and the run succeeds with a corrupted-but-innocuous V. The finite guard rejects the non-finite value before the cast. The transition S -> I @ beta*S keeps the run well-defined and finite throughout.",
+    "compartments": [
+      { "name": "S", "kind": "integer" },
+      { "name": "I", "kind": "integer" },
+      { "name": "V", "kind": "integer" }
+    ],
+    "transitions": [
+      {
+        "name": "decay",
+        "stoichiometry": [["S", -1], ["I", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": { "param": "beta" },
+            "right": { "pop": "S" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "transmission",
+          "source_compartment": "S",
+          "dest_compartment": "I"
+        }
+      }
+    ],
+    "ode_equations": [],
+    "time_functions": [],
+    "tables": [],
+    "interventions": [
+      {
+        "name": "bad_set",
+        "schedule": { "at_times": [2.0] },
+        "actions": [
+          {
+            "set": {
+              "compartment": "V",
+              "value": {
+                "bin_op": {
+                  "op": "div",
+                  "left": { "param": "c" },
+                  "right": { "param": "z" }
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "observations": [],
+    "parameters": [
+      { "name": "beta", "value": 0.1, "prior": null, "transform": null, "initial_value": null },
+      { "name": "c", "value": 1.0, "prior": null, "transform": null, "initial_value": null },
+      { "name": "z", "value": 0.0, "prior": null, "transform": null, "initial_value": null }
+    ],
+    "initial_conditions": {
+      "explicit": { "S": 1000, "I": 0, "V": 0 }
+    },
+    "output": {
+      "times": { "regular": { "start": 0.0, "step": 1.0, "end": 5.0 } },
+      "format": "tsv",
+      "trajectory": true,
+      "observations": false
+    },
+    "simulation": {
+      "t_start": 0.0,
+      "t_end": 5.0,
+      "time_semantics": "continuous",
+      "dt": null,
+      "rng_seed": 42
+    }
+  }
+}

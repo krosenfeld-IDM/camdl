@@ -7,6 +7,44 @@ use crate::{
 };
 use ir::intervention::{Action, Intervention, InterventionSchedule};
 
+/// Short human label for an action, for diagnostics (`"set V"`,
+/// `"transfer S -> I (fraction)"`). Error-path only.
+fn action_label(action: &Action) -> String {
+    match action {
+        Action::Add(a) => format!("add {}", a.compartment),
+        Action::Set(a) => format!("set {}", a.compartment),
+        Action::FractionTransfer(t) => format!("transfer {} -> {} (fraction)", t.src, t.dst),
+        Action::AbsoluteTransfer(t) => format!("transfer {} -> {} (absolute)", t.src, t.dst),
+    }
+}
+
+/// Validate that an intervention/event action's resolved value is finite
+/// before it is cast to a count. A non-finite value otherwise casts
+/// silently and wrongly — `NaN as i64 == 0`, `inf as i64 == i64::MAX`,
+/// `-inf as i64 == i64::MIN` — corrupting the trajectory with no error.
+/// The finite guard on the intervention *time* has no analogue for the
+/// resolved *value*; this is it. Hard error (not per-particle-recoverable):
+/// a non-finite effect amount is a structural/config defect in the action
+/// expression, not a stochastic exploration artifact, so it surfaces
+/// regardless of caller (forward-sim or inference).
+fn finite_action_value(
+    value: f64,
+    iv_name: &str,
+    action: &Action,
+    t: f64,
+) -> Result<f64, SimError> {
+    if !value.is_finite() {
+        return Err(SimError::Validation(format!(
+            "intervention '{iv_name}' action ({}) resolved to a non-finite \
+             value ({value}) at t={t:.3}; a non-finite effect amount would \
+             cast silently to a wrong count (NaN→0, +inf→i64::MAX, \
+             -inf→i64::MIN) — check the action expression",
+            action_label(action)
+        )));
+    }
+    Ok(value)
+}
+
 /// Convert an `InterventionSchedule` to a sorted list of fire times.
 ///
 /// For parametric `at [...]` lists (gh#69, `AtTimesExpr`) the caller
@@ -133,6 +171,7 @@ pub fn inject_event_deltas(
         if !fire_steps[iv_idx].contains(&current_step) { continue; }
         for (action_idx, action) in iv.actions.iter().enumerate() {
             let resolved_val = eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx);
+            let resolved_val = finite_action_value(resolved_val, &iv.name, action, t_end)?;
             match action {
                 Action::Add(aa) => {
                     let raw = resolved_val;
@@ -269,6 +308,7 @@ fn apply_intervention(
             &model.resolved.intervention_exprs[iv_idx][action_idx],
             &EvalCtx { model, int_s, real_s, params, t, dt, projected: None, int_float_override: None },
         );
+        let resolved_val = finite_action_value(resolved_val, &iv.name, action, t)?;
         let trace = crate::chain_binomial::trace_enabled();
         match action {
             Action::FractionTransfer(ft) => {
@@ -360,7 +400,7 @@ fn apply_intervention(
                     return Err(SimError::NegativeCount {
                         compartment: aa.compartment.clone(),
                         attempted_value: count,
-                        t: 0.0, // intervention t not in scope here; see fire_steps for actual time
+                        t,
                         cause: crate::error::NegativeCountCause::InterventionAddNegative,
                     });
                 }
@@ -375,4 +415,45 @@ fn apply_intervention(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ir::intervention::SetAction;
+    use ir::expr::Expr;
+
+    fn set_v() -> Action {
+        Action::Set(SetAction { compartment: "V".into(), value: Expr::const_(0.0) })
+    }
+
+    /// Every non-finite kind must error before the cast. `NaN as i64 == 0`,
+    /// `+inf as i64 == i64::MAX`, `-inf as i64 == i64::MIN` — all silent
+    /// corruption if they reach the cast. The guard rejects all three.
+    #[test]
+    fn finite_action_value_rejects_non_finite() {
+        let action = set_v();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = finite_action_value(bad, "campaign", &action, 5.0)
+                .expect_err(&format!("{bad} must be rejected"));
+            let msg = err.to_string();
+            assert!(msg.contains("non-finite"), "message should name the cause: {msg}");
+            assert!(msg.contains("campaign"), "message should name the intervention: {msg}");
+            assert!(msg.contains("set V"), "message should label the action: {msg}");
+        }
+    }
+
+    /// A finite value passes through unchanged (negative is finite — the
+    /// negative-count check is a *separate* guard, applied post-state, not
+    /// here).
+    #[test]
+    fn finite_action_value_passes_finite() {
+        let action = set_v();
+        for ok in [0.0, 1.0, -3.0, 1e9, f64::MIN_POSITIVE] {
+            assert_eq!(
+                finite_action_value(ok, "campaign", &action, 0.0).unwrap(),
+                ok
+            );
+        }
+    }
 }

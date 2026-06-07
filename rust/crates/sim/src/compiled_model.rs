@@ -465,6 +465,19 @@ pub struct ResolvedModel {
 }
 
 impl CompiledModel {
+    /// Compartment name for a local **integer** state index, for
+    /// diagnostics. O(n) reverse walk of `comp_index` → `global_to_int`;
+    /// only used on error paths (negative-count detection), never in the
+    /// hot loop. Falls back to a synthetic label if the slot has no name
+    /// (cannot happen for a well-formed model).
+    pub fn int_compartment_name(&self, local: usize) -> String {
+        self.comp_index
+            .iter()
+            .find(|(_, &g)| self.global_to_int.get(g).copied().flatten() == Some(local))
+            .map(|(n, _)| n.clone())
+            .unwrap_or_else(|| format!("(local-int-{local})"))
+    }
+
     /// Resolve per-intervention fire **times** for the current
     /// parameter vector. For constant schedules (`AtTimes`,
     /// `Recurring`) returns the baked `self.fire_times`; for

@@ -1,0 +1,71 @@
+{
+  "ir_version": "0.9",
+  "validated_by": "hand-curated-guard-fixture",
+  "model": {
+    "name": "intervention_set_negative",
+    "version": "0.1",
+    "time_unit": "days",
+    "description": "Guard fixture (D-negative): a scheduled intervention sets compartment V to a negative value (param neg = -5) at the FINAL step (t = t_end = 5), so there is no subsequent substep whose pre-advance scan could catch it. V appears in no transition rate, so the negative count cannot trigger a negative-propensity error; it sits in the state. On the pre-guard code the run succeeds with V = -5 carried into the final snapshot (genuinely silent). The centralized post-INTERVENE/BALANCE scan rejects it. There is no balance block, so V is not the (exempt) balance target. (Firing mid-run would instead be caught one substep later by the pre-advance scan as the WRONG, per-particle-recoverable BinomialOvershoot cause — which is exactly the hazard this guard removes.)",
+    "compartments": [
+      { "name": "S", "kind": "integer" },
+      { "name": "I", "kind": "integer" },
+      { "name": "V", "kind": "integer" }
+    ],
+    "transitions": [
+      {
+        "name": "decay",
+        "stoichiometry": [["S", -1], ["I", 1]],
+        "rate": {
+          "bin_op": {
+            "op": "mul",
+            "left": { "param": "beta" },
+            "right": { "pop": "S" }
+          }
+        },
+        "metadata": {
+          "origin_kind": "transmission",
+          "source_compartment": "S",
+          "dest_compartment": "I"
+        }
+      }
+    ],
+    "ode_equations": [],
+    "time_functions": [],
+    "tables": [],
+    "interventions": [
+      {
+        "name": "bad_set_neg",
+        "schedule": { "at_times": [5.0] },
+        "actions": [
+          {
+            "set": {
+              "compartment": "V",
+              "value": { "param": "neg" }
+            }
+          }
+        ]
+      }
+    ],
+    "observations": [],
+    "parameters": [
+      { "name": "beta", "value": 0.1, "prior": null, "transform": null, "initial_value": null },
+      { "name": "neg", "value": -5.0, "prior": null, "transform": null, "initial_value": null }
+    ],
+    "initial_conditions": {
+      "explicit": { "S": 1000, "I": 0, "V": 10 }
+    },
+    "output": {
+      "times": { "regular": { "start": 0.0, "step": 1.0, "end": 5.0 } },
+      "format": "tsv",
+      "trajectory": true,
+      "observations": false
+    },
+    "simulation": {
+      "t_start": 0.0,
+      "t_end": 5.0,
+      "time_semantics": "continuous",
+      "dt": null,
+      "rng_seed": 42
+    }
+  }
+}
