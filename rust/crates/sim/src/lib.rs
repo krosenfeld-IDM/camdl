@@ -16,6 +16,7 @@ pub mod tau_leap;
 pub mod chain_binomial;
 pub mod ode;
 pub mod intervention;
+pub mod lifecycle;
 pub mod simulate;
 pub mod transition_diagnostics;
 pub mod inference;

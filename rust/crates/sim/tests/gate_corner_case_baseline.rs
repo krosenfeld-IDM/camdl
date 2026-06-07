@@ -84,6 +84,19 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("coincident_obs_intervention", "tau_leap", 0x2e85be37a9e66603),
     ("coincident_obs_intervention", "chain_binomial", 0x268779bebe644754),
     ("coincident_obs_intervention", "ode", 0x67869e7c6ce2f0e2),
+    // event_drain_fusion (cycle 2a): a live transition DRAINS A every substep
+    // while an always_active value-dependent event (transfer fraction=f of A)
+    // ALSO reads A. The event delta floor(A*f) is read from the START-OF-STEP
+    // SNAPSHOT (pre-drain A), fused atomically with the transition delta. At the
+    // harness dts (chain dt=1, tau dt=0.5) the kernels take different substep
+    // counts, so chain/tau hashes differ HERE; the chain==tau byte-equality
+    // (proof of the fusion) is asserted at MATCHED dt=1 in
+    // cross_backend_lifecycle_agreement.rs. ode (RK4) and gillespie (SSA) have
+    // distinct kernels and get their own pinned baselines.
+    ("event_drain_fusion", "gillespie", 0xa793914cfeab7c40),
+    ("event_drain_fusion", "tau_leap", 0x3c3bd007a8255322),
+    ("event_drain_fusion", "chain_binomial", 0x9f09ba4bd868112c),
+    ("event_drain_fusion", "ode", 0x9c9d32826bfb3905),
     // event_intervention_agree: a coincident always_active event + intervention
     // where the intervention reads the compartment the event modified. The
     // canonical (M1) lifecycle makes chain_binomial / tau_leap / ode byte-

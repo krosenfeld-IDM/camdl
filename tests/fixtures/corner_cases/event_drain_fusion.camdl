@@ -1,0 +1,63 @@
+# Corner case: EVENT READ-SOURCE FUSION (cycle 2a).
+#
+# The strong fixture that PROVES the within-substep event delta is computed from
+# the START-OF-STEP SNAPSHOT, not the post-transition state. A live transition
+# DRAINS A every substep, while an always-active event ALSO reads A (a
+# value-dependent fraction transfer A --> C). Because the event delta is
+# floor(A * f), it DIFFERS depending on whether A is read pre- or post-drain:
+#
+#   drain : A --> B @ k * A            (nonzero per-capita rate: A leaks to B)
+#   leak  : transfer(fraction = f, from = A, to = C)   every substep
+#
+# Canonical lifecycle (chain_binomial, the reference): the event reads the
+# start-of-step snapshot A (pre-drain), the transition drains A, and both deltas
+# are FUSED and applied atomically. Pre-fix tau_leap computed the event delta
+# from the POST-drain A — the read-source bug. After the fusion fix, tau reads
+# the snapshot too.
+#
+# KEY ASSERTION (cross_backend_lifecycle_agreement.rs): chain_binomial and
+# tau_leap share the IDENTICAL Euler-multinomial kernel, so at the SAME dt and
+# seed they draw the SAME transition flow. The ONLY remaining difference is the
+# event read-source. Therefore:
+#   - AFTER the fusion fix: chain trajectory == tau trajectory, BYTE-IDENTICAL.
+#   - BEFORE the fix:       tau reads post-drain A => tau != chain.
+# That byte-equality (RED before, GREEN after) is the proof the fusion landed.
+#
+# ode (RK4) and gillespie (SSA) have different kernels, so they do NOT byte-match
+# chain here; they get their own pinned baselines in gate_corner_case_baseline.
+time_unit = 'days
+
+compartments { A, B, C }
+
+parameters {
+  k : rate        in [0.0, 1.0]
+  f : probability in [0.0, 1.0]
+}
+
+transitions {
+  drain : A --> B  @ k * A
+}
+
+events {
+  # Start at t=1 (not t=0): the very first substep is the clean coincident case
+  # (transition drain + event read of the SAME pre-drain A). Starting at t=0
+  # would make the backends disagree on event CADENCE at the boundary (tau lands
+  # an extra zero-length substep on the t=0 effect; chain's step_one keys events
+  # to the END of each step and never fires at t=0) — a cadence difference
+  # unrelated to the read-source this fixture isolates.
+  leak : transfer(fraction = f, from = A, to = C) {
+    every = 1 'days
+    from  = 1
+  }
+}
+
+init {
+  A = 500
+  B = 0
+  C = 0
+}
+
+simulate {
+  from = 0 'days
+  to   = 20 'days
+}

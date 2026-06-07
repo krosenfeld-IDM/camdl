@@ -1,0 +1,12 @@
+{"ir_version":"0.9","validated_by":"ocaml-compiler-v0.9","model":{"name":"event_drain_fusion","version":"0.3","time_unit":"days","description":null,"compartments":[
+{"name":"A","kind":"integer"},
+{"name":"B","kind":"integer"},
+{"name":"C","kind":"integer"}
+],"transitions":[
+{"name":"drain","stoichiometry":[["A",-1],["B",1]],"rate":{"bin_op":{"op":"mul","left":{"param":"k"},"right":{"pop":"A"}}},"metadata":{"origin_kind":"intrinsic","source_compartment":"A","dest_compartment":"B"},"rate_grad":{"k":{"pop":"A"}}}
+],"ode_equations":[],"time_functions":[],"tables":[],"interventions":[
+{"name":"leak","schedule":{"recurring":{"start":1.0,"period":1.0,"end":20.0}},"actions":[{"fraction_transfer":{"src":"A","dst":"C","fraction":{"param":"f"}}}],"always_active":true}
+],"observations":[],"parameters":[
+{"name":"k","value":0.3,"bounds":[0.0,1.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"rate","param_dim":null},
+{"name":"f","value":0.2,"bounds":[0.0,1.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"probability","param_dim":null}
+],"initial_conditions":{"explicit":{"A":500.0,"B":0.0,"C":0.0}},"output":{"times":{"regular":{"start":0.0,"step":1.0,"end":20.0}},"format":"tsv","trajectory":true,"observations":true},"simulation":{"t_start":0.0,"t_end":20.0,"time_semantics":"continuous","dt":null,"rng_seed":null},"scenarios":[],"model_structure":{"dimensions":[],"compartment_dims":{"A":[],"B":[],"C":[]},"base_compartments":["A","B","C"],"transmission_transitions":[],"infectious_compartments":[]}}}

@@ -3,7 +3,7 @@ use crate::{
     config::{SimConfig, TauLeapConfig},
     rng::StatefulRng,
     error::SimError,
-    intervention::{all_intervention_times, apply_events_at, apply_interventions_at},
+    intervention::all_intervention_times,
     lineage::TransitionObserver,
     ode_integrator::rk4_step,
     output::output_times as get_output_times,
@@ -122,15 +122,27 @@ pub fn run_tau_leap_with_observer(
         // bit-exact (not (t+dt)-t).
         let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
         if dt <= 0.0 {
-            // At a boundary — handle it
-            // Apply intervention if due. Canonical within-substep lifecycle
-            // (matches chain_binomial): always_active events fire FIRST, reading
-            // the start-of-step snapshot — here `int_s`/`real_s`, which the
-            // interventions have not yet touched — then interventions run on the
-            // post-event state.
+            // At a boundary — handle it.
+            // Canonical within-substep lifecycle (matches chain_binomial): the
+            // event PROPOSE stage reads the start-of-step snapshot, then ADVANCE
+            // (no transition step here — dt<=0), then INTERVENE. With no
+            // in-flight transition the snapshot IS the current state, so the
+            // event delta and the (post-advance) intervention agree. `t` is
+            // already the boundary; pass `t - cfg.dt` so the shared seam's
+            // `t_end = t + dt` lands on the boundary with the cfg.dt step key.
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-                apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
-                apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
+                let mut event_deltas: Vec<(usize, i64)> = Vec::new();
+                crate::lifecycle::propose_event_deltas(
+                    model, &fire_steps, &int_s, &real_s, params, t - cfg.dt, cfg.dt,
+                    &mut event_deltas,
+                )?;
+                for (local, delta) in event_deltas.drain(..) {
+                    int_s.counts[local] += delta;
+                }
+                crate::lifecycle::apply_post_advance(
+                    model, &fire_steps, &mut int_s, &mut real_s, params,
+                    t - cfg.dt, cfg.dt, 1e-10, None,
+                )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
             // Record output if due
@@ -148,6 +160,18 @@ pub fn run_tau_leap_with_observer(
             if t >= cfg.t_end { break; }
             continue;
         }
+
+        // SNAPSHOT-CAPTURE HAZARD: freeze the start-of-step state BEFORE any
+        // draw reads/mutates it. The transition draws below read `int_s.counts`
+        // and accumulate into `pending_deltas` (they do not mutate `int_s`
+        // in place until the drain), so this clone is the true pre-advance
+        // snapshot. The event PROPOSE stage MUST read this snapshot — not the
+        // post-drain `int_s` — so a value-dependent event on a draining
+        // compartment (e.g. transfer(fraction=f, from=A) while A --> B fires)
+        // reads pre-drain A, exactly like chain_binomial. Capturing after the
+        // drain would silently use post-drain A.
+        let snap_int = int_s.clone();
+        let snap_real = real_s.clone();
 
         // Evaluate propensities at current state
         eval_propensities(model, &int_s, &real_s, params, t, cfg.dt, &mut propensities)?;
@@ -274,6 +298,23 @@ pub fn run_tau_leap_with_observer(
             obs.end_batch_step();
         }
 
+        // PROPOSE (stage 1): always_active event deltas from the FROZEN
+        // start-of-step snapshot, FUSED into the transition deltas so both are
+        // applied atomically in the drain below — exactly like chain_binomial.
+        // This substep lands on the boundary `t + dt` (Exact policy); fire only
+        // when that boundary is a scheduled effect time. The boundary time is
+        // `t + dt`; pass `(t + dt) - cfg.dt` so the seam's `t_end` lands on the
+        // boundary with the cfg.dt step key (matching the prior
+        // `apply_events_at(t + dt, …, cfg.dt)` evaluation point — only the
+        // READ-SOURCE changes: snapshot, not post-drain state).
+        let boundary = t + dt;
+        if schedule.effect_time(&cursor).is_some_and(|iv| (iv - boundary).abs() < 1e-10) {
+            crate::lifecycle::propose_event_deltas(
+                model, &fire_steps, &snap_int, &snap_real, params,
+                boundary - cfg.dt, cfg.dt, &mut pending_deltas,
+            )?;
+        }
+
         for (local, delta) in pending_deltas.drain(..) {
             int_s.counts[local] += delta;
         }
@@ -303,13 +344,17 @@ pub fn run_tau_leap_with_observer(
 
         t += dt;
 
-        // Apply intervention if now at that time. Canonical lifecycle: events
-        // (reading the start-of-step snapshot, i.e. the pre-intervention
-        // `int_s`/`real_s`) fire BEFORE interventions, which then read the
-        // post-event state. Matches chain_binomial.
+        // INTERVENE (stage 3) on the post-advance state, if now at an effect
+        // boundary. The event PROPOSE stage already fired this substep (fused
+        // pre-drain, reading the snapshot), so only the intervention runs here —
+        // on the post-advance, post-event state. `t` is the boundary; pass
+        // `t - cfg.dt` so the seam's `t_end` lands on `t` with the cfg.dt step
+        // key. Balance is chain-only (None here).
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-            apply_events_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params)?;
-            apply_interventions_at(t, model, &fire_steps, cfg.dt, &mut int_s, &mut real_s, params, 1e-10)?;
+            crate::lifecycle::apply_post_advance(
+                model, &fire_steps, &mut int_s, &mut real_s, params,
+                t - cfg.dt, cfg.dt, 1e-10, None,
+            )?;
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
 

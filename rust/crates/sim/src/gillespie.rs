@@ -3,7 +3,7 @@ use crate::{
     config::{GillespieConfig, SimConfig},
     rng::StatefulRng,
     error::SimError,
-    intervention::{all_intervention_times, apply_events_at, apply_interventions_at},
+    intervention::{all_intervention_times, apply_events_at},
     lineage::TransitionObserver,
     ode_integrator::rk4_step,
     output::output_times as get_output_times,
@@ -192,7 +192,15 @@ pub fn run_gillespie_with_observer(
                     // `int_s`/`real_s`; events read it before interventions touch
                     // it.
                     apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
-                    apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
+                    // INTERVENE (stage 3) via the shared seam (byte-identical):
+                    // `t - iv_resolution_dt` lands the seam's `t_end` on `t`.
+                    // Gillespie has no transition step at a boundary, so the
+                    // start-of-step snapshot == current state and events stay
+                    // at-boundary (no fusion needed); balance is chain-only.
+                    crate::lifecycle::apply_post_advance(
+                        model, &fire_steps, &mut int_s, &mut real_s, params,
+                        t - iv_resolution_dt, iv_resolution_dt, 1e-10, None,
+                    )?;
                     while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                     // Full recompute after intervention
                     eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;
@@ -235,7 +243,11 @@ pub fn run_gillespie_with_observer(
                 // at this boundary, since gillespie has no transition step here),
                 // then interventions on the post-event state.
                 apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
-                apply_interventions_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params, 1e-10)?;
+                // INTERVENE (stage 3) via the shared seam (byte-identical).
+                crate::lifecycle::apply_post_advance(
+                    model, &fire_steps, &mut int_s, &mut real_s, params,
+                    t - iv_resolution_dt, iv_resolution_dt, 1e-10, None,
+                )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                 // Full recompute after intervention (integer state changed)
                 eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;

@@ -3,7 +3,7 @@ use crate::{
     config::{ChainBinomialConfig, SimConfig},
     rng::StatefulRng,
     error::SimError,
-    intervention::{all_intervention_times, apply_interventions_at},
+    intervention::all_intervention_times,
     lineage::TransitionObserver,
     ode_integrator::rk4_step,
     output::output_times as get_output_times,
@@ -442,8 +442,11 @@ pub fn step_one(
         flows[i] += count;
     }
 
-    // Inject always_active event deltas (evaluated from snapshot, applied atomically)
-    crate::intervention::inject_event_deltas(
+    // PROPOSE (stage 1): always_active event deltas from the start-of-step
+    // snapshot (`scratch.int_s`/`scratch.real_s`, captured at the top of this
+    // function before any draws). Fused into ADVANCE — applied atomically with
+    // the transition deltas below.
+    crate::lifecycle::propose_event_deltas(
         model, fire_steps, &scratch.int_s, &scratch.real_s, params, t, dt,
         &mut scratch.pending_deltas,
     )?;
@@ -507,35 +510,16 @@ pub fn step_one(
         }
     }
 
-    // Apply interventions that fire at t + dt (within tolerance dt/2).
-    if !model.model.interventions.is_empty() {
-        let t_end = t + dt;
-        scratch.int_s.counts.copy_from_slice(counts);
-        let fired = apply_interventions_at(
-            t_end, model, fire_steps, dt, &mut scratch.int_s, &mut scratch.real_s, params, dt * 0.5,
-        )?;
-        if fired {
-            counts.copy_from_slice(&scratch.int_s.counts);
-        }
-    }
-
-    // Apply balance constraint: overwrite target compartment so the population
-    // budget holds. All other compartments are finalized at this point.
-    if let Some(ref bal) = model.balance {
-        scratch.int_s.counts.copy_from_slice(counts);
-        let t_end = t + dt;
-        let ctx = EvalCtx {
-            model, int_s: &scratch.int_s, real_s: &scratch.real_s,
-            params, t: t_end, dt, projected: None, int_float_override: None,
-        };
-        let val = eval_resolved(&bal.expr, &ctx);
-        let bal_count = val.round() as i64;
-        if bal_count < 0 {
-            log::warn!("balance compartment went negative ({}) at t={:.1} — \
-                        model may be inconsistent at these parameters", bal_count, t_end);
-        }
-        counts[bal.local_int_idx] = bal_count;
-    }
+    // INTERVENE (stage 3) then BALANCE (stage 4) on the current post-advance
+    // state, in fixed canonical order. `scratch.int_s` starts == `counts`, so
+    // the intervention reads the post-advance state and the balance reads the
+    // post-intervention state — byte-identical to the prior inline blocks.
+    scratch.int_s.counts.copy_from_slice(counts);
+    crate::lifecycle::apply_post_advance(
+        model, fire_steps, &mut scratch.int_s, &mut scratch.real_s,
+        params, t, dt, dt * 0.5, model.balance.as_ref(),
+    )?;
+    counts.copy_from_slice(&scratch.int_s.counts);
 
     Ok(())
 }
