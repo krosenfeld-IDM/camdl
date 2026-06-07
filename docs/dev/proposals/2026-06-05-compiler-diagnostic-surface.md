@@ -40,6 +40,18 @@ Consequences, each verified in `compiler.ml` / `diagnostics.ml`:
    tell you one validated and one didn't, so a caller picks the short one and
    silently skips validation. This is the gh#170 root (`check` used the short
    path) and the gh#160 symptom (`check` returned a model `simulate` rejected).
+5. **Location is discarded at 85% of emit sites.** 111 of 131
+   `Diagnostics.{error,warning,info}` calls pass `Diagnostics.no_loc`
+   (`grep -rc '~loc:Diagnostics.no_loc' ocaml/lib` over a total of 131 emit
+   sites). Some of that is honest — post-expansion structural errors (E5xx,
+   "duplicate compartment after stratification") have no single source span
+   because stratification synthesized the clash from two origins. Much is not:
+   the front-end date-literal parser `failwith`s into an E001 at `no_loc`, and
+   `run_dimcheck` / `run_validate` / `run_lint` re-emit every downstream
+   diagnostic at `no_loc` even where the AST carries a span. The `loc` type is
+   rich; the plumbing throws it away. The surface refactor is the moment to
+   thread real spans through the pass-return values, so this should land with
+   it rather than as a separate sweep.
 
 These are the same class CLAUDE.md names: stringly/flag-riddled data where an
 ADT belongs, and illegal states (an unvalidated model used as if valid) left
@@ -82,6 +94,60 @@ representable.
 
 4. **Make `Diagnostics.t` immutable (or local).** Each pass returns a list; the
    fold concatenates. Removes the `mutable` + cons-reverse dance.
+
+## Design note: accumulate (applicative) vs sequence (monad)
+
+`outcome` is not a `Result` and not a short-circuiting error monad. Structurally
+it is `(value : 'a option, diagnostics : diagnostic list)` — i.e.
+`MaybeT (Writer (diagnostic list))`: a Writer effect that accumulates the
+diagnostic log monoidally, over a Maybe effect that carries the value. That
+combination *is* a lawful monad — unlike `Validation` / `Either`-with-
+accumulation, which is applicative-only (its `bind` needs the success value to
+choose the next step, so it cannot run a failed step's successor to collect more
+errors; accumulation is inherently the applicative `<*>`, per McBride & Paterson,
+*Applicative Programming with Effects*, JFP 2008). What buys the monad back is
+that errors accumulate in a *separate channel* (the Writer log) from
+success/failure (the Maybe) — and the same split is what lets `outcome`
+represent "compiled successfully **with** warnings," which an `Either` cannot.
+
+Two combinators, two jobs:
+
+- **Sequential, dependent phases → monadic `let*` (bind).** expand → dimcheck →
+  autodiff: if expand structurally fails there is no model to dimcheck, so
+  short-circuit the *value* while retaining the log. This is the pipeline fold.
+- **Independent sibling checks → applicative `let+ … and+ …` / traverse.**
+  Within dimcheck, N transitions each produce their own diagnostics; run all,
+  concat the lists. Do not `bind` siblings — bind short-circuits at the first
+  bad one and hides the rest.
+
+In OCaml (4.08+ binding operators) that is a ~15-line module:
+
+```ocaml
+module Outcome : sig
+  type 'a t = { value : 'a option; diags : Diagnostics.diagnostic list }
+  val return  : 'a -> 'a t
+  val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t   (* sequence: short-circuit value, keep log *)
+  val ( let+ ) : 'a t -> ('a -> 'b) -> 'b t
+  val ( and+ ) : 'a t -> 'b t -> ('a * 'b) t    (* accumulate: concat both logs *)
+end
+```
+
+`( and+ )` (the applicative product) is where accumulation lives; `( let* )` is
+where short-circuit lives. A pass is `traverse` over its siblings with `and+`;
+the pipeline is `let*` over its phases.
+
+Peer compilers split the same way by different means. Stan's compiler (stanc3 —
+OCaml + Menhir, this project's stack) reports the *first* semantic error via an
+internal exception (`exception TypecheckerException of Semantic_error.t`, caught
+at the boundary and turned into a `Result.t`) while *accumulating warnings* in a
+`Warnings.t list ref` (`src/frontend/Typechecker.ml`) — almost exactly camdl's
+current `Compile_error` + `mutable diags`. rustc and GHC instead accumulate and
+recover: rustc threads a side-effecting diagnostics context (`DiagCtxt`) and uses
+`ErrorGuaranteed` as a type-level witness that an error was reported (the same
+idea as the phantom-typed `Validated.t` below); GHC's typechecker monad (`TcRn`)
+accumulates into an error bag and recovers. The `outcome` type puts camdl in the
+accumulate camp **without** a global mutable sink — cleaner than the stanc3
+baseline, not a remediation of something uniquely broken.
 
 ## Migration (incremental, each step green)
 
