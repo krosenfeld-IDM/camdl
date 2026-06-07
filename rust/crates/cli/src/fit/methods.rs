@@ -405,7 +405,12 @@ pub fn check_model_capabilities(
 ) -> Result<(), String> {
     use sim::Capabilities;
     let backend_caps = match backend {
-        "chain_binomial" => Capabilities::OVERDISPERSION | Capabilities::REAL_COMPARTMENTS,
+        // chain_binomial intentionally does NOT advertise REAL_COMPARTMENTS for
+        // INFERENCE: the filter loops carry no real state and never advance a
+        // reservoir, so a real-coupled model would be fit with its real
+        // compartments frozen at their init value — silently mis-fit (gh#191).
+        // Re-grant REAL_COMPARTMENTS here once inference advances real state.
+        "chain_binomial" => Capabilities::OVERDISPERSION,
         "ode"            => Capabilities::REAL_COMPARTMENTS,
         other            => return Err(format!(
             "check_model_capabilities: unknown backend '{}'", other
@@ -429,9 +434,15 @@ pub fn check_model_capabilities(
     }
     if unsupported.contains(Capabilities::REAL_COMPARTMENTS) {
         features.push(
-            "REAL_COMPARTMENTS: the model has real-valued compartments \
-             with explicit ODE equations. Use backend = \"ode\" — the \
-             chain_binomial backend doesn't support continuous state.",
+            "REAL_COMPARTMENTS: stochastic inference (backend = \
+             \"chain_binomial\") does not yet advance real-valued \
+             (ODE-coupled) compartments — they would be held frozen at their \
+             initial value, silently mis-fitting any transition rate that \
+             couples to them (gh#191). For a deterministic-skeleton fit use \
+             backend = \"ode\" (which integrates the real compartments); \
+             otherwise remove the real compartments, or use forward \
+             simulation (`camdl simulate`) for real-coupled stochastic \
+             dynamics.",
         );
     }
     Err(format!(
@@ -616,5 +627,46 @@ mod tests {
             out[pf_idx..pf_line_end].contains("diagnostic"),
             "pfilter line should mark it as diagnostic"
         );
+    }
+
+    #[test]
+    fn chain_binomial_inference_rejects_real_compartments() {
+        // gh#191: the inference path carries no real state and never advances a
+        // reservoir, so a real-coupled model would be fit with its real
+        // compartments frozen at init — silently mis-fit. The capability gate
+        // must REJECT it (before gh#191 it was silently accepted). Forward sim
+        // handles real compartments correctly (see #3 / 5c7585c).
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ocaml/golden/sir_reservoir_mixed.ir.json"
+        );
+        let json = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}"));
+        // Golden IR is enveloped: { ir_version, validated_by, model: {...} },
+        // and stores parameter values as null (resolved at run time). Fill them
+        // with an in-bounds placeholder so the model compiles — the values are
+        // irrelevant to the capability check.
+        let env: serde_json::Value =
+            serde_json::from_str(&json).expect("parse sir_reservoir_mixed envelope");
+        let mut model: ir::Model = serde_json::from_value(env["model"].clone())
+            .expect("deserialize sir_reservoir_mixed model");
+        for p in &mut model.parameters {
+            if p.value.is_none() {
+                p.value = Some(0.5);
+            }
+        }
+        let compiled = sim::CompiledModel::new(model).expect("compile sir_reservoir_mixed");
+        assert!(
+            compiled
+                .required_capabilities()
+                .contains(sim::Capabilities::REAL_COMPARTMENTS),
+            "fixture must actually have real compartments"
+        );
+        let err = check_model_capabilities("chain_binomial", &compiled)
+            .expect_err("chain_binomial inference must reject real-coupled models");
+        assert!(err.contains("gh#191"), "should cite the tracking issue: {err}");
+        assert!(err.contains("frozen"), "should explain the frozen-reservoir reason: {err}");
+        // ode integrates real compartments — still accepted.
+        assert!(check_model_capabilities("ode", &compiled).is_ok());
     }
 }
