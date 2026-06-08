@@ -24,7 +24,7 @@
 use crate::{
     compiled_model::{CompiledModel, ResolvedBalance},
     error::SimError,
-    intervention::apply_interventions_at,
+    intervention::apply_effect_batch,
     propensity::EvalCtx,
     resolved_expr::eval_resolved,
     state::{IntState, RealState},
@@ -34,38 +34,35 @@ use crate::{
 /// CURRENT post-advance state, in fixed order. One function so no backend can reorder them.
 /// NOTE: for tau/ode/gillespie this is a one-call passthrough today (balance is chain-only).
 ///
-/// INTERVENE fires every intervention whose `fire_steps` lands at `t + dt`
-/// (within `tolerance`), reading the current post-advance state; BALANCE then
-/// overwrites the target compartment so the population budget holds, reading the
-/// post-intervention state. The balance target is exempt from the
+/// INTERVENE applies the `intervention_idx` batch [`due_effects`](crate::effects::due_effects)
+/// derived for this substep (reading the current post-advance state); BALANCE
+/// then overwrites the target compartment so the population budget holds,
+/// reading the post-intervention state. The balance target is exempt from the
 /// negative-count check by construction (its negativity is a separate signal,
 /// warned about here, not erred). RNG-free.
 ///
-/// `dt` is `dt_actual` — the realized substep length, driving the balance /
-/// effect-amount evaluation. `grid_dt` is the nominal model dt the `fire_steps`
-/// step-index table was built on; the intervention FIRING KEY is computed on
-/// `grid_dt` (`time_to_step(t_end, grid_dt)` inside `apply_interventions_at`).
-/// They diverge only when an inference filter clips a substep to land off-grid —
-/// see docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A.
+/// `intervention_idx` is the scheduled (`!always_active`) interventions due at
+/// `t + dt`, in declaration order — the seam no longer re-derives due-ness here
+/// (the duplication removed by the scheduling-spine §B). `dt` is `dt_actual` —
+/// the realized substep length, driving the balance / effect-amount evaluation.
+/// See docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A/§B.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_post_advance(
     model: &CompiledModel,
-    fire_steps: &[std::collections::BTreeSet<i64>],
+    intervention_idx: &[usize],
     current: &mut IntState,
     real: &mut RealState,
     params: &[f64],
     t: f64,
     dt: f64,
-    grid_dt: f64,
-    tolerance: f64,
     balance: Option<&ResolvedBalance>,
 ) -> Result<(), SimError> {
     let t_end = t + dt;
 
     // Stage 3: INTERVENE on the current post-advance state.
-    if !model.model.interventions.is_empty() {
-        apply_interventions_at(
-            t_end, model, fire_steps, dt, grid_dt, current, real, params, tolerance,
+    if !intervention_idx.is_empty() {
+        apply_effect_batch(
+            t_end, model, intervention_idx, dt, current, real, params,
         )?;
     }
 

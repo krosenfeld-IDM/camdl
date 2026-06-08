@@ -10,12 +10,34 @@ use ir::{
 };
 use sim::{
     compiled_model::CompiledModel,
-    intervention::apply_interventions_at,
+    effects::due_effects,
+    intervention::apply_effect_batch,
+    schedule::EffectBatch,
     state::{IntState, RealState},
 };
 
 fn int_comp(name: &str) -> Compartment {
     Compartment { name: name.into(), kind: CompartmentKind::Integer }
+}
+
+/// Test adapter preserving the old `apply_interventions_at` call shape: derive
+/// the due batch at `t` (the seam `due_effects` now owns) and apply the
+/// scheduled interventions. Byte-identical to the retired entry point.
+#[allow(clippy::too_many_arguments)]
+fn apply_interventions_at(
+    t: f64,
+    model: &CompiledModel,
+    fire_steps: &[std::collections::BTreeSet<i64>],
+    dt: f64,
+    grid_dt: f64,
+    int_s: &mut IntState,
+    real_s: &mut RealState,
+    params: &[f64],
+    _tolerance: f64,
+) -> Result<bool, sim::error::SimError> {
+    let mut batch = EffectBatch::default();
+    due_effects(model, fire_steps, t, grid_dt, &mut batch);
+    apply_effect_batch(t, model, &batch.intervention_idx, dt, int_s, real_s, params)
 }
 
 fn minimal_model_with_interventions(

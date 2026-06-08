@@ -233,44 +233,76 @@ pub fn resolve_intervention(
     Ok(())
 }
 
-/// Resolve all always-active events firing at this step into typed deltas. The
-/// EVENT path: every action of every firing event resolves against the frozen
-/// pre-advance snapshot at `t_end = t + dt` (so events fuse with the kernel
-/// draw). PURE — the caller fuses `out.int` into the draw and applies `out.real`
-/// to the real reservoir. Replaces the historical int-only `inject_event_deltas`
-/// (which silently dropped real-targeted events).
+/// The single due-ness check for a substep: which interventions fire at the
+/// boundary `t_end`, pre-split by lifecycle stage into an [`EffectBatch`]. This
+/// is the ONE place `time_to_step(t_end, grid_dt) + fire_steps.contains` lives —
+/// the events path (PROPOSE) and the interventions path (INTERVENE) each consume
+/// the batch instead of re-deriving due-ness, so the two stages can never
+/// disagree about what is due (the duplication this seam removes).
 ///
-/// `dt` is `dt_actual` — the realized substep length, which drives the rate /
-/// amount evaluation (the `EvalCtx.dt` the resolved intervention exprs see).
+/// `current_step = time_to_step(t_end, grid_dt)` is computed ONCE. Interventions
+/// are scanned in DECLARATION ORDER (`model.model.interventions`); a firing one
+/// lands in `event_idx` if `always_active`, else `intervention_idx` — preserving
+/// the historical per-stage firing order exactly.
+///
 /// `grid_dt` is the nominal model dt the `fire_steps` step-index table was built
-/// on (`resolve_fire_steps(grid_dt, …)`), so the FIRING KEY must be computed on
-/// `grid_dt`, not `dt`. They are equal under Snap and for on-grid Exact substeps;
-/// they diverge only when an inference filter clips a substep to land on an
-/// off-grid observation. Keying the firing on `grid_dt` lands the clipped
-/// substep on the correct nominal step (the `StepClock` discipline of
-/// docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A).
-#[allow(clippy::too_many_arguments)]
-pub fn resolve_events(
+/// on (`resolve_fire_steps(grid_dt, …)`), so the FIRING KEY is on `grid_dt`, not
+/// the realized `dt_actual`. They are equal under Snap and for on-grid Exact
+/// substeps; they diverge only when an inference filter clips a substep to land
+/// on an off-grid observation — the `StepClock` discipline of
+/// docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A.
+///
+/// `out` is caller-provided and reused: [`EffectBatch::clear`] resets it without
+/// freeing, so the hot inference path (one batch per particle per substep)
+/// allocates nothing per call.
+pub fn due_effects(
     model: &CompiledModel,
     fire_steps: &[std::collections::BTreeSet<i64>],
-    snapshot: &IntState,
-    real_snapshot: &RealState,
-    params: &[f64],
-    t: f64,
-    dt: f64,
+    t_end: f64,
     grid_dt: f64,
-    out: &mut EffectDeltas,
-) -> Result<(), SimError> {
-    let t_end = t + dt;
+    out: &mut crate::schedule::EffectBatch,
+) {
+    out.clear();
     let current_step = crate::time::time_to_step(t_end, grid_dt);
-    let snap = StateRef { int: snapshot, real: real_snapshot };
     for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
-        if !iv.always_active {
-            continue;
-        }
         if !fire_steps[iv_idx].contains(&current_step) {
             continue;
         }
+        if iv.always_active {
+            out.event_idx.push(iv_idx);
+        } else {
+            out.intervention_idx.push(iv_idx);
+        }
+    }
+}
+
+/// Resolve a known batch of always-active events into typed deltas. The EVENT
+/// path's apply half: every action of each event in `event_idx` resolves against
+/// the frozen pre-advance snapshot at the boundary `t_end` (so events fuse with
+/// the kernel draw). PURE — the caller fuses `out.int` into the draw and applies
+/// `out.real` to the real reservoir. Replaces the historical int-only
+/// `inject_event_deltas` (which silently dropped real-targeted events).
+///
+/// `event_idx` (from [`due_effects`]) lists exactly the firing always-active
+/// interventions in declaration order — this function does NOT re-check
+/// `always_active` or `fire_steps`; it applies the list it was handed.
+///
+/// `dt` is `dt_actual` — the realized substep length driving the rate / amount
+/// evaluation (the `EvalCtx.dt` the resolved intervention exprs see).
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_event_batch(
+    model: &CompiledModel,
+    event_idx: &[usize],
+    snapshot: &IntState,
+    real_snapshot: &RealState,
+    params: &[f64],
+    t_end: f64,
+    dt: f64,
+    out: &mut EffectDeltas,
+) -> Result<(), SimError> {
+    let snap = StateRef { int: snapshot, real: real_snapshot };
+    for &iv_idx in event_idx {
+        let iv = &model.model.interventions[iv_idx];
         resolve_intervention(model, iv_idx, iv, snap, params, t_end, dt, EffectKind::Event, out)?;
     }
     Ok(())
@@ -376,32 +408,34 @@ fn apply_action_f64(
     Ok(())
 }
 
-/// Apply all boundary effects to ODE's continuous compartment vectors, exactly
-/// (no rounding). Order matches the discrete lifecycle: always-active EVENTS
-/// fire first, every action reading the frozen pre-intervention snapshot; then
-/// scheduled INTERVENTIONS apply sequentially on the post-event state. ODE
-/// carries no balance. `t_boundary` is the effect time; `dt` is the step that
-/// built `fire_steps`.
-pub fn apply_boundary_effects_continuous(
+/// Apply a known due batch to ODE's continuous compartment vectors, exactly (no
+/// rounding). Order matches the discrete lifecycle: always-active EVENTS fire
+/// first (`batch.event_idx`), every action reading the frozen pre-intervention
+/// snapshot; then scheduled INTERVENTIONS (`batch.intervention_idx`) apply
+/// sequentially on the post-event state. ODE carries no balance. `t_boundary` is
+/// the effect time; `dt` drives the amount evaluation.
+///
+/// `batch` (from [`due_effects`]) carries the firing interventions in
+/// declaration order per stage — this function does NOT re-derive due-ness; it
+/// applies the lists it was handed (the duplication the scheduling-spine §B seam
+/// removes from `effects.rs:382`).
+pub fn apply_boundary_batch_continuous(
     model: &CompiledModel,
-    fire_steps: &[std::collections::BTreeSet<i64>],
+    batch: &crate::schedule::EffectBatch,
     int_vals: &mut [f64],
     real_vals: &mut [f64],
     params: &[f64],
     t_boundary: f64,
     dt: f64,
 ) -> Result<(), SimError> {
-    let current_step = crate::time::time_to_step(t_boundary, dt);
     let t = t_boundary;
 
     // EVENTS — frozen snapshot, every firing event's actions resolve against it.
-    if model.model.interventions.iter().any(|iv| iv.always_active) {
+    if !batch.event_idx.is_empty() {
         let snap_int = int_vals.to_vec();
         let snap_real = real_vals.to_vec();
-        for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
-            if !iv.always_active || !fire_steps[iv_idx].contains(&current_step) {
-                continue;
-            }
+        for &iv_idx in &batch.event_idx {
+            let iv = &model.model.interventions[iv_idx];
             for (action_idx, action) in iv.actions.iter().enumerate() {
                 let v = eval_amount_f64(model, iv_idx, action_idx, &snap_int, &snap_real, params, t, dt);
                 let v = crate::intervention::finite_action_value(v, &iv.name, action, t)?;
@@ -412,10 +446,8 @@ pub fn apply_boundary_effects_continuous(
     }
 
     // INTERVENTIONS — sequential, each action reads the live state.
-    for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
-        if iv.always_active || !fire_steps[iv_idx].contains(&current_step) {
-            continue;
-        }
+    for &iv_idx in &batch.intervention_idx {
+        let iv = &model.model.interventions[iv_idx];
         for (action_idx, action) in iv.actions.iter().enumerate() {
             let live_int = int_vals.to_vec();
             let live_real = real_vals.to_vec();
@@ -702,6 +734,24 @@ mod tests {
         assert_eq!(real_s.values, vec![52.5]);
     }
 
+    /// Test shim: compute the due batch at `t_boundary` (the seam `due_effects`
+    /// now owns) and route it through `apply_boundary_batch_continuous` — the
+    /// byte-identical replacement for the old `apply_boundary_effects_continuous`
+    /// that re-derived due-ness internally.
+    fn apply_boundary_effects_continuous(
+        model: &CompiledModel,
+        fire_steps: &[std::collections::BTreeSet<i64>],
+        int_vals: &mut [f64],
+        real_vals: &mut [f64],
+        params: &[f64],
+        t_boundary: f64,
+        dt: f64,
+    ) -> Result<(), SimError> {
+        let mut batch = crate::schedule::EffectBatch::default();
+        super::due_effects(model, fire_steps, t_boundary, dt, &mut batch);
+        apply_boundary_batch_continuous(model, &batch, int_vals, real_vals, params, t_boundary, dt)
+    }
+
     // ── Continuous (ODE) path — exact f64, no rounding ──────────────────────
     // These are the de-quantization oracle at the f64 level (before the output
     // contract rounds integer compartments for display): the continuous apply
@@ -863,5 +913,153 @@ mod tests {
         // Discriminating control: the discrete int path would floor(10*0.337)=3;
         // the real path moves ≈3.37, strictly more than 3.
         assert!(moved > 3.0 && moved < 3.4, "moved ≈3.37, not the floored 3: {moved}");
+    }
+
+    // ── due_effects: the centralized due-check ──────────────────────────────
+    // One model with an always-active EVENT and a scheduled INTERVENTION, both
+    // firing at t=1 (step 1 at dt=1). due_effects must route the event into
+    // event_idx and the intervention into intervention_idx, in declaration
+    // order, and produce an empty batch off-step.
+
+    /// S/I/W scaffold with TWO interventions, declared in this order:
+    ///   [0] `evt`  — always_active EVENT, fires at t=1
+    ///   [1] `camp` — scheduled INTERVENTION, fires at t=1
+    /// Both have a single trivial `set` action so the model compiles.
+    fn model_event_and_intervention() -> CompiledModel {
+        let mk = |name: &str, always: bool| Intervention {
+            name: name.into(),
+            base_name: None,
+            schedule: InterventionSchedule::AtTimes(vec![1.0]),
+            actions: vec![Action::Set(SetAction {
+                compartment: "I".into(),
+                value: Expr::const_(1.0),
+            })],
+            always_active: always,
+        };
+        let m = Model {
+            name: "due_effects_test".into(),
+            version: "0.1".into(),
+            time_unit: "days".into(),
+            description: None,
+            origin: None,
+            origin_rata_die: None,
+            compartments: vec![
+                Compartment { name: "S".into(), kind: CompartmentKind::Integer },
+                Compartment { name: "I".into(), kind: CompartmentKind::Integer },
+                Compartment { name: "W".into(), kind: CompartmentKind::Real },
+            ],
+            transitions: vec![Transition {
+                name: "decay".into(),
+                stoichiometry: vec![StoichiometryEntry("S".into(), -1), StoichiometryEntry("I".into(), 1)],
+                rate: Expr::const_(0.0),
+                metadata: None,
+                draw_method: DrawMethod::Poisson,
+                rate_grad: Default::default(),
+                lineage: None,
+            }],
+            ode_equations: vec![],
+            time_functions: vec![],
+            tables: vec![],
+            // Declaration order: event first, then intervention.
+            interventions: vec![mk("evt", true), mk("camp", false)],
+            observations: vec![],
+            bindings: vec![],
+            parameters: vec![Parameter {
+                name: "p".into(), value: Some(1.0), bounds: None, prior: None,
+                transform: None, initial_value: None, param_kind: None,
+                param_dim: None, hierarchical: None,
+            }],
+            initial_conditions: InitialConditions::Explicit({
+                let mut h = HashMap::new();
+                h.insert("S".into(), 100.0);
+                h.insert("I".into(), 0.0);
+                h.insert("W".into(), 50.0);
+                h
+            }),
+            output: OutputConfig {
+                times: OutputSchedule::AtTimes(vec![0.0, 1.0]),
+                format: "tsv".into(),
+                trajectory: true,
+                observations: false,
+            },
+            simulation: SimulationConfig {
+                t_start: 0.0, t_end: 2.0, time_semantics: "continuous".into(),
+                dt: Some(1.0), rng_seed: Some(1),
+            },
+            presets: vec![],
+            model_structure: None,
+            balance: None,
+            identity_tracked_compartments: vec![],
+        };
+        CompiledModel::new(m).unwrap()
+    }
+
+    #[test]
+    fn due_effects_splits_event_and_intervention_at_same_step() {
+        let m = model_event_and_intervention();
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut batch = crate::schedule::EffectBatch::default();
+        // t_end = 1.0, grid_dt = 1.0 → step 1: both the event (iv 0) and the
+        // intervention (iv 1) fire.
+        due_effects(&m, &fire, 1.0, 1.0, &mut batch);
+        assert_eq!(batch.event_idx.as_slice(), &[0], "always_active event → event_idx");
+        assert_eq!(batch.intervention_idx.as_slice(), &[1], "scheduled → intervention_idx");
+    }
+
+    #[test]
+    fn due_effects_empty_off_step() {
+        let m = model_event_and_intervention();
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut batch = crate::schedule::EffectBatch::default();
+        // t_end = 2.0 → step 2: nothing scheduled there.
+        due_effects(&m, &fire, 2.0, 1.0, &mut batch);
+        assert!(batch.is_empty(), "no effect due at step 2");
+        assert!(batch.event_idx.is_empty() && batch.intervention_idx.is_empty());
+    }
+
+    #[test]
+    fn due_effects_preserves_declaration_order() {
+        // Two always-active events and two scheduled interventions, interleaved
+        // in declaration order, all firing at the same step. Each stage's list
+        // must come out in declaration order (the byte-identical firing order).
+        let mk = |name: &str, always: bool| Intervention {
+            name: name.into(),
+            base_name: None,
+            schedule: InterventionSchedule::AtTimes(vec![1.0]),
+            actions: vec![Action::Set(SetAction {
+                compartment: "I".into(),
+                value: Expr::const_(1.0),
+            })],
+            always_active: always,
+        };
+        // Declaration order: evt_a(ev), camp_a(iv), evt_b(ev), camp_b(iv).
+        let interventions = vec![
+            mk("evt_a", true),
+            mk("camp_a", false),
+            mk("evt_b", true),
+            mk("camp_b", false),
+        ];
+        let base0 = model_event_and_intervention();
+        // Rebuild from a model carrying the 4-intervention list.
+        let mut model = (*base0.model).clone();
+        model.interventions = interventions;
+        let base = CompiledModel::new(model).unwrap();
+        let fire = base.resolve_fire_steps(1.0, &base.default_params);
+        let mut batch = crate::schedule::EffectBatch::default();
+        due_effects(&base, &fire, 1.0, 1.0, &mut batch);
+        assert_eq!(batch.event_idx.as_slice(), &[0, 2], "events in declaration order");
+        assert_eq!(batch.intervention_idx.as_slice(), &[1, 3], "interventions in declaration order");
+    }
+
+    #[test]
+    fn due_effects_clears_the_reused_batch() {
+        // A batch reused across substeps must not accumulate stale indices.
+        let m = model_event_and_intervention();
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut batch = crate::schedule::EffectBatch::default();
+        due_effects(&m, &fire, 1.0, 1.0, &mut batch); // fills it
+        assert!(!batch.is_empty());
+        due_effects(&m, &fire, 2.0, 1.0, &mut batch); // off-step → must clear
+        assert!(batch.is_empty(), "reused batch must be cleared on the off-step call");
     }
 }

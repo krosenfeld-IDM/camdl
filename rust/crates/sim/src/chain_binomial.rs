@@ -56,6 +56,12 @@ pub struct StepScratch {
     /// `int` deltas are fused into the draw via `pending_deltas`; `real` deltas
     /// apply to the real reservoir. Cleared per `step_one`.
     event_deltas: crate::effects::EffectDeltas,
+    /// Reusable due-batch for this substep — the interventions/events firing at
+    /// `t + dt`, derived ONCE per `step_one` via `due_effects` and consumed by
+    /// both the PROPOSE (event_idx) and INTERVENE (intervention_idx) stages.
+    /// Reused across substeps (one batch per particle) — no per-step allocation
+    /// on the inference hot path.
+    effect_batch: crate::schedule::EffectBatch,
 }
 
 /// How event counts are drawn — resolved from the IR at step start.
@@ -79,6 +85,7 @@ impl StepScratch {
             binomial_z_idx: 0,
             gamma_used: Vec::new(),
             event_deltas: crate::effects::EffectDeltas::default(),
+            effect_batch: crate::schedule::EffectBatch::default(),
             probs: Vec::with_capacity(n_tr),
         }
     }
@@ -471,15 +478,21 @@ pub fn step_one(
         flows[i] += count;
     }
 
+    // Compute the due batch for this substep ONCE (the single
+    // time_to_step + fire_steps.contains check), keyed on grid_dt at the
+    // boundary t + dt. Consumed by PROPOSE (event_idx) here and INTERVENE
+    // (intervention_idx) below — neither stage re-derives due-ness.
+    crate::effects::due_effects(model, fire_steps, t + dt, grid_dt, &mut scratch.effect_batch);
+
     // PROPOSE (stage 1): always_active event deltas from the start-of-step
     // snapshot (`scratch.int_s`/`scratch.real_s`, captured at the top of this
     // function before any draws). The integer deltas are fused into ADVANCE —
     // applied atomically with the transition deltas below; the real deltas apply
     // to the snapshot reservoir, which is written back to `real` at the end.
     scratch.event_deltas.clear();
-    crate::effects::resolve_events(
-        model, fire_steps, &scratch.int_s, &scratch.real_s, params, t, dt, grid_dt,
-        &mut scratch.event_deltas,
+    crate::effects::resolve_event_batch(
+        model, &scratch.effect_batch.event_idx, &scratch.int_s, &scratch.real_s,
+        params, t + dt, dt, &mut scratch.event_deltas,
     )?;
     for d in &scratch.event_deltas.int {
         scratch.pending_deltas.push((d.idx, d.delta));
@@ -546,8 +559,8 @@ pub fn step_one(
     // post-intervention state — byte-identical to the prior inline blocks.
     scratch.int_s.counts.copy_from_slice(counts);
     crate::lifecycle::apply_post_advance(
-        model, fire_steps, &mut scratch.int_s, &mut scratch.real_s,
-        params, t, dt, grid_dt, dt * 0.5, model.balance.as_ref(),
+        model, &scratch.effect_batch.intervention_idx, &mut scratch.int_s,
+        &mut scratch.real_s, params, t, dt, model.balance.as_ref(),
     )?;
     counts.copy_from_slice(&scratch.int_s.counts);
 

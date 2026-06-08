@@ -26,6 +26,11 @@ rand_distr = "0.4"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Inline-capacity vectors for the scheduling spine's TimelineStop reasons and
+# EffectBatch index lists — both small in the common case (≤4 reasons / due
+# effects per stop), so the inline storage avoids per-substep heap allocation
+# on the inference hot path. Already pinned at 1.15.1 via cli's dependency tree.
+smallvec = "1"
 thiserror = "1"
 
 [features]

@@ -131,10 +131,13 @@ pub fn run_tau_leap_with_observer(
             // already the boundary; pass `t - cfg.dt` so the shared seam's
             // `t_end = t + dt` lands on the boundary with the cfg.dt step key.
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
+                // The due batch at the boundary `t` (grid = cfg.dt): events at
+                // PROPOSE, interventions at INTERVENE, derived once.
+                let mut batch = crate::schedule::EffectBatch::default();
+                crate::effects::due_effects(model, &fire_steps, t, cfg.dt, &mut batch);
                 let mut ev = crate::effects::EffectDeltas::default();
-                crate::effects::resolve_events(
-                    model, &fire_steps, &int_s, &real_s, params, t - cfg.dt, cfg.dt, cfg.dt,
-                    &mut ev,
+                crate::effects::resolve_event_batch(
+                    model, &batch.event_idx, &int_s, &real_s, params, t, cfg.dt, &mut ev,
                 )?;
                 for d in &ev.int {
                     int_s.counts[d.idx] += d.delta;
@@ -143,8 +146,8 @@ pub fn run_tau_leap_with_observer(
                     real_s.values[d.idx] += d.delta;
                 }
                 crate::lifecycle::apply_post_advance(
-                    model, &fire_steps, &mut int_s, &mut real_s, params,
-                    t - cfg.dt, cfg.dt, cfg.dt, 1e-10, None,
+                    model, &batch.intervention_idx, &mut int_s, &mut real_s, params,
+                    t - cfg.dt, cfg.dt, None,
                 )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
@@ -305,17 +308,18 @@ pub fn run_tau_leap_with_observer(
         // start-of-step snapshot, FUSED into the transition deltas so both are
         // applied atomically in the drain below — exactly like chain_binomial.
         // This substep lands on the boundary `t + dt` (Exact policy); fire only
-        // when that boundary is a scheduled effect time. The boundary time is
-        // `t + dt`; pass `(t + dt) - cfg.dt` so the seam's `t_end` lands on the
-        // boundary with the cfg.dt step key (matching the prior
-        // `apply_events_at(t + dt, …, cfg.dt)` evaluation point — only the
-        // READ-SOURCE changes: snapshot, not post-drain state).
+        // when that boundary is a scheduled effect time. The due batch (events at
+        // PROPOSE, interventions at INTERVENE) is derived ONCE here at the
+        // boundary `t + dt` with the cfg.dt grid key and reused at INTERVENE
+        // below (the same boundary after `t += dt`).
         let boundary = t + dt;
+        let mut batch = crate::schedule::EffectBatch::default();
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - boundary).abs() < 1e-10) {
+            crate::effects::due_effects(model, &fire_steps, boundary, cfg.dt, &mut batch);
             let mut ev = crate::effects::EffectDeltas::default();
-            crate::effects::resolve_events(
-                model, &fire_steps, &snap_int, &snap_real, params,
-                boundary - cfg.dt, cfg.dt, cfg.dt, &mut ev,
+            crate::effects::resolve_event_batch(
+                model, &batch.event_idx, &snap_int, &snap_real, params,
+                boundary, cfg.dt, &mut ev,
             )?;
             for d in &ev.int {
                 pending_deltas.push((d.idx, d.delta));
@@ -357,13 +361,14 @@ pub fn run_tau_leap_with_observer(
         // INTERVENE (stage 3) on the post-advance state, if now at an effect
         // boundary. The event PROPOSE stage already fired this substep (fused
         // pre-drain, reading the snapshot), so only the intervention runs here —
-        // on the post-advance, post-event state. `t` is the boundary; pass
-        // `t - cfg.dt` so the seam's `t_end` lands on `t` with the cfg.dt step
-        // key. Balance is chain-only (None here).
+        // on the post-advance, post-event state, consuming the SAME `batch`
+        // derived at PROPOSE (this `t` == that boundary). `t` is the boundary;
+        // pass `t - cfg.dt` so the seam's `t_end` lands on `t`. Balance is
+        // chain-only (None here).
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
             crate::lifecycle::apply_post_advance(
-                model, &fire_steps, &mut int_s, &mut real_s, params,
-                t - cfg.dt, cfg.dt, cfg.dt, 1e-10, None,
+                model, &batch.intervention_idx, &mut int_s, &mut real_s, params,
+                t - cfg.dt, cfg.dt, None,
             )?;
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }

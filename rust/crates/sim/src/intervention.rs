@@ -103,52 +103,45 @@ pub fn intervention_fire_times(
     }
 }
 
-/// Apply all interventions scheduled at time `t` (in document order).
+/// Apply a known due batch of scheduled interventions at time `t_end` (in
+/// declaration order). The INTERVENE-stage apply half: it consumes the
+/// `intervention_idx` list [`due_effects`](crate::effects::due_effects) already
+/// derived, and does ONE job — apply those interventions — instead of
+/// re-deriving due-ness via `time_to_step + fire_steps.contains`.
+///
+/// `intervention_idx` lists exactly the firing scheduled (`!always_active`)
+/// interventions in declaration order; this function does not re-check
+/// `always_active` or `fire_steps`.
 ///
 /// `dt` is `dt_actual` — the realized integrator substep (not
 /// `model.simulation.dt`, which the compiled model carries only as a default —
 /// the runtime can override it via `SimConfig.dt`); it drives the effect-amount
-/// evaluation. `grid_dt` is the nominal model dt the `fire_steps` step-index
-/// table was built on (`resolve_fire_steps(grid_dt, …)`), so the intervention
-/// FIRING KEY is computed on `grid_dt`, not `dt`. They are equal under Snap and
-/// for on-grid Exact substeps, diverging only when an inference filter clips a
-/// substep to land on an off-grid observation — keying on `grid_dt` lands the
-/// clipped substep on the correct nominal step. See gh#53 for the compile/runtime
-/// split and docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A for the
-/// two step lengths.
-#[allow(clippy::too_many_arguments)]
-pub fn apply_interventions_at(
-    t: f64,
+/// evaluation. See docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A/§B
+/// for the two step lengths and the due-batch seam.
+pub fn apply_effect_batch(
+    t_end: f64,
     model: &CompiledModel,
-    fire_steps: &[std::collections::BTreeSet<i64>],
+    intervention_idx: &[usize],
     dt: f64,
-    grid_dt: f64,
     int_s: &mut IntState,
     real_s: &mut RealState,
     params: &[f64],
-    _tolerance: f64,
 ) -> Result<bool, SimError> {
     // Rm4 in 2026-04-19 engine review: guard against NaN t silently
-    // rounding to step 0. NaN `as i64` is 0 on current rustc, which
-    // would make every intervention match step 0 if an upstream bug
-    // ever produced NaN.
-    if !t.is_finite() {
+    // rounding to step 0. The due batch is derived from `time_to_step`, which
+    // debug-asserts finiteness; this keeps the runtime guard on the apply path.
+    if !t_end.is_finite() {
         return Err(SimError::Validation(format!(
-            "apply_interventions_at: non-finite t = {}", t
+            "apply_effect_batch: non-finite t = {}", t_end
         )));
     }
-    let current_step = crate::time::time_to_step(t, grid_dt);
-    let mut any_fired = false;
-    for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
-        if iv.always_active { continue; }
-        if fire_steps[iv_idx].contains(&current_step) {
-            crate::effects::apply_intervention_effects(
-                model, iv_idx, iv, int_s, real_s, params, t, dt,
-            )?;
-            any_fired = true;
-        }
+    for &iv_idx in intervention_idx {
+        let iv = &model.model.interventions[iv_idx];
+        crate::effects::apply_intervention_effects(
+            model, iv_idx, iv, int_s, real_s, params, t_end, dt,
+        )?;
     }
-    Ok(any_fired)
+    Ok(!intervention_idx.is_empty())
 }
 
 /// Apply always_active event actions directly to `int_s` / `real_s`.
@@ -173,14 +166,16 @@ pub fn apply_events_at(
             "apply_events_at: non-finite t = {}", t_event
         )));
     }
-    // `resolve_events` uses `t_end = t + dt` for the EvalCtx and `t_end / grid_dt`
-    // for the step-index lookup, so pass `t = t_event - dt` to land on
-    // `t_end = t_event`. `dt` here is the nominal grid the `fire_steps` were built
-    // on (gillespie's `iv_resolution_dt`); the realized substep coincides with it
-    // on this at-boundary event path, so it is both `dt_actual` and `grid_dt`.
+    // Events resolve at the boundary `t_event`. `dt` here is the nominal grid the
+    // `fire_steps` were built on (gillespie's `iv_resolution_dt`); the realized
+    // substep coincides with it on this at-boundary event path, so it is both
+    // `dt_actual` and `grid_dt`. `due_effects` keys the firing on `dt` (grid),
+    // then `resolve_event_batch` resolves the events against the current state.
+    let mut batch = crate::schedule::EffectBatch::default();
+    crate::effects::due_effects(model, fire_steps, t_event, dt, &mut batch);
     let mut ev = crate::effects::EffectDeltas::default();
-    crate::effects::resolve_events(
-        model, fire_steps, int_s, real_s, params, t_event - dt, dt, dt, &mut ev,
+    crate::effects::resolve_event_batch(
+        model, &batch.event_idx, int_s, real_s, params, t_event, dt, &mut ev,
     )?;
     let fired = !ev.is_empty();
     for d in &ev.int {

@@ -227,9 +227,12 @@ pub fn run_ode(
                 // interventions (sequential, post-event). Applied EXACTLY to the
                 // f64 vectors — no `to_states` round-trip — so the fractional
                 // integrator state survives the boundary (the de-quantization the
-                // ODE backend exists to provide).
-                crate::effects::apply_boundary_effects_continuous(
-                    model, &fire_steps, &mut int_vals, &mut real_vals, params, t, cfg.dt,
+                // ODE backend exists to provide). The due batch is derived once
+                // at the boundary `t` (grid = cfg.dt).
+                let mut batch = crate::schedule::EffectBatch::default();
+                crate::effects::due_effects(model, &fire_steps, t, cfg.dt, &mut batch);
+                crate::effects::apply_boundary_batch_continuous(
+                    model, &batch, &mut int_vals, &mut real_vals, params, t, cfg.dt,
                 )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
@@ -268,9 +271,12 @@ pub fn run_ode(
         // chain_binomial.
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
             // Continuous lifecycle (events then interventions), applied EXACTLY
-            // to the f64 vectors so the fractional integrator state survives.
-            crate::effects::apply_boundary_effects_continuous(
-                model, &fire_steps, &mut int_vals, &mut real_vals, params, t, cfg.dt,
+            // to the f64 vectors so the fractional integrator state survives. The
+            // due batch is derived once at the boundary `t` (grid = cfg.dt).
+            let mut batch = crate::schedule::EffectBatch::default();
+            crate::effects::due_effects(model, &fire_steps, t, cfg.dt, &mut batch);
+            crate::effects::apply_boundary_batch_continuous(
+                model, &batch, &mut int_vals, &mut real_vals, params, t, cfg.dt,
             )?;
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }

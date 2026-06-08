@@ -196,10 +196,14 @@ pub fn run_gillespie_with_observer(
                     // `t - iv_resolution_dt` lands the seam's `t_end` on `t`.
                     // Gillespie has no transition step at a boundary, so the
                     // start-of-step snapshot == current state and events stay
-                    // at-boundary (no fusion needed); balance is chain-only.
+                    // at-boundary (no fusion needed); balance is chain-only. The
+                    // due batch is derived once at the boundary `t` (grid =
+                    // iv_resolution_dt).
+                    let mut batch = crate::schedule::EffectBatch::default();
+                    crate::effects::due_effects(model, &fire_steps, t, iv_resolution_dt, &mut batch);
                     crate::lifecycle::apply_post_advance(
-                        model, &fire_steps, &mut int_s, &mut real_s, params,
-                        t - iv_resolution_dt, iv_resolution_dt, iv_resolution_dt, 1e-10, None,
+                        model, &batch.intervention_idx, &mut int_s, &mut real_s, params,
+                        t - iv_resolution_dt, iv_resolution_dt, None,
                     )?;
                     while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                     // Full recompute after intervention
@@ -243,10 +247,14 @@ pub fn run_gillespie_with_observer(
                 // at this boundary, since gillespie has no transition step here),
                 // then interventions on the post-event state.
                 apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
-                // INTERVENE (stage 3) via the shared seam (byte-identical).
+                // INTERVENE (stage 3) via the shared seam (byte-identical). The
+                // due batch is derived once at the boundary `t` (grid =
+                // iv_resolution_dt).
+                let mut batch = crate::schedule::EffectBatch::default();
+                crate::effects::due_effects(model, &fire_steps, t, iv_resolution_dt, &mut batch);
                 crate::lifecycle::apply_post_advance(
-                    model, &fire_steps, &mut int_s, &mut real_s, params,
-                    t - iv_resolution_dt, iv_resolution_dt, iv_resolution_dt, 1e-10, None,
+                    model, &batch.intervention_idx, &mut int_s, &mut real_s, params,
+                    t - iv_resolution_dt, iv_resolution_dt, None,
                 )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                 // Full recompute after intervention (integer state changed)

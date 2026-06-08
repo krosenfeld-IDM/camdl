@@ -37,7 +37,8 @@ use ir::{
 };
 use sim::{
     compiled_model::CompiledModel,
-    effects::{resolve_events, EffectDeltas},
+    effects::{due_effects, resolve_event_batch, EffectDeltas},
+    schedule::EffectBatch,
     inference::{
         obs_loglik::poisson_logpmf,
         particle_filter::bootstrap_filter,
@@ -194,21 +195,28 @@ fn resolve_events_keys_firing_on_grid_dt_not_clipped_dt() {
     let snap_int = IntState::from_vec(vec![100]);
     let snap_real = RealState::new(0);
 
-    // FIXED: firing keyed on grid_dt → event fires, emits +1 to N (local int 0).
+    // The boundary the clipped substep lands on: t_end = t0 + dt_actual = 4.0.
+    let t_end = t0 + dt_actual;
+
+    // FIXED: firing keyed on grid_dt → due_effects routes the event into the
+    // batch, resolve_event_batch emits +1 to N (local int 0).
+    let mut batch = EffectBatch::default();
+    due_effects(&compiled, &fire_steps, t_end, grid_dt, &mut batch);
+    assert_eq!(batch.event_idx.as_slice(), &[0],
+        "event must be due on the clipped substep keyed on grid_dt");
     let mut out = EffectDeltas::default();
-    resolve_events(&compiled, &fire_steps, &snap_int, &snap_real, &params,
-                   t0, dt_actual, grid_dt, &mut out).unwrap();
+    resolve_event_batch(&compiled, &batch.event_idx, &snap_int, &snap_real, &params,
+                        t_end, dt_actual, &mut out).unwrap();
     assert_eq!(out.int.len(), 1, "event must fire on the clipped substep keyed on grid_dt");
     assert_eq!(out.int[0].idx, 0, "the firing targets N (local int 0)");
     assert_eq!(out.int[0].delta, 1, "add(N, 1) → +1");
     assert!(out.real.is_empty());
 
     // NEGATIVE CONTROL (the old behaviour): keying on the clipped dt_actual lands
-    // on step 8, which is not in the table → the event silently SKIPS.
-    let mut buggy = EffectDeltas::default();
-    resolve_events(&compiled, &fire_steps, &snap_int, &snap_real, &params,
-                   t0, dt_actual, /* grid_dt = */ dt_actual, &mut buggy).unwrap();
-    assert!(buggy.is_empty(),
+    // on step 8, which is not in the table → the event is not due (silent SKIP).
+    let mut buggy_batch = EffectBatch::default();
+    due_effects(&compiled, &fire_steps, t_end, /* grid_dt = */ dt_actual, &mut buggy_batch);
+    assert!(buggy_batch.is_empty(),
         "keying on dt_actual misfires: the event would be silently skipped — the bug this fix removes");
 }
 

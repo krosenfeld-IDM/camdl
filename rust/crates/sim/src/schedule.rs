@@ -46,6 +46,70 @@
 //! shared-mutable cursor would corrupt it without failing any all-on-grid golden.
 //! Pinned by [`tests::n_cursors_identical_sequence`].
 
+use smallvec::SmallVec;
+
+/// Why a [`TimelineStop`] matters — one stop can carry several reasons (an
+/// output time that is ALSO an observation and a scheduled-effect boundary).
+/// The driver handles a stop's reasons in one declared canonical order rather
+/// than each backend re-deriving "what is due" at the landing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// A trajectory snapshot is due here ([`Schedule::output_times`]).
+    Output,
+    /// A scheduled effect (intervention / always-active event) fires here
+    /// ([`Schedule::effect_times`]).
+    ScheduledEffect,
+    /// An inference filter scores the likelihood here ([`Schedule::obs_times`]).
+    Observation,
+    /// The run window terminates here (`t_end`).
+    End,
+}
+
+/// The next boundary the integrator must land on, and every reason it matters.
+/// Returned by [`Schedule::next_stop`]: `t = min(t_end, next_output, next_effect,
+/// next_obs)` and `reasons` lists each kind whose own next time equals that `t`
+/// (within the schedule's tolerances). The driver consumes the reasons in one
+/// canonical order; effect application then reads a known due batch (see
+/// [`EffectBatch`]) instead of re-deriving due-ness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelineStop {
+    pub t: f64,
+    pub reasons: SmallVec<[StopReason; 4]>,
+}
+
+/// The interventions/events due to fire at one substep, pre-split by lifecycle
+/// stage so application carries a known list instead of re-deriving due-ness.
+/// Indices are into `model.model.interventions`, in DECLARATION ORDER (the
+/// firing order the discrete backends already used). Filled by
+/// [`crate::effects::due_effects`]; consumed by the PROPOSE / INTERVENE stages.
+///
+/// - `event_idx` — `always_active` interventions (events): fire at PROPOSE,
+///   resolved against the start-of-step snapshot and fused with the kernel draw.
+/// - `intervention_idx` — scheduled (`!always_active`) interventions: fire at
+///   INTERVENE, applied sequentially on the post-advance state.
+///
+/// Caller-provided + reused across substeps (the inference hot path runs one per
+/// particle per substep) — [`EffectBatch::clear`] resets it without freeing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EffectBatch {
+    pub event_idx: SmallVec<[usize; 4]>,
+    pub intervention_idx: SmallVec<[usize; 4]>,
+}
+
+impl EffectBatch {
+    /// Reset both index lists without releasing capacity, for reuse across
+    /// substeps.
+    pub fn clear(&mut self) {
+        self.event_idx.clear();
+        self.intervention_idx.clear();
+    }
+
+    /// Whether no intervention or event is due (the common off-step case).
+    pub fn is_empty(&self) -> bool {
+        self.event_idx.is_empty() && self.intervention_idx.is_empty()
+    }
+}
+
 /// How a fixed-step driver maps off-grid output/effect times onto its `dt` grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepPolicy {
@@ -70,8 +134,8 @@ pub struct Cursor {
 /// Tolerance for "an output time has been reached" — matches the
 /// `<= t + 1e-12` test the backends use at output emission.
 const OUTPUT_EPS: f64 = 1e-12;
-/// Tolerance for "an effect time has been reached" — matches the `1e-10` the
-/// exact backends pass to `apply_interventions_at`.
+/// Tolerance for "an effect time has been reached" — the `1e-10` window the
+/// exact backends use to decide an effect boundary has been hit.
 const EFFECT_EPS: f64 = 1e-10;
 
 /// Immutable, `Sync`, shared by every particle. Construction sorts the boundary
@@ -172,6 +236,49 @@ impl Schedule {
             StepPolicy::Snap => self.t_end,
         };
         Some(self.dt.min(boundary - t))
+    }
+
+    /// The next boundary the integrator must stop on AND every reason it
+    /// matters. `t = min(t_end, next_output, next_effect, next_obs)` for the
+    /// cursor; `reasons` lists each kind whose next time equals that `t` within
+    /// the schedule's tolerances (so a single stop can be simultaneously
+    /// `Output + Observation + ScheduledEffect`, and `End` whenever the min is
+    /// `t_end`). Returns `None` once the cursor has walked past `t_end`.
+    ///
+    /// PURE in `(self, cursor, t)` — does not mutate the cursor; the driver
+    /// advances each per-kind cursor (`pass_output` / `pass_effect` / `pass_obs`)
+    /// after consuming the corresponding reason. The reason set is built against
+    /// the SAME `OUTPUT_EPS` / `EFFECT_EPS` tolerances the `*_due_at` predicates
+    /// use, so "is this kind a reason for the stop" agrees with "is this kind due
+    /// at the landing."
+    ///
+    /// Added per the scheduling-spine §B. The backend boundary loops fully adopt
+    /// it in Step 3; here it is a correct, unit-tested primitive that the drivers
+    /// can drop in where clean.
+    pub fn next_stop(&self, cursor: &Cursor, t: f64) -> Option<TimelineStop> {
+        if t > self.t_end + OUTPUT_EPS {
+            return None;
+        }
+        let next_out = self.next_output(cursor);
+        let next_eff = self.next_effect(cursor);
+        let next_obs = self.next_obs(cursor);
+        let stop_t = self.t_end.min(next_out).min(next_eff).min(next_obs);
+
+        let mut reasons: SmallVec<[StopReason; 4]> = SmallVec::new();
+        // Canonical reason order: Output, ScheduledEffect, Observation, End.
+        if next_out <= stop_t + OUTPUT_EPS {
+            reasons.push(StopReason::Output);
+        }
+        if next_eff <= stop_t + EFFECT_EPS {
+            reasons.push(StopReason::ScheduledEffect);
+        }
+        if next_obs <= stop_t + EFFECT_EPS {
+            reasons.push(StopReason::Observation);
+        }
+        if stop_t >= self.t_end - OUTPUT_EPS {
+            reasons.push(StopReason::End);
+        }
+        Some(TimelineStop { t: stop_t, reasons })
     }
 
     /// Gillespie's query: the process proposes `t_proposed` (drawn exponential)
@@ -524,6 +631,81 @@ mod tests {
         let r2 = s2.clip(&cur, 3.0, 4.0);
         assert_eq!(r2.t, 3.0);
         assert!(r2.hit_boundary);
+    }
+
+    #[test]
+    fn next_stop_simultaneous_output_and_observation() {
+        // A time that is BOTH an output and an observation boundary: the stop
+        // carries both reasons (and ScheduledEffect if an effect also lands).
+        let s = Schedule::new(1.0, 12.0, 1.0, StepPolicy::Exact, vec![5.0], vec![5.0])
+            .with_obs(vec![5.0]);
+        let cur = Cursor::default();
+        let stop = s.next_stop(&cur, 4.0).unwrap();
+        assert_eq!(stop.t, 5.0);
+        assert!(stop.reasons.contains(&StopReason::Output));
+        assert!(stop.reasons.contains(&StopReason::Observation));
+        assert!(stop.reasons.contains(&StopReason::ScheduledEffect));
+        assert!(!stop.reasons.contains(&StopReason::End), "5.0 is not t_end");
+        // Reason order is canonical: Output, ScheduledEffect, Observation.
+        assert_eq!(
+            stop.reasons.as_slice(),
+            &[StopReason::Output, StopReason::ScheduledEffect, StopReason::Observation],
+        );
+    }
+
+    #[test]
+    fn next_stop_effect_only() {
+        // An off-grid effect with no coincident output/obs: a lone
+        // ScheduledEffect stop, landing exactly on the effect time.
+        let s = exact(1.0, 5.0, vec![], vec![2.5]);
+        let cur = Cursor::default();
+        let stop = s.next_stop(&cur, 2.0).unwrap();
+        assert_eq!(stop.t, 2.5);
+        assert_eq!(stop.reasons.as_slice(), &[StopReason::ScheduledEffect]);
+    }
+
+    #[test]
+    fn next_stop_end_only() {
+        // No outputs/effects/obs remaining before t_end: the next stop is the
+        // End boundary, with ONLY the End reason.
+        let s = exact(1.0, 5.0, vec![], vec![]);
+        let cur = Cursor::default();
+        let stop = s.next_stop(&cur, 4.0).unwrap();
+        assert_eq!(stop.t, 5.0);
+        assert_eq!(stop.reasons.as_slice(), &[StopReason::End]);
+    }
+
+    #[test]
+    fn next_stop_end_coincides_with_output() {
+        // An output exactly at t_end: the stop carries Output AND End.
+        let s = exact(1.0, 5.0, vec![5.0], vec![]);
+        let cur = Cursor::default();
+        let stop = s.next_stop(&cur, 4.0).unwrap();
+        assert_eq!(stop.t, 5.0);
+        assert_eq!(stop.reasons.as_slice(), &[StopReason::Output, StopReason::End]);
+    }
+
+    #[test]
+    fn next_stop_none_past_end() {
+        // Walked past t_end → no further stop.
+        let s = exact(1.0, 5.0, vec![], vec![]);
+        let cur = Cursor::default();
+        assert!(s.next_stop(&cur, 5.5).is_none(), "no stop once t is past t_end");
+        // At exactly t_end the End stop is still reported.
+        assert!(s.next_stop(&cur, 5.0).is_some());
+    }
+
+    #[test]
+    fn next_stop_t_is_the_next_boundary_min() {
+        // next_stop.t is exactly min(t_end, next_output, next_effect, next_obs)
+        // for the cursor — the same min the Exact substep clips to. A schedule
+        // with all four kinds pending: the nearest (the effect at 2.5) wins.
+        let s = Schedule::new(1.0, 12.0, 1.0, StepPolicy::Exact, vec![4.0], vec![2.5])
+            .with_obs(vec![7.3]);
+        let cur = Cursor::default();
+        let stop = s.next_stop(&cur, 1.0).unwrap();
+        assert_eq!(stop.t, 2.5, "nearest of {{12, 4, 2.5, 7.3}} is the effect at 2.5");
+        assert_eq!(stop.reasons.as_slice(), &[StopReason::ScheduledEffect]);
     }
 
     #[test]
