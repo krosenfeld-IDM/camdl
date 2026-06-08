@@ -127,6 +127,13 @@ pub enum CasError {
     /// should have taken the cache hit from `lookup` instead of claiming.
     #[error("artifact already completed at {path}")]
     AlreadyCompleted { path: String },
+    /// Defense-in-depth: after winning the lock, the leaf's `run.json` was
+    /// already `Completed`. A legitimate reclaim only ever clears a
+    /// crashed/incomplete leaf; a `Completed` record at clear-time means a
+    /// concurrent claimant finalized this leaf out from under us (a reclaim
+    /// race residual). Refuse loudly rather than blind-wipe a finished result.
+    #[error("refusing to clear a Completed leaf at {path} (concurrent finalize)")]
+    ReclaimRaceCompleted { path: String },
 }
 
 /// A bundle of named output files (e.g. `{traj.tsv, event_log.tsv}`).
@@ -381,9 +388,21 @@ impl FsCasStore {
             Err(e) => return Err(e.into()),
         }
 
-        // We now hold the exclusive lock. Clear any stale orphan contents
-        // (a prior crashed run's chain files + stale run.json), preserving
-        // only our fresh `.lock`.
+        // We now hold the exclusive lock. Defense-in-depth: a legitimate
+        // reclaim only ever clears a crashed/incomplete leaf (`resolve_claim_dir`
+        // returns `Reclaim`/`Fresh` only for non-`Completed` states). If the
+        // `run.json` is `Completed` here, a concurrent claimant finalized this
+        // leaf out from under us — refuse loudly rather than blind-wipe a
+        // finished result. (Fresh claims never see a `Completed` same-identity
+        // run.json: that would have surfaced as `AlreadyCompleted` above.)
+        if let ReadResult::Ok(r) = read_record(&dir) {
+            if r.status == RunStatus::Completed {
+                return Err(CasError::ReclaimRaceCompleted { path: dir.display().to_string() });
+            }
+        }
+
+        // Clear any stale orphan contents (a prior crashed run's chain files +
+        // stale run.json), preserving only our fresh `.lock`.
         clear_except_lock(&dir)?;
 
         let mut rec = running;
@@ -532,9 +551,10 @@ enum ExactSet {
 }
 
 /// Files the exact-set check and manifest builder ignore: the record itself,
-/// its tmp, and the Mode B locks (`.lock` and the `.reclaim` serializer).
+/// its tmp, and the Mode B locks (`.lock`, its atomic-rename temp `.lock.new`,
+/// and the `.reclaim` serializer).
 fn is_reserved(name: &str) -> bool {
-    matches!(name, "run.json" | "run.json.tmp" | ".lock" | ".reclaim")
+    matches!(name, "run.json" | "run.json.tmp" | ".lock" | ".lock.new" | ".reclaim")
 }
 
 fn read_record(dir: &Path) -> ReadResult {
@@ -772,21 +792,36 @@ fn reclaim_or_refuse(dir: &Path, lock: &Path) -> Result<(), CasError> {
         Err(e) if e.kind() == ErrorKind::AlreadyExists => return Err(fail(holder.unwrap_or(0))),
         Err(e) => return Err(e.into()),
     }
-    // The dead `.lock` is stable while we hold `.reclaim` — every other
-    // `create_new(.lock)` fails on it and funnels into this same gate — so
-    // removing it removes exactly the dead lock. A fresh claimant can only slip
-    // in *after* we free it, and the atomic `create_new` below hands the leaf
-    // to whoever wins that gap (we refuse if we lose). Release `.reclaim` on
-    // every path.
-    let _ = fs::remove_file(lock);
-    let outcome = match OpenOptions::new().write(true).create_new(true).open(lock) {
-        Ok(mut f) => match write!(f, "{}", std::process::id()).and_then(|_| f.sync_all()) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(CasError::from(e)),
-        },
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(fail(read_lock_pid(lock).unwrap_or(0))),
-        Err(e) => Err(CasError::from(e)),
-    };
+    // Take over the dead `.lock` WITHOUT ever leaving it absent. A bare
+    // claimant's `create_new(.lock)` must always fail (file present) so it
+    // funnels into this gate, where `.reclaim` blocks it — never a window in
+    // which `.lock` is gone and a bare `create_new` could succeed. So we write
+    // the live PID to a temp sibling, fsync it, then atomically `rename` it
+    // over `.lock`. `rename(2)` is atomic within a filesystem: `.lock` goes
+    // dead-PID → live-PID in one step, never absent. We hold `.reclaim`
+    // throughout; release it on every path.
+    let lock_new = dir.join(".lock.new");
+    // TEST-ONLY: fire the gap hook at the point the old code left `.lock`
+    // absent. Here `.lock` still holds the dead PID, so a concurrent bare
+    // claimant's create_new(.lock) fails → routes to reclaim → refuses. Inert
+    // in non-test builds.
+    #[cfg(test)]
+    reclaim_gap_hook(lock);
+    let outcome = (|| -> Result<(), CasError> {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_new)?;
+        write!(f, "{}", std::process::id())?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&lock_new, lock)?;
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_file(&lock_new);
+    }
     let _ = fs::remove_file(&reclaim);
     outcome
 }
@@ -843,6 +878,32 @@ fn write_record_atomic(dir: &Path, record: &RunRecord) -> Result<(), CasError> {
     write_file_synced(&tmp, &json)?;
     fs::rename(&tmp, dir.join("run.json"))?;
     Ok(())
+}
+
+/// TEST-ONLY hook fired inside `reclaim_or_refuse`, at the instant just before
+/// the dead `.lock` is taken over by the atomic rename — the point at which the
+/// pre-fix code left `.lock` observably absent. A test installs a closure here
+/// to drive a concurrent bare claimant into that instant and assert it is now
+/// refused (the TOCTOU proof). `None` for every test that does not opt in, so
+/// the reclaim path is unchanged for the rest of the suite.
+#[cfg(test)]
+type ReclaimGapHook = Box<dyn Fn(&Path) + Send>;
+
+#[cfg(test)]
+static RECLAIM_GAP_HOOK: std::sync::Mutex<Option<ReclaimGapHook>> = std::sync::Mutex::new(None);
+
+/// TEST-ONLY: serializes the tests that exercise `reclaim_or_refuse`, so an
+/// installed `RECLAIM_GAP_HOOK` (a process-global) never fires in another
+/// concurrently-running test's reclaim.
+#[cfg(test)]
+static RECLAIM_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn reclaim_gap_hook(lock: &Path) {
+    let guard = RECLAIM_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = guard.as_ref() {
+        h(lock);
+    }
 }
 
 #[cfg(test)]

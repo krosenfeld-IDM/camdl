@@ -320,6 +320,8 @@ fn mode_b_second_claim_fails_fast() {
 
 #[test]
 fn mode_b_reclaims_stale_lock_held_by_dead_pid() {
+    // Serialize against the gap-hook test: an installed hook is a process-global.
+    let _serial = super::RECLAIM_HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = tmp_root("deadpid");
     let store = FsCasStore::new(&root);
     let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
@@ -360,11 +362,157 @@ fn mode_b_reclaims_stale_running_when_unlocked() {
     cleanup(&root);
 }
 
+/// Deterministic proof of the remove→recreate TOCTOU in `reclaim_or_refuse`.
+///
+/// The `RECLAIM_GAP_HOOK` fires at exactly the point the buggy code left `.lock`
+/// absent (between removing the dead `.lock` and recreating it), and drives a
+/// real bare claimant through a full claim→write→finalize cycle there. On the
+/// buggy code the intruder's `create_new(.lock)` succeeds into the open gap and
+/// `finalize` removes `.lock`; the reclaimer then resumes, its
+/// `create_new(.lock)` succeeds against the absent lock, and it re-enters the
+/// critical section and `clear_except_lock`-wipes the intruder's just-completed
+/// result → **two** finalizes of the same leaf. Under the atomic-rename fix the
+/// intruder's `create_new(.lock)` always fails (`.lock` never absent) → it
+/// routes through reclaim → `.reclaim` held → refuses, and only the reclaimer
+/// wins.
+///
+/// The true contract — independent of which claimant wins — is **exactly one**
+/// successful finalize and an intact `Completed` leaf. Buggy: two successes
+/// (FAIL, every run). Fixed: one (PASS).
+#[test]
+fn mode_b_reclaim_gap_is_not_exploitable() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let root = tmp_root("reclaim_gap");
+    let store = Arc::new(FsCasStore::new(&root));
+    let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
+
+    // A definitely-dead PID for the planted crashed lock.
+    let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+    let dead_pid = child.id();
+    child.wait().expect("reap");
+
+    // Plant a crashed run: a `Running` leaf + orphan whose `.lock` holder is dead.
+    fs::remove_dir_all(&leaf).ok();
+    let c = store.claim_streaming(&leaf, record(id(0xaa))).unwrap();
+    c.write("orphan_chain.tsv", b"partial").unwrap();
+    drop(c);
+    fs::write(leaf.join(".lock"), dead_pid.to_string()).unwrap();
+
+    // Counts every claimant that finalizes a leaf. The contract is exactly one.
+    let finalizes = Arc::new(AtomicUsize::new(0));
+    let fired = Arc::new(AtomicBool::new(false));
+    // True iff the intruder's claim was refused — the atomic-rename fix's direct
+    // signature (`.lock` never absent ⇒ the bare `create_new(.lock)` fails ⇒
+    // reclaim ⇒ `.reclaim` held ⇒ refuse). Isolates the rename fix from the
+    // defense-in-depth guard, which would otherwise mask a still-open window.
+    let intruder_refused = Arc::new(AtomicBool::new(false));
+
+    // The gap hook is a process-global; serialize against the other tests that
+    // walk `reclaim_or_refuse` so an installed hook never fires in their
+    // context. Held for the whole test.
+    let _serial = super::RECLAIM_HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    // RAII disarm: restore the hook to `None` on every exit path (incl. an
+    // assertion unwind), so it can never leak into another test.
+    struct DisarmOnDrop;
+    impl Drop for DisarmOnDrop {
+        fn drop(&mut self) {
+            *super::RECLAIM_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+    let _disarm = DisarmOnDrop;
+
+    // Install the gap hook: exactly once, drive a real bare claimant through a
+    // full claim→write→finalize on a joined thread, so its whole cycle
+    // completes before the reclaimer resumes. The claim is tolerant of refusal
+    // (the correct behaviour under the fix): only a successful claim finalizes.
+    {
+        let store_h = Arc::clone(&store);
+        let leaf_h = leaf.clone();
+        let fin_h = Arc::clone(&finalizes);
+        let fired_h = Arc::clone(&fired);
+        let refused_h = Arc::clone(&intruder_refused);
+        let mut guard = super::RECLAIM_GAP_HOOK.lock().unwrap();
+        *guard = Some(Box::new(move |_lock: &std::path::Path| {
+            if fired_h.swap(true, Ordering::SeqCst) {
+                return; // fire only on the first reclaim
+            }
+            let leaf2 = leaf_h.clone();
+            let store2 = Arc::clone(&store_h);
+            let fin2 = Arc::clone(&fin_h);
+            let refused2 = Arc::clone(&refused_h);
+            std::thread::spawn(move || {
+                match store2.claim_streaming(&leaf2, record(id(0xaa))) {
+                    Ok(claim) => {
+                        claim
+                            .write("chain_intruder/trace.tsv", b"sweep\tll\n1\t-1.0\n")
+                            .unwrap();
+                        claim.finalize(record(id(0xaa))).unwrap();
+                        fin2.fetch_add(1, Ordering::SeqCst);
+                    }
+                    // Correct: the window is closed, the intruder is refused.
+                    Err(CasError::FitInProgress { .. }) | Err(CasError::AlreadyCompleted { .. }) => {
+                        refused2.store(true, Ordering::SeqCst);
+                    }
+                    Err(e) => panic!("intruder hit an unexpected error: {e:?}"),
+                }
+            })
+            .join()
+            .unwrap();
+        }));
+    }
+
+    // The reclaimer runs. If it wins the leaf it finalizes (as production code
+    // would); a refusal is also acceptable. The bug is *both* finalizing.
+    let reclaimer = store.claim_streaming(&leaf, record(id(0xaa)));
+
+    // Disarm now (the RAII guard is the panic-safe backstop).
+    *super::RECLAIM_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+    match reclaimer {
+        Ok(claim) => {
+            claim
+                .write("chain_reclaimer/trace.tsv", b"sweep\tll\n1\t-2.0\n")
+                .unwrap();
+            claim.finalize(record(id(0xaa))).unwrap();
+            finalizes.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(CasError::FitInProgress { .. }) | Err(CasError::AlreadyCompleted { .. }) => {}
+        // The defense-in-depth guard turns a residual race into this loud error
+        // rather than a silent clobber — also acceptable (no double-write).
+        Err(CasError::ReclaimRaceCompleted { .. }) => {}
+        Err(e) => panic!("unexpected reclaim error: {e:?}"),
+    }
+
+    assert!(fired.load(Ordering::SeqCst), "the gap hook never fired — the reclaim path was not exercised");
+    // The rename fix's direct signature: a bare claimant arriving in what was
+    // the gap is refused, because `.lock` is never observably absent.
+    assert!(
+        intruder_refused.load(Ordering::SeqCst),
+        "the intruder slipped into the reclaim gap (`.lock` was observably absent) — the window is still open"
+    );
+    assert_eq!(
+        finalizes.load(Ordering::SeqCst),
+        1,
+        "exactly one claimant must finalize the leaf — two means the reclaim gap was exploited (double-write)"
+    );
+    // The surviving leaf must be a single intact Completed Hit.
+    assert!(
+        matches!(store.lookup(&leaf, &LeafIdentity::new(id(0xaa))), Lookup::Hit(_)),
+        "the winning claimant's Completed leaf must be intact, not clobbered"
+    );
+    cleanup(&root);
+}
+
 #[test]
 fn mode_b_reclaim_is_exclusive_under_concurrency() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    // Serialize against the gap-hook test: an installed hook is a process-global.
+    let _serial = super::RECLAIM_HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = tmp_root("reclaim_race");
     let store = Arc::new(FsCasStore::new(&root));
     let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
