@@ -448,6 +448,10 @@ pub fn eval_propensities(
     }
 
     let ctx = EvalCtx { model, int_s, real_s, params, t, dt, projected: None, int_float_override: None };
+    // Activate the per-state binding cache for this propensity vector: each
+    // model binding is evaluated at most once instead of on every BindingRef
+    // (the on-demand path is restored when `_cache` drops at function exit).
+    let _cache = crate::resolved_expr::CacheScope::enter(model.resolved.bindings.len());
     // Bench/validation switch (eval_stats::eval_unresolved): off → the
     // pre-resolved index path (default, hot); on → the string-keyed
     // eval_expr path. Read once here and branched per-transition below,

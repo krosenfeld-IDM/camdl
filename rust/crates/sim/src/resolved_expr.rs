@@ -9,7 +9,9 @@
 //! maps, surfacing errors at model construction. The evaluator (`eval_resolved`)
 //! is infallible — no `Result`, no HashMap probes, just array indexing.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use ir::expr::{BinOp, Expr, UnOp};
 use ir::table::OobPolicy;
@@ -242,6 +244,121 @@ pub fn resolve_expr(expr: &Expr, ctx: &ResolveCtx<'_>) -> Result<ResolvedExpr, S
     }
 }
 
+// ── Binding evaluation cache ─────────────────────────────────────────────────
+//
+// A Fix-B hoisted binding (`N[l]`, `I_agg[l]`, …) is referenced once per
+// destination stratum — ~945× each on a dense P=44 spatial model — and
+// `BindingRef` re-evaluates its body on every reference. Within ONE
+// propensity-vector evaluation (a single state snapshot) a binding's value is
+// constant, so we memoize: compute once per state, reuse across all rate trees.
+// Measured: `eval_resolved` is 46–54% of sim-thread compute, dominated by these
+// redundant re-evals.
+//
+// Correctness:
+// - thread-local: PF/PGAS parallelise across particles; each worker owns its
+//   cache, so there is no cross-particle aliasing.
+// - `active` only inside `eval_propensities` (via `CacheScope`): the cache holds
+//   one state's values. Observation-likelihood / gradient evals run at other
+//   states and outside this scope, so they fall through to on-demand eval —
+//   byte-identical to the pre-cache behaviour.
+// - O(1) invalidation: a generation counter bumped per `eval_propensities`
+//   call; a slot is fresh iff its stamp equals the current generation.
+//
+// Pinned by the byte-identical A/B gate (`tests/gate_binding_cache_ab.rs`):
+// cache on vs off → identical trajectories.
+
+#[derive(Default)]
+struct BindingCache {
+    val:    Vec<f64>,
+    stamp:  Vec<u32>,
+    gen:    u32,
+    active: bool,
+    /// Lifetime hit count on this thread. Read by the A/B gate to prove the
+    /// cache actually served hits (else byte-identity proves nothing). Not used
+    /// on the hot path beyond a single increment per hit.
+    hits:   u64,
+}
+
+thread_local! {
+    static BINDING_CACHE: RefCell<BindingCache> = RefCell::new(BindingCache::default());
+}
+
+thread_local! {
+    /// Per-thread test/bench override of the cache state. `None` → fall through
+    /// to the `CAMDL_NO_BINDING_CACHE` env default.
+    static CACHE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Escape hatch (A/B gate / debugging): `CAMDL_NO_BINDING_CACHE` forces the
+/// on-demand path, making a run comparable to the pre-cache evaluator. The
+/// per-thread override (set by the A/B gate) wins so cache-on and cache-off can
+/// be compared in one process.
+fn binding_cache_disabled() -> bool {
+    if let Some(off) = CACHE_OVERRIDE.with(|c| c.get()) {
+        return off;
+    }
+    static OFF: OnceLock<bool> = OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("CAMDL_NO_BINDING_CACHE").is_some())
+}
+
+/// Test/bench hook: force the binding cache off (`true`) or on (`false`) for the
+/// current thread, overriding `CAMDL_NO_BINDING_CACHE`. The A/B gate uses it to
+/// run cache-on and cache-off in one process and assert byte-identity.
+pub fn set_binding_cache_disabled(off: bool) {
+    CACHE_OVERRIDE.with(|c| c.set(Some(off)));
+}
+
+/// Test/bench hook: read and reset this thread's cumulative binding-cache hit
+/// count. The A/B gate calls it after a cache-on run to assert hits > 0 (the
+/// cache served reuse — so byte-identity is a non-vacuous claim).
+pub fn take_binding_cache_hits() -> u64 {
+    BINDING_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let n = c.hits;
+        c.hits = 0;
+        n
+    })
+}
+
+/// RAII scope that activates the binding cache for one propensity-vector
+/// evaluation. `enter` bumps the generation (invalidating the prior state's
+/// values) and marks the cache active; `Drop` deactivates it so any eval
+/// outside the propensity loop never reads a stale value.
+pub struct CacheScope;
+
+impl CacheScope {
+    #[inline]
+    pub fn enter(n_bindings: usize) -> Self {
+        if !binding_cache_disabled() {
+            BINDING_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.val.len() != n_bindings {
+                    c.val = vec![0.0; n_bindings];
+                    c.stamp = vec![0; n_bindings];
+                    c.gen = 0;
+                }
+                c.gen = c.gen.wrapping_add(1);
+                if c.gen == 0 {
+                    // Generation wrapped: clear stamps so no stale slot aliases gen 0.
+                    c.stamp.iter_mut().for_each(|s| *s = 0);
+                    c.gen = 1;
+                }
+                c.active = true;
+            });
+        }
+        CacheScope
+    }
+}
+
+impl Drop for CacheScope {
+    #[inline]
+    fn drop(&mut self) {
+        if !binding_cache_disabled() {
+            BINDING_CACHE.with(|c| c.borrow_mut().active = false);
+        }
+    }
+}
+
 // ── Infallible evaluator ─────────────────────────────────────────────────────
 
 /// Evaluate a pre-resolved expression. **Infallible** — all name validation
@@ -399,7 +516,36 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
         ResolvedExpr::Reduce(terms) => terms.iter().map(|t| eval_resolved(t, ctx)).sum(),
         // On-demand: evaluate the binding's body. Topologically ordered (a binding
         // only references earlier ones), so this recursion terminates.
-        ResolvedExpr::BindingRef(slot) => eval_resolved(&ctx.model.resolved.bindings[*slot], ctx),
+        ResolvedExpr::BindingRef(slot) => {
+            // Memoized within one propensity-vector evaluation (see BindingCache).
+            // The borrow is released before the miss-path recursion below — a
+            // binding body may reference earlier bindings, re-entering this arm.
+            let hit = BINDING_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.active && *slot < c.stamp.len() && c.stamp[*slot] == c.gen {
+                    c.hits = c.hits.wrapping_add(1);
+                    Some(c.val[*slot])
+                } else {
+                    None
+                }
+            });
+            match hit {
+                Some(v) => v,
+                None => {
+                    // Borrow released before recursing — a binding body may
+                    // reference earlier bindings, which re-enter this arm.
+                    let v = eval_resolved(&ctx.model.resolved.bindings[*slot], ctx);
+                    BINDING_CACHE.with(|c| {
+                        let mut c = c.borrow_mut();
+                        if c.active && *slot < c.val.len() {
+                            c.val[*slot] = v;
+                            c.stamp[*slot] = c.gen;
+                        }
+                    });
+                    v
+                }
+            }
+        }
     }
 }
 

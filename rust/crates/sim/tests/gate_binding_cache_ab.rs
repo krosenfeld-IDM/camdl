@@ -1,0 +1,158 @@
+//! A/B gate for the runtime binding cache (the byte-identical soundness proof
+//! the cache's claim rests on).
+//!
+//! The cache (`resolved_expr.rs`, `BindingCache`/`CacheScope`) memoizes each
+//! model binding's value for the lifetime of one propensity-vector evaluation,
+//! so a binding referenced N times in the rate trees (e.g. `N_p`/`I_agg_p` in a
+//! spatial FOI, ~945× on a dense P=44 model) is computed once per state instead
+//! of N times. It claims to be *trajectory-preserving*: a memoized value within
+//! one state snapshot is identical to recomputing it. This gate makes that claim
+//! a test.
+//!
+//! Unlike the constant-fold gate, the A side and B side are the SAME model — the
+//! only difference is the cache flag, flipped in-process via
+//! `set_binding_cache_disabled`. The fixture `sparse_coupling_ab_folded.ir.json`
+//! has 18 hoisted bindings (`beta`, `seas`, and per-patch `I_agg_p*`/`N_p*`),
+//! referenced repeatedly across the spatial transition rates.
+//!
+//! Two assertions:
+//!   1. NON-VACUITY — with the cache ON, a run must register binding-cache hits
+//!      (`take_binding_cache_hits() > 0`). A green test where the cache never
+//!      served a hit would prove nothing; this guards it.
+//!   2. SOUNDNESS — for every supported backend at a fixed seed, the cache-on and
+//!      cache-off runs simulate to a byte-identical trajectory (same FNV-1a
+//!      hash). This is what "trajectory-preserving" means.
+
+use std::path::PathBuf;
+use sim::{
+    compiled_model::CompiledModel,
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig, TauLeapConfig},
+    resolved_expr::{set_binding_cache_disabled, take_binding_cache_hits},
+    simulate::Simulate,
+    ChainBinomialSim, GillespieSim, OdeSim, TauLeapSim,
+};
+
+const SEED: u64 = 42;
+
+fn fixtures_dir() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    PathBuf::from(&manifest).join("tests/fixtures")
+}
+
+fn load(name: &str) -> ir::Model {
+    let path = fixtures_dir().join(format!("{}.ir.json", name));
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read {:?}: {}", path, e));
+    ir::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e))
+}
+
+/// FNV-1a/64 over the full trajectory numeric content — the same hash the
+/// constant-fold A/B gate uses. Deterministic and platform-independent.
+fn trajectory_hash(traj: &sim::state::Trajectory) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut mix = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    };
+    for snap in &traj.snapshots {
+        mix(&snap.t.to_bits().to_le_bytes());
+        for &c in &snap.int_state.counts {
+            mix(&c.to_le_bytes());
+        }
+        for &v in &snap.real_state.values {
+            mix(&v.to_bits().to_le_bytes());
+        }
+        for &f in &snap.flows.counts {
+            mix(&f.to_le_bytes());
+        }
+    }
+    h
+}
+
+#[test]
+fn gate_binding_cache_is_byte_identical() {
+    sim::eval_stats::set_allow_degenerate_rates(true);
+
+    let model = load("sparse_coupling_ab_folded");
+
+    // The cache only proves something if the model actually has bindings to
+    // cache. (The hit-count assertion below is the load-bearing non-vacuity
+    // check; this is a fast sanity guard on the fixture.)
+    assert!(
+        !model.bindings.is_empty(),
+        "fixture has no bindings — the binding cache A/B gate is vacuous; pick a \
+         model with hoisted bindings (per-patch N_p/I_agg_p)"
+    );
+
+    let compiled = CompiledModel::new(model.clone()).expect("model failed to compile");
+    let params = compiled.default_params.clone();
+
+    let t_start = model.simulation.t_start;
+    let t_end = model.simulation.t_end;
+
+    let backends: &[(&str, SimConfig)] = &[
+        ("gillespie", SimConfig::Gillespie(GillespieConfig { t_start, t_end, output_dt: None })),
+        ("tau_leap", SimConfig::TauLeap(TauLeapConfig { t_start, t_end, dt: 0.5 })),
+        ("chain_binomial", SimConfig::ChainBinomial(ChainBinomialConfig { t_start, t_end, dt: 1.0 })),
+        ("ode", SimConfig::Ode(OdeConfig { t_start, t_end, dt: 1.0 })),
+    ];
+
+    let required = compiled.required_capabilities();
+    let mut checked = 0usize;
+    for (backend, config) in backends {
+        let sim: &dyn Simulate = match *backend {
+            "gillespie" => &GillespieSim,
+            "tau_leap" => &TauLeapSim,
+            "ode" => &OdeSim,
+            _ => &ChainBinomialSim,
+        };
+        if !(required - sim.capabilities()).is_empty() {
+            continue;
+        }
+
+        // B side: cache OFF (the pre-cache on-demand evaluator).
+        set_binding_cache_disabled(true);
+        let traj_off = sim
+            .run(&compiled, &params, SEED, config)
+            .unwrap_or_else(|e| panic!("cache-off {backend} sim failed: {e:?}"));
+        let h_off = trajectory_hash(&traj_off);
+
+        // A side: cache ON. Clear the hit counter, run, then read it back.
+        set_binding_cache_disabled(false);
+        let _ = take_binding_cache_hits();
+        let traj_on = sim
+            .run(&compiled, &params, SEED, config)
+            .unwrap_or_else(|e| panic!("cache-on {backend} sim failed: {e:?}"));
+        let hits = take_binding_cache_hits();
+        let h_on = trajectory_hash(&traj_on);
+
+        // ── 1. NON-VACUITY ──────────────────────────────────────────────────
+        // Every backend here evaluates propensities through `eval_propensities`
+        // (the ODE backend builds its derivatives from the same rate trees), so
+        // each must register cache hits — verified: gillespie 248, tau_leap
+        // 45260, chain_binomial / ode 22630 on this fixture. Zero hits means the
+        // cache was never exercised and byte-identity would prove nothing.
+        assert!(
+            hits > 0,
+            "{backend}: binding cache served 0 hits — the A/B gate is vacuous \
+             (cache never exercised). Expected the spatial FOI to re-reference \
+             N_p/I_agg_p within a propensity step."
+        );
+
+        // ── 2. SOUNDNESS ────────────────────────────────────────────────────
+        assert_eq!(
+            h_off, h_on,
+            "TRAJECTORY DIVERGED on {backend}: the binding cache is NOT \
+             byte-identical (cache-off 0x{h_off:016x} != cache-on 0x{h_on:016x}). \
+             This is a soundness bug in the cache, not a golden update."
+        );
+        eprintln!("{backend}: byte-identical (hash 0x{h_off:016x}), cache hits = {hits}");
+        checked += 1;
+    }
+    assert!(checked >= 3, "expected at least 3 backends checked, got {checked}");
+
+    // Leave the override cleared so other tests on this thread are unaffected.
+    set_binding_cache_disabled(false);
+}
