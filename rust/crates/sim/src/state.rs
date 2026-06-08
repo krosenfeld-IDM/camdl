@@ -111,7 +111,7 @@ pub struct Snapshot {
 #[derive(Debug, Clone)]
 pub struct Trajectory {
     pub snapshots: Vec<Snapshot>,
-    /// Per-transition firing diagnostics (populated by Gillespie; empty for tau-leap/chain-binomial).
+    /// Per-transition firing diagnostics (populated by Gillespie; empty for chain-binomial).
     pub transition_diagnostics: Vec<crate::transition_diagnostics::TransitionDiagnostics>,
 }
 

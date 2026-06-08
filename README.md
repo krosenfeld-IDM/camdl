@@ -28,7 +28,7 @@ model.camdl ──→ camdlc ──→ model.ir.json
 | Domain               | What camdl does                                                                                                                                                                                                                                                                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Modelling**        | Compartments, stratification (age, space, risk), contact matrices, Erlang staging, forcing functions, interventions, events, balance constraints, scenarios                                                                                                                                                                           |
-| **Simulation**       | Gillespie SSA, tau-leap, chain-binomial (Euler-multinomial), ODE (RK4). Extra-demographic stochasticity via `overdispersed()`. Deterministic flows via `deterministic()`.                                                                                                                                                             |
+| **Simulation**       | Gillespie SSA, chain-binomial (Euler-multinomial), ODE (RK4). Extra-demographic stochasticity via `overdispersed()`. Deterministic flows via `deterministic()`.                                                                                                                                                             |
 | **Inference**        | IF2 (MLE), PGAS with NUTS (Bayesian posterior), bootstrap particle filter, 1D/2D profiles. Source-to-source autodiff: compiler emits gradient expressions, enabling HMC.                                                                                                                                                              |
 | **Fitting workflow** | Declarative `fit.toml` (named stages → `camdl fit run`). IF2 finds the MLE; PGAS+NUTS characterises the Bayesian posterior with exact complete-data likelihood + analytical gradients from the compiler. Mandatory convergence gates between stages, Richardson dt-convergence audit after every fit, content-addressable provenance. |
 | **Experiments**      | Multi-scenario seed ensembles, Sobol sensitivity analysis, parameter sweeps. Content-addressable output with caching.                                                                                                                                                                                                                 |
@@ -283,19 +283,18 @@ Full reference: [`docs/camdl-language-spec.md`](docs/camdl-language-spec.md)
 ## Simulation
 
 ```bash
-camdl simulate MODEL [--backend gillespie|tau_leap|chain_binomial|ode]
+camdl simulate MODEL [--backend gillespie|chain_binomial|ode]
     [--dt DT] [--seed N] [--params P.toml] [--param K=V] [--output FILE]
 ```
 
 | Backend        | Flag                                | Notes                                           |
 | -------------- | ----------------------------------- | ----------------------------------------------- |
 | Gillespie SSA  | `--backend gillespie`               | Exact stochastic; default                       |
-| Tau-leap       | `--backend tau_leap --dt 0.5`       | Poisson approximation                           |
 | Chain-binomial | `--backend chain_binomial --dt 1.0` | Euler-multinomial (multinomial competing risks) |
 | ODE (RK4)      | `--backend ode --dt 0.1`            | Deterministic                                   |
 
 Same seed + same backend = identical trajectory (Common Random Numbers).
-`overdispersed()` requires tau-leap or chain-binomial. The backend capability
+`overdispersed()` requires chain-binomial. The backend capability
 system enforces this at dispatch time.
 
 ---

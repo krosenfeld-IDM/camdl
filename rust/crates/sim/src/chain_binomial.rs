@@ -134,7 +134,7 @@ pub fn run_chain_binomial(
 /// and is fed each transition's per-step flow count *after* `step_one` has
 /// drawn it, against the **start-of-step** state captured before `step_one`
 /// mutated the counts. This is the trajectory-invariance invariant (Tier 2a).
-/// Like tau-leap, chain-binomial fires `k` events per transition per step
+/// Chain-binomial fires `k` events per transition per step
 /// against frozen start-of-step rates, so the observer samples parents from a
 /// frozen pool snapshot — the `dt`-bias the diagnostic measures.
 pub fn run_chain_binomial_with_observer(

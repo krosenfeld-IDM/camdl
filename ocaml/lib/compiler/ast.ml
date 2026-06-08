@@ -113,7 +113,7 @@ type stoich_ref = string * index_item list
     - [DstBranch] (wave 2 / malaria #2) is a probabilistic branch:
       `X --> { A : w_A, B : w_B } @ rate`. The expander desugars each
       branch into its own IR transition with rate `w_i * rate`. The
-      existing chain-binomial / tau-leap source-grouping machinery
+      existing chain-binomial source-grouping machinery
       then performs the correct multinomial split at firing time. *)
 type destination_form =
   | DstSum    of stoich_ref list

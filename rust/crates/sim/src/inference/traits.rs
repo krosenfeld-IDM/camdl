@@ -36,7 +36,7 @@ pub trait Resettable {
 /// and allocate reusable scratch buffers.
 ///
 /// Generic over State and Scratch to support different backends
-/// (chain-binomial, tau-leap, Gillespie) without boxing.
+/// (chain-binomial, Gillespie) without boxing.
 pub trait ProcessModel: Send + Sync {
     /// Particle state type.
     /// - `Clone`: resampling copies particles.

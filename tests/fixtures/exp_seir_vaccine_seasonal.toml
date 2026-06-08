@@ -1,11 +1,11 @@
 # Polio model extended with sinusoidal seasonal forcing (N=1M).
-# Tau-leap is essential at this population size.
+# Chain-binomial (Euler-multinomial) at this population size.
 # Assesses whether SIA impact changes under seasonal transmission.
 
 [config]
 model = "ocaml/golden/seir_vaccine_seasonal.camdl"
 params = "ocaml/golden/seir_vaccine_seasonal.params.toml"
-backend = "tau_leap"
+backend = "chain_binomial"
 dt = 1.0
 
 [config.seeds]

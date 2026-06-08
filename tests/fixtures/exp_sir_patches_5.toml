@@ -1,11 +1,11 @@
 # Five spatially heterogeneous regions with patch-specific R0 values.
-# Tau-leap (dt=0.5d) compares fast recovery (~5d infectious) vs
+# Chain-binomial (dt=0.5d) compares fast recovery (~5d infectious) vs
 # slow recovery (~14d infectious) across all patches simultaneously.
 
 [config]
 model = "ocaml/golden/sir_patches_5.camdl"
 params = "ocaml/golden/sir_patches_5.params.toml"
-backend = "tau_leap"
+backend = "chain_binomial"
 dt = 0.5
 
 [config.seeds]

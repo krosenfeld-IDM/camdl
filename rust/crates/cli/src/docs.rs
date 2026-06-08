@@ -75,7 +75,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         slug: "backends",
         aliases: &["runtimes", "simulate"],
-        summary: "Simulation backends: Gillespie, tau-leap, chain-binomial, ODE",
+        summary: "Simulation backends: Gillespie, chain-binomial, ODE",
         body: include_str!("../../../../docs/runtimes.md"),
     },
     Topic {

@@ -190,7 +190,7 @@ fn collect_int_comp_deps(
 /// output/intervention boundary as time advances (the SSA otherwise freezes a
 /// transition's propensity between events). Missing `Expr::Time` here means a
 /// rate that depends on bare `t` is frozen at its `t=0` value under Gillespie,
-/// silently producing wrong dynamics (the chain-binomial / tau-leap backends
+/// silently producing wrong dynamics (the chain-binomial backend
 /// re-evaluate every substep regardless, so they are unaffected).
 fn expr_is_time_dependent(expr: &Expr, bindings: &HashMap<&str, &Expr>) -> bool {
     match expr {

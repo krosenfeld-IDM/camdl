@@ -272,7 +272,7 @@ pub trait TransitionObserver {
         params: &[f64],
     ) -> Result<(), SimError>;
 
-    /// Begin a batch step (tau-leap / chain-binomial): the backend has frozen
+    /// Begin a batch step (chain-binomial): the backend has frozen
     /// rates and pools at step start and will feed `on_fired` with `multiplicity
     /// >= 1` and `batched = true`. Default no-op — the [`EventRecorder`] flips
     /// its `in_batch` flag so replay can reproduce the frozen-pool semantics.

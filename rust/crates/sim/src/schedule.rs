@@ -322,7 +322,7 @@ impl Schedule {
 
     /// The current (next un-applied) effect time for `cursor`, or `None` past the
     /// end. The backend keeps its own firing-tolerance check against this time
-    /// (e.g. tau-leap's `(iv - t).abs() < 1e-10`).
+    /// (e.g. the clipped-boundary `(iv - t).abs() < 1e-10` check).
     pub fn effect_time(&self, cursor: &Cursor) -> Option<f64> {
         self.effect_times.get(cursor.effect_idx).copied()
     }

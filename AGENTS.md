@@ -41,7 +41,7 @@ compiler (`camdlc`) reads the `.camdl` file, dim-checks every expression,
 expands stratification at compile time, emits source-to-source gradients for
 every rate, and serialises the result as a versioned IR JSON envelope. The Rust
 runtime (`camdl`) consumes that IR and runs simulation backends (Gillespie,
-tau-leap, chain-binomial, ODE) plus inference algorithms (particle filter, IF2,
+chain-binomial, ODE) plus inference algorithms (particle filter, IF2,
 PGAS+NUTS, PMMH). Parameter values are supplied at runtime — the model file is
 parameter-free.
 
@@ -166,7 +166,7 @@ Run-time errors from `camdl simulate` / `pfilter` / `if2` / `fit`:
 | `SimError::NumericalCollapse { kind: PowNanInf / SqrtNegative }`    | Negative base raised to fractional power, or sqrt of negative                                                   | Domain bug in the rate expression. Add a guard or fix the formula.                                                                                                                                                               |
 | `SimError::NegativeCount { cause: BinomialOvershoot }`              | Binomial split overshot (rate × dt → 1 for some particle). Common in inference exploration                      | If during `simulate`: reduce `--dt`. If during `fit`: per-particle recovery handles it (the offending particle gets `−Inf` log-likelihood and is killed in resampling). Watch the `eval-stats` summary for how often this fires. |
 | `SimError::NegativeCount { cause: InterventionAddNegative }`        | An `Action::Add` expression resolved to a negative value                                                        | Config bug. There's no inference scenario where `Add` should remove individuals. Fix the expression or use `transfer` instead of `add`.                                                                                          |
-| `requires capabilities: BALANCE` (on tau_leap/gillespie/ode)        | Model uses `balance { ... }`; only chain-binomial supports it                                                   | Use `--backend chain_binomial`. Don't try to translate `balance` to a manual transition — its semantics are chain-binomial-specific (the residual-compartment fix).                                                              |
+| `requires capabilities: BALANCE` (on gillespie/ode)                 | Model uses `balance { ... }`; only chain-binomial supports it                                                   | Use `--backend chain_binomial`. Don't try to translate `balance` to a manual transition — its semantics are chain-binomial-specific (the residual-compartment fix).                                                              |
 | `--record-prequential requires --stage <pfilter-stage>`             | Flag used with a non-PFilter stage                                                                              | Pass `--stage` with a PFilter stage from your fit.toml. The error message lists available PFilter stages.                                                                                                                        |
 | `pgas refuses to run with implicit improper-uniform priors`         | `[estimate.X]` block exists with no `[estimate.X.prior]`                                                        | Add an explicit prior. For uniform-on-bounds: `prior = { uniform = { lower = ..., upper = ... } }`. **Do not** add a wide normal "to make it shut up" — the prior shows up in the posterior.                                     |
 | `PGAS gradient does not yet include obs-likelihood ... derivatives` | Estimating `rho`, `psi`, `k`, or any param appearing in the obs-likelihood / overdispersion expression          | Move that param to fixed (`[fixed.rho] value = ...`) and either grid-search it, or fit it with IF2 first (gradient-free). Full obs-likelihood gradient threading is on the roadmap (audit C1 follow-up).                         |
@@ -202,9 +202,8 @@ with `camdl fit summary` for context.
 
 ## Idioms / anti-idioms
 
-**Backend choice for fits.** Use `chain_binomial`. Gillespie is for
-forward-simulation sanity checks, not fits (too slow). Tau-leap is fine but
-chain-binomial is the production fit backend.
+**Backend choice for fits.** Use `chain_binomial` — the production fit backend.
+Gillespie is for forward-simulation sanity checks, not fits (too slow).
 
 **Always `camdl survey` before `camdl fit run`.** Surveying is the cheapest hour
 of compute in the pipeline; fitting a model you haven't surveyed is the single

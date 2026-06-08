@@ -48,7 +48,7 @@ not along directory boundaries:
   consume + shared plumbing (see below). Most reviews anchored in fit accuracy /
   convergence / output shape land here. This zip is the most common request.
 
-- **`engine`** — simulation backends (Gillespie, tau-leap, ODE, chain-binomial),
+- **`engine`** — simulation backends (Gillespie, ODE, chain-binomial),
   propensity evaluator, intervention processing, obs sampling + shared plumbing.
   Reviews of simulate, scenarios, sweep batches, or any "does the forward
   simulation compute the right thing" question land here.

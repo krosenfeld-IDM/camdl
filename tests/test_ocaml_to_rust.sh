@@ -42,7 +42,7 @@ print(s[0]['name'] if s else '')
     fi
 
     ok=1
-    for backend in gillespie tau_leap chain_binomial; do
+    for backend in gillespie chain_binomial; do
         tmperr=$(mktemp /tmp/camdl_err_XXXXXX)
         # gh#audit-C6: --allow-degenerate-rates restores the legacy
         # silent-zero on rate-eval collapse. The integration test

@@ -42,7 +42,7 @@ use super::{CompartmentId, DemeId, IdentityState, IndividualId, LineageRng, Pare
 
 /// A frozen clone of the parent pools at the start of a batched step.
 ///
-/// tau-leap / chain-binomial fire `k` events against rates and pools frozen at
+/// chain-binomial fires `k` events against rates and pools frozen at
 /// step start. The shipped observer sampled all `k` *parents* from a snapshot
 /// taken at step start, so a child minted earlier in the step is invisible as a
 /// same-step parent (proposal §11 open-question 3). Realize reproduces this:

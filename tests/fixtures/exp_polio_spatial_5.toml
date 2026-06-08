@@ -1,11 +1,11 @@
 # Five regions with heterogeneous R0 and gravity-driven spatial coupling.
-# Tau-leap (dt=1d) compares isolated patches (kappa=0) vs coupled (kappa=0.05)
+# Chain-binomial (dt=1d) compares isolated patches (kappa=0) vs coupled (kappa=0.05)
 # to assess elimination probability differences.
 
 [config]
 model = "ocaml/golden/polio_spatial_5.camdl"
 params = "ocaml/golden/polio_spatial_5.params.toml"
-backend = "tau_leap"
+backend = "chain_binomial"
 dt = 1.0
 
 [config.seeds]

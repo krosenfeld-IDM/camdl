@@ -3,7 +3,7 @@
 //! Estimates log p(y_{1:T} | θ) via sequential importance sampling
 //! with systematic resampling. Uses the ProcessModel trait to
 //! advance particles — any simulation backend works (chain-binomial,
-//! tau-leap, etc.).
+//! ODE, etc.).
 
 use std::time::Instant;
 

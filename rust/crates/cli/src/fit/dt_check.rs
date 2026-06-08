@@ -95,8 +95,8 @@ pub struct DtCheckResult {
 ///
 /// All fit-stage backends have a dt parameter — the fit-stage `Backend`
 /// enum only carries `ChainBinomial` and `Ode` (Gillespie is a
-/// forward-sim backend; tau-leap isn't currently exposed at the
-/// fit-stage layer). The threshold differs by convergence order:
+/// forward-sim backend, not a fit-stage backend). The threshold differs
+/// by convergence order:
 ///
 /// - **`ChainBinomial`** is O(dt) weak-convergent (Euler-multinomial /
 ///   `reulermultinom` family); the boarding-school SIR reproducer's

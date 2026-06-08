@@ -577,7 +577,7 @@ pub struct SimulateArgs {
 
     /// Record the Layer-1 lineage **event log** (2026-05-20 three-layer
     /// architecture). Requires a model with `#[lineage]` annotations and a
-    /// backend that declares the LINEAGES capability (Gillespie / tau-leap /
+    /// backend that declares the LINEAGES capability (Gillespie /
     /// chain-binomial). The event log is stored as the content-addressed
     /// `event_log.tsv` artifact in the run's CAS leaf, alongside `traj.tsv`
     /// (read it with `camdl cat <id> --stream event_log.tsv`); it is

@@ -16,7 +16,7 @@
 # Subsystems:
 #   inference   — fit algorithms (IF2/PGAS/NUTS/PMMH/PF) + fit CLI
 #                 + shared plumbing. Anchor for most inference work.
-#   engine      — simulation backends (Gillespie/tau-leap/ODE/CB) +
+#   engine      — simulation backends (Gillespie/ODE/CB) +
 #                 propensity + shared plumbing. Anchor for simulate
 #                 + observation work.
 #   compiler    — OCaml DSL → IR.

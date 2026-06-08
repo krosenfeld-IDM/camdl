@@ -77,14 +77,14 @@ pub struct EventRecord {
     pub time: f64,
     pub transition: TransitionId,
     /// Number of identical firings: always 1 for Gillespie, ≥ 1 for the
-    /// batched backends (tau-leap / chain-binomial).
+    /// batched backends (chain-binomial).
     pub multiplicity: u64,
     /// `true` if this event fired inside a batched (frozen-pool) step. Replay
     /// uses this to reproduce the shipped sub-`dt` bias accounting and to
     /// sample all `k` attributions against the start-of-step pools.
     pub batched: bool,
     /// Monotone batched-step index. All events sharing a `step` value fired in
-    /// the same tau-leap / chain-binomial step and must, in replay, sample
+    /// the same chain-binomial step and must, in replay, sample
     /// their identity attributions against the **frozen start-of-step** identity
     /// pools (mirroring the shipped observer's per-step pool snapshot — see
     /// proposal §11 open-question 3: "all attributions in a batched step use
