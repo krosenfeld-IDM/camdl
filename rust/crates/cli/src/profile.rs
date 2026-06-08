@@ -755,6 +755,23 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // for `optimize_cell` (`compute_ode_loglik` reads
     // `log_likelihood_from_flows_and_counts` directly).
     let obs_times_vec: Vec<f64> = observations.iter().map(|o| o.time).collect();
+
+    // gh#193 preflight: correlated PMMH (CPM, rho > 0) pre-draws a fixed-size
+    // noise block per observation window, so it requires a (near-)uniform obs
+    // grid. The check is θ-independent (obs grid only), so run it ONCE here and
+    // fail with the actionable message — otherwise a genuine non-uniform grid
+    // surfaces as a silently-swallowed all-(-inf) profile (every per-cell PF
+    // eval maps the filter Err to -inf). A leading window coinciding with
+    // t_start is fine (scored at the initial state); see validate_cpm_obs_grid.
+    if pmmh_rho_opt.is_some() {
+        if let Err(e) = sim::inference::correlated_pf::validate_cpm_obs_grid(
+            &obs_times_vec, compiled.model.simulation.t_start, dt,
+        ) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+
     let obs_model_obj: Arc<MultiStreamObsModel> = {
         let mut stream_specs = Vec::with_capacity(resolved_obs.len());
         for (obs, stream_obs) in resolved_obs.iter().zip(per_stream_obs.iter()) {

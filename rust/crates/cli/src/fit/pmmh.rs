@@ -133,6 +133,19 @@ pub fn run_stage(
 
     let dt = config.if2_config.dt;
 
+    // gh#193 preflight: correlated PMMH (CPM, rho > 0) pre-draws a fixed-size
+    // noise block per observation window and so requires a (near-)uniform obs
+    // grid. The check is θ-independent (obs grid only) — run it ONCE here and
+    // surface the actionable message, instead of letting every per-step PF eval
+    // swallow the filter Err into -inf (a silent all-(-inf) chain). A leading
+    // window coinciding with t_start is fine; see validate_cpm_obs_grid.
+    if rho.is_some() {
+        let obs_times: Vec<f64> = config.observations.iter().map(|o| o.time).collect();
+        sim::inference::correlated_pf::validate_cpm_obs_grid(
+            &obs_times, config.smc_config().t_start, dt,
+        ).map_err(|e| e.to_string())?;
+    }
+
     // Build proposal SDs
     let proposal_sd = build_proposal_sd(&config, starts_from)?;
 
