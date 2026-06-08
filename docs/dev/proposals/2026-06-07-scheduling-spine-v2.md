@@ -160,34 +160,38 @@ comments are deleted. Gillespie keeps its boundary path (it already routes effec
 advance. Structure for an invariant currently held by comments; byte-identical, with a
 per-backend A/B and an assertion that the closure receives the pre-draw snapshot.
 
-### D. Drop tau-leap (D3) — fold into chain's `Exact` policy, adopting chain's conventions
+### D. Drop tau-leap (D3) — delete it; chain's `Exact` policy is the replacement
 
-tau-leap is the same Euler-multinomial kernel as chain under a different policy, **plus two
-genuine convention differences**: it evaluates rates/σ² at `cfg.dt` not the clipped `dt`
-(`tau_leap.rs:180`), and it skips transitions at `rate ≤ 0` where chain skips at
-`rate ≤ RATE_EPSILON = 1e-15` (`tau_leap.rs:229` vs `chain_binomial.rs:23`). So the fold is
-**not** a pure byte-identical equivalence — it makes the retired tau behaviour **adopt
-chain's conventions**. The gate reflects that honestly:
+camdl's "tau-leap" is the **same** Euler-multinomial kernel as chain under the `Exact`
+policy — verified (it is not canonical Poisson tau-leaping) — differing only in two
+conventions that were arguably bugs relative to chain: rates/σ² evaluated at `cfg.dt` not the
+clipped `dt_actual` (`tau_leap.rs:180`), and transitions skipped at `rate ≤ 0` vs chain's
+`rate ≤ RATE_EPSILON = 1e-15` (`tau_leap.rs:229` vs `chain_binomial.rs:23`). Inference never
+used it (the filters run chain's `step_one` under Exact). So there is nothing unique to
+preserve, and **no equivalence proof is required**: camdl is alpha (backward-compat is a
+non-goal), so we do not owe tau's exact numbers. The bar is **"chain+Exact is correct"**, not
+**"chain+Exact == tau"** — a strictly weaker, achievable bar.
 
-- For the cases where chain+`Exact` and tau already agree, prove **byte-identical A/B**:
-  integer-only · off-grid interventions · always-active events reading the source ·
-  simultaneous event+intervention+output · overdispersed · deterministic draws · competing
-  exits · ungrouped inflows · lineage observer on · inference stepping to off-grid obs ·
-  **real compartments coupled into rates** (unblocked — #3 fixed, real-coupling tests
-  landed).
-- For the cases where they **provably differ** — tiny rates in `(0, RATE_EPSILON]` (different
-  RNG consumption → different stream) and expressions referencing `dt` (eval at `cfg.dt` vs
-  `dt_actual`) — pin **chain's chosen numbers with red→green tests**, with a one-line
-  rationale for why chain's convention is the correct one. Do NOT assert a false "A == B" on
-  cases that cannot be equal.
-- The `balance + Exact` case is an **open design decision** (chain runs balance under Snap
-  today; there is no balance-under-Exact semantics yet) — decide and document it, don't list
-  it as a test to pass.
+The fold:
 
-Then extract the one shared kernel under `step_policy`, route chain (`Snap`) and the retired
-tau behaviour (`Exact`) through it, delete `TauLeapSim` + the CLI arm (no alias — house
-policy), repoint goldens. **Blocked on A–C** (the fold needs `StepClock`'s `dt` decision and
-the closure driver to be the single kernel host).
+- Expose chain's `Exact` policy for forward simulation (the `Schedule` + shared kernel
+  already support it — the inference filters use it), so off-grid-exact forward sim survives
+  the deletion. Delete `TauLeapSim` + the CLI `tau_leap` arm (no alias — house policy).
+- Re-derive the goldens that had tau rows as chain+`Exact`, **verified correct** against the
+  cross-backend / analytic / lifecycle-audit oracles — not byte-matched to old tau.
+- Keep the 14 cases (integer-only · off-grid interventions · always-active events reading the
+  source · simultaneous event+intervention+output · overdispersed · deterministic draws ·
+  competing exits · ungrouped inflows · tiny rates near `RATE_EPSILON` · dt-referencing rates
+  · **real-coupled rates** (unblocked — #3 fixed, real-coupling tests landed) · lineage
+  observer · `balance + Exact` · inference off-grid obs) as a **chain+Exact correctness
+  corpus** — "does chain do the right thing here," not an A/B vs tau. Two are decisions, not
+  tests: the tiny-rate / dt-eval conventions are settled (chain's, per §A), and
+  `balance + Exact` is an open design decision (chain runs balance under Snap today) — decide
+  and document it.
+
+This **dissolves the previously-flagged t=0 event-cadence "blocker"**: it was only a blocker
+under an equivalence requirement. Without one, the question is "is chain's cadence correct?"
+— verify it, don't match it to tau's. Blocked on A–C (chain must be the single kernel host).
 
 ### E. `Target = Parameter` — the NPI axis (forward half)
 
@@ -204,8 +208,8 @@ independently of A–D.
 ## Invariants (every reshape must preserve)
 
 - **RNG draw order / paired-seed CRN** — A–C are byte-identical (verified by A/B gate, not
-  just a golden pass); the tau fold (D) deliberately moves tau's numbers to chain's on the
-  two divergent cases (pinned, not asserted-equal).
+  just a golden pass); the tau fold (D) only deletes a redundant backend — the kept backends
+  are unaffected, and tau's goldens re-derive as chain+Exact (verified correct, not matched).
 - **PGAS complete-data density + gradient** — `shape = dt_actual/σ²` and `p = 1−exp(−rate·dt_actual)`:
   the density's `dt` is `dt_actual`. `StepClock` routes `dt_actual` to physics + eval (what
   the density already uses), so the density is unmoved; the producer's source-group draw order
@@ -239,9 +243,9 @@ Then, each behind a byte-identical A/B gate:
    the due batch; `apply_effect_batch` replaces `apply_interventions_at`'s due-derivation.
 3. **Closure driver (D1)** — extract `fixed_step_substep`; fold PROPOSE in; route ODE's order
    through it; delete the `// → FixedStepLifecycle` markers.
-4. **Drop tau (D3)** — the mixed gate above (byte-identical where equal; red→green chosen
-   numbers where divergent); delete `TauLeapSim` + the CLI arm; repoint goldens. Blocked on
-   1–3.
+4. **Drop tau (D3)** — expose chain's `Exact` for forward; delete `TauLeapSim` + the CLI arm;
+   re-derive the tau goldens as chain+Exact, verified correct (not byte-matched). No
+   equivalence proof — the bar is chain+Exact correctness. Blocked on 1–3.
 5. **Target=Parameter forward (E)** — additive; ships independently.
 
 Steps 1–3 are byte-identical (Step-0 oracles + existing gates are the guard). 4 is the
