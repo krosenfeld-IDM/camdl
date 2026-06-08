@@ -125,6 +125,77 @@ pub fn phi(x: f64) -> f64 {
     super::obs_loglik::normal_cdf(x)
 }
 
+/// Tolerance for "the first observation coincides with `t_start`". Matches the
+/// `Substeps` iterator's own termination slack (`schedule::EFFECT_EPS`, 1e-10):
+/// the iterator yields zero substeps for a window `[t_start, obs(0)]` exactly
+/// when `obs(0) <= t_start + EFFECT_EPS`, so keying the gate on the same slack
+/// keeps the "empty leading window" judgement bit-consistent with the walk.
+const LEADING_WINDOW_EPS: f64 = 1e-10;
+
+/// Substeps-per-window the CPM pre-drawn-noise arrays are sized for, derived
+/// from the first non-trivial spacing `obs(1) - obs(0)` (or `obs(0) - t_start`
+/// for a single observation).
+pub fn cpm_steps_per_obs(obs_times: &[f64], t_start: f64, dt: f64) -> usize {
+    let obs_dt = if obs_times.len() > 1 {
+        obs_times[1] - obs_times[0]
+    } else if obs_times.len() == 1 {
+        obs_times[0] - t_start
+    } else {
+        1.0
+    };
+    crate::time::interval_steps(0.0, obs_dt, dt)
+}
+
+/// Validate that the CPM pre-drawn-noise indexing is sound for this obs grid.
+///
+/// The indexing (`noise_idx = particle*steps_per_obs + substep`) is a flat block
+/// of `steps_per_obs` substeps per particle per window, so it is sound only if
+/// EVERY window has exactly `steps_per_obs` substeps — with ONE exception: a
+/// leading window `[t_start, obs(0)]` that coincides with `t_start` (the
+/// universal `regular start=0` case). That window is empty — the `Substeps`
+/// iterator yields zero substeps — so it consumes no noise block, the indexing
+/// for windows `1..` is unaffected, and `obs(0)` is scored at the initial state
+/// exactly as the plain bootstrap PF does. Any OTHER non-uniformity (a genuine
+/// mid-period start, e.g. obs at `[5,12,19]` with `t_start=0`, or an interior
+/// window of the wrong width) is rejected with an actionable message.
+///
+/// This is the single source of truth for CPM obs-grid validity: the filter
+/// calls it defensively, and profile/fit call it once at preflight (gh#193) so
+/// a genuine non-uniform grid surfaces this message instead of a swallowed
+/// all-(-inf) profile.
+pub fn validate_cpm_obs_grid(obs_times: &[f64], t_start: f64, dt: f64) -> Result<(), SimError> {
+    let steps_per_obs = cpm_steps_per_obs(obs_times, t_start, dt);
+    let mut window_start = t_start;
+    for (i, &obs_t) in obs_times.iter().enumerate() {
+        // Empty leading window (obs(0) == t_start): allowed, consumes no noise.
+        if i == 0 && obs_t - t_start <= LEADING_WINDOW_EPS {
+            window_start = obs_t;
+            continue;
+        }
+        let window_steps = crate::time::interval_steps(window_start, obs_t, dt);
+        if window_steps != steps_per_obs {
+            let which = if i == 0 {
+                format!("the FIRST window [t_start={window_start:.4}, obs(0)={obs_t:.4}]")
+            } else {
+                format!("the window [obs({})={window_start:.4}, obs({i})={obs_t:.4}]", i - 1)
+            };
+            return Err(SimError::Validation(format!(
+                "correlated PF requires every observation window to have the same \
+                 number of dt-substeps (the pre-drawn-noise arrays are sized at \
+                 {steps_per_obs} substeps/window from obs(1)-obs(0)), but {which} \
+                 has {window_steps} substep(s) at dt={dt:.4}. CPM tolerates a \
+                 leading window only when the first observation coincides with \
+                 t_start (it is then scored at the initial state); a mid-period \
+                 start or a mis-sized interior window breaks the indexing. Drop \
+                 to vanilla PMMH (rho = None), or align the observation grid so \
+                 every window spans the same number of substeps."
+            )));
+        }
+        window_start = obs_t;
+    }
+    Ok(())
+}
+
 /// Run the bootstrap particle filter with pre-drawn correlated randoms.
 ///
 /// The Gamma multiplier for overdispersed transitions is drawn from
@@ -172,72 +243,26 @@ pub fn bootstrap_filter_correlated(
     let mut ll_increments = Vec::with_capacity(n_obs);
     let mut t = config.t_start;
 
-    // Compute steps per observation interval.
-    // CPM requires uniform observation spacing because the noise arrays are
-    // sized assuming a fixed number of substeps per observation interval.
-    let obs_dt = if n_obs > 1 {
-        obs_model.obs_time(1) - obs_model.obs_time(0)
-    } else if n_obs == 1 {
-        obs_model.obs_time(0) - config.t_start
-    } else {
-        1.0
-    };
-    let steps_per_obs = crate::time::interval_steps(0.0, obs_dt, dt);
+    // Substeps per window the pre-drawn-noise arrays are sized for. CPM requires
+    // (near-)uniform observation spacing because that block size is fixed.
+    let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+    let steps_per_obs = cpm_steps_per_obs(&obs_times, config.t_start, dt);
 
-    // Validate uniform spacing — EXACTLY, by substep COUNT.
-    //
-    // The pre-drawn-noise indexing (noise_idx = particle*steps_per_obs + substep,
-    // binom_idx = particle*steps_per_obs*n_groups + substep*n_groups + group) is a
-    // flat block of `steps_per_obs` substeps per particle per window. It is sound
-    // ONLY if EVERY window has exactly `steps_per_obs` substeps — INCLUDING the
-    // first window [t_start, obs(0)], which is sized from obs(1)-obs(0) above and
-    // is *not* guaranteed to match (data starting mid-period, e.g. obs at
-    // [5,12,19] with t_start=0 → first window 5 substeps but steps_per_obs=7).
-    //
-    // A window whose substep count exceeds `steps_per_obs` overruns its noise
-    // block and (under the guards below) silently falls through to fresh
-    // per-particle RNG, decorrelating the estimator with no diagnostic. Compare
-    // the EXACT integer substep count per window (via interval_steps) — not a
-    // dt*0.5 time-gap slack — so the indexing is provably valid for every window.
-    {
-        let mut window_start = config.t_start;
-        for i in 0..n_obs {
-            let obs_t = obs_model.obs_time(i);
-            let window_steps = crate::time::interval_steps(window_start, obs_t, dt);
-            if window_steps != steps_per_obs {
-                let which = if i == 0 {
-                    format!(
-                        "the FIRST window [t_start={:.4}, obs(0)={:.4}]",
-                        window_start, obs_t,
-                    )
-                } else {
-                    format!(
-                        "the window [obs({})={:.4}, obs({})={:.4}]",
-                        i - 1, window_start, i, obs_t,
-                    )
-                };
-                return Err(SimError::Validation(format!(
-                    "correlated PF requires every observation window to have the \
-                     same number of dt-substeps (the pre-drawn-noise arrays are \
-                     sized at {steps_per_obs} substeps/window from obs(1)-obs(0)), \
-                     but {which} has {window_steps} substep(s) at dt={dt:.4}. CPM \
-                     needs uniform spacing INCLUDING the first window \
-                     [t_start, obs(0)] — data starting mid-period breaks the \
-                     indexing. Drop to vanilla PMMH (rho = None), or align the \
-                     observation grid so every window (the first included) spans \
-                     the same number of substeps."
-                )));
-            }
-            window_start = obs_t;
-        }
-    }
+    // Validate the obs grid against the pre-drawn-noise indexing. A leading
+    // window coinciding with t_start (obs(0) == t_start) is allowed — it is
+    // empty (zero substeps), consumes no noise block, and obs(0) is scored at
+    // the initial state, exactly as the plain bootstrap PF does. Every other
+    // window must be exactly `steps_per_obs` substeps. Single source of truth in
+    // `validate_cpm_obs_grid`; profile/fit also preflight it (gh#193) so a
+    // genuine non-uniform grid surfaces this message instead of a swallowed
+    // all-(-inf) profile.
+    validate_cpm_obs_grid(&obs_times, config.t_start, dt)?;
 
     // Merged timeline spine: the EXACT policy clips each substep to the next
     // observation boundary (same as the bootstrap PF). The Schedule reproduces
     // dt.min(obs_time - t) exactly, so the per-window substep COUNT is preserved
     // and the pre-drawn-noise indexing (noise_idx = i*steps_per_obs + substep)
     // is unaffected. Substep TIME stays accumulated (s*dt deferred, task #14).
-    let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
     let schedule =
         Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
