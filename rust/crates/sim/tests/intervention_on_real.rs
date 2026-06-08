@@ -67,3 +67,45 @@ fn intervention_set_on_real_compartment_is_exact() {
     let w0 = traj.snapshots.first().unwrap().real_state.values[0];
     assert_eq!(w0, 0.0, "W starts at its init 0.0 (got {w0})");
 }
+
+/// gh#196: `set W = -5` (W is a real compartment) is a config bug — symmetric
+/// with `set(int, <0)` and `add(<0)`, both of which already error. The real
+/// arena's `set` had no negativity guard, so a negative real-set was silently
+/// accepted and -5 flowed into the reservoir. End-to-end through the ODE backend
+/// this must now error.
+#[test]
+fn intervention_set_negative_on_real_compartment_errors() {
+    let mut model = load_real_coupled();
+    model.interventions.push(Intervention {
+        name: "set_w_neg".into(),
+        base_name: None,
+        schedule: InterventionSchedule::AtTimes(vec![2.0]),
+        actions: vec![Action::Set(SetAction {
+            compartment: "W".into(),
+            value: Expr::const_(-5.0),
+        })],
+        always_active: false,
+    });
+
+    let compiled = CompiledModel::new(model.clone()).unwrap();
+    let params = compiled.default_params.clone();
+    let err = OdeSim
+        .run(
+            &compiled,
+            &params,
+            0,
+            &SimConfig::Ode(OdeConfig {
+                t_start: model.simulation.t_start,
+                t_end: model.simulation.t_end,
+                dt: 0.5,
+            }),
+        )
+        .expect_err("a `set` driving a real compartment negative must error, not write -5");
+    match err {
+        sim::SimError::NegativeCount { compartment, cause, .. } => {
+            assert_eq!(compartment, "W", "should point at the real compartment set negative");
+            assert_eq!(cause, sim::NegativeCountCause::InterventionNegative);
+        }
+        other => panic!("expected NegativeCount{{InterventionNegative}}, got: {other}"),
+    }
+}

@@ -371,7 +371,15 @@ fn apply_action_f64(
         }
         Action::Set(sa) => match resolve_target(model, &sa.compartment)? {
             Arena::Int(i) => int_vals[i] = v,
-            Arena::Real(i) => real_vals[i] = v,
+            Arena::Real(i) => {
+                // gh#196: reject a negative real `set` on the ODE path too,
+                // matching the discrete resolver. Check the explicit value,
+                // not the integrated state (RK4 undershoot is cleaned to 0).
+                if v < 0.0 {
+                    return Err(set_real_negative_err(&sa.compartment, v, 0.0));
+                }
+                real_vals[i] = v;
+            }
         },
         Action::FractionTransfer(ft) => {
             let frac = v.clamp(0.0, 1.0);
@@ -495,10 +503,20 @@ fn resolve_action(
                 idx: i,
                 delta: (v.round() as i64) - snap.int.counts[i],
             }),
-            Arena::Real(i) => out.real.push(RealDelta {
-                idx: i,
-                delta: v - snap.real.values[i],
-            }),
+            Arena::Real(i) => {
+                // gh#196: a `set` to a negative value is a config bug on the
+                // real arena too. The integer arena catches this via the
+                // post-INTERVENE scan; the real arena is not scanned (ODE's
+                // tiny RK4 undershoot, cleaned by `.max(0.0)`, would
+                // false-positive). Check the explicit set VALUE here instead.
+                if v < 0.0 {
+                    return Err(set_real_negative_err(&sa.compartment, v, t));
+                }
+                out.real.push(RealDelta {
+                    idx: i,
+                    delta: v - snap.real.values[i],
+                })
+            }
         },
         Action::FractionTransfer(ft) => {
             let frac = v.clamp(0.0, 1.0);
@@ -533,6 +551,21 @@ fn resolve_action(
         }
     }
     Ok(())
+}
+
+/// gh#196: a `set` driving a REAL compartment below zero. The integer arena
+/// catches its negatives in the post-INTERVENE scan, but the real arena is not
+/// scanned (ODE's `.max(0.0)` RK4-undershoot cleanup would false-positive a
+/// state scan), so the check lives at the action site on the explicit value —
+/// symmetric with the `add(<0)` guard. `attempted_value` is rounded for the
+/// shared i64 diagnostic field; the message names the compartment and time.
+fn set_real_negative_err(compartment: &str, v: f64, t: f64) -> SimError {
+    SimError::NegativeCount {
+        compartment: compartment.to_string(),
+        attempted_value: v.round() as i64,
+        t,
+        cause: NegativeCountCause::InterventionNegative,
+    }
 }
 
 /// A transfer whose endpoints land in different arenas (one integer, one real)
@@ -687,6 +720,46 @@ mod tests {
         let m = model_with(vec![Action::Set(SetAction { compartment: "W".into(), value: Expr::const_(12.5) })]);
         let d = resolve(&m);
         assert_eq!(d.real, vec![RealDelta { idx: 0, delta: 12.5 - 50.0 }]);
+    }
+
+    /// gh#196: a `set` driving a REAL compartment below zero is a config bug,
+    /// symmetric with `set(int, <0)` (caught by the post-advance scan) and
+    /// `add(<0)` (caught at the action site). The real arena's `set` had no
+    /// negativity check, so `set(W, -5)` was silently accepted. The discrete
+    /// resolver must now reject it at the action site.
+    #[test]
+    fn set_real_negative_is_hard_error() {
+        let m = model_with(vec![Action::Set(SetAction { compartment: "W".into(), value: Expr::const_(-5.0) })]);
+        let (int_s, real_s) = states();
+        let mut out = EffectDeltas::default();
+        let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap_err();
+        match err {
+            SimError::NegativeCount { compartment, attempted_value, cause, .. } => {
+                assert_eq!(compartment, "W");
+                assert_eq!(attempted_value, -5);
+                assert_eq!(cause, NegativeCountCause::InterventionNegative);
+            }
+            other => panic!("expected NegativeCount{{InterventionNegative}}, got: {other}"),
+        }
+    }
+
+    /// gh#196 (ODE path): the continuous `apply_action_f64` real-`Set` arm must
+    /// reject a negative value the same way. `set(W, -5)` through the boundary
+    /// batch errors instead of writing -5 into the reservoir.
+    #[test]
+    fn continuous_set_real_negative_is_hard_error() {
+        let m = model_with(vec![Action::Set(SetAction { compartment: "W".into(), value: Expr::const_(-5.0) })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![100.0_f64, 0.0];
+        let mut real_vals = vec![50.0_f64];
+        let err = apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0)
+            .unwrap_err();
+        assert!(
+            matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionNegative, .. }),
+            "ODE real `set` to a negative value must error; got: {err}"
+        );
+        assert_eq!(real_vals[0], 50.0, "the reservoir must be untouched when the set is rejected");
     }
 
     #[test]
