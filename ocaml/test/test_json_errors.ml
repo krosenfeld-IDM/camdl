@@ -10,10 +10,11 @@
    The invariant under test: a compile emits AT MOST ONE diagnostic
    blob. On the success-with-warnings path that blob is a single JSON
    array (under --json-errors) or a single ANSI box (default); on the
-   error path it is the [report_and_exit] blob. The latent double-render
-   bug — non-blocking render firing before the autodiff E600 check, then
-   [report_and_exit] re-rendering everything — would emit TWO JSON
-   arrays for an E600-with-warnings model. We pin the single-array
+   error path it is the single render [compile] does before returning
+   [Error]. The latent double-render bug — non-blocking render firing
+   before the autodiff E600 check, then the error path re-rendering
+   everything — would emit TWO JSON arrays for an E600-with-warnings
+   model. We pin the single-array
    property directly by parsing the captured stderr as a JSON *stream*
    and asserting it holds exactly one value. *)
 
@@ -103,8 +104,8 @@ simulate {
 }
 |camdl}
 
-(* A syntactically broken model: the front end raises E001 (syntax
-   error) and aborts via report_and_exit — the blocking-error path. *)
+(* A syntactically broken model: the front end emits E001 (syntax error)
+   and [compile] renders it then returns [Error] — the error path. *)
 let error_src = "this is not a valid camdl model {{{"
 
 let with_json_mode b (f : unit -> unit) =

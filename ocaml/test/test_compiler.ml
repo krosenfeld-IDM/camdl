@@ -5692,9 +5692,10 @@ let test_simulate_unknown_key_errors () =
   |})
 
 (* ── gh#181 step 1: structured, non-raising compile_outcome ──────────────────
-   compile_outcome returns every diagnostic as a value and never raises —
-   including on a POST-EXPANSION error (Validate E507) that the blocking
-   `compile` aborts on via Compile_error. The two SEIR models differ by one
+   compile_outcome returns every diagnostic as a value and never raises;
+   on a POST-EXPANSION error (Validate E507) both surfaces return it as a
+   value — [compile] as [Error], [compile_outcome] as [value = None]. The
+   two SEIR models differ by one
    character: the observation projects `incidence(infection)` (a real
    transition) vs `incidence(infektion)` (a typo). A bare unknown name in
    `incidence(...)` falls through expansion to a dangling CumulativeFlow
@@ -5770,17 +5771,22 @@ let test_compile_outcome_clean_returns_value () =
   Alcotest.(check int) "clean model: no Error-severity diagnostics" 0 n_err
 
 let test_compile_outcome_late_error_is_value_not_raise () =
-  (* Pin that this is the LATE path: `compile` aborts via Compile_error rather
-     than returning Error (json mode keeps the rendered diagnostic compact). *)
+  (* A post-expansion error (Validate E507) must arrive as a VALUE from both
+     surfaces: [compile] returns [Error] (it no longer raises Compile_error,
+     so the CLI exits 1 cleanly instead of on an uncaught exception), and
+     [compile_outcome] returns [value = None]. json mode keeps the rendered
+     payload a compact JSON array we can grep for the code. *)
   Diagnostics.json_errors_mode := true;
-  let compile_raised =
-    try ignore (Compiler.compile ~name:"oc_err" outcome_model_late_err); false
-    with Diagnostics.Compile_error _ -> true
-  in
+  let compile_result = Compiler.compile ~name:"oc_err" outcome_model_late_err in
   Diagnostics.json_errors_mode := false;
-  Alcotest.(check bool)
-    "compile RAISES Compile_error on a post-expansion error" true compile_raised;
-  (* compile_outcome surfaces the same error as a value, without raising. *)
+  (match compile_result with
+   | Ok _ ->
+     Alcotest.failf "expected compile to return Error on a dangling \
+                     observation reference, got Ok"
+   | Error payload ->
+     if not (contains_substring ~needle:"E507" payload) then
+       Alcotest.failf "compile Error payload should name E507, got: %s" payload);
+  (* compile_outcome surfaces the same error as a value. *)
   let o = Compiler.compile_outcome ~name:"oc_err" outcome_model_late_err in
   Alcotest.(check bool) "compile_outcome: value is None on error"
     true (o.Compiler.value = None);

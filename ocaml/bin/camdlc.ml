@@ -156,9 +156,11 @@ let () =
        match Compiler.compile ~name ~filename:path src with
        | Error e when e = "compilation failed"
                    || (String.length e > 0 && e.[0] = '[') ->
-         (* Diagnostics already rendered (text or JSON) by
-            Diagnostics.report_and_exit — don't re-print on a fresh
-            line (m5 in the 2026-04-19 compiler review). *)
+         (* Diagnostics already rendered to stderr (text or JSON) by
+            [Compiler.compile] — the sniff matches its rendered payload
+            ("compilation failed", or a "["-prefixed JSON array under
+            --json-errors). Exit 1 without re-printing on a fresh line
+            (m5 in the 2026-04-19 compiler review). *)
          exit 1
        | Error e -> Printf.eprintf "Error: %s\n" e; exit 1
        | Ok m ->

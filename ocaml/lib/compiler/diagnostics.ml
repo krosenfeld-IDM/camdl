@@ -207,23 +207,15 @@ let render_all t cache ppf =
   in
   List.iter (render_one ppf cache) sorted
 
-(** Raised by [report_and_exit] instead of calling [exit 1] directly.
-    This allows callers (tests, library users) to catch compilation failures
-    without terminating the process. The CLI catches this at the top level
-    and calls [exit 1]. *)
-exception Compile_error of string
-
-(** Render every diagnostic in [t] to stderr, honouring
-    [json_errors_mode]: a single JSON array under [--json-errors],
-    otherwise the ANSI source-block boxes. Returns the JSON payload
-    (so [report_and_exit] can carry it in [Compile_error]); the return
-    value is ignored on the ANSI path.
-
-    This is the single rendering surface for BOTH the blocking-error
-    path ([report_and_exit] = [render] + raise) and the non-blocking
-    warning/lint path in [Compiler.compile]. Routing both through here
-    keeps JSON and ANSI behaviour identical and guarantees one emission
-    shape per call. *)
+(** Render every diagnostic in [t] to stderr, honouring [json_errors_mode]:
+    a single JSON array under [--json-errors], otherwise the ANSI
+    source-block boxes. Returns the payload string — the JSON array under
+    [--json-errors], else ["compilation failed"] — which [Compiler.compile]
+    hands back as its [Error] value. The single rendering surface for both
+    the error path and the non-blocking warning/lint path, so JSON and ANSI
+    stay identical and there is one emission shape per call. The library
+    never raises or exits: rendering is a side effect; control flow is the
+    caller's [Error]/[outcome] value (gh#181). *)
 let render t cache : string =
   if !json_errors_mode then (
     let msg = to_json_string t in
@@ -234,12 +226,6 @@ let render t cache : string =
     render_all t cache Fmt.stderr;
     "compilation failed"
   )
-
-(** Render diagnostics to stderr and raise [Compile_error].
-    Respects [json_errors_mode] via [render]. *)
-let report_and_exit t cache =
-  let msg = render t cache in
-  raise (Compile_error msg)
 
 (* ── Shorthand constructors ──────────────────────────────────────────────── *)
 

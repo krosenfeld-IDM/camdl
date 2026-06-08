@@ -12,8 +12,8 @@ type compile_detail = {
     A value-typed surface over [collect_detail]: every diagnostic — errors,
     warnings, infos — is returned as a [diagnostic list] rather than rendered
     and raised. [value] is [Some] exactly when no [Error]-severity diagnostic
-    was produced. Nothing here raises ([compile]'s [report_and_exit] /
-    [Compile_error] path is bypassed entirely).
+    was produced. Nothing in the library raises: [compile] returns [Error]
+    on failure, this returns [value = None].
 
     This is the accumulating shape the gh#181 proposal targets — structurally
     [MaybeT (Writer (diagnostic list))]: the diagnostic log is always present;
@@ -146,20 +146,15 @@ let compile_detail_result ?(name = "model") ?(filename = "<input>") (src : strin
   let (detail, diags, source) = front_end_collect ~name ~filename src in
   match detail with
   | None ->
-    (* Front-end failure (lex/parse/expand): [front_end_collect] has
-       captured it as an E001 in [diags]. Render and return the payload,
-       exactly as the old [report_and_exit]-then-catch path did. Note a
-       deliberate consolidation: a [Failure] raised inside the expander
-       (e.g. a malformed date literal) now surfaces as a rendered E001
-       here, the same way it already did via [collect_diagnostics] — the
-       old inlined [compile_detail_result] returned its bare message
-       un-rendered through an outer handler. Routing both consumers
-       through one core makes the diagnostic surface identical. *)
+    (* Front-end failure (lex/parse/expand): [front_end_collect] captured it
+       as an E001 in [diags]. Render to stderr and return the payload string
+       as [Error]. A [Failure] raised inside the expander (e.g. a malformed
+       date literal) also surfaces here as a rendered E001. *)
     Error (Diagnostics.render diags source)
   | Some d ->
     (* Expansion produced a model; [d.ctx.diags] may carry a drained
-       parser-action error. Mirror the old [has_errors → report_and_exit]
-       gate: render and return [Error] on any error, else [Ok]. *)
+       parser-action error. Render and return [Error] on any error, else
+       [Ok]. *)
     if Diagnostics.has_errors d.ctx.diags then
       Error (Diagnostics.render d.ctx.diags d.source)
     else
@@ -342,39 +337,46 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
   match compile_detail_result ~name ~filename src with
   | Ok d ->
     (* Post-expansion passes are pure (return diagnostic lists); emit them
-       into [d.ctx.diags] — the accumulator [report_and_exit]/[has_errors]
-       read — to preserve behaviour exactly. The fold that replaces this
-       bridge with a single [outcome] is the next gh#181 step.
+       into [d.ctx.diags] — the accumulator [has_errors]/[render] read — and
+       on any Error-severity diagnostic return [Error (render …)] rather than
+       raising. [compile] never throws (gh#181): a late-phase error (validate
+       E5xx, dimcheck, autodiff E600) now arrives as [Error], the same shape
+       the front-end path already returns, so the CLI exits cleanly (1)
+       instead of on an uncaught [Compile_error] (a Fatal-error trace, exit 2).
+       [render] still writes the diagnostics to stderr exactly as before; only
+       the control flow changes from raise to return.
        Validate first (M1 / C5 in the 2026-04-19 compiler review). *)
     let emit_all = List.iter (Diagnostics.emit d.ctx.diags) in
+    let fail () : (Ir.model, string) result =
+      Error (Diagnostics.render d.ctx.diags d.source) in
     let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
     emit_all vdiags;
-    if vdiags <> [] then
-      Diagnostics.report_and_exit d.ctx.diags d.source;
-    emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
-    emit_all (Passtime.time "lint" (fun () -> run_lint d));
-    if Diagnostics.has_errors d.ctx.diags then
-      Diagnostics.report_and_exit d.ctx.diags d.source;
-    let (transitions, gdiags) = differentiate_transitions d in
-    emit_all gdiags;
-    if Diagnostics.has_errors d.ctx.diags then
-      Diagnostics.report_and_exit d.ctx.diags d.source;
-    (* Single render of any collected non-blocking diagnostics
-       (expansion warnings + dimcheck infos + L4xx lints). This is the
-       ONLY non-blocking emission, and it fires AFTER the final E600
-       [has_errors] check, so it runs only when the compile is
-       definitely succeeding — it can never co-fire with a
-       [report_and_exit] above. (Were it placed before the autodiff
-       check, an E600-with-warnings model would emit twice: once here,
-       once from [report_and_exit] re-rendering everything — a cosmetic
-       double-print in ANSI, two invalid JSON arrays under
-       --json-errors. Routing through [Diagnostics.render] gives JSON
-       under [--json-errors] and the ANSI box otherwise, matching the
-       error path's shape exactly.) *)
-    if Diagnostics.has_any d.ctx.diags then
-      ignore (Diagnostics.render d.ctx.diags d.source);
-    let m = { d.model with Ir.transitions = transitions } in
-    Ok (maybe_constant_fold m)
+    (* Validate short-circuits before dimcheck (dimcheck ICEs on unknown
+       params), matching the original short-circuit ordering. *)
+    if vdiags <> [] then fail ()
+    else begin
+      emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
+      emit_all (Passtime.time "lint" (fun () -> run_lint d));
+      if Diagnostics.has_errors d.ctx.diags then fail ()
+      else begin
+        let (transitions, gdiags) = differentiate_transitions d in
+        emit_all gdiags;
+        if Diagnostics.has_errors d.ctx.diags then fail ()
+        else begin
+          (* Single render of any collected non-blocking diagnostics
+             (expansion warnings + dimcheck infos + L4xx lints). The ONLY
+             non-blocking emission, on the definitely-succeeding path after
+             the final [has_errors] check — it can never co-fire with a
+             [fail ()] render above, so warnings never double-print. Routing
+             through [Diagnostics.render] gives JSON under [--json-errors] and
+             the ANSI box otherwise, matching the error path's shape. *)
+          if Diagnostics.has_any d.ctx.diags then
+            ignore (Diagnostics.render d.ctx.diags d.source);
+          let m = { d.model with Ir.transitions = transitions } in
+          Ok (maybe_constant_fold m)
+        end
+      end
+    end
   | Error e -> Error e
 
 (* ── Severity-agnostic diagnostic collection ─────────────────────────────────
@@ -382,12 +384,11 @@ let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model
    [collect_detail] runs the real compile pipeline (lex → parse → expand →
    validate → dimcheck → lint → autodiff) over a source, accumulating EVERY
    diagnostic — errors, warnings, and infos alike — into the returned
-   [Diagnostics.t], without rendering to stderr and without aborting via
-   [report_and_exit]. It is the shared non-aborting core behind both
-   [collect_diagnostics] (test/tooling: keeps only the diagnostic list) and
-   `inspect`'s `run_check` (the CLI: also renders the summary off the
-   [compile_detail]). [compile] is the aborting counterpart that runs the
-   same stages but renders and exits on errors.
+   [Diagnostics.t], without rendering to stderr. It is the shared core behind
+   both [collect_diagnostics] (test/tooling: keeps only the diagnostic list)
+   and `inspect`'s `run_check` (the CLI: also renders the summary off the
+   [compile_detail]). [compile] runs the same stages but renders to stderr and
+   returns [Error] on failure; neither raises.
 
    Routing `run_check` through this core is the cure for the recurring
    check/compile divergence (gh#9 re dimcheck, gh#170 re validate): there is
@@ -445,9 +446,9 @@ let collect_diagnostics ?(name = "model") ?(filename = "<input>") (src : string)
     [value] is the expanded [compile_detail] exactly when no Error-severity
     diagnostic fired. A structural lex/parse/expand failure already yields
     [detail = None] (with the E001 in [diags]), so the [has_errors] gate
-    subsumes that case. Unlike [compile], a late-phase error (validate E5xx,
-    autodiff E600) arrives here as a value in [diagnostics] rather than a
-    raised [Compile_error]. *)
+    subsumes that case. A late-phase error (validate E5xx, autodiff E600)
+    arrives here as a value in [diagnostics]; [compile] returns the same
+    error as a string [Error]. Neither raises. *)
 let compile_outcome ?(name = "model") ?(filename = "<input>") (src : string)
     : compile_detail outcome =
   let (detail, diags, source) = collect_detail ~name ~filename src in

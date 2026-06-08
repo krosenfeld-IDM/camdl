@@ -446,9 +446,8 @@ let test_catalog_consistency () =
      - CHECK side: [Compiler.collect_detail] — the exact function
        `Inspect.run_check` consumes — collapsed to its Error-severity codes.
      - COMPILE side: [Compiler.compile] — the real compile — collapsed to
-       its error codes (it surfaces post-expansion errors by *raising*
-       [Diagnostics.Compile_error] carrying the JSON payload, and front-end
-       errors via its [Error] return; we capture both).
+       its error codes (it surfaces every error, front-end or post-expansion,
+       via its [Error] return; gh#181 — it no longer raises).
 
    A divergence (one accepts, the other rejects; or different code sets) is
    the smell the Defect-B class is made of. *)
@@ -472,10 +471,10 @@ let check_error_codes ~filename src : string list =
   |> List.sort_uniq String.compare
 
 (* Error codes (sorted-unique) from the COMPILE pipeline. [Compiler.compile]
-   prints to stderr and either returns [Error json] (front-end failure) or
-   raises [Compile_error json] (post-expansion failure, e.g. Validate E507);
-   under [json_errors_mode] both payloads are the same JSON array, which we
-   parse for `"code"` fields. An [Ok] compile yields the empty set. *)
+   prints to stderr and returns [Error json] for ANY compile failure —
+   front-end (lex/parse/expand) or post-expansion (e.g. Validate E507); it
+   never raises (gh#181). Under [json_errors_mode] the payload is a JSON
+   array, which we parse for `"code"` fields. An [Ok] compile yields []. *)
 let compile_error_codes ~filename src : string list =
   let codes_of_json (payload : string) : string list =
     (* payload is a JSON array of diagnostic objects, each with a "code".
@@ -500,7 +499,6 @@ let compile_error_codes ~filename src : string list =
     match Compiler.compile ~name:(Filename.basename filename) ~filename src with
     | Ok _ -> []
     | Error payload -> codes_of_json payload
-    | exception Diagnostics.Compile_error payload -> codes_of_json payload
   in
   Diagnostics.json_errors_mode := prev;
   result
