@@ -285,15 +285,24 @@ let run_validate (d : compile_detail) : Diagnostics.diagnostic list =
 let run_dimcheck (d : compile_detail) : Diagnostics.diagnostic list =
   if !no_dim_check then []
   else
+    (* dimcheck runs on the IR (no source spans); it tags each diagnostic with
+       the construct it concerns, which we resolve to the declaration's loc. *)
+    let loc_of_subject = function
+      | Some (Dimcheck.STransition n)  -> Expander.transition_loc  d.ctx n
+      | Some (Dimcheck.SOde c)         -> Expander.compartment_loc d.ctx c
+      | Some (Dimcheck.SObservation n) -> Expander.obs_loc         d.ctx n
+      | Some (Dimcheck.SBinding _) | None -> Diagnostics.no_loc
+    in
     List.map (fun (dc : Dimcheck.diagnostic) ->
+      let loc = loc_of_subject dc.subject in
       match dc.severity with
       | Dimcheck.Error ->
         Diagnostics.mk_error
-          ~code:dc.code ~loc:Diagnostics.no_loc
+          ~code:dc.code ~loc
           ~message:dc.message ?detail:dc.detail ?hint:dc.hint ()
       | Dimcheck.Info ->
         Diagnostics.mk_info
-          ~code:dc.code ~loc:Diagnostics.no_loc
+          ~code:dc.code ~loc
           ~message:dc.message ?detail:dc.detail ?hint:dc.hint ()
     ) (Dimcheck.check_model d.model).diagnostics
 

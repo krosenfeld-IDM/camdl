@@ -5837,6 +5837,26 @@ let test_validate_reference_error_has_location () =
     Alcotest.(check bool) "E507 points at the enclosing observation (line > 0)"
       true (d.loc.Diagnostics.line > 0)
 
+(* gh#181: dimcheck (dimensional) errors now point at the offending construct.
+   dimcheck is disabled globally for compiler tests, so enable it here. *)
+let test_dimcheck_error_has_location () =
+  let src = {|
+    compartments { S, I }
+    parameters { beta : rate in [0, 1] }
+    transitions { infection : S --> I @ beta + S }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} in
+  let prev = !Compiler.no_dim_check in
+  Compiler.no_dim_check := false;
+  let diags = Compiler.collect_diagnostics ~name:"loc_e300" src in
+  Compiler.no_dim_check := prev;
+  match List.find_opt (fun (d : Diagnostics.diagnostic) -> d.code = "E300") diags with
+  | None -> Alcotest.failf "expected E300 (dimensional error)"
+  | Some d ->
+    Alcotest.(check bool) "E300 points at the transition (line > 0)"
+      true (d.loc.Diagnostics.line > 0)
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -6009,6 +6029,7 @@ let () =
     "diagnostic_locations", [
       Alcotest.test_case "decl-keyed validate error carries a loc"   `Quick test_validate_decl_error_has_location;
       Alcotest.test_case "reference validate error carries a loc"    `Quick test_validate_reference_error_has_location;
+      Alcotest.test_case "dimcheck error carries a loc"              `Quick test_dimcheck_error_has_location;
     ];
     "trig_primitives", [
       Alcotest.test_case "pi resolves to Const ≈ π"                 `Quick test_trig_pi_resolves_to_const;

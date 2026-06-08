@@ -71,12 +71,22 @@ type dim =
 
 type severity = Error | Info
 
+(* The construct a diagnostic concerns. Dimcheck runs on the IR, which has no
+   source spans, so it records the subject and the compiler resolves it to the
+   declaration's loc (the same prefix-match the validate/autodiff paths use). *)
+type subject =
+  | STransition  of string
+  | SOde         of string   (* compartment whose ODE derivative *)
+  | SObservation of string
+  | SBinding     of string
+
 type diagnostic = {
   severity : severity;
   code     : string;
   message  : string;
   detail   : string option;
   hint     : string option;
+  subject  : subject option;
 }
 
 type result = {
@@ -96,6 +106,9 @@ type state = {
   resolved : (int, dim_vec) Hashtbl.t;
   links : (int, int) Hashtbl.t;  (* union-find: child -> parent *)
   mutable diags : diagnostic list;
+  (* The construct currently being checked, set at each top-level loop so the
+     emit helpers can tag diagnostics with their subject for loc resolution. *)
+  mutable subject : subject option;
   (* Stable param dim map *)
   param_map : (string, param_dim_entry) Hashtbl.t;
   (* Pre-computed table dims *)
@@ -130,6 +143,7 @@ let create_state () = {
   rate_cache = Hashtbl.create 16;
   binding_dims = Hashtbl.create 16;
   permissive_dim = false;
+  subject = None;
 }
 
 let fresh_var st =
@@ -138,10 +152,10 @@ let fresh_var st =
   Unknown id
 
 let emit_error st ~code ~message ?detail ?hint () =
-  st.diags <- { severity = Error; code; message; detail; hint } :: st.diags
+  st.diags <- { severity = Error; code; message; detail; hint; subject = st.subject } :: st.diags
 
 let emit_info st ~code ~message ?detail ?hint () =
-  st.diags <- { severity = Info; code; message; detail; hint } :: st.diags
+  st.diags <- { severity = Info; code; message; detail; hint; subject = st.subject } :: st.diags
 
 (* ── Resolution ─────────────────────────────────────────────────────────── *)
 
@@ -531,6 +545,7 @@ let init_table_dims st (tables : table list) =
           if all_const then
             fresh_var st
           else begin
+            st.subject <- None;
             let ctx = Printf.sprintf "table '%s'" tbl.name in
             let dims = List.map (fun e -> infer st ~ctx e) exprs in
             (match dims with
@@ -717,6 +732,7 @@ let check_model (m : model) : result =
      param-free, so their dim is fully determined here and stable across the
      transition rounds below. *)
   List.iter (fun (b : binding) ->
+    st.subject <- Some (SBinding b.bname);
     let ctx = Printf.sprintf "binding '%s'" b.bname in
     let d = infer st ~ctx b.bexpr in
     Hashtbl.replace st.binding_dims b.bname d
@@ -728,6 +744,7 @@ let check_model (m : model) : result =
      second round picks up cross-transition effects). *)
   for _round = 1 to 3 do
     List.iter (fun (tr : transition) ->
+      st.subject <- Some (STransition tr.name);
       let ctx = Printf.sprintf "transition '%s'" tr.name in
       ignore (infer st ~ctx tr.rate);
       propagate st ~ctx tr.rate rate_total;
@@ -742,6 +759,7 @@ let check_model (m : model) : result =
     (* Balance *)
     (match m.balance with
      | Some bal ->
+       st.subject <- None;
        let ctx = Printf.sprintf "balance '%s'" bal.balance_target in
        ignore (infer st ~ctx bal.balance_expr);
        propagate st ~ctx bal.balance_expr population
@@ -749,6 +767,7 @@ let check_model (m : model) : result =
 
     (* ODE *)
     List.iter (fun (eq : ode_equation) ->
+      st.subject <- Some (SOde eq.compartment);
       let ctx = Printf.sprintf "ODE d(%s)/dt" eq.compartment in
       ignore (infer st ~ctx eq.derivative);
       propagate st ~ctx eq.derivative rate_total
@@ -781,6 +800,7 @@ let check_model (m : model) : result =
     let prev_permissive = st.permissive_dim in
     st.permissive_dim <- true;
     List.iter (fun (obs : observation_model) ->
+      st.subject <- Some (SObservation obs.name);
       let ctx = Printf.sprintf "observation '%s'" obs.name in
       (match obs.likelihood with
        | NegBinomial nb ->
@@ -842,6 +862,7 @@ let check_model (m : model) : result =
 
   (* Transition rates must be P*T^-1 *)
   List.iter (fun (tr : transition) ->
+    st.subject <- Some (STransition tr.name);
     let d = resolve st
       (match Hashtbl.find_opt st.rate_cache tr.name with
        | Some cached -> cached
@@ -872,6 +893,7 @@ let check_model (m : model) : result =
   (* Balance *)
   (match m.balance with
    | Some bal ->
+     st.subject <- None;
      let d = resolve st (read_dim st bal.balance_expr) in
      (match d with
       | Known v when not (dim_eq v population) ->
@@ -884,6 +906,7 @@ let check_model (m : model) : result =
 
   (* ODE *)
   List.iter (fun (eq : ode_equation) ->
+    st.subject <- Some (SOde eq.compartment);
     let d = resolve st (read_dim st eq.derivative) in
     (match d with
      | Known v when not (dim_eq v rate_total) ->
@@ -896,6 +919,7 @@ let check_model (m : model) : result =
 
   (* Observation dispersion *)
   List.iter (fun (obs : observation_model) ->
+    st.subject <- Some (SObservation obs.name);
     (match obs.likelihood with
      | NegBinomial nb ->
        let dd = resolve st (read_dim st nb.dispersion) in
@@ -1019,6 +1043,7 @@ let check_model (m : model) : result =
     | [] | [_] -> ()
     | first :: rest ->
       let (first_tr, first_dim) = first in
+      st.subject <- Some (STransition first_tr);
       List.iter (fun (other_tr, other_dim) ->
         if not (dim_eq first_dim other_dim) then
           emit_error st ~code:"E303"
@@ -1032,6 +1057,7 @@ let check_model (m : model) : result =
   ) param_transition_dims;
 
   (* Collect resolved param dims; emit I300 for undetermined *)
+  st.subject <- None;
   let param_dims = ref [] in
   Hashtbl.iter (fun name entry ->
     let d = resolve st entry.stable_dim in
