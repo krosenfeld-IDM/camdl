@@ -93,6 +93,11 @@ above.
    ```
    `ir/VERSION` is the **IR schema** version — bump it *only* if the IR contract
    itself changed, independently of the release version.
+
+   If this release crosses a maturity rung (alpha → beta → stable), update the
+   **`Status`** badge in `README.md` (`status-alpha-orange` →
+   `status-beta-yellow` → `status-stable-brightgreen`). It is a static badge, so
+   nothing else moves it — a stale `alpha` badge on a beta release is a lie.
 3. **Regenerate the changelog spine:** `make changelog` (writes `CHANGELOG.md`).
    git-cliff turns the `[unreleased]` section into `[X.Y.Z] - <date>` once the
    tag exists; review the grouping.
