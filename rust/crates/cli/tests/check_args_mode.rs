@@ -110,3 +110,78 @@ fn flag_on_wrong_subcommand_is_drift() {
     // `--particles` belongs to pfilter/profile/survey, not simulate.
     assert_eq!(check(&["simulate", "model.camdl", "--particles", "10"]), 2);
 }
+
+// ── gh#194: pfilter `--scenario` ⊥ `--params` / `--param` ─────────────────────
+//
+// On pfilter a scenario's `set`/`scale` block resolves at a higher precedence
+// than `--params`, so combining them would silently score the likelihood at
+// the scenario's θ rather than the user's pinned θ. The combination is a hard
+// clap-level conflict; clap rejects it at the parse layer (exit 2), so the
+// silent-wrong-θ run can never start.
+
+#[test]
+fn pfilter_scenario_with_params_file_is_conflict() {
+    assert_eq!(
+        check(&["pfilter", "m.camdl", "--scenario", "baseline",
+                "--params", "p.toml", "--data", "d.tsv", "--particles", "100"]),
+        2,
+        "`pfilter --scenario S --params FILE` must be a parse-layer conflict \
+         (gh#194): the scenario silently overrides the pinned θ otherwise."
+    );
+}
+
+#[test]
+fn pfilter_scenario_with_param_cli_is_conflict() {
+    assert_eq!(
+        check(&["pfilter", "m.camdl", "--scenario", "baseline",
+                "--param", "beta=0.3", "--data", "d.tsv", "--particles", "100"]),
+        2,
+        "`pfilter --scenario S --param NAME=VALUE` must be a parse-layer \
+         conflict (gh#194), same root cause as --params."
+    );
+}
+
+#[test]
+fn pfilter_scenario_without_explicit_theta_is_ok() {
+    // Scenario alone (θ comes from the scenario's set/scale) is the
+    // intended way to score a named scenario — must still parse clean.
+    assert_eq!(
+        check(&["pfilter", "m.camdl", "--scenario", "baseline",
+                "--data", "d.tsv", "--particles", "100"]),
+        0
+    );
+}
+
+#[test]
+fn pfilter_params_without_scenario_is_ok() {
+    // Pinning θ via --params with no scenario is the canonical pfilter
+    // invocation — must parse clean.
+    assert_eq!(
+        check(&["pfilter", "m.camdl", "--params", "p.toml",
+                "--data", "d.tsv", "--particles", "100"]),
+        0
+    );
+}
+
+#[test]
+fn pfilter_params_with_enable_is_ok() {
+    // `--enable`/`--disable` toggle interventions, not parameter values, so
+    // "pin θ + toggle an intervention" stays coherent and must NOT conflict
+    // with --params. Only --scenario (which sets θ) conflicts.
+    assert_eq!(
+        check(&["pfilter", "m.camdl", "--params", "p.toml", "--enable", "sia",
+                "--data", "d.tsv", "--particles", "100"]),
+        0
+    );
+}
+
+#[test]
+fn pfilter_params_and_param_together_is_ok() {
+    // The conflict is scenario-vs-explicit-θ, NOT params-vs-param. A file plus
+    // a singular override is a legitimate layering and must stay accepted.
+    assert_eq!(
+        check(&["pfilter", "m.camdl", "--params", "p.toml", "--param", "beta=0.3",
+                "--data", "d.tsv", "--particles", "100"]),
+        0
+    );
+}

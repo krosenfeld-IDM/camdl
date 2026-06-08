@@ -159,3 +159,59 @@ fn scenario_scale_multiplies_mu_value() {
          2026-04-21 table-unit incident: if scale were a no-op, \
          we'd see baseline ≈ 135.", s_doubled, frac);
 }
+
+// ── gh#194: pfilter rejects --scenario + --params instead of silently ─────────
+// scoring the likelihood at the scenario's θ ───────────────────────────────────
+//
+// On `simulate` (tests above) the scenario's `set`/`scale` deliberately
+// overrides the `--params` baseline — that's the documented "baseline +
+// counterfactual" semantics. On `pfilter` there is no such semantics: the user
+// pins θ via --params to score ONE likelihood, and a scenario that also sets θ
+// (resolver tier 4 > the --params tier 3) would silently win, scoring at the
+// scenario's θ rather than the user's. Before gh#194 that combination ran
+// silently and produced a likelihood at the wrong θ. It is now a hard
+// parse-layer conflict: the run must abort with a clear "cannot be used with"
+// error before any filtering starts.
+#[test]
+fn pfilter_scenario_with_params_aborts_not_silently_overrides() {
+    let bin = skip_if_missing_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let model = tmp.path().join("pd.camdl");
+    let params = tmp.path().join("p.toml");
+    let data = tmp.path().join("d.tsv");
+    write_pure_death_model(&model);
+    write_baseline_params(&params);
+    // A dummy data file so --data is satisfied syntactically; the conflict
+    // fires at parse time, well before any data is read.
+    std::fs::write(&data, "t\tS_obs\n0\t1000\n").unwrap();
+
+    let out = Command::new(&bin)
+        .args([
+            "pfilter", &model.to_string_lossy(),
+            // `fast` sets mu=0.5; --params pins mu=0.1. If the conflict were
+            // absent, the scenario would silently win and the loglik would be
+            // computed at mu=0.5, not the user's mu=0.1.
+            "--scenario", "fast",
+            "--params", &params.to_string_lossy(),
+            "--data", &data.to_string_lossy(),
+            "--particles", "100",
+        ])
+        .output()
+        .expect("spawn pfilter");
+
+    assert!(
+        !out.status.success(),
+        "pfilter --scenario + --params must abort (gh#194), not run; \
+         exit status was success. stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot be used with")
+            && stderr.contains("--scenario")
+            && stderr.contains("--params"),
+        "expected a clap conflict error naming --scenario and --params; \
+         got stderr:\n{}",
+        stderr
+    );
+}

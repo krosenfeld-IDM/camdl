@@ -8,7 +8,7 @@
 pub mod types;
 
 use std::path::PathBuf;
-use clap::Args;
+use clap::{Args, ArgGroup};
 use crate::colored_help;
 use types::{Backend, DataSpec, ListDuration, ParamOverride, ParamVecSpec, RwSd, SeedSpec, SweepSpec, TableSpec};
 
@@ -1190,6 +1190,21 @@ Examples:
   camdl pfilter sir.camdl --params p.toml --data cases.tsv \\
       --particles 5000 --save-prequential preq
 "))]
+// gh#194: `--scenario` and explicit-θ flags (`--params` / `--param`) are a
+// hard conflict on pfilter. A scenario's `set`/`scale` block resolves at a
+// *higher* precedence than `--params` (params_resolver tier 4 > tier 3), so
+// pinning θ via `--params` while a scenario is active would silently score
+// the likelihood at the scenario's θ, not the user's — a silent-wrong-θ
+// result. On `simulate` the same precedence is intentional (`--params` sets
+// baseline values, the scenario applies a counterfactual modification on top
+// — pinned by `scenario_runtime_application.rs`); on `pfilter` there is no
+// such "baseline + counterfactual" semantics — the user wants one θ scored —
+// so we reject the ambiguous combination at the parse layer instead.
+// `--enable`/`--disable` stay compatible with `--params`: those toggle
+// interventions, not parameter values, so "pin θ + toggle an intervention"
+// is coherent.
+#[command(group(ArgGroup::new("pfilter_explicit_theta")
+    .args(["params", "param"]).multiple(true).conflicts_with("scenario")))]
 pub struct PfilterArgs {
     /// IR JSON or .camdl model file
     pub model: PathBuf,
