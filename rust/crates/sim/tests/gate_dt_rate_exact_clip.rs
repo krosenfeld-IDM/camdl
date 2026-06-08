@@ -159,7 +159,7 @@ fn dt_rate_density_reads_realized_records_under_exact_clip() {
         d_realized - d_uniform
     );
     assert!(
-        (d_realized - d_uniform).abs() > 1e-3,
+        (d_realized - d_uniform).abs() > 1e-6 * d_uniform.abs().max(1.0),
         "realized records must reconstruct a different density than uniform s·dt (Δ={:.3e})",
         d_realized - d_uniform
     );
@@ -221,6 +221,30 @@ fn dt_rate_propensity_scales_with_eval_ctx_dt() {
         (ratio - short_dt / DT).abs() < 1e-12,
         "infection propensity must scale as dt_actual/grid_dt: ratio {ratio} vs {}",
         short_dt / DT
+    );
+
+    // ABSOLUTE pin (closes the ratio's blind spot): the realized propensity must
+    // EQUAL the rate computed from first principles at the realized dt —
+    // beta·S·I/N·(dt_actual/tau). The ratio alone only proves "linear in the dt
+    // argument" and would survive a `Dt → k·ctx.dt` overload, or a read of the
+    // wrong-but-proportional dt field (the grid_dt-vs-dt_actual mixup this branch
+    // exists to prevent). The absolute value nails `Expr::Dt == ctx.dt`.
+    let comp = |name: &str| {
+        compiled.model.compartments.iter().position(|c| c.name == name)
+            .unwrap_or_else(|| panic!("compartment {name} not found"))
+    };
+    let s = int_s.counts[comp("S")] as f64;
+    let i = int_s.counts[comp("I")] as f64;
+    let n: f64 = int_s.counts.iter().map(|&c| c as f64).sum();
+    let beta = params[compiled.param_index["beta"]];
+    let tau = params[compiled.param_index["tau"]];
+    let expected_short = beta * s * i / n * (short_dt / tau);
+    let rel = (prop_short[inf] - expected_short).abs() / expected_short.abs().max(1e-12);
+    assert!(
+        rel < 1e-9,
+        "infection propensity must EQUAL beta·S·I/N·(dt_actual/tau) = {expected_short:.6e}, \
+         got {:.6e} (rel {rel:.2e}) — pins Expr::Dt == ctx.dt, not merely linear in it",
+        prop_short[inf]
     );
 
     // recovery rate = gamma·I: references no dt → bit-identical across the two evals.
