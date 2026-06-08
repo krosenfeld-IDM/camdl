@@ -151,9 +151,6 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
     let schedule =
         Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
-    // #1-interim: under Exact, off-grid obs shorten the final substep, which
-    // misfires always-active events (they key on round(t/dt)). Refuse loudly.
-    schedule.reject_event_misfire(process.has_always_active_events(), config.t_start)?;
 
     // gh#147 (M3.1). Cumulative particle-substep count for the
     // deterministic compute-budget guard. Bounds a single PF evaluation;

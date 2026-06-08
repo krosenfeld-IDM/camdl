@@ -85,7 +85,7 @@ fn test_fraction_transfer_uses_floor_not_round() {
     let mut real_s = RealState::new(0);
 
     let fire_steps = model.resolve_fire_steps(1.0, &[]);
-    apply_interventions_at(30.0, &model, &fire_steps, 1.0, &mut int_s, &mut real_s, &[], 1e-10).unwrap();
+    apply_interventions_at(30.0, &model, &fire_steps, 1.0, 1.0, &mut int_s, &mut real_s, &[], 1e-10).unwrap();
 
     // floor(1 * 0.6) = floor(0.6) = 0: no transfer should happen
     assert_eq!(int_s.counts[0], 1, "S should remain 1 (no transfer)");
@@ -118,7 +118,7 @@ fn test_fraction_transfer_floor_larger() {
     let mut real_s = RealState::new(0);
 
     let fire_steps = model.resolve_fire_steps(1.0, &[]);
-    apply_interventions_at(30.0, &model, &fire_steps, 1.0, &mut int_s, &mut real_s, &[], 1e-10).unwrap();
+    apply_interventions_at(30.0, &model, &fire_steps, 1.0, 1.0, &mut int_s, &mut real_s, &[], 1e-10).unwrap();
 
     // floor(5 * 0.8) = floor(4.0) = 4
     assert_eq!(int_s.counts[0], 1, "S should be 1 after 4 transferred");

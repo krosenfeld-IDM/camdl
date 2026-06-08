@@ -73,15 +73,6 @@ pub trait ProcessModel: Send + Sync {
 
     /// Allocate a fresh scratch buffer sized for this model.
     fn new_scratch(&self) -> Self::Scratch;
-
-    /// Whether the model carries any always-active event (`events {}`), which
-    /// fires every substep keyed on `round(t/dt)`. The inference drivers use it
-    /// to reject off-grid observation timing under `Exact` stepping
-    /// (`Schedule::reject_event_misfire`), where a shortened substep would land
-    /// the event firing on the wrong step. Required (no default): a silent
-    /// `false` would re-open the misfire for a future process model that does
-    /// carry events.
-    fn has_always_active_events(&self) -> bool;
 }
 
 /// Observation model: maps latent state to data likelihood.

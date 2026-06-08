@@ -243,9 +243,6 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
         config.dt, sched_t_end, config.dt, StepPolicy::Exact, Vec::new(), Vec::new(),
     )
     .with_obs(obs_times);
-    // #1-interim: under Exact, off-grid obs shorten the final substep, which
-    // misfires always-active events (they key on round(t/dt)). Refuse loudly.
-    schedule.reject_event_misfire(process.has_always_active_events(), config.t_start)?;
 
     // Mutable copy of params — updated each iteration with the filter mean.
     // Start from `base_params` for non-estimated slots, then overwrite each

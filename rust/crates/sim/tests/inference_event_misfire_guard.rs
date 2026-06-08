@@ -1,18 +1,29 @@
-//! Wiring test for the #1-interim event-misfire guard
-//! (`Schedule::reject_event_misfire`, exercised through the inference filters).
+//! Run-correctly tests for always-active events under the `Exact` inference
+//! stepping policy, after the `StepClock` fix
+//! (docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A, step 1).
 //!
-//! The inference filters step EXACTLY to each observation time (StepPolicy::Exact).
-//! When an observation is off the dt grid, the final substep of that window is
-//! shortened, so its end lands off the `round(t/dt)` grid that always-active
-//! events key their firing on — the event fires on the wrong step, a silent
-//! likelihood error. The guard refuses such a configuration loudly.
+//! The inference filters step EXACTLY to each observation time
+//! (`StepPolicy::Exact`). When an observation is off the dt grid, the final
+//! substep of that window is shortened: the realized substep length `dt_actual`
+//! diverges from the nominal model `grid_dt`. Always-active events key their
+//! firing on a step index (`time_to_step(t_end, ·)`) into a `fire_steps` table
+//! built on the nominal `grid_dt`. The defect this fix removes was that the
+//! firing key was computed on the *clipped* `dt_actual`, so the shortened
+//! substep landed on the wrong step — the event fired on the wrong step, or not
+//! at all, a silent likelihood error.
 //!
-//! This test proves the guard is WIRED into `bootstrap_filter`: the same model
-//! is accepted with on-grid observations and rejected with off-grid ones, and a
-//! model WITHOUT always-active events is accepted either way (the predicate
-//! itself is unit-tested exhaustively in `schedule.rs`). The accept-on-grid case
-//! is the over-rejection control: always-active events with on-grid obs (the
-//! common importation/seeding fit) must still run.
+//! Previously this configuration (off-grid obs + always-active event under
+//! Exact) was REJECTED at filter setup by `Schedule::reject_event_misfire`. With
+//! the firing key now correctly computed on `grid_dt`, the configuration RUNS,
+//! and the event fires at the correct nominal grid step. These tests pin that:
+//!
+//!   1. The off-grid + event case now runs and returns a finite log-likelihood
+//!      (was rejected — the red→green proof at the filter level).
+//!   2. A direct `resolve_events` check: on a CLIPPED substep whose end lands on
+//!      a nominal grid time, the event fires keyed on `grid_dt`; the (old) key on
+//!      `dt_actual` would silently SKIP it. The negative control demonstrates the
+//!      bug the fix removes.
+//!   3. The on-grid + event and no-event controls still run unchanged.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,6 +37,7 @@ use ir::{
 };
 use sim::{
     compiled_model::CompiledModel,
+    effects::{resolve_events, EffectDeltas},
     inference::{
         obs_loglik::poisson_logpmf,
         particle_filter::bootstrap_filter,
@@ -33,6 +45,8 @@ use sim::{
         traits::{ObservationModel, SMCConfig},
         ParticleState,
     },
+    state::{IntState, RealState},
+    time::time_to_step,
 };
 
 struct PoissonPrevalenceObs {
@@ -48,22 +62,23 @@ impl ObservationModel<ParticleState> for PoissonPrevalenceObs {
     fn obs_time(&self, obs_idx: usize) -> f64 { self.obs_times[obs_idx] }
 }
 
-/// Pure-death N with optional always-active importation event (`add N += 1`
-/// every integer step). The event makes `has_always_active_events()` true.
-fn death_model(with_event: bool) -> CompiledModel {
-    let interventions = if with_event {
-        vec![Intervention {
+/// Pure-death N with an optional always-active importation event firing at the
+/// given integer times (`add N += 1` whenever a substep lands on one of those
+/// nominal grid steps). The event makes the model carry an always-active
+/// intervention.
+fn death_model(event_times: Option<Vec<f64>>) -> CompiledModel {
+    let interventions = match event_times {
+        Some(times) => vec![Intervention {
             name: "importation".into(),
             base_name: None,
-            schedule: InterventionSchedule::AtTimes((1..=10).map(|k| k as f64).collect()),
+            schedule: InterventionSchedule::AtTimes(times),
             actions: vec![Action::Add(AddAction {
                 compartment: "N".into(),
                 count: Expr::const_(1.0),
             })],
             always_active: true,
-        }]
-    } else {
-        vec![]
+        }],
+        None => vec![],
     };
     let model = Model {
         name: "death_event_guard".into(),
@@ -114,7 +129,8 @@ fn death_model(with_event: bool) -> CompiledModel {
 }
 
 fn run(with_event: bool, obs_times: Vec<f64>) -> Result<f64, sim::SimError> {
-    let compiled = Arc::new(death_model(with_event));
+    let event_times = with_event.then(|| (1..=10).map(|k| k as f64).collect());
+    let compiled = Arc::new(death_model(event_times));
     let params = compiled.default_params.clone();
     let process = ChainBinomialProcess::new(compiled, 1.0);
     let obs_model = PoissonPrevalenceObs {
@@ -129,29 +145,83 @@ fn run(with_event: bool, obs_times: Vec<f64>) -> Result<f64, sim::SimError> {
     bootstrap_filter(&process, &obs_model, &params, &config, 42).map(|r| r.log_likelihood)
 }
 
-/// RED: with an always-active event, off-grid observations must be rejected at
-/// filter setup. Pre-guard the filter ran and returned a (silently-misfiring)
-/// log-likelihood.
+/// GREEN (was RED — previously rejected): with an always-active event, off-grid
+/// observations now RUN. Under Exact the final substep of each off-grid window is
+/// clipped, so `dt_actual ≠ grid_dt`; the firing key is computed on `grid_dt`, so
+/// the events still land on the correct nominal grid steps. Pre-fix this returned
+/// an error at filter setup (`reject_event_misfire`); the fix makes it a correct
+/// run with a finite likelihood.
 #[test]
-fn pf_rejects_off_grid_obs_with_always_active_event() {
-    let err = run(true, vec![3.5, 7.5])
-        .expect_err("off-grid obs + always-active event must be rejected, not silently misfire");
-    let msg = err.to_string();
-    assert!(msg.contains("always-active"), "message should name the cause: {msg}");
-    assert!(msg.contains("3.5"), "message should name the off-grid time: {msg}");
+fn pf_runs_off_grid_obs_with_always_active_event() {
+    let ll = run(true, vec![3.5, 7.5])
+        .expect("off-grid obs + always-active event must now RUN (StepClock fix), not be rejected");
+    assert!(ll.is_finite(), "log-likelihood should be finite, got {ll}");
 }
 
-/// CONTROL (over-rejection guard): the SAME event model with on-grid obs must
-/// still run — always-active events with on-grid observations are the common
-/// importation/seeding fit and must not be refused.
+/// The firing-key fix at the resolution layer, deterministic and hand-computed.
+///
+/// An event is scheduled at the single nominal time t = 4.0 → `fire_steps =
+/// {time_to_step(4.0, grid_dt=1) = 4}`. Consider the CLIPPED substep `t0 = 3.5`,
+/// `dt_actual = 0.5` → `t_end = 4.0` (the substep an Exact filter takes after
+/// landing on an off-grid obs at 3.5, when the next boundary is the grid time
+/// 4.0). The event must fire here, keyed on the NOMINAL grid:
+///
+///   - CORRECT (grid_dt = 1.0): `time_to_step(4.0, 1.0) = 4` ∈ {4} → fires.
+///   - BUGGY  (dt_actual = 0.5): `time_to_step(4.0, 0.5) = 8` ∉ {4} → SILENTLY
+///     SKIPS — the lost firing this fix removes.
+///
+/// We assert both: the fixed call (grid_dt) emits the `add(N, +1)` delta, and the
+/// buggy call (grid_dt = dt_actual) emits nothing. This is the red→green at the
+/// function the filters call.
+#[test]
+fn resolve_events_keys_firing_on_grid_dt_not_clipped_dt() {
+    let compiled = death_model(Some(vec![4.0])); // single event at nominal t = 4
+    let params = compiled.default_params.clone();
+    let grid_dt = 1.0_f64;
+    let dt_actual = 0.5_f64;
+    let t0 = 3.5_f64; // clipped substep start; t_end = t0 + dt_actual = 4.0
+
+    // fire_steps is built on the NOMINAL grid (what the filter resolves).
+    let fire_steps = compiled.resolve_fire_steps(grid_dt, &params);
+    // Sanity: the event keys to nominal step 4, and the buggy dt_actual key would
+    // be step 8 — distinct, and 8 is NOT in the table, so the bug is observable.
+    assert!(fire_steps[0].contains(&time_to_step(4.0, grid_dt)),
+        "event must key to nominal grid step {} ", time_to_step(4.0, grid_dt));
+    assert!(!fire_steps[0].contains(&time_to_step(4.0, dt_actual)),
+        "the buggy dt_actual key (step {}) must be absent from the table so the \
+         misfire is a SKIP, not a coincidental hit", time_to_step(4.0, dt_actual));
+
+    let snap_int = IntState::from_vec(vec![100]);
+    let snap_real = RealState::new(0);
+
+    // FIXED: firing keyed on grid_dt → event fires, emits +1 to N (local int 0).
+    let mut out = EffectDeltas::default();
+    resolve_events(&compiled, &fire_steps, &snap_int, &snap_real, &params,
+                   t0, dt_actual, grid_dt, &mut out).unwrap();
+    assert_eq!(out.int.len(), 1, "event must fire on the clipped substep keyed on grid_dt");
+    assert_eq!(out.int[0].idx, 0, "the firing targets N (local int 0)");
+    assert_eq!(out.int[0].delta, 1, "add(N, 1) → +1");
+    assert!(out.real.is_empty());
+
+    // NEGATIVE CONTROL (the old behaviour): keying on the clipped dt_actual lands
+    // on step 8, which is not in the table → the event silently SKIPS.
+    let mut buggy = EffectDeltas::default();
+    resolve_events(&compiled, &fire_steps, &snap_int, &snap_real, &params,
+                   t0, dt_actual, /* grid_dt = */ dt_actual, &mut buggy).unwrap();
+    assert!(buggy.is_empty(),
+        "keying on dt_actual misfires: the event would be silently skipped — the bug this fix removes");
+}
+
+/// CONTROL: the same event model with on-grid obs runs (always-active events with
+/// on-grid observations are the common importation/seeding fit) — unchanged by
+/// the fix (on-grid Exact substeps never clip, so `dt_actual == grid_dt`).
 #[test]
 fn pf_accepts_on_grid_obs_with_always_active_event() {
     let ll = run(true, vec![4.0, 8.0]).expect("on-grid obs + event must run");
     assert!(ll.is_finite(), "log-likelihood should be finite, got {ll}");
 }
 
-/// CONTROL: a model WITHOUT always-active events is accepted with off-grid obs —
-/// the guard keys on the event, not on off-grid obs alone.
+/// CONTROL: a model WITHOUT always-active events runs with off-grid obs.
 #[test]
 fn pf_accepts_off_grid_obs_without_event() {
     let ll = run(false, vec![3.5, 7.5]).expect("off-grid obs without event must run");

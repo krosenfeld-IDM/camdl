@@ -904,7 +904,9 @@ pub fn simulate_reference_on_grid(
         scratch.gamma_used.clear();
 
         let counts_before = counts.clone();
-        step_one(model, &mut counts, &mut flows, &mut real, params, t0, dt_s, rng, &mut scratch, &fire_steps)?;
+        // `dt_s` is the realized substep (clipped under Exact); `dt` is the
+        // nominal grid the `fire_steps` were built on → it keys event firing.
+        step_one(model, &mut counts, &mut flows, &mut real, params, t0, dt_s, dt, rng, &mut scratch, &fire_steps)?;
 
         // Verify: density evaluation of this record won't produce k > n.
         // This catches state/flow mismatches before they cause -inf later.
@@ -1129,7 +1131,9 @@ pub fn csmc_as(
             step_one(
                 model, &mut counts[j], &mut substep_flows[j],
                 &mut particle_reals[j],
-                params, t, step_dt, &mut rngs[j], &mut scratches[j],
+                // `step_dt` is the realized substep (clipped under Exact); `dt` is
+                // the nominal grid the `fire_steps` were built on → keys firing.
+                params, t, step_dt, dt, &mut rngs[j], &mut scratches[j],
                 &fire_steps,
             )?;
 

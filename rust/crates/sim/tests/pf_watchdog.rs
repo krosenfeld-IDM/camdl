@@ -541,7 +541,6 @@ impl ProcessModel for CountingProcess {
     }
 
     fn new_scratch(&self) {}
-    fn has_always_active_events(&self) -> bool { false }
 }
 
 /// Observation model that supplies only a time grid (constant likelihood,

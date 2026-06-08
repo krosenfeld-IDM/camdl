@@ -105,17 +105,24 @@ pub fn intervention_fire_times(
 
 /// Apply all interventions scheduled at time `t` (in document order).
 ///
-/// `dt` is the **runtime** integrator step (not `model.simulation.dt`,
-/// which the compiled model carries only as a default — the runtime
-/// can override it via `SimConfig.dt`). `fire_steps` is the runtime-
-/// resolved view of `model.fire_times` for that dt; callers obtain it
-/// once per sim run via `model.resolve_fire_steps(dt)` and pass it
-/// in. See gh#53 for why the compile/runtime split is load-bearing.
+/// `dt` is `dt_actual` — the realized integrator substep (not
+/// `model.simulation.dt`, which the compiled model carries only as a default —
+/// the runtime can override it via `SimConfig.dt`); it drives the effect-amount
+/// evaluation. `grid_dt` is the nominal model dt the `fire_steps` step-index
+/// table was built on (`resolve_fire_steps(grid_dt, …)`), so the intervention
+/// FIRING KEY is computed on `grid_dt`, not `dt`. They are equal under Snap and
+/// for on-grid Exact substeps, diverging only when an inference filter clips a
+/// substep to land on an off-grid observation — keying on `grid_dt` lands the
+/// clipped substep on the correct nominal step. See gh#53 for the compile/runtime
+/// split and docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A for the
+/// two step lengths.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_interventions_at(
     t: f64,
     model: &CompiledModel,
     fire_steps: &[std::collections::BTreeSet<i64>],
     dt: f64,
+    grid_dt: f64,
     int_s: &mut IntState,
     real_s: &mut RealState,
     params: &[f64],
@@ -130,7 +137,7 @@ pub fn apply_interventions_at(
             "apply_interventions_at: non-finite t = {}", t
         )));
     }
-    let current_step = crate::time::time_to_step(t, dt);
+    let current_step = crate::time::time_to_step(t, grid_dt);
     let mut any_fired = false;
     for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
         if iv.always_active { continue; }
@@ -166,11 +173,14 @@ pub fn apply_events_at(
             "apply_events_at: non-finite t = {}", t_event
         )));
     }
-    // `resolve_events` uses `t_end = t + dt` for both the EvalCtx and the
-    // step-index lookup, so pass `t = t_event - dt` to land on `t_end = t_event`.
+    // `resolve_events` uses `t_end = t + dt` for the EvalCtx and `t_end / grid_dt`
+    // for the step-index lookup, so pass `t = t_event - dt` to land on
+    // `t_end = t_event`. `dt` here is the nominal grid the `fire_steps` were built
+    // on (gillespie's `iv_resolution_dt`); the realized substep coincides with it
+    // on this at-boundary event path, so it is both `dt_actual` and `grid_dt`.
     let mut ev = crate::effects::EffectDeltas::default();
     crate::effects::resolve_events(
-        model, fire_steps, int_s, real_s, params, t_event - dt, dt, &mut ev,
+        model, fire_steps, int_s, real_s, params, t_event - dt, dt, dt, &mut ev,
     )?;
     let fired = !ev.is_empty();
     for d in &ev.int {

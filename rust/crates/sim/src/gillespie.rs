@@ -199,7 +199,7 @@ pub fn run_gillespie_with_observer(
                     // at-boundary (no fusion needed); balance is chain-only.
                     crate::lifecycle::apply_post_advance(
                         model, &fire_steps, &mut int_s, &mut real_s, params,
-                        t - iv_resolution_dt, iv_resolution_dt, 1e-10, None,
+                        t - iv_resolution_dt, iv_resolution_dt, iv_resolution_dt, 1e-10, None,
                     )?;
                     while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                     // Full recompute after intervention
@@ -246,7 +246,7 @@ pub fn run_gillespie_with_observer(
                 // INTERVENE (stage 3) via the shared seam (byte-identical).
                 crate::lifecycle::apply_post_advance(
                     model, &fire_steps, &mut int_s, &mut real_s, params,
-                    t - iv_resolution_dt, iv_resolution_dt, 1e-10, None,
+                    t - iv_resolution_dt, iv_resolution_dt, iv_resolution_dt, 1e-10, None,
                 )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
                 // Full recompute after intervention (integer state changed)

@@ -113,7 +113,7 @@ fn simulate_and_count_fires(
     let mut t = t_start;
     while t <= t_end + 1e-9 {
         apply_interventions_at(
-            t, model, &fire_steps, runtime_dt,
+            t, model, &fire_steps, runtime_dt, runtime_dt,
             &mut int_s, &mut real_s, &[], 1e-10,
         ).unwrap();
         t += runtime_dt;
@@ -231,7 +231,7 @@ fn periodic_intervention_fires_at_absolute_wall_time_independent_of_t_start() {
     let mut real_s = RealState::new(0);
     let mut t = 0.0;
     while t <= 300.0 + 1e-9 {
-        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5,
+        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5, 0.5,
             &mut int_s, &mut real_s, &[], 1e-10).unwrap();
         t += 0.5;
     }
@@ -244,7 +244,7 @@ fn periodic_intervention_fires_at_absolute_wall_time_independent_of_t_start() {
     let mut real_s = RealState::new(0);
     let mut t = 100.0;
     while t <= 300.0 + 1e-9 {
-        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5,
+        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5, 0.5,
             &mut int_s, &mut real_s, &[], 1e-10).unwrap();
         t += 0.5;
     }
@@ -258,7 +258,7 @@ fn periodic_intervention_fires_at_absolute_wall_time_independent_of_t_start() {
     let mut real_s = RealState::new(0);
     let mut t = 200.0;
     while t <= 300.0 + 1e-9 {
-        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5,
+        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5, 0.5,
             &mut int_s, &mut real_s, &[], 1e-10).unwrap();
         t += 0.5;
     }
@@ -273,7 +273,7 @@ fn periodic_intervention_fires_at_absolute_wall_time_independent_of_t_start() {
     let mut real_s = RealState::new(0);
     let mut t = 300.0;
     while t <= 400.0 + 1e-9 {
-        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5,
+        apply_interventions_at(t, &model_at_zero, &fire_steps, 0.5, 0.5,
             &mut int_s, &mut real_s, &[], 1e-10).unwrap();
         t += 0.5;
     }
@@ -331,7 +331,7 @@ fn periodic_intervention_fires_at_correct_wall_time_under_sub_day_dt() {
     let mut real_s = RealState::new(0);
     let mut t = 0.0;
     while t <= 130.0 + 1e-9 {
-        apply_interventions_at(t, &model, &fire_steps, 0.5,
+        apply_interventions_at(t, &model, &fire_steps, 0.5, 0.5,
             &mut int_s, &mut real_s, &[], 1e-10).unwrap();
         t += 0.5;
     }
@@ -343,7 +343,7 @@ fn periodic_intervention_fires_at_correct_wall_time_under_sub_day_dt() {
 
     // Continue past wall time 258. After t = 258 it must have fired.
     while t <= 260.0 + 1e-9 {
-        apply_interventions_at(t, &model, &fire_steps, 0.5,
+        apply_interventions_at(t, &model, &fire_steps, 0.5, 0.5,
             &mut int_s, &mut real_s, &[], 1e-10).unwrap();
         t += 0.5;
     }

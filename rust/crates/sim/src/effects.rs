@@ -239,6 +239,17 @@ pub fn resolve_intervention(
 /// draw). PURE — the caller fuses `out.int` into the draw and applies `out.real`
 /// to the real reservoir. Replaces the historical int-only `inject_event_deltas`
 /// (which silently dropped real-targeted events).
+///
+/// `dt` is `dt_actual` — the realized substep length, which drives the rate /
+/// amount evaluation (the `EvalCtx.dt` the resolved intervention exprs see).
+/// `grid_dt` is the nominal model dt the `fire_steps` step-index table was built
+/// on (`resolve_fire_steps(grid_dt, …)`), so the FIRING KEY must be computed on
+/// `grid_dt`, not `dt`. They are equal under Snap and for on-grid Exact substeps;
+/// they diverge only when an inference filter clips a substep to land on an
+/// off-grid observation. Keying the firing on `grid_dt` lands the clipped
+/// substep on the correct nominal step (the `StepClock` discipline of
+/// docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A).
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_events(
     model: &CompiledModel,
     fire_steps: &[std::collections::BTreeSet<i64>],
@@ -247,10 +258,11 @@ pub fn resolve_events(
     params: &[f64],
     t: f64,
     dt: f64,
+    grid_dt: f64,
     out: &mut EffectDeltas,
 ) -> Result<(), SimError> {
     let t_end = t + dt;
-    let current_step = crate::time::time_to_step(t_end, dt);
+    let current_step = crate::time::time_to_step(t_end, grid_dt);
     let snap = StateRef { int: snapshot, real: real_snapshot };
     for (iv_idx, iv) in model.model.interventions.iter().enumerate() {
         if !iv.always_active {

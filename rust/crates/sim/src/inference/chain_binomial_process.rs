@@ -100,22 +100,21 @@ impl ProcessModel for ChainBinomialProcess {
         // real-coupled models on chain-binomial is a separate, larger fix
         // (the particle state must carry and RK4-advance the real reservoir).
         let mut real = crate::state::RealState::new(self.compiled.real_local_to_global.len());
+        // `dt` is the realized substep the filter handed us (clipped under Exact
+        // to land on an off-grid observation); `self.dt` is the nominal model grid
+        // the `fire_steps` were built on, so it keys the event/intervention firing.
         step_one(
             &self.compiled,
             &mut state.counts,
             &mut state.flow_accumulators,
             &mut real,
-            params, t, dt, rng, scratch,
+            params, t, dt, self.dt, rng, scratch,
             &fire_steps,
         )
     }
 
     fn new_scratch(&self) -> StepScratch {
         StepScratch::new(&self.compiled)
-    }
-
-    fn has_always_active_events(&self) -> bool {
-        self.compiled.model.interventions.iter().any(|iv| iv.always_active)
     }
 }
 

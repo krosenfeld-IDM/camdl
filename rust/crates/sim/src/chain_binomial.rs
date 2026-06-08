@@ -222,7 +222,7 @@ pub fn run_chain_binomial_with_observer(
         // (once at t_end inside step_one, once at the new t here).
         // See docs/dev/incidents/2026-04-17-chain-binomial-double-fire.md.
         flows.fill(0);
-        step_one(model, &mut int_s.counts, &mut flows, &mut real_s, params, t_grid, dt, &mut rng, &mut scratch, &fire_steps)?;
+        step_one(model, &mut int_s.counts, &mut flows, &mut real_s, params, t_grid, dt, cfg.dt, &mut rng, &mut scratch, &fire_steps)?;
 
         // Lineage observer: feed each transition's per-step flow count against
         // the frozen start-of-step state. step_one has already drawn from the
@@ -290,8 +290,19 @@ pub fn trace_enabled() -> bool {
 /// particle filter and other inference algorithms. It operates on raw
 /// slices to avoid coupling to IntState/FlowVec/ParticleState.
 ///
+/// `dt` is `dt_actual` — the realized substep length the kernel advances:
+/// rate evaluation, the transition probability `1 − exp(−rate·dt)`, the
+/// overdispersion `shape = dt/σ²`, and the event-amount evaluation all use it.
+/// `grid_dt` is the nominal model dt the `fire_steps` step-index table was built
+/// on; it keys the always-active-event and scheduled-intervention FIRING only
+/// (`time_to_step(t_end, grid_dt)`). The two are equal under the Snap forward
+/// policy and for on-grid Exact substeps, and diverge only when an inference
+/// filter clips a substep to land on an off-grid observation — see
+/// docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A (the `StepClock`).
+///
 /// `scratch` holds pre-allocated buffers to avoid heap allocation per call.
 /// Create one `StepScratch` per particle and reuse across all time steps.
+#[allow(clippy::too_many_arguments)]
 pub fn step_one(
     model: &CompiledModel,
     counts: &mut [i64],
@@ -300,6 +311,7 @@ pub fn step_one(
     params: &[f64],
     t: f64,
     dt: f64,
+    grid_dt: f64,
     rng: &mut StatefulRng,
     scratch: &mut StepScratch,
     fire_steps: &[std::collections::BTreeSet<i64>],
@@ -466,7 +478,7 @@ pub fn step_one(
     // to the snapshot reservoir, which is written back to `real` at the end.
     scratch.event_deltas.clear();
     crate::effects::resolve_events(
-        model, fire_steps, &scratch.int_s, &scratch.real_s, params, t, dt,
+        model, fire_steps, &scratch.int_s, &scratch.real_s, params, t, dt, grid_dt,
         &mut scratch.event_deltas,
     )?;
     for d in &scratch.event_deltas.int {
@@ -535,7 +547,7 @@ pub fn step_one(
     scratch.int_s.counts.copy_from_slice(counts);
     crate::lifecycle::apply_post_advance(
         model, fire_steps, &mut scratch.int_s, &mut scratch.real_s,
-        params, t, dt, dt * 0.5, model.balance.as_ref(),
+        params, t, dt, grid_dt, dt * 0.5, model.balance.as_ref(),
     )?;
     counts.copy_from_slice(&scratch.int_s.counts);
 

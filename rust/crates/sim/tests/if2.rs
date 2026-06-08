@@ -149,7 +149,7 @@ fn generate_data(compiled: &CompiledModel, params: &[f64]) -> (Vec<f64>, Vec<f64
     let mut t = 0.0;
     while t < 77.0 {
         for _ in 0..7 {
-            step_one(compiled, &mut state.counts, &mut state.flow_accumulators, &mut real, params, t, 1.0, &mut rng, &mut scratch, &compiled.resolve_fire_steps(1.0, params)).unwrap();
+            step_one(compiled, &mut state.counts, &mut state.flow_accumulators, &mut real, params, t, 1.0, 1.0, &mut rng, &mut scratch, &compiled.resolve_fire_steps(1.0, params)).unwrap();
             t += 1.0;
         }
         // Project: recovery flow (index 1)

@@ -40,6 +40,13 @@ use crate::{
 /// post-intervention state. The balance target is exempt from the
 /// negative-count check by construction (its negativity is a separate signal,
 /// warned about here, not erred). RNG-free.
+///
+/// `dt` is `dt_actual` — the realized substep length, driving the balance /
+/// effect-amount evaluation. `grid_dt` is the nominal model dt the `fire_steps`
+/// step-index table was built on; the intervention FIRING KEY is computed on
+/// `grid_dt` (`time_to_step(t_end, grid_dt)` inside `apply_interventions_at`).
+/// They diverge only when an inference filter clips a substep to land off-grid —
+/// see docs/dev/proposals/2026-06-07-scheduling-spine-v2.md §A.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_post_advance(
     model: &CompiledModel,
@@ -49,6 +56,7 @@ pub fn apply_post_advance(
     params: &[f64],
     t: f64,
     dt: f64,
+    grid_dt: f64,
     tolerance: f64,
     balance: Option<&ResolvedBalance>,
 ) -> Result<(), SimError> {
@@ -57,7 +65,7 @@ pub fn apply_post_advance(
     // Stage 3: INTERVENE on the current post-advance state.
     if !model.model.interventions.is_empty() {
         apply_interventions_at(
-            t_end, model, fire_steps, dt, current, real, params, tolerance,
+            t_end, model, fire_steps, dt, grid_dt, current, real, params, tolerance,
         )?;
     }
 

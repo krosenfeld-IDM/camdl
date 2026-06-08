@@ -16,7 +16,7 @@ use crate::schedule::{Cursor, Schedule, StepPolicy};
 use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, LOG_PROB_FLOOR};
 use super::particle_filter::PFilterResult;
 use super::chain_binomial_process::ChainBinomialProcess;
-use super::traits::{ObservationModel, ProcessModel, SMCConfig};
+use super::traits::{ObservationModel, SMCConfig};
 
 /// Pre-drawn random state for one PF evaluation.
 ///
@@ -241,9 +241,6 @@ pub fn bootstrap_filter_correlated(
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
     let schedule =
         Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
-    // #1-interim: under Exact, off-grid obs shorten the final substep, which
-    // misfires always-active events (they key on round(t/dt)). Refuse loudly.
-    schedule.reject_event_misfire(process.has_always_active_events(), config.t_start)?;
 
     // Gamma shape/scale for the overdispersed transition (precompute).
     //
@@ -433,10 +430,13 @@ pub fn bootstrap_filter_correlated(
                     // models (n_real == 0) this is empty and byte-identical.
                     let mut real = crate::state::RealState::new(
                         process.compiled.real_local_to_global.len());
+                    // `step_dt` is the realized substep (clipped under Exact);
+                    // `process.dt` is the nominal grid the `fire_steps` were built
+                    // on → it keys the event/intervention firing.
                     crate::chain_binomial::step_one(
                         model, &mut state.counts, &mut state.flow_accumulators,
                         &mut real,
-                        params, t_local, step_dt, rng, scratch,
+                        params, t_local, step_dt, process.dt, rng, scratch,
                         &fire_steps,
                     )?;
                 }

@@ -133,7 +133,7 @@ pub fn run_tau_leap_with_observer(
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 let mut ev = crate::effects::EffectDeltas::default();
                 crate::effects::resolve_events(
-                    model, &fire_steps, &int_s, &real_s, params, t - cfg.dt, cfg.dt,
+                    model, &fire_steps, &int_s, &real_s, params, t - cfg.dt, cfg.dt, cfg.dt,
                     &mut ev,
                 )?;
                 for d in &ev.int {
@@ -144,7 +144,7 @@ pub fn run_tau_leap_with_observer(
                 }
                 crate::lifecycle::apply_post_advance(
                     model, &fire_steps, &mut int_s, &mut real_s, params,
-                    t - cfg.dt, cfg.dt, 1e-10, None,
+                    t - cfg.dt, cfg.dt, cfg.dt, 1e-10, None,
                 )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
@@ -315,7 +315,7 @@ pub fn run_tau_leap_with_observer(
             let mut ev = crate::effects::EffectDeltas::default();
             crate::effects::resolve_events(
                 model, &fire_steps, &snap_int, &snap_real, params,
-                boundary - cfg.dt, cfg.dt, &mut ev,
+                boundary - cfg.dt, cfg.dt, cfg.dt, &mut ev,
             )?;
             for d in &ev.int {
                 pending_deltas.push((d.idx, d.delta));
@@ -363,7 +363,7 @@ pub fn run_tau_leap_with_observer(
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
             crate::lifecycle::apply_post_advance(
                 model, &fire_steps, &mut int_s, &mut real_s, params,
-                t - cfg.dt, cfg.dt, 1e-10, None,
+                t - cfg.dt, cfg.dt, cfg.dt, 1e-10, None,
             )?;
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
