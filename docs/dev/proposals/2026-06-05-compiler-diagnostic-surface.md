@@ -1,12 +1,31 @@
 ---
 date: 2026-06-05
-status: proposal
+status: goal met (2026-06-07); step-4 polish deliberately deferred
+implemented: ea842d7 (compile_outcome) · ad20a78 (pure passes) · e7f484b (compile non-raising — the fix)
 related: ../../ocaml/lib/compiler/compiler.ml, ../../ocaml/lib/compiler/diagnostics.ml
 issue: gh#181
 supersedes-partially: the gh#170 front-end-unification (collect_detail), which this generalizes
 ---
 
 # Compiler diagnostic/result surface: accumulate, don't throw
+
+## Status
+
+The core goal is met: **the library no longer throws.** `compile` returns
+`Error` on every failure (it raised `Compile_error` on late-phase errors before
+— a real bug: `camdlc <late-error>` exited 2 with a `Fatal error` trace instead
+of a clean 1), `report_and_exit`/`Compile_error` are deleted, the post-expansion
+passes return `diagnostic list`, and `compile_outcome` is the structured
+non-raising surface. The reproduction and fix are in `e7f484b`.
+
+Deliberately **not** done, because the reproduction showed they are aesthetic
+once `compile` is non-raising (consolidate to the seam, not past it): the
+render-relocation to the CLI (C3), the `compile → Ir.model outcome` flip with its
+~65-caller migration, and `compiler.mli` (C5). `compile` keeps its `(Ir.model,
+string) result` type; the structured path is `compile_outcome`. If revisited,
+`compiler.mli` (private `outcome` + smart constructor) is the highest-value
+leftover. The Constraints (C1–C6) and Migration below are kept as the record of
+what the full step-4 *would* entail.
 
 ## Problem
 
