@@ -1,8 +1,9 @@
 ---
 date: 2026-06-07
-status: proposal
+status: implemented
 related: ../../rust/crates/sim/src/resolved_expr.rs, ../../rust/crates/sim/src/propensity.rs
-evidence: ../notes/ (cost-report + samply profile of a dense spatial model)
+evidence: ../notes/2026-06-07-runtime-binding-cache.md (before/after timings + profiles)
+gate: ../../rust/crates/sim/tests/gate_binding_cache_ab.rs
 ---
 
 # Runtime binding cache: evaluate each model binding once per propensity step
@@ -86,39 +87,77 @@ Notes that keep it correct:
 - A generation stamp (not `clear()`) makes invalidation O(1) regardless of
   binding count.
 
+### As built (deviation from the sketch above)
+
+The sketch threads `bind_val`/`bind_gen`/`gen` through `EvalCtx`. As built, the
+cache is a **thread-local** (`BindingCache` in `resolved_expr.rs`) entered via an
+RAII `CacheScope` in `eval_propensities`, *not* `EvalCtx` fields.
+
+Reason: the `EvalCtx`-fields form changes the `eval_resolved(expr, &EvalCtx)`
+signature transitively and forces every `EvalCtx` construction site (propensity,
+gradient, obs-likelihood) to allocate and pass the cache buffers, even the ones
+that don't want caching. The thread-local keeps the signature untouched and
+scopes the cache to exactly the one site that benefits (`eval_propensities`),
+falling through to on-demand eval everywhere else — which is *why* gradient and
+obs-likelihood evals stay byte-identical to the pre-cache path. Correctness
+properties (topological order, per-step generation stamp, cross-particle
+isolation via thread-locality) are unchanged.
+
+Cost of the deviation: a thread-local access (`LocalKey::with` + `_tlv_get_addr`)
+on every `BindingRef`, ~12% of the after-profile busy thread. The `EvalCtx`-by-
+reference form would reclaim it; deferred (the realized 2.74× already lands).
+
 ## Expected speedup
 
-`eval_resolved` ≈ 54% of sim-thread compute (national model); within it the
-redundant work is `N[q]`/`I_agg[q]` recomputed ~945× each (a PopSum of ~105 / ~21
-terms). Caching collapses 945 evals → 1 per binding per step. The irreducible FOI
-sum (P² multiply-adds) and the non-rate 46% (RNG, output, alloc) remain:
+`eval_resolved` is the dominant cost; within it the redundant work is
+`N[q]`/`I_agg[q]` recomputed ~945× each (a PopSum of ~105 / ~21 terms). Caching
+collapses 945 evals → 1 per binding per step. The irreducible FOI sum (P²
+multiply-adds) and the non-rate fraction (RNG, output, alloc) remain.
+
+The conservative pre-implementation estimate (~1.5×) was anchored on a **short
+365-day run**, where setup/IO dilutes `eval_resolved` to ~46% of the busy thread:
 
 ```
-eval_resolved 3× faster → 1/(0.46 + 0.54/3) = 1.56× overall
-eval_resolved 4× faster → 1/(0.46 + 0.135) = 1.68×
-hard ceiling (eval_resolved → 0)           = 2.17×
+eval_resolved 3× faster → 1/(0.46 + 0.54/3) = 1.56× overall   ← short-run estimate
 ```
 
-**Estimate: ~1.5× overall** — eval_resolved ~3× faster (the PopSum recomputation
-is the bulk; the FOI sum is not).
+But the headline workload is a long horizon where per-step eval dominates and
+`eval_resolved` is ~79%. Amdahl on that share, with the cache cutting eval work
+~6×, predicts ~3×:
+
+```
+1/( (1-0.79) + 0.79/6.2 ) = 2.96×                              ← long-run prediction
+```
+
+**Estimate: ~1.5× (short run) to ~3× (long run).** The realized number lands at
+the long-run end (below).
 
 ## Before / after — estimate vs realized
 
-Benchmark: `gen_spatial P=44 A=21` dense coupling, chain_binomial, dt=1, seed 1
-(reproducible via `scripts/gen_scaling_models.py`; the colleague's national
-model is private and not used here).
+Benchmark: `gen_spatial P=44 A=21` dense coupling, chain_binomial, dt=1, seed 1,
+**horizon 3650 d** (steady-state per-step eval dominates; reproducible via
+`scripts/gen_scaling_models.py`; the colleague's national model is private and
+not used here). Same release binary, cache toggled by `CAMDL_NO_BINDING_CACHE`;
+wall = best-of-3, profile = samply busy-thread leaf attribution.
 
 ```
-                          wall (s)    eval_resolved (% busy thread)
-  before (no cache)         1.57           46%        ← measured
-  after  (binding cache)    TBD            TBD         ← fill on implementation
-  predicted (this run)      ~1.1          ~15%        (≈1.4× — setup-heavy short run)
+                       wall (s)   speedup   eval_resolved (% busy)   eval_resolved samples
+  before (no cache)      9.06       1.0×          78.9%                   7443
+  after  (cache)         3.31       2.74×         36.3%                   1194  (6.2× fewer)
+
+  estimate (proposal)     —        ~1.5×           —                       —     (short-run anchor)
 ```
 
-The 365-day run is setup-/IO-heavy, which dilutes the factor; the headline
-before/after will also run a longer horizon (per-step eval dominates) so the
-realized factor is comparable to the ~1.5× estimate. Profile artifacts:
-`docs/dev/notes/assets/` (`before` captured; `after` on implementation).
+**Realized 2.74× — at the long-run end of the estimate, not the short-run
+anchor.** Busy-sample ratio (2.87×) corroborates the wall-clock. `eval_resolved`
+dropped 6.2× in absolute samples; the residual gap to the 2.96× Amdahl
+prediction is the cache's own cost, now visible in the after profile:
+`thread::local::LocalKey::with` 12.4% + `_tlv_get_addr` — the thread-local
+indirection on every `BindingRef`. Passing the cache by reference through
+`EvalCtx` (the original sketch above, vs the as-built thread-local) would reclaim
+that; deferred as a follow-up since 2.74× already lands. Profile artifacts:
+`docs/dev/notes/assets/2026-06-07-binding-cache-{before,after}.json.gz` (+
+`.syms.json` sidecars).
 
 ## Lift / risk / gate
 
