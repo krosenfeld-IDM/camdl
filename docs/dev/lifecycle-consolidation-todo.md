@@ -111,9 +111,21 @@ blocks a later one (noted). `[ ]` todo · `[~]` in progress · `[x]` done.
   re-derived, verified by the continuous unit oracle). Discrete backends byte-identical;
   CRN / PGAS-density / gradient untouched. `CountStoreMut` not introduced — representation
   is carried by the delta type, not an enum-with-rounding-methods.
-- [ ] **D1 — closure driver.** Extract `fixed_step_substep(state, .., advance)`;
-  route chain/tau/ode through it; Gillespie via `apply_boundary_effects`. Remove the
-  `// → FixedStepLifecycle` markers. Byte-identical.
+- [~] **D1 — closure driver — DROPPED.** Its payoff was unifying *four* fixed-step
+  backends; after D3 (drop tau) only chain + ODE remain, and the effect-purity seam
+  already factors their one shared bug-prone part (the representation split) via the
+  delta types. A two-backend `fixed_step_substep` would consolidate past the natural
+  seam — a shared indirection without a shared hazard removed. `// → FixedStepLifecycle`
+  markers stay as documentation of the order. (scheduling-spine-v2 §C.)
+- [x] **Step 0(a) — dt-rate Exact-clip oracle** — the StepClock guard. `dt_rate.camdl`
+  corner fixture (infection rate `… · dt/tau`, an `Expr::Dt` node) + `gate_dt_rate_exact_clip.rs`.
+  The load-bearing arm is at the propensity level: under Exact clipping the infection rate
+  scales *exactly* `dt_actual/grid_dt` (recovery, dt-free, bit-identical) — mutation-checked
+  (freeze `Expr::Dt→1.0` ⇒ ratio 1.0 ⇒ red). A second arm pins consumer-records
+  consistency (complete_data_loglik reads realized `(t0,dt_substep)`, finite, ≠ uniform
+  reconstruction — kernel+t0+rate combined, not Expr::Dt-isolated). Closes the gap that
+  `gate_pgas_density_baseline` (fixed-dt, never clips) and `pgas_exact_tiling` (kernel-dt,
+  not a dt-referencing rate) both missed. (scheduling-spine-v2 §Sequencing Step 0.)
 - [x] **D3 — drop tau-leap** — `761c812` (scheduling-spine-v2 §D / Step 4). Done as a
   **pure delete**, not a kernel-extraction. tau-leap's niche (approximate
   fixed-step stochastic forward, multiple firings per substep against frozen

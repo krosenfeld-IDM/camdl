@@ -116,6 +116,17 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("off_grid_obs", "gillespie", 0x3a47fe1458a43c93),
     ("off_grid_obs", "chain_binomial", 0x38f9706bf047cf25),
     ("off_grid_obs", "ode", 0xfb342768c44ea834),
+    // dt_rate: an `(dt/tau)`-scaled infection rate (`Expr::Dt`, gh#54). The
+    // FORWARD backends never clip to obs times, so every substep is the full
+    // grid dt=1 and the dt/tau factor is identically 1.0 (tau=1) — hence these
+    // hashes EQUAL off_grid_obs above (same SIR otherwise). The dt-factor only
+    // bites under Exact substep clipping, where dt_actual ≠ grid_dt; that path
+    // is pinned by gate_dt_rate_exact_clip.rs, not here. (On gillespie/ode the
+    // `Expr::Dt` node freezes to sim.dt-or-1.0 — deterministic but degenerate;
+    // dt-rates are only meaningful on the fixed-step / inference path.)
+    ("dt_rate", "gillespie", 0x3a47fe1458a43c93),
+    ("dt_rate", "chain_binomial", 0x38f9706bf047cf25),
+    ("dt_rate", "ode", 0xfb342768c44ea834),
     // seasonal_drift runs here at dt=1 (integer), where s*dt == accumulated, so
     // these pin the integer-dt behaviour.
     ("seasonal_drift", "gillespie", 0x3ebeed379edb8107),

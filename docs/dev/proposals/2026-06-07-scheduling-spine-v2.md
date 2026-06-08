@@ -136,6 +136,17 @@ existing prose): `substep`/`interval` = `[t0,t1]`; `timeline stop`/`boundary` = 
 
 ### C. The closure-taking lifecycle driver (D1)
 
+**Decided: dropped.** This unification paid off when *four* backends shared the
+fixed-step skeleton. After D (drop tau-leap) only chain (discrete) and ODE
+(continuous f64) remain fixed-step, and the effect-purity seam already factors
+their one genuinely-shared, bug-prone part — the representation split — through
+the delta types. A two-backend `fixed_step_substep` closure would unify a loop
+skeleton that is already short and clear in each, buying a shared indirection
+without removing a shared hazard: consolidation past the natural seam. The
+`// → FixedStepLifecycle` markers stay as documentation of the shared order;
+`apply_post_advance` already owns the bug-prone tail. Retained below as the
+record of the considered-and-declined option.
+
 ```rust
 fixed_step_substep(
     state, clock, due_effects, scratch,
@@ -230,31 +241,49 @@ independently of A–D.
 
 ## Sequencing
 
-**Step 0 — the missing oracles (before any reshape).** Today there is *zero* coverage of a
-rate expression that references `dt`, and no clipped-substep density baseline: the `Expr::Dt`
-node appears in no fixture, and `gate_inference_baseline` runs at `dt = 1` with integer obs so
-nothing clips. Add (a) a corner fixture whose rate references `dt`, run by
-`gate_pgas_density_baseline` at fractional dt under Exact; (b) an Exact-clipped IF2/PF baseline.
-These are the oracles that prove `StepClock` (A) didn't move the inference path and that pin
-the tau-fold (D) number-move. Cheap, highest-leverage, currently absent from the plan.
+**Step 0 — the missing oracles (before any reshape).** Before this work there was *zero*
+coverage of a rate expression that references `dt` under clipping: the `Expr::Dt` node
+appeared in no fixture, and `gate_pgas_density_baseline` runs `simulate_reference` at a
+fixed `dt` (uniform substeps, `dt_actual == grid_dt` always) so it never clips. The plan
+called for (a) a corner fixture whose rate references `dt`, scored under Exact clipping; and
+(b) an Exact-clipped IF2/PF baseline.
+
+- **(a) — landed.** `tests/fixtures/corner_cases/dt_rate.camdl` (infection hazard `… ·
+  dt/tau`, an `Expr::Dt` node) + `gate_dt_rate_exact_clip.rs`. Under `StepPolicy::Exact`
+  with off-grid obs it produces genuinely shortened substeps and pins, two ways:
+  - *propensity level (the isolated guard)* — the shared evaluator scales the infection
+    rate **exactly** as `dt_actual/grid_dt` (0.5 on a 0.5 substep) while the dt-free
+    recovery rate is bit-identical. Mutation-checked: freezing `Expr::Dt → 1.0` makes the
+    ratio 1.0 and turns this red. This is the direct oracle for `StepClock`'s
+    `EvalCtx.dt = dt_actual` on the rate-eval path.
+  - *integration / consumer-consistency* — the full producer → records →
+    `complete_data_loglik` pipeline runs on the `Expr::Dt` model, stays finite, and scores
+    it from the realized `(t0, dt_substep)` records (== realized recompute, ≠ the uniform
+    `s·dt` reconstruction). NB this Δ is kernel-`dt` + `t0` + rate-`dt` combined, *not*
+    `Expr::Dt`-isolated (frozen `Expr::Dt` leaves it green) — it guards "reads realized
+    records," the propensity arm guards the rate eval.
+- **(b) — largely covered, smaller remainder.** The clipped PGAS density *and gradient* are
+  already oracle'd by `pgas_exact_tiling.rs` (shortened-substep value/gradient on
+  `seir_vaccine_seasonal`); a dedicated Exact-clipped IF2/PF *numeric* baseline is a lower-
+  priority nicety, not a StepClock blocker.
 
 Then, each behind a byte-identical A/B gate:
 
-1. **`StepClock`** — thread it through the lifecycle; `EvalCtx.dt = dt_actual`, `time_to_step`
-   keys on `grid_dt`. Byte-identical (codifies chain/PGAS); the Step-0 oracles confirm it.
-   Lets the Tier-1 off-grid guard be deleted (the rejected model class becomes correct).
-2. **`TimelineStop` / `StopReason` + `EffectBatch`** — the schedule returns the next stop +
-   the due batch; `apply_effect_batch` replaces `apply_interventions_at`'s due-derivation.
-3. **Closure driver (D1)** — extract `fixed_step_substep`; fold PROPOSE in; route ODE's order
-   through it; delete the `// → FixedStepLifecycle` markers.
-4. **Drop tau (D3)** — pure delete: `TauLeapSim`/config/CLI arm + tau golden rows + tau
-   tests. Byte-identical for the other backends (no equivalence proof, the Exact policy
-   survives in inference). **Not** blocked on 1–3. Update the docs (backend lists in the
-   project CLAUDE.md, spec, cheatsheet, the backend-rationalization note).
-5. **Target=Parameter forward (E)** — additive; ships independently.
+1. **`StepClock`** — ✅ landed. `EvalCtx.dt = dt_actual`, `time_to_step` keys on `grid_dt`.
+   Byte-identical (codifies chain/PGAS); the Step-0(a) oracle confirms it on the dt-rate
+   path. The Tier-1 off-grid guard is deleted (the rejected model class is now correct).
+2. **`TimelineStop` / `StopReason` + `EffectBatch`** — ✅ landed. The schedule returns the
+   next stop + the due batch; `apply_effect_batch` replaces `apply_interventions_at`'s
+   due-derivation.
+3. **Closure driver (D1)** — ❌ dropped (see §C). With tau gone only chain + ODE remain
+   fixed-step; a two-backend `fixed_step_substep` would consolidate past the natural seam.
+4. **Drop tau (D3)** — ✅ landed (`761c812`). Pure delete: `TauLeapSim`/config/CLI arm + tau
+   golden rows + tau tests. Byte-identical for the surviving backends.
+5. **Target=Parameter forward (E)** — ⬜ deferred (additive; ships independently, after the
+   observation system).
 
-Steps 1–3 are byte-identical (Step-0 oracles + existing gates are the guard). 4 is a
-pure delete — byte-identical for the surviving backends (only tau's own golden rows go);
+Steps 1–2 are byte-identical (Step-0(a) + existing gates are the guard). 3 is declined. 4 is
+a pure delete — byte-identical for the surviving backends (only tau's own golden rows go);
 its one identity ripple is that runid's `Backend` enum re-indexes when `TauLeap` is
 removed, so chain/ode run_ids shift going forward (Gillespie, index 0, is unchanged) —
 alpha-acceptable, no literal is pinned. 5 is additive.

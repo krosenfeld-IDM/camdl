@@ -162,6 +162,7 @@ update-corner-golden: build-ocaml
 	@$(CAMDLC) $(CORNER_DIR)/seasonal_drift.camdl              --set beta=0.6 --set gamma=0.4 --set alpha=0.4 -o $(CORNER_DIR)/ir/seasonal_drift.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/event_intervention_agree.camdl    --set k=0.0 --set keep=0.5 -o $(CORNER_DIR)/ir/event_intervention_agree.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/event_drain_fusion.camdl          --set k=0.3 --set f=0.2 -o $(CORNER_DIR)/ir/event_drain_fusion.ir.json
+	@$(CAMDLC) $(CORNER_DIR)/dt_rate.camdl                     --set beta=1.0 --set gamma=0.2 --set tau=1.0 -o $(CORNER_DIR)/ir/dt_rate.ir.json
 
 # ── Quick simulation helpers ──────────────────────────────────────────────────
 
