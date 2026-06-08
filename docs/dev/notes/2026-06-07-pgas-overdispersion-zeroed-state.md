@@ -3,6 +3,7 @@
 Date: 2026-06-07
 Project: camdl
 Tags: inference, pgas, overdispersion, nuts, value-gradient-mismatch
+GH: gh#195.
 Status: finding (reviewer trace, NOT yet independently reproduced) — needs a
 failing test before it becomes an incident.
 

@@ -4,7 +4,8 @@ Date: 2026-06-08
 Project: camdl
 Tags: inference, particle-filter, correlated-pf, pmmh, cpm
 Status: bug, reproduced — localized but not yet root-caused in the CPM code.
-Related: #17 (correlated_pf variable-noise-layout / CPM silent-decorrelation).
+GH: gh#193 (this bug); gh#194 (the `--scenario`/`--params` footgun below).
+Related work: correlated_pf variable-noise-layout / CPM silent-decorrelation.
 
 ## Summary
 
@@ -67,7 +68,7 @@ Needs a trace of the per-window CPM weights vs the plain PF on this model.
   — defer to a focused session against #17, with a CPM-vs-plain-PF per-window
   weight trace as the first diagnostic.
 
-## Separate footgun found (file alongside)
+## Separate footgun found (filed as gh#194)
 
 `camdl pfilter --scenario <S> --params <FILE>` — the scenario's parameter values
 **silently override `--params`** (the loglik was byte-constant across wildly
