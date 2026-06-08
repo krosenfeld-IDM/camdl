@@ -288,3 +288,34 @@ Final demonstration (clean `origin/main` base): OCaml `dune runtest` 9 suites ·
 posterior-ranking rework is now unblocked; re-test on this fixed base. **Ready to
 merge + close (8):** #97, #112, #114, #117, #123, #147, #191, #192 (+#98).
 
+---
+
+## Issue-count reduction campaign (2026-06-08)
+
+Goal: drop the count via dedup + already-fixed closures (fast, no code), then an
+S-class knockdown, leaving only the tricky tier.
+
+**Merged + closed (green-8 batch):** #97, #98, #112, #114, #117, #123, #147,
+#192 (#191 reopened — only the interim gate landed). On `origin/main` (e8a30ca8).
+
+**Dedup + already-fixed pass — closed 18 (92 → 74):**
+- Dup: **#175 → #146** (hierarchical PGAS+NUTS Gate-3b; #175 is the user-facing repro).
+- Already-fixed (verified the load-bearing artifact on main, then closed):
+  #71, #80, #81, #94, #110, #113, #136, #145, #148, #152, #176, #181, #188,
+  #193, #194, #196; **#100** closed as obsolete (the `[source.from_csv]` surface
+  was never merged into this lineage).
+- **Held #187** (claim that PGAS ignores scheduled interventions): triage says
+  stale but verification was a soft CHECK — it's an inference-path correctness
+  claim, so NOT closed without a real trace.
+
+**S-class reliably-landable (triage found only 5 — the bar is strict):**
+- In-flight batch 1: #66, #174, #108, #37 (`wmtgrg7bo`) → clean-verify then land+close.
+- Batch 2 (queued, launch after batch 1 frees its worktrees): #36, #124, #128, #183.
+- After both → S-class drained; ~66 open.
+
+**Residue = the tricky tier (left for deliberate work):** M-class (~27: e.g.
+#29, #55/#56, #96, #101, #103, #122, #125, #126, #127, #134, #156, #169, #177,
+#179, #189, #190, #198, #199) and L/proposal/inference-owned (~41: RC2-full
+consolidation, #111 resolver, #95 sampler, #119/#186 frozen-params, #197/#200
+grad-drift [inference agent], #129 re-test, ABC #203, reactive #204, etc.).
+
