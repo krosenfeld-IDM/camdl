@@ -9,6 +9,29 @@ use crate::manifest::CamdlSpec;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Resolve the program token of a case's `command`. The case manifests
+/// name the binary as the bare `camdl`, which relies on `camdl` being on
+/// `PATH` — true for an interactive shell or `make install`ed setup, but
+/// NOT for `cargo test` / CI, where the workspace-built `camdl` lives in
+/// `target/{debug,release}/` and is never installed.
+///
+/// So if the token is exactly `camdl` and the `CAMDL` environment variable
+/// is set, use that path instead. This mirrors `tests/test_ocaml_to_rust.sh`
+/// (`CAMDL=${CAMDL:-camdl}`): the test harness points `CAMDL` at the
+/// built binary (via `CARGO_BIN_EXE_camdl`), interactive use falls back to
+/// PATH. Any other token (an absolute path, a different program) passes
+/// through unchanged.
+fn resolve_prog(prog: &str) -> String {
+    if prog == "camdl" {
+        if let Ok(p) = std::env::var("CAMDL") {
+            if !p.is_empty() {
+                return p;
+            }
+        }
+    }
+    prog.to_string()
+}
+
 /// One batch-mode invocation's record — camdl runs once, writes a
 /// long-format TSV containing all replicates, harness then summarises
 /// via `summarise::summarise_long_tsv`.
@@ -51,13 +74,14 @@ pub fn run_camdl_batch(
         return Err(anyhow::anyhow!("case.toml camdl.command is empty"));
     }
     let (prog, rest) = args.split_first().unwrap();
+    let prog = resolve_prog(prog);
 
     let stdout_path = abs_runs_dir.join("stdout.log");
     let stderr_path = abs_runs_dir.join("stderr.log");
     let stdout = std::fs::File::create(&stdout_path)?;
     let stderr = std::fs::File::create(&stderr_path)?;
 
-    let status = Command::new(prog)
+    let status = Command::new(&prog)
         .args(rest)
         .current_dir(case_dir)
         .stdout(stdout)
@@ -121,13 +145,14 @@ pub fn run_camdl_seed(
         return Err(anyhow::anyhow!("case.toml camdl.command is empty"));
     }
     let (prog, rest) = args.split_first().unwrap();
+    let prog = resolve_prog(prog);
 
     let stdout_path = seed_dir.join("stdout.log");
     let stderr_path = seed_dir.join("stderr.log");
     let stdout = std::fs::File::create(&stdout_path)?;
     let stderr = std::fs::File::create(&stderr_path)?;
 
-    let status = Command::new(prog)
+    let status = Command::new(&prog)
         .args(rest)
         .current_dir(case_dir)
         .stdout(stdout)

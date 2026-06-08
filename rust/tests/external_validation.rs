@@ -67,16 +67,58 @@ fn harness_bin() -> PathBuf {
     );
 }
 
+/// Locate the workspace-built `camdl` binary so the harness can spawn it
+/// without depending on `camdl` being on `PATH`. The case manifests name
+/// the binary as the bare `camdl`; under `cargo test`/CI nothing installs
+/// it to a PATH directory (only `make install` does), so without this the
+/// harness fails with `spawn camdl: No such file or directory`.
+///
+/// The harness binary (`external-harness`) and `camdl` are siblings in the
+/// same `target/<profile>/` directory under `cargo test --workspace` (what
+/// `make test-rust` runs). Prefer the sibling of the resolved harness
+/// binary; fall back to a `target/{release,debug}/` probe. The resolved
+/// path is handed to the harness via the `CAMDL` env var, matching the
+/// `CAMDL=${CAMDL:-camdl}` convention in `tests/test_ocaml_to_rust.sh`.
+fn camdl_bin() -> PathBuf {
+    // Sibling of the harness binary, same profile directory.
+    let harness = harness_bin();
+    if let Some(dir) = harness.parent() {
+        let sibling = dir.join("camdl");
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    // Fallback probe. Prefer release (make test-rust always builds it via
+    // `build-rust`) over debug.
+    let root = workspace_root();
+    for profile in ["release", "debug"] {
+        let p = root.join("rust").join("target").join(profile).join("camdl");
+        if p.exists() { return p; }
+        let p = root.join("target").join(profile).join("camdl");
+        if p.exists() { return p; }
+    }
+    panic!(
+        "camdl binary not found next to the external-harness binary or under \
+         target/{{release,debug}}/. Build it first with: cargo build -p cli \
+         (or run via `make test-rust`, which builds the release binaries)."
+    );
+}
+
 #[test]
 fn run_all_cases() {
     let root = workspace_root();
     let bin = harness_bin();
+    let camdl = camdl_bin();
 
     let cases_root = root.join("tests/external/cases");
     let status = Command::new(&bin)
         .args(["run-all", "--root"])
         .arg(&cases_root)
         .current_dir(&root)
+        // The harness spawns the `camdl` token from each case.toml; point
+        // it at the workspace-built binary so the test does not depend on
+        // `camdl` being on PATH (it is not under `cargo test`/CI).
+        .env("CAMDL", &camdl)
         .status()
         .expect("spawn external-harness");
 
