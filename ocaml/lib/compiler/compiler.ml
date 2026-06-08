@@ -258,6 +258,15 @@ let diagnose_validate_error ctx (err : Validate.error) : Diagnostics.diagnostic 
       Printf.sprintf "transition '%s' has zero delta for compartment '%s'" tr c,
       Some "a zero-delta stoichiometry entry has no effect; remove it",
       tr_loc tr
+    | ParamInBinding (b, p) ->
+      "E512",
+      Printf.sprintf "hoisted binding '%s' references parameter '%s'" b p,
+      Some "shared bindings must be param-free: the gradient pass \
+            differentiates a binding reference to 0, so a parameter inside \
+            one would be silently frozen during inference (zero gradient). \
+            This is a compiler invariant — please file a bug.",
+      (* Bindings are synthesized post-expansion with no source span. *)
+      Diagnostics.no_loc
   in
   Diagnostics.mk_error ~code ~loc ~message ?hint ()
 

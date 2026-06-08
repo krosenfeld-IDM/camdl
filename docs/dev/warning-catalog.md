@@ -76,6 +76,7 @@ documented at each emit site in `ocaml/lib/compiler/`.)
 | E509      | validate       | real-valued compartment has no ODE equation                                                                                                        |
 | E510      | validate       | ODE equation for a non-real compartment                                                                                                            |
 | E511      | validate       | transition has zero delta for a compartment                                                                                                        |
+| E512      | validate       | hoisted binding references a parameter (gradient would be silently zeroed)                                                                          |
 | E600      | runtime config | rejected before backend dispatch                                                                                                                   |
 | E601      | semantic       | lineage tracking requires linear dependence on parent compartments                                                                                 |
 

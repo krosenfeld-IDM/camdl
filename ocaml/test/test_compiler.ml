@@ -252,6 +252,86 @@ let test_constant_fold_collapses_sparse_foi_reduce () =
   Alcotest.(check int) "fold collapses FOI Reduce to k=2 terms" 2 after;
   Alcotest.(check bool) "fold strictly shrank the FOI Reduce" true (after < before)
 
+(* ── Binding param-free invariant (E512, defensive) ───────────────────────────
+   The hoist/autodiff contract: [autodiff.ml] differentiates [BindingRef] to 0,
+   so a hoisted [model.bindings] body must be param-free or its gradient is
+   silently zeroed (the gh#186 failure class). [Validate.references_param] is
+   the structural reachability check; the E512 error fires if any binding body
+   reaches a Param. The expander's eligibility heuristic already excludes
+   param-referencing lets, so on the clean corpus this NEVER fires — the test
+   below asserts that the sparse-ring model (which DOES hoist `N[l]`) compiles
+   without E512, which is non-vacuous because the model has bindings for the
+   check to traverse. *)
+
+(** Unit test of the reachability primitive on hand-built exprs. *)
+let test_references_param_primitive () =
+  let open Ir in
+  (* No Param anywhere: state/time/const tree → false. *)
+  let state_only =
+    BinOp { op = Mul; left = Pop "S";
+            right = Cond { pred = BinOp { op = Gt; left = Pop "N"; right = Const 0.0 };
+                           then_ = BinOp { op = Div; left = Pop "I"; right = Pop "N" };
+                           else_ = Const 0.0 } } in
+  Alcotest.(check bool) "state/const tree has no Param" false
+    (Validate.references_param state_only);
+  (* A Param buried under a Reduce term → true. *)
+  let with_param =
+    Reduce [ Const 0.0;
+             BinOp { op = Mul; left = Param "beta"; right = Pop "I" } ] in
+  Alcotest.(check bool) "Param under Reduce is reached" true
+    (Validate.references_param with_param);
+  Alcotest.(check (option string)) "first_param names the offending param"
+    (Some "beta") (Validate.first_param with_param);
+  (* A BindingRef is a leaf — the check does NOT recurse into other bindings
+     (each binding is validated in turn), so a bare BindingRef is param-free. *)
+  Alcotest.(check bool) "BindingRef is a param-free leaf" false
+    (Validate.references_param (BindingRef "N_p0"))
+
+(** Clean-corpus assertion: the sparse-ring spatial model hoists `N[l]` into
+    [model.bindings]; compiling it must NOT raise E512, and the model must
+    actually carry bindings (else the invariant runs over nothing). *)
+let test_binding_invariant_clean_on_spatial () =
+  let m = match Compiler.compile ~name:"sparse_ring" sparse_ring_src with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "spatial model should compile, got: %s" e
+  in
+  (* Non-vacuity: there are hoisted bindings for the invariant to traverse. *)
+  Alcotest.(check bool) "spatial model has hoisted bindings"
+    true (m.bindings <> []);
+  (* And every binding body is param-free (the contract holds on the corpus). *)
+  List.iter (fun (b : Ir.binding) ->
+    Alcotest.(check bool)
+      (Printf.sprintf "binding '%s' is param-free" b.bname)
+      false (Validate.references_param b.bexpr)
+  ) m.bindings
+
+(** Negative control: the invariant is live, not dead code. Take a real model,
+    inject a Param into one binding body (the failure the front-end heuristic is
+    supposed to prevent), and confirm [Validate.validate] reports it. This is
+    the red the DSL itself cannot easily produce, exercised at the IR level. *)
+let test_binding_invariant_catches_poisoned_binding () =
+  let m = match Compiler.compile ~name:"sparse_ring" sparse_ring_src with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "spatial model should compile, got: %s" e
+  in
+  let b0 = match m.bindings with
+    | b :: _ -> b
+    | [] -> Alcotest.fail "expected at least one hoisted binding"
+  in
+  (* Splice a param into the first binding's body: N[l] -> N[l] + beta. *)
+  let poisoned =
+    { b0 with Ir.bexpr =
+        Ir.BinOp { op = Ir.Add; left = b0.Ir.bexpr; right = Ir.Param "beta" } } in
+  let m' = { m with Ir.bindings = poisoned :: List.tl m.bindings } in
+  match Validate.validate m' with
+  | Ok () -> Alcotest.fail "expected ParamInBinding error, got Ok"
+  | Error errs ->
+    let fired = List.exists (function
+      | Validate.ParamInBinding (b, p) -> b = b0.Ir.bname && p = "beta"
+      | _ -> false) errs in
+    Alcotest.(check bool) "ParamInBinding fired for the poisoned binding"
+      true fired
+
 (* min/max wire through the DSL surface to the already-supported Ir.BinOp
    Min/Max (the IR, Rust eval, dimcheck, and autodiff already handle them). *)
 let test_min_max_wire_to_binop () =
@@ -5923,6 +6003,14 @@ let () =
     "constant_fold", [
       Alcotest.test_case "sparse ring FOI Reduce P=4 collapses to k=2"
         `Quick test_constant_fold_collapses_sparse_foi_reduce;
+    ];
+    "binding_param_free_invariant", [
+      Alcotest.test_case "references_param on hand-built exprs"
+        `Quick test_references_param_primitive;
+      Alcotest.test_case "spatial model with hoisted N[l] compiles (no E512)"
+        `Quick test_binding_invariant_clean_on_spatial;
+      Alcotest.test_case "poisoned binding (Param spliced in) raises E512"
+        `Quick test_binding_invariant_catches_poisoned_binding;
     ];
     "min_max", [
       Alcotest.test_case "min/max wire to BinOp Min/Max" `Quick test_min_max_wire_to_binop;

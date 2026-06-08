@@ -21,6 +21,7 @@ type error =
   | MissingOdeEquation    of string
   | OdeForNonRealComp     of string
   | ZeroDelta             of string * string  (* transition, compartment *)
+  | ParamInBinding        of string * string  (* binding name, param name *)
 
 let error_to_string = function
   | DuplicateCompartment s -> Printf.sprintf "duplicate compartment: %s" s
@@ -36,8 +37,37 @@ let error_to_string = function
   | MissingOdeEquation s -> Printf.sprintf "real compartment '%s' has no ODE equation" s
   | OdeForNonRealComp  s -> Printf.sprintf "ODE equation for non-real compartment '%s'" s
   | ZeroDelta (tr, c)    -> Printf.sprintf "zero delta for '%s' in transition '%s'" c tr
+  | ParamInBinding (b, p) ->
+    Printf.sprintf "parameter '%s' reachable from hoisted binding '%s'" p b
 
 module SS = Set.Make(String)
+
+(* Does this expression reach a [Param] node? Used to enforce the
+   hoist/autodiff contract: a hoisted [model.bindings] body must be
+   param-free, because [autodiff.ml] differentiates [BindingRef] to 0.
+   A param leaking into a binding would silently zero its gradient.
+   This is a structural reachability check — it does NOT resolve
+   [BindingRef] transitively (bindings are topo-ordered and each is
+   checked in turn, so a param reachable through an earlier binding
+   surfaces on that binding). *)
+let first_param (e : expr) : string option =
+  let rec go = function
+    | Param p -> Some p
+    | Const _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _ | BindingRef _
+    | Projected -> None
+    | BinOp b -> (match go b.left with Some _ as r -> r | None -> go b.right)
+    | UnOp u  -> go u.arg
+    | Cond c  ->
+      (match go c.pred with
+       | Some _ as r -> r
+       | None -> (match go c.then_ with Some _ as r -> r | None -> go c.else_))
+    | TableLookup (_, idxs) -> List.find_map go idxs
+    | Reduce terms -> List.find_map go terms
+    | UncheckedDim u -> go u.inner
+  in
+  go e
+
+let references_param (e : expr) : bool = first_param e <> None
 
 let uniq_check name_of xs constructor errors =
   let seen = Hashtbl.create 16 in
@@ -141,6 +171,21 @@ let validate (m : model) : (unit, error list) result =
      | BetaBinomial { n; alpha; beta }          -> chk n; chk alpha; chk beta
      | Bernoulli    { p }                       -> chk p)
   ) m.observations;
+
+  (* Hoist/autodiff contract (defensive invariant). Every entry in
+     [m.bindings] must be param-free: [autodiff.ml] differentiates
+     [BindingRef] unconditionally to 0, so a param reachable from a
+     hoisted binding body would silently zero its gradient — an
+     un-estimable parameter with no error (the gh#186 failure class).
+     The expander's [let_is_hoistable] only hoists param-free lets, so
+     on the clean corpus this never fires; it converts a latent
+     silent-wrong-gradient into a loud compile-time failure if that
+     eligibility heuristic ever regresses. *)
+  List.iter (fun (b : binding) ->
+    match first_param b.bexpr with
+    | Some p -> errors := ParamInBinding (b.bname, p) :: !errors
+    | None -> ()
+  ) m.bindings;
 
   if !errors = [] then Ok ()
   else Error (List.rev !errors)
