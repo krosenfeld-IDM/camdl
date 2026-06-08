@@ -755,8 +755,20 @@ pub fn complete_data_loglik(
         if !rec.gammas.is_empty() {
             // Collect σ² values for overdispersed transitions in source-group order,
             // matching the order step_one pushes to gamma_used.
+            //
+            // Evaluate σ² at the real start-of-step state (`counts_before`),
+            // mirroring the three sibling sites: step_one (chain_binomial.rs),
+            // log_transition_density_substep (above), and
+            // log_gamma_density_grad_substep (pgas_grad.rs). σ² is
+            // state-independent today — a compile-time guard in
+            // compiled_model.rs rejects any overdispersion expression that
+            // references compartment state — so this state choice is currently
+            // a no-op for the σ² value. Using `counts_before` (not a zeroed
+            // scratch) keeps this site byte-identical to its siblings and
+            // defensive against any future relaxation of that guard.
             let n_int_local = model.int_local_to_global.len();
-            let int_s_local = IntState::new(n_int_local);
+            let mut int_s_local = IntState::new(n_int_local);
+            int_s_local.counts.copy_from_slice(&rec.counts_before);
             let real_s_local = RealState::new(model.real_local_to_global.len());
             let ctx = EvalCtx {
                 model, int_s: &int_s_local, real_s: &real_s_local,
@@ -767,13 +779,10 @@ pub fn complete_data_loglik(
             for &(src_local, ref group) in &model.source_groups {
                 let n_src = rec.counts_before[src_local].max(0);
                 if n_src == 0 { continue; }
-                // Recompute propensities for rate check
+                // Recompute propensities for rate check (same start-of-step state).
                 let mut local_props = vec![0.0; n_tr];
-                let _ = eval_propensities(model, &{
-                    let mut s = IntState::new(n_int_local);
-                    s.counts.copy_from_slice(&rec.counts_before);
-                    s
-                }, &real_s_local, params, ctx.t, dt_s, &mut local_props);
+                let _ = eval_propensities(model, &int_s_local, &real_s_local,
+                    params, ctx.t, dt_s, &mut local_props);
                 for &tr_idx in group {
                     let rate = local_props[tr_idx];
                     if rate <= RATE_EPSILON { continue; }
