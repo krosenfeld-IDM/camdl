@@ -1,6 +1,6 @@
-//! T4 — evolving real-reservoir coupling on tau_leap and gillespie (the two
-//! backends with zero behavioral oracle coverage for the RK4-real path), with
-//! ODE as the deterministic reference.
+//! T4 — evolving real-reservoir coupling on chain_binomial and gillespie (the
+//! stochastic backends with behavioral oracle coverage for the RK4-real path),
+//! with ODE as the deterministic reference.
 //!
 //! Model: `cholera_siwr` golden IR. W is a REAL compartment integrated by
 //! `dW/dt = xi·I − omega_W·W`, and W feeds back into the infection rate via the
@@ -29,10 +29,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use sim::{
     compiled_model::CompiledModel,
-    config::{GillespieConfig, OdeConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig},
     simulate::Simulate,
     state::Trajectory,
-    GillespieSim, OdeSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim, OdeSim,
 };
 
 const SEED: u64 = 42;
@@ -67,7 +67,7 @@ fn assert_real_coupling_evolved(backend: &str, cfg: SimConfig) {
 
     let sim: &dyn Simulate = match backend {
         "gillespie" => &GillespieSim,
-        "tau_leap" => &TauLeapSim,
+        "chain_binomial" => &ChainBinomialSim,
         other => panic!("unexpected backend {other}"),
     };
     let traj = sim.run(&compiled, &compiled.default_params, SEED, &cfg).unwrap();
@@ -96,10 +96,10 @@ fn assert_real_coupling_evolved(backend: &str, cfg: SimConfig) {
 }
 
 #[test]
-fn tau_leap_evolves_real_reservoir_and_couples() {
+fn chain_binomial_evolves_real_reservoir_and_couples() {
     assert_real_coupling_evolved(
-        "tau_leap",
-        SimConfig::TauLeap(TauLeapConfig { t_start: 0.0, t_end: 365.0, dt: 0.5 }),
+        "chain_binomial",
+        SimConfig::ChainBinomial(ChainBinomialConfig { t_start: 0.0, t_end: 365.0, dt: 0.5 }),
     );
 }
 

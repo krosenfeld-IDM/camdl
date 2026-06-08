@@ -20,9 +20,9 @@
 use std::path::Path;
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, SimConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim,
 };
 
 fn golden_path(name: &str) -> String {
@@ -123,20 +123,6 @@ fn test_branching_gillespie_conservation() {
 }
 
 #[test]
-fn test_branching_tau_leap_conservation() {
-    let (model, compiled) = load_branching();
-    let params = compiled.default_params.clone();
-    let config = SimConfig::TauLeap(TauLeapConfig {
-        t_start: model.simulation.t_start,
-        t_end: model.simulation.t_end,
-        dt: 0.5,
-    });
-    assert_conservation(&compiled,
-        |seed| TauLeapSim.run(&compiled, &params, seed, &config).unwrap(),
-        "tau_leap");
-}
-
-#[test]
 fn test_branching_chain_binomial_conservation() {
     let (model, compiled) = load_branching();
     let params = compiled.default_params.clone();
@@ -165,20 +151,6 @@ fn test_branching_gillespie_split_ratio() {
     assert_split_ratio(&compiled,
         |seed| GillespieSim.run(&compiled, &params, seed, &config).unwrap(),
         0.6, 0.02, "gillespie");
-}
-
-#[test]
-fn test_branching_tau_leap_split_ratio() {
-    let (model, compiled) = load_branching();
-    let params = compiled.default_params.clone();
-    let config = SimConfig::TauLeap(TauLeapConfig {
-        t_start: model.simulation.t_start,
-        t_end: model.simulation.t_end,
-        dt: 0.5,
-    });
-    assert_split_ratio(&compiled,
-        |seed| TauLeapSim.run(&compiled, &params, seed, &config).unwrap(),
-        0.6, 0.02, "tau_leap");
 }
 
 #[test]

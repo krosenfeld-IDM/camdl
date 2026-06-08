@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use ir::intervention::Intervention;
 use sim::{
-    CompiledModel, GillespieSim, TauLeapSim, ChainBinomialSim, OdeSim,
-    config::{GillespieConfig, TauLeapConfig, ChainBinomialConfig, OdeConfig},
+    CompiledModel, GillespieSim, ChainBinomialSim, OdeSim,
+    config::{GillespieConfig, ChainBinomialConfig, OdeConfig},
     simulate::Simulate,
     Trajectory,
 };
@@ -1692,7 +1692,6 @@ pub fn simulate_compiled(
     // trait-dispatch path; kept so the error wording is unchanged).
     let backend: &dyn Simulate = match run.backend {
         Backend::Gillespie     => &GillespieSim,
-        Backend::TauLeap       => &TauLeapSim,
         Backend::ChainBinomial => &ChainBinomialSim,
         Backend::Ode           => &OdeSim,
     };
@@ -1727,12 +1726,6 @@ pub fn simulate_compiled(
                 compiled, &params, run.seed, &cfg, None, tick_opt.as_deref_mut(),
             )
         }
-        Backend::TauLeap => {
-            let cfg = TauLeapConfig { t_start, t_end, dt: run.dt };
-            sim::tau_leap::run_tau_leap_with_observer(
-                compiled, &params, run.seed, &cfg, None, tick_opt.as_deref_mut(),
-            )
-        }
         Backend::ChainBinomial => {
             let cfg = ChainBinomialConfig { t_start, t_end, dt: run.dt };
             sim::chain_binomial::run_chain_binomial_with_observer(
@@ -1757,10 +1750,10 @@ pub fn simulate_compiled(
 /// whether the backend was exact (Gillespie). The recorder draws no identities;
 /// identity attribution happens later in `camdl lineage realize`.
 ///
-/// Supported backends: **Gillespie** (exact), **tau-leap** and
-/// **chain-binomial** (batched — the event log records `multiplicity` and a
-/// `batched` flag per event so replay reproduces the frozen-pool sub-`dt`
-/// semantics). ODE is incompatible (no individuals).
+/// Supported backends: **Gillespie** (exact) and **chain-binomial**
+/// (batched — the event log records `multiplicity` and a `batched` flag
+/// per event so replay reproduces the frozen-pool sub-`dt` semantics).
+/// ODE is incompatible (no individuals).
 ///
 /// The count trajectory is byte-identical to the same run without
 /// `--event-log` at the same seed (validation Tier 2a): the recorder consumes
@@ -1776,13 +1769,12 @@ pub fn run_simulation_event_log(
     // no individuals).
     let backend: &dyn Simulate = match run.backend {
         Backend::Gillespie => &GillespieSim,
-        Backend::TauLeap => &TauLeapSim,
         Backend::ChainBinomial => &ChainBinomialSim,
         Backend::Ode => {
             return Err(
                 "the event log is incompatible with the ODE backend: ODE \
                  tracks continuous densities, not individuals. Use \
-                 --backend gillespie (exact), or tau_leap / chain_binomial \
+                 --backend gillespie (exact), or chain_binomial \
                  (batched, with a reported sub-dt bias in `lineage realize`)."
                     .to_string(),
             );
@@ -1825,12 +1817,6 @@ pub fn run_simulation_event_log(
         Backend::Gillespie => {
             let cfg = GillespieConfig { t_start, t_end, output_dt: None };
             sim::gillespie::run_gillespie_with_observer(
-                &compiled, &params, run.seed, &cfg, Some(&mut recorder), None,
-            )
-        }
-        Backend::TauLeap => {
-            let cfg = TauLeapConfig { t_start, t_end, dt: run.dt };
-            sim::tau_leap::run_tau_leap_with_observer(
                 &compiled, &params, run.seed, &cfg, Some(&mut recorder), None,
             )
         }

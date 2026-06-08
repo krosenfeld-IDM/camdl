@@ -21,11 +21,10 @@ use std::path::Path;
 use sim::{
     chain_binomial::run_chain_binomial_with_observer,
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig},
     gillespie::run_gillespie_with_observer,
     ode::run_ode,
     state::Trajectory,
-    tau_leap::run_tau_leap_with_observer,
 };
 
 /// Path to a committed golden IR fixture (same source the invariant tests use,
@@ -108,23 +107,6 @@ fn chain_binomial_tick_does_not_change_trajectory() {
             .unwrap();
 
     assert_traj_eq(&traj_none, &traj_ticked, "chain_binomial");
-    assert!(!ticks.is_empty(), "tick never fired — test is vacuous");
-}
-
-#[test]
-fn tau_leap_tick_does_not_change_trajectory() {
-    let (model, params) = load_sir();
-    let cfg = TauLeapConfig { t_start: 0.0, t_end: T_END, dt: 1.0 };
-
-    let traj_none =
-        run_tau_leap_with_observer(&model, &params, SEED, &cfg, None, None).unwrap();
-
-    let mut ticks: Vec<f64> = Vec::new();
-    let mut tick = |t: f64| ticks.push(t);
-    let traj_ticked =
-        run_tau_leap_with_observer(&model, &params, SEED, &cfg, None, Some(&mut tick)).unwrap();
-
-    assert_traj_eq(&traj_none, &traj_ticked, "tau_leap");
     assert!(!ticks.is_empty(), "tick never fired — test is vacuous");
 }
 

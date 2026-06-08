@@ -72,7 +72,6 @@ fn backend(b: crate::args::types::Backend) -> Backend {
     use crate::args::types::Backend as B;
     match b {
         B::Gillespie => Backend::Gillespie,
-        B::TauLeap => Backend::TauLeap,
         B::ChainBinomial => Backend::ChainBinomial,
         B::Ode => Backend::Ode,
     }

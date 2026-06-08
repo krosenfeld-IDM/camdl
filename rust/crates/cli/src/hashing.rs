@@ -256,12 +256,12 @@ mod tests {
 
     #[test]
     fn sim_hash_dt_invalidates() {
-        assert_ne!(sim_hash("m", "", "tau_leap", 1.0), sim_hash("m", "", "tau_leap", 0.5));
+        assert_ne!(sim_hash("m", "", "chain_binomial", 1.0), sim_hash("m", "", "chain_binomial", 0.5));
     }
 
     #[test]
     fn sim_hash_backend_invalidates() {
-        assert_ne!(sim_hash("m", "", "gillespie", 1.0), sim_hash("m", "", "tau_leap", 1.0));
+        assert_ne!(sim_hash("m", "", "gillespie", 1.0), sim_hash("m", "", "chain_binomial", 1.0));
     }
 
     #[test]

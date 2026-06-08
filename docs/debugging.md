@@ -79,7 +79,7 @@ columns alongside trajectory output. Useful for debugging unexpected dynamics by
 seeing what the simulator computed at each step.
 
 ```bash
-camdl simulate model.ir.json --params p.toml --backend tau_leap --dt 1 --seed 42 --trace
+camdl simulate model.ir.json --params p.toml --backend chain_binomial --dt 1 --seed 42 --trace
 ```
 
 Output includes existing columns plus traced columns:

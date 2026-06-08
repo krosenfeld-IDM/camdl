@@ -172,26 +172,30 @@ preserve, and **no equivalence proof is required**: camdl is alpha (backward-com
 non-goal), so we do not owe tau's exact numbers. The bar is **"chain+Exact is correct"**, not
 **"chain+Exact == tau"** — a strictly weaker, achievable bar.
 
-The fold:
+The fold is a **pure delete**:
 
-- Expose chain's `Exact` policy for forward simulation (the `Schedule` + shared kernel
-  already support it — the inference filters use it), so off-grid-exact forward sim survives
-  the deletion. Delete `TauLeapSim` + the CLI `tau_leap` arm (no alias — house policy).
-- Re-derive the goldens that had tau rows as chain+`Exact`, **verified correct** against the
-  cross-backend / analytic / lifecycle-audit oracles — not byte-matched to old tau.
-- Keep the 14 cases (integer-only · off-grid interventions · always-active events reading the
-  source · simultaneous event+intervention+output · overdispersed · deterministic draws ·
-  competing exits · ungrouped inflows · tiny rates near `RATE_EPSILON` · dt-referencing rates
-  · **real-coupled rates** (unblocked — #3 fixed, real-coupling tests landed) · lineage
-  observer · `balance + Exact` · inference off-grid obs) as a **chain+Exact correctness
-  corpus** — "does chain do the right thing here," not an A/B vs tau. Two are decisions, not
-  tests: the tiny-rate / dt-eval conventions are settled (chain's, per §A), and
-  `balance + Exact` is an open design decision (chain runs balance under Snap today) — decide
-  and document it.
+- Delete `TauLeapSim`, `run_tau_leap[_with_observer]`, `TauLeapConfig`, `SimConfig::TauLeap`,
+  the `TauLeapSim` export, and the CLI `tau_leap` backend arm (no alias — house policy).
+- Remove tau's rows from the goldens (`gate_corner_case_baseline`, `gate_trajectory_baseline`)
+  and tau-specific tests (the `chain_and_tau_byte_identical…` differential oracle, the
+  `tau_leap_*` cases in the lifecycle-audit tests). No re-derivation — the backend is gone;
+  the other backends' rows are **byte-identical** (the gate proves it). The chain-side event
+  fusion the differential oracle pinned is covered by `pgas_event_density` + the lifecycle
+  audit.
+- **We do NOT add a chain Exact-forward backend now** (deviation from an earlier draft of
+  this section). tau and chain compute the *same* Euler-multinomial kernel
+  mathematically — tau's `run_tau_leap` loop only mirrored chain's within-substep
+  lifecycle (its own comment: "matches chain_binomial"); it never shared chain's
+  `step_one` code. Only tau's run-loop (Exact boundary-clipping) was unique, and the
+  Exact *policy* survives in the inference
+  filters (PF/IF2/correlated PF). The fast off-grid-exact *stochastic-forward* niche is
+  covered by gillespie (exact) or a finer chain `dt`; chain+Exact-forward is trivially
+  addable later (the kernel + policy already exist) if the forward capability is wanted.
 
-This **dissolves the previously-flagged t=0 event-cadence "blocker"**: it was only a blocker
-under an equivalence requirement. Without one, the question is "is chain's cadence correct?"
-— verify it, don't match it to tau's. Blocked on A–C (chain must be the single kernel host).
+No capability is lost: every `Capability` (overdispersion, real-compartments, balance,
+lineages) still has a forward backend (chain covers overdispersion/real/balance/lineages;
+gillespie real/lineages; ode real). This leaves the **honest three forward kernels** (chain
+/ ode / gillespie). No equivalence proof, no t=0-cadence blocker — there is nothing to match.
 
 ### E. `Target = Parameter` — the NPI axis (forward half)
 
@@ -243,9 +247,10 @@ Then, each behind a byte-identical A/B gate:
    the due batch; `apply_effect_batch` replaces `apply_interventions_at`'s due-derivation.
 3. **Closure driver (D1)** — extract `fixed_step_substep`; fold PROPOSE in; route ODE's order
    through it; delete the `// → FixedStepLifecycle` markers.
-4. **Drop tau (D3)** — expose chain's `Exact` for forward; delete `TauLeapSim` + the CLI arm;
-   re-derive the tau goldens as chain+Exact, verified correct (not byte-matched). No
-   equivalence proof — the bar is chain+Exact correctness. Blocked on 1–3.
+4. **Drop tau (D3)** — pure delete: `TauLeapSim`/config/CLI arm + tau golden rows + tau
+   tests. Byte-identical for the other backends (no equivalence proof, the Exact policy
+   survives in inference). **Not** blocked on 1–3. Update the docs (backend lists in the
+   project CLAUDE.md, spec, cheatsheet, the backend-rationalization note).
 5. **Target=Parameter forward (E)** — additive; ships independently.
 
 Steps 1–3 are byte-identical (Step-0 oracles + existing gates are the guard). 4 is the

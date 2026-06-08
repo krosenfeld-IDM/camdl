@@ -103,9 +103,6 @@ pub enum Backend {
     #[value(name = "gillespie")]
     #[serde(rename = "gillespie")]
     Gillespie,
-    #[value(name = "tau_leap", alias = "tau-leap")]
-    #[serde(rename = "tau_leap", alias = "tau-leap")]
-    TauLeap,
     #[value(name = "chain_binomial", alias = "chain-binomial")]
     #[serde(rename = "chain_binomial", alias = "chain-binomial")]
     ChainBinomial,
@@ -118,7 +115,6 @@ impl Backend {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Gillespie     => "gillespie",
-            Self::TauLeap       => "tau_leap",
             Self::ChainBinomial => "chain_binomial",
             Self::Ode           => "ode",
         }

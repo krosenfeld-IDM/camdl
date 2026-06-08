@@ -325,7 +325,7 @@ cli → io → observe → sim → ir
 ```
 
 - `ir`: pure types + serde, no simulation logic
-- `sim`: simulation backends (Gillespie, tau-leap, ODE, chain-binomial) +
+- `sim`: simulation backends (Gillespie, ODE, chain-binomial) +
   propensity evaluator; defines the `Model` trait
 - `observe`: projection + likelihood sampling/scoring; depends on `sim` for
   `Trajectory`
@@ -398,8 +398,8 @@ runtime autodiff, no finite differences.
 Model features constrain which backends can run them. The `Capabilities`
 bitflags in `rust/crates/sim/src/lib.rs` enforce this at dispatch time:
 
-- `OVERDISPERSION`: transitions using `overdispersed(rate, σ²)` require tau-leap
-  or chain-binomial (NegBinomial draws). Gillespie and ODE reject these models
+- `OVERDISPERSION`: transitions using `overdispersed(rate, σ²)` require
+  chain-binomial (NegBinomial draws). Gillespie and ODE reject these models
   with a hard error.
 - `REAL_COMPARTMENTS`: real-valued compartments with ODE equations.
 
@@ -412,7 +412,7 @@ simulation starts.
 Interventions are deterministic state modifications (not stochastic events).
 Each backend handles them differently and the interaction is non-trivial — see
 §2.3.1 of `compartmental-ir-spec.md` for the
-Gillespie/tau-leap/ODE/discrete-time specifics. The key constraint: after a
+Gillespie/ODE/discrete-time specifics. The key constraint: after a
 Gillespie intervention, propensities must be fully recomputed from the modified
 state; do not resume with remaining exponential time.
 

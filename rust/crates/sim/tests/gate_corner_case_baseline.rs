@@ -23,9 +23,9 @@ use std::path::PathBuf;
 
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, OdeSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim, OdeSim,
 };
 
 const SEED: u64 = 42;
@@ -81,20 +81,15 @@ fn trajectory_hash(traj: &sim::state::Trajectory) -> u64 {
 const BASELINES: &[(&str, &str, u64)] = &[
     ("all_lifecycle", "chain_binomial", 0xaad69690736b2061),
     ("coincident_obs_intervention", "gillespie", 0xc95855be016faa2e),
-    ("coincident_obs_intervention", "tau_leap", 0x2e85be37a9e66603),
     ("coincident_obs_intervention", "chain_binomial", 0x268779bebe644754),
     ("coincident_obs_intervention", "ode", 0x8e4f3e32f11b6c80), // ODE de-quant (exact fraction-transfer)
     // event_drain_fusion (cycle 2a): a live transition DRAINS A every substep
     // while an always_active value-dependent event (transfer fraction=f of A)
     // ALSO reads A. The event delta floor(A*f) is read from the START-OF-STEP
-    // SNAPSHOT (pre-drain A), fused atomically with the transition delta. At the
-    // harness dts (chain dt=1, tau dt=0.5) the kernels take different substep
-    // counts, so chain/tau hashes differ HERE; the chain==tau byte-equality
-    // (proof of the fusion) is asserted at MATCHED dt=1 in
-    // cross_backend_lifecycle_agreement.rs. ode (RK4) and gillespie (SSA) have
-    // distinct kernels and get their own pinned baselines.
+    // SNAPSHOT (pre-drain A), fused atomically with the transition delta. ode
+    // (RK4) and gillespie (SSA) have distinct kernels and get their own pinned
+    // baselines.
     ("event_drain_fusion", "gillespie", 0xa793914cfeab7c40),
-    ("event_drain_fusion", "tau_leap", 0x3c3bd007a8255322),
     ("event_drain_fusion", "chain_binomial", 0x9f09ba4bd868112c),
     // ode moved with the effect-purity seam's ODE de-quantization: a
     // fraction_transfer on integer compartments now applies the exact fraction
@@ -105,30 +100,25 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("event_drain_fusion", "ode", 0xf6cc6cd7b95392ac),
     // event_intervention_agree: a coincident always_active event + intervention
     // where the intervention reads the compartment the event modified. The
-    // canonical (M1) lifecycle makes chain_binomial / tau_leap / ode byte-
-    // identical (same hash); gillespie differs only in its absorbing-state
-    // output cadence, not the terminal state. The cross-backend AGREEMENT on the
-    // terminal counts is asserted directly in cross_backend_lifecycle_agreement.rs.
+    // canonical (M1) lifecycle makes chain_binomial / ode byte-identical (same
+    // hash); gillespie differs only in its absorbing-state output cadence, not
+    // the terminal state. The cross-backend AGREEMENT on the terminal counts is
+    // asserted directly in cross_backend_lifecycle_agreement.rs.
     ("event_intervention_agree", "gillespie", 0x178b6b9b28a16bca),
-    ("event_intervention_agree", "tau_leap", 0x17be41f06b7e1f78),
     ("event_intervention_agree", "chain_binomial", 0x17be41f06b7e1f78),
     ("event_intervention_agree", "ode", 0x17be41f06b7e1f78),
     ("fractional_output_end", "gillespie", 0x12ea70a5ebfd6189),
-    ("fractional_output_end", "tau_leap", 0xc672043aa47092ef),
     ("fractional_output_end", "chain_binomial", 0x28067d22b8adc1b3),
     ("fractional_output_end", "ode", 0x55b55839abd925b5),
     ("off_grid_intervention", "gillespie", 0xe967c235c5278b90),
-    ("off_grid_intervention", "tau_leap", 0x2e2b9abfab6c62b1),
     ("off_grid_intervention", "chain_binomial", 0x4f96d41fadd2c78a),
     ("off_grid_intervention", "ode", 0x0bad82f510c7fca4), // ODE de-quant (exact fraction-transfer)
     ("off_grid_obs", "gillespie", 0x3a47fe1458a43c93),
-    ("off_grid_obs", "tau_leap", 0x9dec41aee58acb15),
     ("off_grid_obs", "chain_binomial", 0x38f9706bf047cf25),
     ("off_grid_obs", "ode", 0xfb342768c44ea834),
     // seasonal_drift runs here at dt=1 (integer), where s*dt == accumulated, so
     // these pin the integer-dt behaviour.
     ("seasonal_drift", "gillespie", 0x3ebeed379edb8107),
-    ("seasonal_drift", "tau_leap", 0x3c916f5a28ca853c),
     ("seasonal_drift", "chain_binomial", 0xf8db0999aa8fe812),
     ("seasonal_drift", "ode", 0x631a6bb7eba02031),
 ];
@@ -149,7 +139,6 @@ fn corner_case_trajectory_baselines_hold() {
 
         let backends: &[(&str, SimConfig)] = &[
             ("gillespie", SimConfig::Gillespie(GillespieConfig { t_start, t_end, output_dt: None })),
-            ("tau_leap", SimConfig::TauLeap(TauLeapConfig { t_start, t_end, dt: 0.5 })),
             ("chain_binomial", SimConfig::ChainBinomial(ChainBinomialConfig { t_start, t_end, dt: 1.0 })),
             ("ode", SimConfig::Ode(OdeConfig { t_start, t_end, dt: 1.0 })),
         ];
@@ -158,7 +147,6 @@ fn corner_case_trajectory_baselines_hold() {
         for (backend, config) in backends {
             let sim: &dyn Simulate = match *backend {
                 "gillespie" => &GillespieSim,
-                "tau_leap" => &TauLeapSim,
                 "ode" => &OdeSim,
                 _ => &ChainBinomialSim,
             };

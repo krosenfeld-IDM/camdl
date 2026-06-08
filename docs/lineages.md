@@ -67,17 +67,17 @@ of `I`) and errors with `E601`. Nonlinear mixing is future work.
 `#[lineage]` transition compiles: the classifier sees through the noise wrapper
 and extracts the same linear weight `β·S/N`. The σ² environmental noise affects
 the _count dynamics_, not the _attribution_ — so overdispersed processes work,
-on the chain-binomial / tau-leap backends that `overdispersed()` requires.
+on the chain-binomial backend that `overdispersed()` requires.
 
 ## Backends and tree accuracy
 
 | Backend                      | Lineage support | Tree accuracy                                                                                                                                                             |
 | ---------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `gillespie`                  | exact           | one event at a time — exact attribution; sub-`dt` bias = 0                                                                                                                |
-| `tau_leap`, `chain_binomial` | approximate     | _k_ events per step against frozen start-of-step pools; **systematically loses parent→child edges shorter than `dt`**. `realize` reports the sub-`dt` edge-loss fraction. |
+| `chain_binomial`             | approximate     | _k_ events per step against frozen start-of-step pools; **systematically loses parent→child edges shorter than `dt`**. `realize` reports the sub-`dt` edge-loss fraction. |
 | `ode`                        | rejected        | no individuals — hard error                                                                                                                                               |
 
-`overdispressed()` models require chain-binomial / tau-leap, so their trees are
+`overdispressed()` models require chain-binomial, so their trees are
 approximate; shrink `--dt` for trustworthy trees, and read the reported sub-`dt`
 bias as the accuracy bound. The exact backend (Gillespie) cannot run
 overdispersed models.

@@ -15,11 +15,10 @@ use std::rc::Rc;
 use sim::{
     chain_binomial::run_chain_binomial_with_observer,
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig},
     gillespie::run_gillespie_with_observer,
     lineage::{realize, EventLog, EventRecorder, LineListEntry, LineListWriter, RealizeSummary},
     state::Trajectory,
-    tau_leap::run_tau_leap_with_observer,
 };
 
 pub fn fixtures_dir() -> PathBuf {
@@ -76,7 +75,6 @@ impl LineListWriter for VecWriter {
 #[derive(Clone, Copy)]
 pub enum Backend {
     Gillespie,
-    TauLeap { dt: f64 },
     ChainBinomial { dt: f64 },
 }
 
@@ -97,10 +95,6 @@ pub fn record_event_log(
         Backend::Gillespie => {
             let cfg = GillespieConfig { t_start: 0.0, t_end, output_dt: None };
             run_gillespie_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder), None).unwrap()
-        }
-        Backend::TauLeap { dt } => {
-            let cfg = TauLeapConfig { t_start: 0.0, t_end, dt };
-            run_tau_leap_with_observer(&compiled, &params, seed, &cfg, Some(&mut recorder), None).unwrap()
         }
         Backend::ChainBinomial { dt } => {
             let cfg = ChainBinomialConfig { t_start: 0.0, t_end, dt };

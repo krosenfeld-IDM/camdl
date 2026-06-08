@@ -1,7 +1,7 @@
 //! gh#audit-H3. Numerically-stable primitives shared across inference
 //! and simulation backends. The audit found four near-identical
 //! `(1.0 - (-total_rate * dt).exp()).clamp(...)` sites
-//! (chain_binomial.rs:304, tau_leap.rs:169, pgas.rs:339,
+//! (chain_binomial.rs:304, pgas.rs:339,
 //! pgas_grad.rs:165) that all hit the same catastrophic-cancellation
 //! regime when `total_rate * dt ≫ 1` — the direct subtraction
 //! `1 - exp(-large)` collapses to floating-point noise. Particle

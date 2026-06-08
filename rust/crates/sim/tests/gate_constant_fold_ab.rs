@@ -27,9 +27,9 @@ use std::path::PathBuf;
 use ir::expr::Expr;
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, OdeSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim, OdeSim,
 };
 
 const SEED: u64 = 42;
@@ -152,7 +152,6 @@ fn gate_constant_fold_is_byte_identical() {
 
     let backends: &[(&str, SimConfig)] = &[
         ("gillespie", SimConfig::Gillespie(GillespieConfig { t_start, t_end, output_dt: None })),
-        ("tau_leap", SimConfig::TauLeap(TauLeapConfig { t_start, t_end, dt: 0.5 })),
         ("chain_binomial", SimConfig::ChainBinomial(ChainBinomialConfig { t_start, t_end, dt: 1.0 })),
         ("ode", SimConfig::Ode(OdeConfig { t_start, t_end, dt: 1.0 })),
     ];
@@ -162,7 +161,6 @@ fn gate_constant_fold_is_byte_identical() {
     for (backend, config) in backends {
         let sim: &dyn Simulate = match *backend {
             "gillespie" => &GillespieSim,
-            "tau_leap" => &TauLeapSim,
             "ode" => &OdeSim,
             _ => &ChainBinomialSim,
         };

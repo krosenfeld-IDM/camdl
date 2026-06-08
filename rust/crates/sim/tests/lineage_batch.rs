@@ -1,5 +1,5 @@
-//! Acceptance tests for the lineage path on the **batch** backends — tau-leap
-//! and chain-binomial (2026-05-20 three-layer proposal). These now go through
+//! Acceptance tests for the lineage path on the **batch** backend —
+//! chain-binomial (2026-05-20 three-layer proposal). These now go through
 //! the Layer-1 event recorder → Layer-2 `realize` path; the assertions are
 //! unchanged.
 //!
@@ -19,10 +19,10 @@ use std::collections::HashMap;
 
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, SimConfig},
     lineage::{LineListEntry, ParentRef},
     state::Trajectory,
-    ChainBinomialSim, Simulate, TauLeapSim,
+    ChainBinomialSim, Simulate,
 };
 
 mod lineage_helpers;
@@ -31,7 +31,6 @@ use lineage_helpers::{load_fixture, record_event_log, realize_log, set_params};
 /// Which batch backend a test runs under.
 #[derive(Clone, Copy)]
 enum Backend {
-    TauLeap,
     ChainBinomial,
 }
 
@@ -49,9 +48,6 @@ fn run_baseline(m: &ir::Model, backend: Backend, seed: u64, dt: f64) -> Trajecto
     let t_start = m.simulation.t_start;
     let t_end = m.simulation.t_end;
     match backend {
-        Backend::TauLeap => TauLeapSim
-            .run(&compiled, &params, seed, &SimConfig::TauLeap(TauLeapConfig { t_start, t_end, dt }))
-            .unwrap(),
         Backend::ChainBinomial => ChainBinomialSim
             .run(
                 &compiled,
@@ -74,7 +70,6 @@ fn run_with_lineage(
 ) -> (Trajectory, Vec<LineListEntry>, f64, u64) {
     let t_end = m.simulation.t_end;
     let helper_backend = match backend {
-        Backend::TauLeap => lineage_helpers::Backend::TauLeap { dt },
         Backend::ChainBinomial => lineage_helpers::Backend::ChainBinomial { dt },
     };
     let (traj, log) = record_event_log(m, helper_backend, seed, t_end);
@@ -82,24 +77,7 @@ fn run_with_lineage(
     (traj, entries, summary.sub_dt_fraction, summary.edges)
 }
 
-// ── Tier 2a — trajectory byte-identity, BOTH batch backends ─────────────────────
-
-#[test]
-fn tier2a_tau_leap_byte_identical_with_and_without_lineages() {
-    for seed in [1u64, 2, 7, 13, 42, 99, 1000] {
-        let mut m = load_fixture("sir_lineage");
-        set_params(&mut m, &[("beta", 0.6), ("gamma", 0.2), ("N0", 500.0)]);
-        let baseline = run_baseline(&m, Backend::TauLeap, seed, 0.25);
-        let (with_lineage, entries, _, _) = run_with_lineage(&m, Backend::TauLeap, seed, 0.25);
-        assert_eq!(
-            traj_signature(&baseline),
-            traj_signature(&with_lineage),
-            "tau-leap trajectory diverged with --lineages at seed {}",
-            seed
-        );
-        let _ = entries;
-    }
-}
+// ── Tier 2a — trajectory byte-identity, batch backend ───────────────────────────
 
 #[test]
 fn tier2a_chain_binomial_byte_identical_with_and_without_lineages() {
@@ -121,7 +99,7 @@ fn tier2a_chain_binomial_byte_identical_with_and_without_lineages() {
 fn batch_backends_produce_line_lists() {
     let mut m = load_fixture("sir_lineage");
     set_params(&mut m, &[("beta", 0.8), ("gamma", 0.2), ("N0", 500.0)]);
-    for backend in [Backend::TauLeap, Backend::ChainBinomial] {
+    for backend in [Backend::ChainBinomial] {
         let (_, entries, _, _) = run_with_lineage(&m, backend, 7, 0.25);
         assert!(!entries.is_empty(), "batch backend should emit line-list entries");
         let n_lineage = entries
@@ -138,7 +116,7 @@ fn batch_backends_produce_line_lists() {
 fn tier1_batch_every_lineage_child_has_one_parent_not_itself() {
     let mut m = load_fixture("sir_lineage");
     set_params(&mut m, &[("beta", 0.9), ("gamma", 0.2), ("N0", 500.0)]);
-    for backend in [Backend::TauLeap, Backend::ChainBinomial] {
+    for backend in [Backend::ChainBinomial] {
         let mut total = 0usize;
         for seed in [1u64, 2, 3, 4, 5] {
             let (_, entries, _, _) = run_with_lineage(&m, backend, seed, 0.25);
@@ -165,7 +143,7 @@ fn tier1_batch_parent_never_a_same_step_child() {
     // strictly earlier time than the child's event (or is the t=0 seed).
     let mut m = load_fixture("sir_lineage");
     set_params(&mut m, &[("beta", 0.9), ("gamma", 0.2), ("N0", 500.0)]);
-    for backend in [Backend::TauLeap, Backend::ChainBinomial] {
+    for backend in [Backend::ChainBinomial] {
         let (_, mut entries, _, _) = run_with_lineage(&m, backend, 3, 0.5);
         entries.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
         // Birth time of each individual (earliest time it appears as focal).
@@ -207,7 +185,6 @@ fn tier1_batch_parent_never_a_same_step_child() {
 
 fn backend_name(b: Backend) -> &'static str {
     match b {
-        Backend::TauLeap => "tau_leap",
         Backend::ChainBinomial => "chain_binomial",
     }
 }
@@ -265,7 +242,7 @@ fn sub_dt_fraction_grows_with_dt() {
 fn batch_line_list_reproducible_given_seed() {
     let mut m = load_fixture("sir_lineage");
     set_params(&mut m, &[("beta", 0.7), ("gamma", 0.2), ("N0", 500.0)]);
-    for backend in [Backend::TauLeap, Backend::ChainBinomial] {
+    for backend in [Backend::ChainBinomial] {
         let (_, e1, f1, _) = run_with_lineage(&m, backend, 55, 0.5);
         let (_, e2, f2, _) = run_with_lineage(&m, backend, 55, 0.5);
         assert_eq!(e1, e2, "same seed must yield identical batch line lists");

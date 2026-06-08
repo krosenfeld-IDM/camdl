@@ -9,17 +9,17 @@
 //!     output/effect time); outputs are emitted post-step at grid times; effects
 //!     fire *inside* `step_one` keyed on `resolve_fire_steps(cfg.dt)` (a step
 //!     index), NOT on the loop's boundary detection. This is the **snap** policy.
-//!   - **tau_leap / ode** (`tau_leap.rs:110-139`, `ode.rs:205-239`) — compute
-//!     `next_boundary = min(t_end, out_t, iv_t)` and clip
+//!   - **ode** (`ode.rs:205-239`) — computes
+//!     `next_boundary = min(t_end, out_t, iv_t)` and clips
 //!     `dt = cfg.dt.min(next_boundary - t)`, landing EXACTLY on each output/effect
-//!     time, where they fire via `apply_interventions_at(t, …, 1e-10)`. This is
+//!     time, where it fires via `apply_interventions_at(t, …, 1e-10)`. This is
 //!     the **exact** policy.
 //!   - **gillespie** (`gillespie.rs:144-246`) — PROPOSES an exponential time and
 //!     clips it back to `min(t_end, out_t, iv_t)`. The **clip** query.
 //!
 //! This module makes the time→step mapping ONE thing with an explicit policy and
 //! an explicit grid, rather than three call-site conventions. The grid is a FIELD
-//! (`cfg.dt` for chain/tau/ode, `model.simulation.dt.unwrap_or(1.0)` —
+//! (`cfg.dt` for chain/ode, `model.simulation.dt.unwrap_or(1.0)` —
 //! gillespie's `iv_resolution_dt`, `gillespie.rs:120` — for gillespie), the
 //! single source of truth, so a model never snaps interventions on one grid and
 //! observations on another.
@@ -117,8 +117,9 @@ pub enum StepPolicy {
     /// an output/effect time. Outputs are emitted at grid points; effects are
     /// snapped to a step elsewhere (`resolve_fire_steps`).
     Snap,
-    /// tau_leap / ode: clip the step so the integrator lands exactly on the next
-    /// output/effect boundary.
+    /// ode: clip the step so the integrator lands exactly on the next
+    /// output/effect boundary. Also the policy the inference filters run
+    /// chain's `step_one` under.
     Exact,
 }
 

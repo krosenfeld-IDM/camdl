@@ -500,7 +500,7 @@ scenarios {
 | Derived quantities | `let N = S + I + R`                             | inlined at compile time       |
 | Parameters         | `parameters { beta : rate }`                    | external, supplied at runtime |
 | Tables             | `tables { C : age × age = [...] }`              | fixed data arrays             |
-| Continuous flow    | `src --> dst @ propensity`                      | Gillespie / tau-leap events   |
+| Continuous flow    | `src --> dst @ propensity`                      | Gillespie / chain-binomial events |
 | Scheduled events   | `transfer(...) at [times]`                      | interventions, discrete       |
 | Observations       | `incidence(...)`, likelihood                    | inference + synthetic data    |
 | Initial state      | `init { S = expr }`                             | override-by-source-order      |

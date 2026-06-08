@@ -217,7 +217,7 @@ troughs) indicates model misspecification.
 1. PROPAGATE: advance all N particles from t_{k-1} to t_k
    For each particle i, for each sub-step dt:
      - Evaluate propensities from particle i's state
-     - Draw events (multinomial for chain-binomial, Poisson for tau-leap)
+     - Draw events (multinomial for chain-binomial)
      - Accumulate flows (infection counts, recovery counts, etc.)
    After 7 sub-steps (one week), each particle has its own state
    and its own incidence count since the last observation.

@@ -284,7 +284,6 @@ fn run_one_cell_with_progress(spec: CellSpec) -> Result<CellResult, String> {
 
     let backend = match spec.sim_run.backend {
         Backend::Gillespie => "gillespie",
-        Backend::TauLeap => "tau_leap",
         Backend::ChainBinomial => "chain_binomial",
         Backend::Ode => "ode",
     };

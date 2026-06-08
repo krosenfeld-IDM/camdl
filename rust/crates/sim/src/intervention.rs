@@ -146,7 +146,7 @@ pub fn apply_effect_batch(
 
 /// Apply always_active event actions directly to `int_s` / `real_s`.
 ///
-/// gh#67: ode/tau_leap/gillespie do not have a `pending_deltas` pipeline
+/// gh#67: ode/gillespie do not have a `pending_deltas` pipeline
 /// (only chain_binomial does, for atomic interleaving with multinomial
 /// draws). They call this helper at each intervention boundary instead of
 /// `inject_event_deltas`. `t_event` is the time the boundary was scheduled

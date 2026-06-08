@@ -51,7 +51,7 @@ A declarative description of:
 - Not a programming language (no control flow, no user-defined functions)
 - Not an agent-based model (no individual state, no contact networks — see §12
   on relationship to Flexmod)
-- Not tied to a specific simulation algorithm (Gillespie, tau-leaping, ODE,
+- Not tied to a specific simulation algorithm (Gillespie, ODE,
   discrete-time chain binomial are all valid backends)
 - Not tied to a specific inference algorithm (PMCMC, IF2, SMC², SBI all consume
   the same interface in v0.2+)
@@ -175,11 +175,11 @@ restarting is statistically valid. But the correct procedure is to draw a fresh
 inter-event time from the _post-intervention_ total propensity. Implementors
 must not simply "resume" with the remaining time from the old exponential draw.
 
-**Tau-leaping.** Intervention times fall between tau steps. The runtime must
-truncate the current step to the intervention time, apply the intervention, and
-restart. If multiple interventions cluster, the tau step may be repeatedly
-truncated. The runtime should adaptively manage step size near intervention
-boundaries.
+**Discrete-time (chain-binomial).** Intervention times fall between discrete
+steps. The runtime must truncate the current step to the intervention time,
+apply the intervention, and restart. If multiple interventions cluster, the step
+may be repeatedly truncated. The runtime should manage step size near
+intervention boundaries.
 
 **ODE.** Standard ODE solvers handle discontinuities via solver restart. The
 intervention schedule must be communicated as "tstop" hints so adaptive steppers
@@ -232,10 +232,8 @@ from the updated state.
 
 **Backend notes:**
 
-- **Tau-leaping `[v0.1]`:** within each step `[t, t+τ]`, integrate the ODE (e.g.
-  RK4) with the end-of-step integer state held fixed.
-- **Discrete-time `[v0.1]`:** real compartments advance by Euler integration at
-  each step before the binomial draws.
+- **Discrete-time (chain-binomial) `[v0.1]`:** real compartments advance by RK4
+  integration at each step before the binomial draws.
 - **Gillespie `[v0.1]`:** propensities that depend on real compartments vary
   continuously between events; treat propensities as locally constant within a
   short horizon and re-evaluate after each stochastic jump. This approximation
@@ -292,7 +290,7 @@ programming language.
 
 **No stochastic nodes.** The expression language is deterministic given
 `(state, params, t)`. All stochasticity comes from event selection
-(Gillespie/tau-leaping) and the observation model likelihoods.
+(Gillespie/chain-binomial) and the observation model likelihoods.
 
 **PopSum** is a convenience. `PopSum(["S_child", "S_adult"])` equals
 `BinOp(Add, Pop("S_child"), Pop("S_adult"))`. It exists because "total
@@ -745,7 +743,7 @@ transition: {
 
   draw_method: DrawPoisson             -- omitted in JSON when Poisson (default)
              | DrawDeterministic       -- string "deterministic"
-             | DrawOverdispersed(expr) -- {"overdispersed": expr} — requires tau-leap or chain-binomial
+             | DrawOverdispersed(expr) -- {"overdispersed": expr} — requires chain-binomial
 
   rate_grad: { param_name: expr, ... } -- ∂rate/∂param for each estimated param (autodiff output).
                                        -- omitted when empty (forward-simulation-only models).
@@ -822,7 +820,6 @@ struct SyntheticObs {
 | Backend         | Method                   | Time semantics | Use case                          |
 | --------------- | ------------------------ | -------------- | --------------------------------- |
 | `Gillespie`     | Exact stochastic (SSA)   | Continuous     | Small populations, exact dynamics |
-| `TauLeap`       | Approximate stochastic   | Continuous     | Moderate populations, faster      |
 | `ODE`           | Deterministic mean-field | Continuous     | Large populations, warm-start     |
 | `Hybrid`        | ODE + Gillespie by event | Continuous     | Mixed-scale models                |
 | `ChainBinomial` | Discrete-time stochastic | Discrete       | Operational models, surveys       |
@@ -835,7 +832,7 @@ When `time_semantics` is `"discrete"`, the model operates as a discrete-time
 Markov chain with fixed step size `dt`:
 
 **Continuous-time IR (default).** The `rate` field is a propensity (events per
-unit time). Consumed directly by Gillespie, tau-leaping, ODE.
+unit time). Consumed directly by Gillespie, ODE.
 
 **Discrete-time IR.** The `rate` field is a **probability per time step** (in
 [0, 1]). At each step, transitions fire Binomial(n, p) events where n = source
@@ -1443,7 +1440,7 @@ The compartmental IR operates at population level.
 | State             | Per-agent field arrays              | Integer population vector + real ODE state |
 | Events            | Per-agent with guards + intensities | Population-level propensities              |
 | Contacts          | Explicit relations (patch, network) | Contact matrices in rate expressions       |
-| Stochasticity     | Per-agent Bernoulli draws           | Gillespie / tau-leaping / chain binomial   |
+| Stochasticity     | Per-agent Bernoulli draws           | Gillespie / chain binomial                 |
 | Spatial structure | Agent-to-patch assignment           | Stratification (expanded at compile time)  |
 | Time              | Tick-based (discrete, fixed dt)     | Continuous or discrete                     |
 
@@ -1549,7 +1546,7 @@ Three-stage pipeline (ODE → IF2 → PMCMC) as separate config:
 inference: {
   stages: [
     { backend: "ode", method: "lbfgs", max_iter: 1000 },
-    { backend: "tau_leap", method: "if2", particles: 500, iterations: 100 },
+    { backend: "chain_binomial", method: "if2", particles: 500, iterations: 100 },
     { backend: "gillespie", method: "pmcmc", particles: 200, mcmc_steps: 50000 }
   ]
 }
@@ -1585,13 +1582,13 @@ runtime so they run in debug/test builds with zero cost in release builds.
 state[i] ≥ 0  for all compartments i, after every state update
 ```
 
-Checked after every Gillespie event, every tau-leaping step, every intervention
-application. For Gillespie, a violation means the propensity of the selected
-transition was positive when its source compartment was zero — this is a
+Checked after every Gillespie event, every chain-binomial step, every
+intervention application. For Gillespie, a violation means the propensity of the
+selected transition was positive when its source compartment was zero — this is a
 propensity evaluation bug (since rate = per_capita * Pop(src), Pop(src) = 0
-should give propensity 0). For tau-leaping, it means the Poisson draw exceeded
-the source population — this requires either rejection + redraw or the
-multinomial competing-risks correction.
+should give propensity 0). For chain-binomial, the multinomial competing-risks
+draw bounds total outflow by the source population by construction, so a
+violation indicates a stoichiometry or fusion bug.
 
 **Test:** Run SIR model with N=10 (tiny population, frequent extinction) for
 10,000 seeds. Any negative state triggers test failure.
@@ -1775,23 +1772,23 @@ Also check: the standard deviation of Gillespie trajectories scales as `O(1/√N
 evaluator bugs that cancel out in Gillespie's relative-rate selection but affect
 the absolute rate in ODE.
 
-#### A.2.6 Tau-Leaping vs. Gillespie Agreement
+#### A.2.6 Chain-Binomial vs. Gillespie Agreement
 
-For small enough `τ`, tau-leaping should approximate Gillespie closely. Run both
-on the same model with the same seeds:
+For small enough `dt`, chain-binomial should approximate Gillespie closely. Run
+both on the same model with the same seeds:
 
 **Test procedure:**
 
 1. SIR model, `N = 1000`, `β = 0.3`, `γ = 0.1`.
 2. Gillespie: 1,000 seeds.
-3. Tau-leaping with `τ = 0.01`: 1,000 seeds (same seeds).
+3. Chain-binomial with `dt = 0.01`: 1,000 seeds (same seeds).
 4. Compare distributions of `R(t=50)` via two-sample KS test. Should not reject
    at p=0.01.
-5. Repeat with `τ = 1.0` — should show larger divergence (documenting the
-   approximation error).
+5. Repeat with `dt = 1.0` — should show larger divergence (documenting the
+   discretization error).
 
-**What it catches:** Bugs in the tau-leaping Poisson sampling, errors in the
-multinomial competing-risks correction.
+**What it catches:** Bugs in the chain-binomial sampling, errors in the
+multinomial competing-risks decomposition.
 
 ---
 
@@ -2083,7 +2080,7 @@ scaling in number of transitions. Flag superlinear behavior as a regression.
 
 Described in §A.2.5. The most important cross-backend test.
 
-#### A.9.2 Gillespie vs. Tau-Leaping (Small τ)
+#### A.9.2 Gillespie vs. Chain-Binomial (Small dt)
 
 Described in §A.2.6.
 
@@ -2125,7 +2122,7 @@ error). Validated via distributional comparison.
 | Model name              | Purpose                                  | Backends tested      |
 | ----------------------- | ---------------------------------------- | -------------------- |
 | `sir_basic`             | Simplest model (3 comp, 2 trans)         | All                  |
-| `sir_closed`            | Population conservation                  | Gillespie, tau-leap  |
+| `sir_closed`            | Population conservation                  | Gillespie, chain-binomial |
 | `sir_birth_death`       | Open model, mass balance                 | All                  |
 | `sir_tiny`              | N=10, extinction dynamics                | Gillespie            |
 | `sir_large`             | N=10⁸, overflow/perf                     | Gillespie, ODE       |

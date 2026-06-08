@@ -37,7 +37,6 @@ use crate::kind::ArtifactKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RunInput)]
 pub enum Backend {
     Gillespie,
-    TauLeap,
     ChainBinomial,
     Ode,
 }

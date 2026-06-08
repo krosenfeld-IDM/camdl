@@ -12,7 +12,6 @@ pub mod rng;
 pub mod schedule;
 pub mod ode_integrator;
 pub mod gillespie;
-pub mod tau_leap;
 pub mod chain_binomial;
 pub mod ode;
 pub mod intervention;
@@ -22,13 +21,12 @@ pub mod simulate;
 pub mod transition_diagnostics;
 pub mod inference;
 
-pub use config::{GillespieConfig, TauLeapConfig, ChainBinomialConfig, OdeConfig, SimConfig};
+pub use config::{GillespieConfig, ChainBinomialConfig, OdeConfig, SimConfig};
 pub use error::{SimError, CollapseKind, NegativeCountCause};
 pub use state::{IntState, RealState, FlowVec, Snapshot, Trajectory};
 pub use compiled_model::CompiledModel;
 pub use simulate::Simulate;
 pub use gillespie::GillespieSim;
-pub use tau_leap::TauLeapSim;
 pub use chain_binomial::ChainBinomialSim;
 pub use ode::OdeSim;
 pub use transition_diagnostics::{TransitionDiagnostics, write_tsv as write_diagnostics_tsv, warn_zero_firings};
@@ -42,7 +40,7 @@ bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Capabilities: u32 {
         /// Transitions with `overdispersion` (NegBinomial draws).
-        /// Supported by tau-leap and chain-binomial, not Gillespie or ODE.
+        /// Supported by chain-binomial, not Gillespie or ODE.
         const OVERDISPERSION    = 1 << 0;
         /// Real-valued compartments with explicit ODE equations (PDMP).
         const REAL_COMPARTMENTS = 1 << 1;
@@ -52,14 +50,14 @@ bitflags::bitflags! {
         /// backends (Gillespie has no substep, ODE conserves
         /// algebraically), so balance is a chain-binomial-only
         /// construct rather than a portable feature. Previously
-        /// silently dropped on tau_leap / gillespie / ode — a
-        /// model with `balance{}` produced a different trajectory on
-        /// each backend with no warning.
+        /// silently dropped on gillespie / ode — a model with
+        /// `balance{}` produced a different trajectory on each
+        /// backend with no warning.
         const BALANCE           = 1 << 2;
         /// Individual-sampling / lineage tracking (2026-05-19 proposal).
         /// Declared by backends that can attach a `TransitionObserver`
-        /// to the event loop and emit a line list. Gillespie, tau-leap,
-        /// and chain-binomial declare it; ODE does not (no individuals).
+        /// to the event loop and emit a line list. Gillespie and
+        /// chain-binomial declare it; ODE does not (no individuals).
         ///
         /// Unlike OVERDISPERSION / REAL_COMPARTMENTS / BALANCE, this is
         /// NOT auto-derived by `CompiledModel::required_capabilities()`

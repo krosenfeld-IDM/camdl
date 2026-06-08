@@ -336,12 +336,11 @@ invalidating others.
 
 ## Multiple simulation backends
 
-One model, four backends. Choose the right tradeoff:
+One model, three backends. Choose the right tradeoff:
 
 | Backend          | When to use                                       |
 | ---------------- | ------------------------------------------------- |
 | `gillespie`      | Small populations, extinction matters             |
-| `tau_leap`       | Large populations, fast approximate               |
 | `chain_binomial` | Euler-multinomial (matches pomp's reulermultinom) |
 | `ode`            | Deterministic parameter sweeps                    |
 

@@ -1,14 +1,12 @@
 # Simulation Backends
 
-`compartmental` ships four simulation backends for the same IR model: Gillespie
-(exact SSA), tau-leap, chain-binomial, and ODE (RK4). They all take the same
-compiled model and parameter vector and return the same `Trajectory` type. The
-choice is a tradeoff between fidelity, speed, and what the downstream analysis
-requires.
+`compartmental` ships three simulation backends for the same IR model: Gillespie
+(exact SSA), chain-binomial, and ODE (RK4). They all take the same compiled model
+and parameter vector and return the same `Trajectory` type. The choice is a
+tradeoff between fidelity, speed, and what the downstream analysis requires.
 
 ```
 camdl simulate model.ir.json --params base.toml --backend gillespie
-camdl simulate model.ir.json --params base.toml --backend tau_leap    --dt 1
 camdl simulate model.ir.json --params base.toml --backend chain_binomial --dt 1
 camdl simulate model.ir.json --params base.toml --backend ode          --dt 0.1
 ```
@@ -22,7 +20,7 @@ camdl simulate model.ir.json --params base.toml --backend ode          --dt 0.1
 The IR distinguishes two compartment kinds:
 
 - **Integer** (`CompartmentKind::Integer`) — the standard epidemic compartment.
-  Head-counted; must be a non-negative integer. All four stochastic/discrete
+  Head-counted; must be a non-negative integer. The stochastic/discrete
   backends maintain these as `i64`. The ODE backend promotes them to `f64`.
 
 - **Real** (`CompartmentKind::Real`) — a continuous-valued auxiliary variable,
@@ -135,63 +133,7 @@ the event rate.
 - **Total events:** proportional to Λ × T. For a 10 000-person SIR at peak, Λ ≈
   3000 events/day; a 100-day simulation ≈ 300 000 events per run.
 - **Scales poorly** with N: events ∝ N, so 1M-person runs are often impractical.
-  Use tau-leap or ODE for large populations.
-
----
-
-## Tau-leap
-
-**When to use:** large populations where individual-event resolution is
-unnecessary. ~10–100× faster than Gillespie; introduces Poisson approximation
-error that shrinks as dt → 0.
-
-### Algorithm
-
-Gillespie's tau-leap approximation (Gillespie 2001): in a step of length τ,
-assume propensities are approximately constant. Then the number of times
-transition j fires is:
-
-```
-Δnⱼ ~ Poisson(λⱼ · τ)
-```
-
-State update:
-
-```
-X(t + τ) = X(t) + Σⱼ νⱼ · Δnⱼ
-```
-
-Negative compartments (which Poisson draws can produce) are clamped to zero.
-
-### Implementation details (`tau_leap.rs`)
-
-**Step truncation.** The nominal dt is truncated when an output time or
-intervention time falls within the current step. The simulation always hits
-boundaries exactly.
-
-**Ordering.** All transition draws are made from the state at the _start_ of the
-step, then applied simultaneously. This is the basic (non-adaptive) tau-leap
-scheme. Adaptive schemes (Cao et al. 2006, Xu & Cai 2011) that automatically
-choose τ are not implemented; the user supplies `--dt`.
-
-**Clamping.** After applying all stoichiometry changes, any negative counts are
-zeroed. A warning is logged. Frequent clamping indicates `dt` is too large.
-
-**Real compartments.** Advanced with RK4 using the integer state at the end of
-the tau-leap step (post-clamping). This slight ordering asymmetry (integers
-first, real second) is a minor approximation.
-
-### Error analysis
-
-The tau-leap approximation error is O(τ). The dominant term is the variance
-introduced by using constant-propensity Poisson draws over the interval; the
-exact distribution would use time-varying propensities. In practice, tau-leap is
-accurate when τ is small enough that no single compartment changes by more than
-~1% per step.
-
-A rule of thumb: τ ≤ 1/(10 · max(λⱼ/n_source)), where n_source is the population
-in the source compartment. For `--dt 1 'days` with β≈0.3, this is satisfied when
-N > ~100.
+  Use chain-binomial or ODE for large populations.
 
 ---
 
@@ -199,7 +141,8 @@ N > ~100.
 
 **When to use:** discrete-time models where the generation interval is the
 natural time step (e.g., daily surveillance data, weekly incidence). Respects
-integer constraints better than tau-leap; fewer clamping issues.
+integer constraints by construction (multinomial competing risks), so no
+clamping is needed.
 
 ### Algorithm
 
@@ -266,21 +209,20 @@ multiplier is applied to the per-capita rate before probability conversion:
 `effective_rate = per_capita × G` where `G ~ Gamma(dt/σ², σ²/dt)`.
 
 **Real compartments.** Advanced with RK4 _before_ the multinomial draws (using
-the start-of-step integer state). The ordering difference from tau-leap is
-intentional: for chain-binomial, the continuous dynamics represent processes
-that run in parallel with (rather than after) the discrete transitions.
+the start-of-step integer state): for chain-binomial, the continuous dynamics
+represent processes that run in parallel with (rather than after) the discrete
+transitions.
 
-### Relationship to tau-leap
+### Bounded competing risks
 
-Chain-binomial and tau-leap agree in the limit of large populations and small p:
-`Binomial(n, p) ≈ Poisson(n·p)`. The key differences:
+The multinomial draw makes chain-binomial bounded by construction:
 
-1. **Multinomial vs independent.** Chain-binomial draws competing transitions
-   from a shared source as a multinomial (bounded). Tau-leap draws them
-   independently as Poisson (can overdraw, requires clamping).
+1. **Multinomial, not independent.** Chain-binomial draws competing transitions
+   from a shared source as a single multinomial, so total outflow cannot exceed
+   the source population.
 
 2. **No clamping needed.** The multinomial guarantees `Σ count_i ≤ n_src` by
-   construction. Tau-leap needs post-step clamping to zero.
+   construction — there is no post-step clamping to zero.
 
 3. **Matches Euler-multinomial.** The chain-binomial is equivalent to pomp's
    `reulermultinom` when using the same per-capita probabilities — making it the
@@ -292,8 +234,8 @@ Chain-binomial and tau-leap agree in the limit of large populations and small p:
 
 **When to use:** large populations where stochasticity is negligible, or for
 fast deterministic exploration of parameter space before running stochastic
-ensembles. Agrees with Gillespie/tau-leap in expectation (same rate expressions
-drive both).
+ensembles. Agrees with Gillespie/chain-binomial in expectation (same rate
+expressions drive both).
 
 ### Algorithm
 
@@ -379,26 +321,25 @@ important ways:
 
 ## Comparison table
 
-| Property                | Gillespie     | Tau-leap    | Chain-binomial | ODE                |
-| ----------------------- | ------------- | ----------- | -------------- | ------------------ |
-| Time type               | continuous    | discrete    | discrete       | continuous         |
-| Stochastic              | yes           | yes         | yes            | no                 |
-| Exact                   | yes           | approx      | approx         | approx             |
-| Extinction behavior     | correct       | clamped     | correct        | never              |
-| Step size               | event-driven  | user (--dt) | user (--dt)    | user (--dt)        |
-| Speed (large N)         | slow          | fast        | fast           | fast               |
-| Speed (small N)         | fast          | overhead    | overhead       | fast               |
-| Real compartments       | PDMP (approx) | hybrid      | hybrid         | native             |
-| CRN coupling            | yes           | yes         | yes            | n/a                |
-| Overdispersion          | incompatible  | supported   | supported      | incompatible       |
-| Int rounding during RK4 | n/a           | n/a         | n/a            | yes (O(1/N) error) |
+| Property                | Gillespie     | Chain-binomial | ODE                |
+| ----------------------- | ------------- | -------------- | ------------------ |
+| Time type               | continuous    | discrete       | continuous         |
+| Stochastic              | yes           | yes            | no                 |
+| Exact                   | yes           | approx         | approx             |
+| Extinction behavior     | correct       | correct        | never              |
+| Step size               | event-driven  | user (--dt)    | user (--dt)        |
+| Speed (large N)         | slow          | fast           | fast               |
+| Speed (small N)         | fast          | overhead       | fast               |
+| Real compartments       | PDMP (approx) | hybrid         | native             |
+| CRN coupling            | yes           | yes            | n/a                |
+| Overdispersion          | incompatible  | supported      | incompatible       |
+| Int rounding during RK4 | n/a           | n/a            | yes (O(1/N) error) |
 
 **Rule of thumb:** use Gillespie for N < 10 000 and when extinction matters;
-tau-leap or chain-binomial for N > 10 000 in production stochastic runs
-(chain-binomial if the generation interval aligns with your Δt); ODE for fast
-parameter sweeps or very large spatial models. If the model uses
-`overdispersed()` transitions, Gillespie and ODE are rejected at runtime — use
-tau-leap or chain-binomial.
+chain-binomial for N > 10 000 in production stochastic runs (especially when the
+generation interval aligns with your Δt); ODE for fast parameter sweeps or very
+large spatial models. If the model uses `overdispersed()` transitions, Gillespie
+and ODE are rejected at runtime — use chain-binomial.
 
 ---
 
@@ -409,17 +350,18 @@ multiplicative noise on their rate (He et al. 2010). The Poisson-Gamma compound
 produces NegBinomial event counts with mean = rate × Δt and variance inflated by
 σ²_SE.
 
-**Tau-leap implementation.** For each overdispersed transition per step:
+**Chain-binomial implementation.** For each overdispersed transition per step,
+the same Gamma multiplier is applied to the per-capita rate before probability
+conversion:
 
 1. Evaluate propensity λ and overdispersion σ² from the current state
-2. Draw a Gamma-distributed rate: ε ~ Gamma(shape = λΔt/σ², scale = σ²)
-3. Draw events: ΔN ~ Poisson(ε)
+2. Draw a Gamma-distributed rate multiplier: G ~ Gamma(dt/σ², σ²/dt)
+3. Convert to probability and draw: the expected count n·p (where
+   p = 1 − exp(−G·per_capita·Δt)) is sampled, capped at the source population
 
-This is equivalent to ΔN ~ NegBinomial(mean = λΔt, size = λΔt/σ²). When σ² → 0,
-the Gamma concentrates at its mean and the draw converges to Poisson(λΔt).
-
-**Chain-binomial implementation.** Same Gamma-Poisson compound applied to the
-expected count n·p (where p = 1 − exp(−λΔt)), capped at the source population.
+This is equivalent to a NegBinomial event count with mean = λΔt and size = λΔt/σ².
+When σ² → 0, the Gamma concentrates at its mean and the draw converges to the
+plain Poisson/binomial limit.
 
 **Backend capability system.** Each model declares required capabilities
 (derived from the IR at compile time). Each backend declares what it supports.
@@ -429,5 +371,5 @@ answers.
 ```
 $ camdl model.ir.json --backend gillespie --seed 42
 error: model requires capabilities not supported by backend 'gillespie':
-  - OVERDISPERSION: transitions with overdispersion require --backend tau_leap or chain_binomial
+  - OVERDISPERSION: transitions with overdispersion require --backend chain_binomial
 ```

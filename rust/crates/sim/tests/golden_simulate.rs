@@ -1,12 +1,12 @@
 //! Golden IR deserialization + simulation smoke tests.
-//! Loads each golden IR file, runs all three backends, checks basic invariants.
+//! Loads each golden IR file, runs all forward backends, checks basic invariants.
 
 use std::path::PathBuf;
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, SimConfig, OdeConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim,
 };
 
 fn golden_dir() -> PathBuf {
@@ -88,15 +88,6 @@ fn test_sir_basic_all_backends() {
     let traj = GillespieSim.run(&compiled, &params, 42, &g_config).unwrap();
     check_trajectory_invariants("sir_basic/gillespie", &traj, true);
 
-    // Tau-leap
-    let tl_config = SimConfig::TauLeap(TauLeapConfig {
-        t_start: model.simulation.t_start,
-        t_end: model.simulation.t_end,
-        dt: 0.5,
-    });
-    let traj = TauLeapSim.run(&compiled, &params, 42, &tl_config).unwrap();
-    check_trajectory_invariants("sir_basic/tau_leap", &traj, false); // tau-leap may violate conservation by rounding
-
     // Chain-binomial
     let cb_config = SimConfig::ChainBinomial(ChainBinomialConfig {
         t_start: model.simulation.t_start,
@@ -148,8 +139,8 @@ fn test_config_mismatch_returns_err() {
     let compiled = CompiledModel::new(model).unwrap();
     let params = compiled.default_params.clone();
 
-    // Pass TauLeap config to GillespieSim — should be ConfigMismatch error
-    let wrong_config = SimConfig::TauLeap(TauLeapConfig {
+    // Pass a non-Gillespie config to GillespieSim — should be ConfigMismatch error
+    let wrong_config = SimConfig::Ode(OdeConfig {
         t_start: 0.0, t_end: 10.0, dt: 1.0,
     });
     let result = GillespieSim.run(&compiled, &params, 42, &wrong_config);

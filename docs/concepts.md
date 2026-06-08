@@ -77,7 +77,7 @@ telling you something true about your model–data–prior triple; listen to it.
 
 ## `dt` and discretization bias
 
-The `chain_binomial` and `tau_leap` backends discretize continuous-time dynamics
+The `chain_binomial` backend discretizes continuous-time dynamics
 into steps of size `dt`. A coarse `dt` **systematically biases** the dynamics —
 and therefore the estimates. The subtlety: synthetic recovery at the _same_
 coarse `dt` will not reveal the bias, because it is baked identically into both

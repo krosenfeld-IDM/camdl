@@ -39,10 +39,10 @@ use ir::{
 };
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, OdeConfig, SimConfig},
     simulate::Simulate,
     state::Trajectory,
-    ChainBinomialSim, GillespieSim, OdeSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim, OdeSim,
 };
 
 const BETA: f64 = 0.1;
@@ -150,14 +150,12 @@ fn run(backend: &str) -> (Arc<CompiledModel>, Trajectory) {
     let compiled = Arc::new(flow_model());
     let cfg = match backend {
         "gillespie" => SimConfig::Gillespie(GillespieConfig { t_start: 0.0, t_end: T_END, output_dt: Some(1.0) }),
-        "tau_leap" => SimConfig::TauLeap(TauLeapConfig { t_start: 0.0, t_end: T_END, dt: 0.5 }),
         "chain_binomial" => SimConfig::ChainBinomial(ChainBinomialConfig { t_start: 0.0, t_end: T_END, dt: 1.0 }),
         "ode" => SimConfig::Ode(OdeConfig { t_start: 0.0, t_end: T_END, dt: 1.0 }),
         other => panic!("unknown backend {other}"),
     };
     let sim: &dyn Simulate = match backend {
         "gillespie" => &GillespieSim,
-        "tau_leap" => &TauLeapSim,
         "ode" => &OdeSim,
         _ => &ChainBinomialSim,
     };
@@ -197,11 +195,6 @@ fn assert_v_lifecycle(backend: &str) {
 #[test]
 fn chain_binomial_agrees_under_flow() {
     assert_v_lifecycle("chain_binomial");
-}
-
-#[test]
-fn tau_leap_agrees_under_flow() {
-    assert_v_lifecycle("tau_leap");
 }
 
 #[test]

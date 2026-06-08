@@ -8,14 +8,6 @@ pub struct GillespieConfig {
     pub output_dt: Option<f64>,
 }
 
-/// Config for the tau-leaping backend.
-#[derive(Debug, Clone)]
-pub struct TauLeapConfig {
-    pub t_start: f64,
-    pub t_end: f64,
-    pub dt: f64,
-}
-
 /// Config for the discrete-time chain-binomial backend.
 #[derive(Debug, Clone)]
 pub struct ChainBinomialConfig {
@@ -38,7 +30,6 @@ pub struct OdeConfig {
 #[derive(Debug, Clone)]
 pub enum SimConfig {
     Gillespie(GillespieConfig),
-    TauLeap(TauLeapConfig),
     ChainBinomial(ChainBinomialConfig),
     Ode(OdeConfig),
 }
@@ -47,7 +38,6 @@ impl SimConfig {
     pub fn t_start(&self) -> f64 {
         match self {
             SimConfig::Gillespie(c) => c.t_start,
-            SimConfig::TauLeap(c) => c.t_start,
             SimConfig::ChainBinomial(c) => c.t_start,
             SimConfig::Ode(c) => c.t_start,
         }
@@ -56,7 +46,6 @@ impl SimConfig {
     pub fn t_end(&self) -> f64 {
         match self {
             SimConfig::Gillespie(c) => c.t_end,
-            SimConfig::TauLeap(c) => c.t_end,
             SimConfig::ChainBinomial(c) => c.t_end,
             SimConfig::Ode(c) => c.t_end,
         }
@@ -65,7 +54,6 @@ impl SimConfig {
     pub fn variant_name(&self) -> &'static str {
         match self {
             SimConfig::Gillespie(_) => "Gillespie",
-            SimConfig::TauLeap(_) => "TauLeap",
             SimConfig::ChainBinomial(_) => "ChainBinomial",
             SimConfig::Ode(_) => "Ode",
         }

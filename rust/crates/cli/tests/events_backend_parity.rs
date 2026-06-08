@@ -1,6 +1,6 @@
 //! gh#67 — events { add(C, n) at [t] } must fire under every backend, not just
-//! chain_binomial. Before this commit: ODE, tau_leap, and gillespie silently
-//! dropped events because they call `apply_interventions_at` (which skips
+//! chain_binomial. Before this commit: ODE and gillespie silently dropped
+//! events because they call `apply_interventions_at` (which skips
 //! `always_active` items per the `if iv.always_active { continue }` guard in
 //! `sim/intervention.rs:99`) but never call the sister `inject_event_deltas`.
 //! chain_binomial alone wires `inject_event_deltas` into its per-substep loop
@@ -90,7 +90,7 @@ fn run_simulate(camdl: &Path, model: &Path, backend: &str, traj: &Path) {
 }
 
 /// gh#67: every backend must fire the `add(I, 100) at [10]` event. Pre-fix,
-/// ode/tau_leap/gillespie never apply the +100 so I stays in the single
+/// ode/gillespie never apply the +100 so I stays in the single
 /// digits (slow dynamics) across the entire run.
 #[test]
 fn events_fire_under_every_backend() {
@@ -99,7 +99,7 @@ fn events_fire_under_every_backend() {
     let model = tmp.join("model.camdl");
     std::fs::write(&model, MODEL_SRC).unwrap();
 
-    for backend in &["chain_binomial", "ode", "tau_leap", "gillespie"] {
+    for backend in &["chain_binomial", "ode", "gillespie"] {
         let traj = tmp.join(format!("{}.tsv", backend));
         run_simulate(&camdl, &model, backend, &traj);
 
@@ -107,7 +107,7 @@ fn events_fire_under_every_backend() {
         let i_post = col_at(&traj, "I", 11.0).expect("row t=11 has I");
         let jump = i_post - i_pre;
 
-        // Pre-fix jump for ode/tau_leap/gillespie is ≈ 0 (slow dynamics,
+        // Pre-fix jump for ode/gillespie is ≈ 0 (slow dynamics,
         // event silently dropped). Post-fix jump ≥ 100 (the event payload).
         assert!(jump >= 90.0,
             "{backend}: event `add(I, 100) at [10]` should jump I by ≥100 \

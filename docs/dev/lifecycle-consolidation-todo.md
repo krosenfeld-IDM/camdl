@@ -21,10 +21,12 @@ blocks a later one (noted). `[ ]` todo · `[~]` in progress · `[x]` done.
   design splits them: a pure `resolve_*(StateRef) → typed Int/Real deltas` (all rounding
   here) + a trivial `apply_effects` (no branch). Representation rides the delta type, not
   an enum. ODE uses a continuous f64 effect path; discrete stays byte-identical.
-- **tau-leap:** drop it — but by **extracting ONE shared Euler-multinomial kernel**
-  and routing chain (`Snap`) and the retired tau-behaviour (`Exact`) through it,
-  *not* by deleting a "similar" copy (chain/tau have real divergences: `RATE_EPSILON`
-  vs `rate<=0`, `cfg.dt` vs actual `dt`). Gate = the 14-case edge matrix below.
+- **tau-leap:** ~~drop via extracting ONE shared kernel + a 14-case equivalence gate~~
+  **DONE as a pure delete** (D3 below). The kernel-extraction/equivalence approach was
+  superseded: tau and chain already share `step_one`, and at alpha (backward-compat a
+  non-goal) no equivalence is owed. Deleted `TauLeapSim` + its golden rows — byte-identical
+  for the other backends; the Exact policy survives in the inference filters. The
+  `RATE_EPSILON`/`cfg.dt` divergences were tau's (arguably bugs), now gone with it.
 - **Timeline vocabulary (going forward):** `substep`/`interval` = `[t0,t1]`;
   `TimelineStop` = `t1`; `StopReason` = why it matters (`Output|ScheduledEffect|
   Observation|End`); `scheduled effect` = the action due there. New types use this;
@@ -112,10 +114,20 @@ blocks a later one (noted). `[ ]` todo · `[~]` in progress · `[x]` done.
 - [ ] **D1 — closure driver.** Extract `fixed_step_substep(state, .., advance)`;
   route chain/tau/ode through it; Gillespie via `apply_boundary_effects`. Remove the
   `// → FixedStepLifecycle` markers. Byte-identical.
-- [ ] **D3 — extract one kernel + drop tau-leap.** One shared Euler-multinomial
-  kernel under a `step_policy`; prove the 14-case edge matrix; repoint goldens;
-  delete `TauLeapSim` + the CLI arm (no alias — house policy). **Blocked by #3** (the
-  chain≡tau proof must include real-coupled models).
+- [x] **D3 — drop tau-leap** — `<SHA>` (scheduling-spine-v2 §D / Step 4). Done as a
+  **pure delete**, not a kernel-extraction. tau-leap's niche (approximate
+  fixed-step stochastic forward, multiple firings per substep against frozen
+  rates) is already covered by chain-binomial on the production path — its
+  `run_tau_leap` loop only ever *mirrored* chain's within-substep lifecycle
+  (its own comment: "matches chain_binomial"), never shared code with it. No
+  capability is lost: chain covers approximate-stochastic forward (incl.
+  overdispersion), gillespie covers exact-stochastic forward, ode covers
+  deterministic, and the Exact step *policy* survives in the inference filters
+  independent of the tau backend. So no equivalence proof and no chain≡tau edge
+  matrix were required (the bar is "the surviving backends are correct," not
+  "chain+Exact == tau"). Deleted `TauLeapSim` / `TauLeapConfig` /
+  `SimConfig::TauLeap` / the CLI `tau_leap` arm + the tau golden rows and
+  tau-specific tests; the other backends' baselines are byte-identical.
 - [ ] **Target=Parameter (NPI axis).** `Action` gains a `{Compartment|Parameter}`
   target via the same `CountStoreMut`/Action rework; option-2 (compile-error guard on
   forcing-consumed params; `gh#186` deferred).
@@ -125,13 +137,16 @@ blocks a later one (noted). `[ ]` todo · `[~]` in progress · `[x]` done.
   (the real state joins the particle); PGAS density may need to account for it. Lifts
   the Tier-1 inference gate when done.
 
-### tau-fold deletion gate (the 14 cases — all must prove chain+Exact ≡ tau)
+### tau-fold deletion gate (the 14 cases — obviated by the pure-delete decision)
+This edge matrix was the gate for the *kernel-extraction* approach, which proved
+chain+Exact ≡ tau before deleting tau. The v2 proposal (§D) replaced that with a pure
+delete — no equivalence proof is owed (alpha; the bar is "chain+Exact is correct"). The
+cases are retained as the rationale for why the fold was safe:
 integer-only · off-grid interventions · always-active events reading the source
 compartment · simultaneous event+intervention+output · overdispersed · deterministic
 draws · competing exits · ungrouped inflows · tiny rates near `RATE_EPSILON` · models
-whose expressions reference `dt` · **real compartments coupled into rates (needs #3)**
-· lineage observer on · balance under Exact (support or reject) · inference stepping
-to off-grid obs.
+whose expressions reference `dt` · real compartments coupled into rates · lineage
+observer on · balance under Exact (support or reject) · inference stepping to off-grid obs.
 
 ## Tier 3 — timeline tightening (gated reshapes; **write the v2 proposal here**)
 

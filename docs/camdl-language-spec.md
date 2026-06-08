@@ -1273,7 +1273,7 @@ infect_v : S_v + I_h --> E_v + I_h   @ a * b_v * S_v * I_h / H
 react    : A + B --> C               @ k * A * B
 ```
 
-Atomic firing: a single Gillespie / tau-leap / chain-binomial step applies the
+Atomic firing: a single Gillespie / chain-binomial step applies the
 _vector_ of deltas at once. For `bite`, `S_h` decrements and `I_h` increments
 together — no intermediate state.
 
@@ -1330,7 +1330,7 @@ bite[a in age] : X[a] --> { Y_symp[a] : p_symp[a], Y_asym[a] : 1 - p_symp[a] }
 **Semantics.** Pure compile-time sugar. Each branch expands to its own IR
 transition with rate `weight_i × original_rate` and stoichiometry
 `{source: -1, dest_i: +1}`. The existing source- grouping machinery in every
-stochastic backend (Gillespie, tau-leap, chain-binomial) correctly groups
+stochastic backend (Gillespie, chain-binomial) correctly groups
 transitions sharing a source and performs a **single multinomial split** at
 firing time — _not_ two independent draws, which would double-consume the source
 at high incidence. See `sim/src/chain_binomial.rs` §Euler-multinomial for the
@@ -1619,8 +1619,8 @@ entire rate expression and are extracted by the compiler during expansion.
 | `overdispersed(rate, σ²)` | `@ overdispersed(beta * S * I / N, sigma_se)` | Gamma-Poisson (NegBinomial) draws. Var = mean + mean²·σ²/dt. |
 | `deterministic(rate)`     | `@ deterministic(mu * N)`                     | Rounded integer: nearbyint(rate × dt). No stochastic noise.  |
 
-These are documented in §9.8 (overdispersion) and are compatible with tau-leap
-and chain-binomial backends. Gillespie and ODE reject models with
+These are documented in §9.8 (overdispersion) and are compatible with the
+chain-binomial backend. Gillespie and ODE reject models with
 `overdispersed()` transitions.
 
 **Compile-time vs runtime `if/else`.** The `if/then/else` expression has two
@@ -1675,10 +1675,10 @@ the variance goes to `transition.overdispersion` in the IR. Transitions without
 
 **Backend compatibility.** Overdispersion is incompatible with Gillespie SSA
 (which assumes deterministic rates between events) and meaningless for ODE
-(deterministic). It is supported by tau-leap (NegBinomial replaces Poisson
-draws) and chain-binomial (same). The runtime enforces this: requesting
-`--backend gillespie` for a model with `overdispersed` transitions produces a
-hard error with a hint to use `--backend tau_leap`.
+(deterministic). It is supported by chain-binomial (NegBinomial replaces Poisson
+draws). The runtime enforces this: requesting `--backend gillespie` for a model
+with `overdispersed` transitions produces a hard error with a hint to use
+`--backend chain_binomial`.
 
 **Composability.** Each transition independently chooses whether to be
 overdispersed, and with what variance:
@@ -2628,7 +2628,7 @@ convention `from`/`to` use.
 genuinely sensitive to the step — discretization error shrinks as `dt → 0`, and
 Richardson-extrapolation diagnostics deliberately vary it — so the chosen step
 is part of the model, declared next to the dynamics it discretizes. (`dt` is the
-per-substep length the tau-leap, chain-binomial, and ODE backends integrate
+per-substep length the chain-binomial and ODE backends integrate
 with; the exact-event Gillespie backend ignores it.)
 
 The CLI `--dt` flag is the **override**: it wins over the model's `dt` for a
@@ -2887,8 +2887,8 @@ camdl inspect MODEL.camdl [OPTIONS]    # inspect compartments, transitions, etc.
 camdl simulate MODEL --params P.toml --seed 42 [OPTIONS]
 
 Options:
-  --backend    gillespie|tau_leap|chain_binomial|ode  (default: gillespie)
-  --dt         DT         step size for tau_leap / chain_binomial / ode
+  --backend    gillespie|chain_binomial|ode  (default: gillespie)
+  --dt         DT         step size for chain_binomial / ode
   --seed       N          RNG seed (default: 1)
   --scenario   NAME       select a named scenario
   --enable     NAME       enable an intervention (ad-hoc; mutually exclusive with --scenario)

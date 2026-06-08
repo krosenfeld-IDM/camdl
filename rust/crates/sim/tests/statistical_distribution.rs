@@ -10,9 +10,9 @@ use ir::{
 };
 use sim::{
     compiled_model::CompiledModel,
-    config::{GillespieConfig, TauLeapConfig, SimConfig},
+    config::{ChainBinomialConfig, GillespieConfig, SimConfig},
     simulate::Simulate,
-    GillespieSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim,
 };
 
 /// Test adapter for the retired `apply_interventions_at`: derive the due batch
@@ -170,11 +170,11 @@ fn test_pure_death_variance() {
 // ── Overdispersion variance validation ──────────────────────────────────
 
 /// Validate that overdispersed() produces the correct variance.
-/// Single transition with known rate and σ², run many tau-leap steps,
+/// Single transition with known rate and σ², run many chain-binomial steps,
 /// check empirical Var[count] ≈ mean + mean² · σ² / dt.
 #[test]
 #[ignore = "statistical test: run with --ignored in nightly CI"]
-fn test_overdispersion_variance_tau_leap() {
+fn test_overdispersion_variance_chain_binomial() {
     // S → I at rate beta*S with overdispersion sigma_sq.
     // With S=10000 and beta=0.01, propensity = 100, mean per step (dt=1) = 100.
     // Var should be: 100 + 100² × 0.5 / 1.0 = 100 + 5000 = 5100
@@ -244,16 +244,16 @@ fn test_overdispersion_variance_tau_leap() {
 
     let compiled = CompiledModel::new(model).unwrap();
     let params = compiled.default_params.clone();
-    let config = SimConfig::TauLeap(TauLeapConfig {
+    let config = SimConfig::ChainBinomial(ChainBinomialConfig {
         t_start: 0.0,
         t_end: 1.0,
         dt: 1.0,
     });
 
-    // Collect infection counts from one tau-leap step across many seeds
+    // Collect infection counts from one chain-binomial step across many seeds
     let mut counts: Vec<f64> = Vec::new();
     for seed in 0..10000u64 {
-        let traj = TauLeapSim.run(&compiled, &params, seed, &config).unwrap();
+        let traj = ChainBinomialSim.run(&compiled, &params, seed, &config).unwrap();
         let last = traj.snapshots.last().unwrap();
         // Infections = flow_infection (index 0)
         counts.push(last.flows.counts[0] as f64);

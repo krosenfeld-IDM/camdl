@@ -14,9 +14,9 @@
 use std::path::Path;
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, SimConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim,
 };
 
 fn golden_path(name: &str) -> String {
@@ -92,20 +92,6 @@ fn test_bimolecular_gillespie_conservation() {
     assert_bimolecular_invariants(&compiled, &params,
         |seed| GillespieSim.run(&compiled, &params, seed, &config).unwrap(),
         "gillespie");
-}
-
-#[test]
-fn test_bimolecular_tau_leap_conservation() {
-    let (model, compiled) = load_bimolecular();
-    let params = compiled.default_params.clone();
-    let config = SimConfig::TauLeap(TauLeapConfig {
-        t_start: model.simulation.t_start,
-        t_end: model.simulation.t_end,
-        dt: 0.5,
-    });
-    assert_bimolecular_invariants(&compiled, &params,
-        |seed| TauLeapSim.run(&compiled, &params, seed, &config).unwrap(),
-        "tau_leap");
 }
 
 #[test]

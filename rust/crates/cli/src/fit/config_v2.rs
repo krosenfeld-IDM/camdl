@@ -1438,7 +1438,7 @@ pub struct DtCheckConfig {
     /// gate's `8·σ_max·NATS_TO_DB` shape, halved because this is a
     /// per-evaluation comparison rather than a chain-level spread).
     /// Default `None` → backend-specific (2.0 for chain_binomial /
-    /// tau_leap / euler_*, 0.5 for ode_rk4).
+    /// euler_*, 0.5 for ode_rk4).
     #[serde(default)]
     pub threshold_nats: Option<f64>,
     /// Combiner for replicate logliks. Default `None` → inherit

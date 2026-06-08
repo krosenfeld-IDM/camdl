@@ -49,7 +49,6 @@ camdl/
 │   │   │       ├── propensity.rs        # eval_expr + eval_expr_deriv
 │   │   │       ├── chain_binomial.rs    # Euler-multinomial simulation
 │   │   │       ├── gillespie.rs         # Gillespie SSA
-│   │   │       ├── tau_leap.rs          # Tau-leap
 │   │   │       ├── ode.rs               # ODE (RK4)
 │   │   │       ├── intervention.rs      # Scheduled events + interventions
 │   │   │       └── inference/

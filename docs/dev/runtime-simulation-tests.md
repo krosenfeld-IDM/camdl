@@ -9,7 +9,7 @@ small-fixture unit tests) and is the right tool when:
   Erlang-k staging case was the motivating example).
 - A claim in the spec is about a _distribution_ rather than a single scalar
   output.
-- Multiple backends (Gillespie vs chain-binomial vs tau-leap) should produce the
+- Multiple backends (Gillespie vs chain-binomial) should produce the
   same distribution and we want a cross-check.
 
 ## Pattern
@@ -60,7 +60,7 @@ pure Erlang survival, unpolluted by new infections or recoveries.
 
 ### Use Gillespie for ground truth
 
-Exact CTMC → no dt-related bias. Reserve chain-binomial / tau-leap tests for
+Exact CTMC → no dt-related bias. Reserve chain-binomial tests for
 when you're specifically comparing approximations against the exact backend, not
 against an external analytical reference.
 

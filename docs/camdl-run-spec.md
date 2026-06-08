@@ -1765,7 +1765,7 @@ staleness detection** for cache invalidation. Simulation results use
 sim_hash = sha256(
     model_ir_json_bytes              # compiled model (deterministic)
     + canonical_sorted(base_param key=value pairs)
-    + backend_string                 # "gillespie", "tau_leap", etc.
+    + backend_string                 # "gillespie", "chain_binomial", etc.
     + dt_bytes                       # f64 little-endian
     + camdl_version_string
 )
@@ -2307,7 +2307,7 @@ what "state at `t`" means per backend:
   events. The snapshot reads the state that has been in effect since the last
   event preceding `t`. If an event or scheduled intervention fires exactly at
   `t`, the snapshot reads the **post-event** state.
-- **Chain-binomial / tau-leap (discrete-time, step `dt`):** the snapshot reads
+- **Chain-binomial (discrete-time, step `dt`):** the snapshot reads
   the state at the step boundary that lands on, or first passes, `t`. For
   `dt = 1` with daily observations this is exact; for `dt < 1` the snapshot is
   the state at the first step boundary `≥ t`.
@@ -2368,7 +2368,7 @@ camdl simulate MODEL [OPTIONS]
   --param NAME=VALUE        Override single parameter (repeatable)
   --param-vec PREFIX=FILE   Override indexed params from keyed TSV
   --table NAME=FILE         Supply external table data
-  --backend BACKEND         gillespie|tau_leap|chain_binomial|ode
+  --backend BACKEND         gillespie|chain_binomial|ode
   --dt DT                   Step size for discrete-time backends
   --seed N                  Single seed
   --seeds SPEC              Multiple seeds: "1:1000", "{n=100}", "{list=[42,137]}"

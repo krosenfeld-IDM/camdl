@@ -1,12 +1,12 @@
-//! Smoke test: load every *.ir.json in ocaml/golden/, run all three backends,
+//! Smoke test: load every *.ir.json in ocaml/golden/, run all forward backends,
 //! assert basic invariants. No camdlc dependency — Rust-only.
 
 use std::path::PathBuf;
 use sim::{
     compiled_model::CompiledModel,
-    config::{ChainBinomialConfig, GillespieConfig, SimConfig, TauLeapConfig},
+    config::{ChainBinomialConfig, GillespieConfig, SimConfig},
     simulate::Simulate,
-    ChainBinomialSim, GillespieSim, TauLeapSim,
+    ChainBinomialSim, GillespieSim,
 };
 
 fn ocaml_golden_dir() -> PathBuf {
@@ -91,14 +91,6 @@ fn test_smoke_all_ocaml_golden() {
                 }),
             ),
             (
-                "tau_leap",
-                SimConfig::TauLeap(TauLeapConfig {
-                    t_start,
-                    t_end,
-                    dt: 0.5,
-                }),
-            ),
-            (
                 "chain_binomial",
                 SimConfig::ChainBinomial(ChainBinomialConfig {
                     t_start,
@@ -113,7 +105,6 @@ fn test_smoke_all_ocaml_golden() {
             let label = format!("{}/{}", name, backend);
             let sim: &dyn Simulate = match *backend {
                 "gillespie" => &GillespieSim,
-                "tau_leap" => &TauLeapSim,
                 _ => &ChainBinomialSim,
             };
             // Skip backends that don't support the model's required capabilities
