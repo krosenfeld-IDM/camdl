@@ -13,8 +13,9 @@ true half is **already specced**:
 - The *pipeline-level* surface — "accumulate structured diagnostics, don't
   throw" — is the subject of an open proposal,
   [`docs/dev/proposals/2026-06-05-compiler-diagnostic-surface.md`](../proposals/2026-06-05-compiler-diagnostic-surface.md)
-  (gh#181, `OPEN`, **unimplemented** — verified: `grep -rn "outcome" ocaml/lib/compiler/` → no
-  matches). That proposal is the right home for the `result`-everywhere work;
+  (gh#181, `OPEN`; step 1 — the non-raising `compile_outcome` surface — has
+  since landed in `ea842d7`, steps 2–4 remain open). That proposal is the right
+  home for the `result`-everywhere work;
   this review should not duplicate it.
 - What gh#181 does **not** touch is *leaf-level* exception hygiene inside the
   expander and IR reader — the actual `try`/`failwith`/`assert false` sites.

@@ -149,20 +149,92 @@ accumulates into an error bag and recovers. The `outcome` type puts camdl in the
 accumulate camp **without** a global mutable sink — cleaner than the stanc3
 baseline, not a remediation of something uniquely broken.
 
-## Migration (incremental, each step green)
+## Migration
 
-1. Add the `outcome` type + `compile` returning it, implemented over the
-   existing `collect_detail` (no behavior change — pure addition).
-2. Repoint internal callers (`run_check` already routes through
-   `collect_detail`; `simulate`/`fit`/CLI compile) to the `outcome` API.
-3. Change `run_validate/dimcheck/lint` to return `diagnostic list`; rewrite the
-   pipeline as a fold; delete the mutable-accumulator reliance.
-4. Delete `report_and_exit` from the library; move render+exit to the CLI
-   top-level. Delete `compile_detail_result` and the string-typed `result` entry
-   points once callers are migrated.
-5. Each step gates on a clean `make test` (OCaml unit + golden + integration);
-   the gh#181-flagged caller (a `result` consumer seeing E507 as an exception)
-   gets a regression test asserting it now arrives as a value.
+The original "every step independently green" plan does not survive contact with
+the code: steps 3 and 4 are coupled and land as one commit (see **C6**). The
+corrected sequence:
+
+1. **✓ landed (`ea842d7`).** `outcome` type + `compile_outcome` over
+   `collect_detail`. Pure addition, nothing raises, no caller changed.
+
+2. **Repoint the value-typed consumers** to `compile_outcome`: `run_inspect`
+   (`inspect.ml:1050`, currently on `compile_detail_result`) and the
+   diagnostic-list tests. `run_check` (`inspect.ml:1099`) already routes through
+   `collect_detail`. Independent and safe — the surface exists. The CLI cannot
+   *fully* migrate here because its render/exit contract moves in 3+4; the CLI
+   being half-migrated after step 2 is an acceptable intermediate.
+
+3. **+4. One atomic commit.** Change
+   `run_validate / run_dimcheck / run_lint / differentiate_transitions` to
+   `compile_detail -> diagnostic list`, rewrite `compile` as a fold over the
+   post-expansion passes, **and** move render+exit out of the library to the two
+   CLI sites (`camdlc.ml`, `inspect.ml` `run_inspect`) — all together. They
+   cannot be separated: once the passes return lists instead of mutating
+   `ctx.diags`, `compile`'s four inline `report_and_exit (d.ctx.diags)` reads
+   (`compiler.ml:347–369`) no longer see the late-phase errors, so the fold
+   rewrite strands the render sites. This commit must migrate, in lockstep, the
+   three surfaces that pin the *old* render-and-raise contract:
+   - `test_json_errors.ml:123,142,174` — assert `compile` writes exactly one
+     JSON array / ANSI box to stderr. Repoint to drive the CLI, or an explicit
+     `render outcome.diagnostics outcome.source`.
+   - `test_diagnostics.ml:500–503` — the check↔compile parity helper matches
+     **both** `Error _` and `exception Compile_error _`. When `compile` stops
+     raising, the `exception` arm goes dead and the parity test passes
+     *vacuously* (the trap CLAUDE.md warns against). Rewrite onto `outcome`.
+   - `test_compiler.ml:5772–5788` — the step-1 test positively asserts `compile`
+     RAISES on a late error (the contrast that proved step 1). Rewrite to assert
+     via the new surface.
+   - Also `test_dimcheck.ml:665` — a `with exn -> Error (Printexc.to_string exn)`
+     catch-all that currently masks a raised `Compile_error` as a skipped test;
+     fix it onto the non-raising path here.
+
+4. **Delete the old entry points.** Remove `compile_detail_result` (10 sites:
+   `inspect.ml:1050` + 9 tests, plus the `compile_with_diags` helper at
+   `test_compiler.ml:4869`) and the string-typed `compile`. Add a `compiler.mli`
+   that exposes `outcome` abstractly with a smart constructor (**C5**) and lists
+   only the post-migration surface.
+
+Gate: steps 2 and 3+4 each on a clean `make test` (OCaml unit + golden +
+integration). The Rust CLI shells `camdlc` and keys only on **exit codes**, not
+on parsing `--json-errors` (`rust/crates/cli/src/util.rs`), so exit codes must
+stay byte-identical across the relocation; the JSON shape is not a Rust-side
+constraint.
+
+## Constraints surfaced by code review (must hold)
+
+- **C1 — render stays out of the fold.** The one non-blocking render fires
+  exactly once, as a single projection on the final `outcome`, never as a pass
+  effect (compiler.ml:334–347 documents the invariant). A fold that renders
+  per-pass double-emits — two JSON arrays under `--json-errors` — and fails
+  `test_json_errors`, which calls `compile` directly (so it breaks before the
+  CLI is touched). The fold is *pure accumulation* into `diagnostics`.
+- **C3 — the CLI replaces the string-shape sniff, doesn't relocate it.**
+  `camdlc.ml:157–163` and `inspect.ml:1050–1055` branch on the payload string
+  (`= "compilation failed"` / `e.[0] = '['`) to suppress a redundant error line.
+  That sniff is dead once the library stops rendering; both sites must instead
+  render `outcome.diagnostics outcome.source` once (honoring `json_errors_mode`
+  exactly as `Diagnostics.render`) then `exit 1`, with **no**
+  `Printf.eprintf "Error: …"` fallback. `run_check` (inspect.ml:1099) is the
+  template.
+- **C4 — immutability is post-expansion only.** The expander emits via the
+  mutable `ctx.diags` at 117 sites, and `front_end_collect` drains two global
+  refs (`Lexer.pending_warnings`, `Parser_errors.pending_errors`,
+  compiler.ml:117–130) into it. Those remain. The fold's *seed* is the
+  already-reversed front-end diagnostic list; only the post-expansion passes
+  become pure list-returning functions. Do not promise expander immutability —
+  Target-design §4's "make `Diagnostics.t` immutable" applies to the
+  post-expansion segment, not the whole pipeline.
+- **C5 — enforce the `outcome` invariant in the type, not by convention.**
+  `value = Some` with an Error-severity diagnostic present is constructible today
+  (the invariant holds only at the `compile_outcome` construction site). Expose
+  `outcome` abstractly via `compiler.mli` with a smart constructor that forces
+  `value = None` whenever the log carries an Error, and make the applicative
+  `and+` recompute `value` from the *merged* log — otherwise "value=Some from one
+  branch + an Error in the other branch's log" leaks the very illegal state this
+  proposal exists to remove.
+- **C6 — steps 3 and 4 are one commit** (see Migration). Steps 1–2 are
+  independent; 3-as-separate-from-4 cannot land green.
 
 ## Aspirational (separate, larger): phantom-typed validated model
 
