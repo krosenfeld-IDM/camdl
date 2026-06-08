@@ -120,16 +120,96 @@ let days_of_date y m d =
   let m' = if m <= 2 then m + 12 else m in
   365 * y' + y'/4 - y'/100 + y'/400 + (153*(m'+1))/5 + d - 694025
 
-let parse_iso_date s =
-  match String.split_on_char '-' s with
-  | [ys; ms; ds] ->
-    (try (int_of_string ys, int_of_string ms, int_of_string ds)
-     with _ -> failwith (Printf.sprintf "invalid date literal '%s': components must be integers" s))
-  | _ -> failwith (Printf.sprintf "date literal must be YYYY-MM-DD, got '%s'" s)
+(* `is_leap_year` / `days_in_month` are defined here (ahead of
+   `parse_iso_date`) so the date-literal parser can range-check the day
+   leap-aware. They mirror `rust/crates/ir/src/caltime.rs`:
+   `is_leap` / `days_in_month` use identical formulas. *)
+let is_leap_year y =
+  (y mod 4 = 0 && y mod 100 <> 0) || y mod 400 = 0
+
+let days_in_month y m =
+  match m with
+  | 1 | 3 | 5 | 7 | 8 | 10 | 12 -> 31
+  | 4 | 6 | 9 | 11              -> 30
+  | 2                            -> if is_leap_year y then 29 else 28
+  | _ -> invalid_arg (Printf.sprintf "days_in_month: month %d out of range" m)
+
+(** Parse an ISO calendar date `YYYY-MM-DD` into `(year, month, day)`.
+
+    Mirrors the canonical grammar in `rust/crates/ir/src/caltime.rs`
+    `parse_iso_date` (gh#98, C6): the two parsers MUST accept exactly the
+    same set of strings, or a `date()` literal that compiles on the OCaml
+    side produces a different internal time than the Rust runtime computes.
+    Concretely:
+      - leading/trailing whitespace is trimmed,
+      - a trailing zone designator (`Z`, `+HH:MM`, `-HH:MM`) is accepted
+        and discarded (a bare date denotes a civil-calendar day,
+        zone-independent — proposal §6.8),
+      - month is validated in 1..12 and day in 1..days_in_month(y, m)
+        (leap-aware), so `date("2020-02-30")` and `date("2020-13-01")` are
+        rejected rather than silently shifting to a garbage day offset.
+
+    Returns [Error msg] (a human-readable reason) rather than raising, so
+    callers emit a located diagnostic (E223) instead of a [failwith] stack
+    trace or a silently-absorbed `0.0`. *)
+let parse_iso_date (raw : string) : (int * int * int, string) result =
+  let s = String.trim raw in
+  (* The date portion is the first 10 chars: YYYY-MM-DD. *)
+  if String.length s < 10 then
+    Error (Printf.sprintf "date '%s' is not in YYYY-MM-DD form" raw)
+  else
+    let date_part = String.sub s 0 10 in
+    let rest = String.sub s 10 (String.length s - 10) in
+    (* Classify the remainder: empty or a bare zone designator → discard;
+       anything else (a `T`/space time-of-day, or junk) → reject. *)
+    let is_zone =
+      rest = "" || rest = "Z" || rest = "z" ||
+      ((String.length rest = 6)
+       && (rest.[0] = '+' || rest.[0] = '-')
+       && rest.[3] = ':'
+       && (let ok = ref true in
+           String.iteri (fun i c ->
+             if (i >= 1 && i <= 2) || (i >= 4 && i <= 5) then
+               (if not (c >= '0' && c <= '9') then ok := false)) rest;
+           !ok))
+    in
+    if not is_zone then
+      Error (Printf.sprintf
+        "date '%s' carries an unsupported trailer (time-of-day is not \
+         supported; use a bare YYYY-MM-DD or a zone designator)" raw)
+    else begin
+      let digits a b =
+        let ok = ref true in
+        for i = a to b do
+          let c = date_part.[i] in
+          if not (c >= '0' && c <= '9') then ok := false
+        done; !ok
+      in
+      let shape_ok =
+        date_part.[4] = '-' && date_part.[7] = '-'
+        && digits 0 3 && digits 5 6 && digits 8 9
+      in
+      if not shape_ok then
+        Error (Printf.sprintf "date '%s' is not in YYYY-MM-DD form" raw)
+      else
+        let y = int_of_string (String.sub date_part 0 4) in
+        let m = int_of_string (String.sub date_part 5 2) in
+        let d = int_of_string (String.sub date_part 8 2) in
+        if m < 1 || m > 12 then
+          Error (Printf.sprintf
+            "date '%s' has month %d out of range (must be 01..12)" raw m)
+        else if d < 1 || d > days_in_month y m then
+          Error (Printf.sprintf
+            "date '%s' has day %d out of range for %04d-%02d (must be \
+             01..%02d)" raw d y m (days_in_month y m))
+        else Ok (y, m, d)
+    end
 
 let parse_date_to_float origin_str date_str time_unit =
-  let (oy, om, od) = parse_iso_date origin_str in
-  let (ty, tm, td) = parse_iso_date date_str in
+  let (oy, om, od) =
+    match parse_iso_date origin_str with Ok v -> v | Error m -> failwith m in
+  let (ty, tm, td) =
+    match parse_iso_date date_str with Ok v -> v | Error m -> failwith m in
   let delta = days_of_date ty tm td - days_of_date oy om od in
   (* days_per is defined below; forward-declare not needed since
      parse_date_to_float is only called after full initialization.
@@ -155,18 +235,8 @@ let parse_date_to_float origin_str date_str time_unit =
    (year, month, day) arithmetic and never touch the 30.4369
    average-month factor.
 
-   Mirrors `rust/crates/ir/src/caltime.rs`: `is_leap` and
-   `days_in_month` use identical formulas. *)
-
-let is_leap_year y =
-  (y mod 4 = 0 && y mod 100 <> 0) || y mod 400 = 0
-
-let days_in_month y m =
-  match m with
-  | 1 | 3 | 5 | 7 | 8 | 10 | 12 -> 31
-  | 4 | 6 | 9 | 11              -> 30
-  | 2                            -> if is_leap_year y then 29 else 28
-  | _ -> invalid_arg (Printf.sprintf "days_in_month: month %d out of range" m)
+   (`is_leap_year` / `days_in_month` are defined above, ahead of
+   `parse_iso_date`, which range-checks against them.) *)
 
 (** `add_calendar_months (y, m, d) n` — proleptic-Gregorian
     month-stepping with month-end clamping. The algorithm from
@@ -835,6 +905,121 @@ let expand_compartment_name ctx cname =
 let all_expanded_compartments ctx =
   List.concat_map (fun cd -> expand_compartment_name ctx cd.cname) ctx.comp_decls
 
+(** Expand an indexed-declaration's `<base>_<level>...` names over the
+    cartesian product of its declared dims' levels, in row-major order —
+    the same name-mangling `resolve_ident_name` / `build_lookup_tables`
+    produce for indexed parameters and forcings. A dim with no registered
+    levels contributes nothing (the dim error is reported elsewhere). *)
+let expand_indexed_decl_names ctx base dims =
+  if dims = [] then [base]
+  else
+    let level_lists = List.map (fun d ->
+      match List.assoc_opt d ctx.dim_registry with Some vs -> vs | None -> []) dims in
+    if List.exists (fun l -> l = []) level_lists then []
+    else
+      let rec cart = function
+        | [] -> [[]]
+        | vs :: rest ->
+          let tails = cart rest in
+          List.concat_map (fun v -> List.map (fun t -> v :: t) tails) vs
+      in
+      List.map (fun combo -> String.concat "_" (base :: combo)) (cart level_lists)
+
+(** gh#117: declaration-name validation.
+
+    `build_lookup_tables` populates every namespace table with
+    [Hashtbl.replace] — silent last-wins. A duplicate within a namespace
+    (`let beta = ...` twice) or the same name across namespaces (a
+    `parameter N` and a `let N`) would resolve to whichever the lookup
+    order happens to favour, silently changing the model's equations.
+    Spec §26.10: such names are an error, "rather than guessing".
+
+    This pass enumerates every declared identifier — BOTH the base name
+    AND its fully-expanded/stratified names (reviewer feedback: a
+    base-name-only check leaves a residual hole on expanded names, e.g. a
+    compartment `R0` stratified to `R0_a` colliding with indexed param
+    `R0[g]` expanding to `R0_a`) — across the namespaces that
+    `resolve_ident_name` consults (compartments, parameters, lets,
+    forcings, tables). Any name claimed by two declarations is a hard
+    E278, naming both declarations and their source locations where the
+    AST retains them (compartments/params carry locs; lets/tables/forcings
+    do not, so those are named without a span). *)
+let check_declaration_names ctx =
+  (* Each entry: (identifier, namespace-label, source-loc).  We record one
+     entry per *occurrence*; a name with >1 entry is the collision. *)
+  let entries : (string * string * Diagnostics.loc) list ref = ref [] in
+  let add name ns loc = entries := (name, ns, loc) :: !entries in
+  (* Compartments — base + stratified expansions all share one decl loc. *)
+  List.iter (fun (cd : compartment_decl) ->
+    let loc = diag_loc_of_ast_ctx ctx cd.cloc in
+    List.iter (fun n -> add n "compartment" loc)
+      (expand_compartment_name ctx cd.cname)
+  ) ctx.comp_decls;
+  (* Parameters — scalar by name; indexed by expanded `<base>_<level>`. *)
+  List.iter (fun pd ->
+    match pd with
+    | PScalar p -> add p.pname "parameter" (diag_loc_of_ast_ctx ctx p.ploc)
+    | PIndexed p ->
+      let loc = diag_loc_of_ast_ctx ctx p.ploc in
+      List.iter (fun n -> add n "parameter" loc)
+        (expand_indexed_decl_names ctx p.pname p.pdims)
+  ) ctx.param_decls;
+  (* Let bindings — by name (no source loc in the AST). *)
+  List.iter (fun lb -> add lb.lname "let" Diagnostics.no_loc) ctx.let_bindings;
+  (* Forcings / time functions — base + expanded over declared indices. *)
+  List.iter (fun (fd : func_decl) ->
+    let dims = List.filter_map (function
+      | IBind (_, d) | IConsec (_, _, d) -> Some d | IComp _ -> None) fd.findices in
+    List.iter (fun n -> add n "forcing" Diagnostics.no_loc)
+      (expand_indexed_decl_names ctx fd.fname dims)
+  ) ctx.func_decls;
+  (* Tables — by each declared name (multi-value `read` declares several). *)
+  List.iter (fun (td : table_decl) ->
+    List.iter (fun n -> add n "table" Diagnostics.no_loc) td.tnames
+  ) ctx.table_decls;
+  (* Group occurrences by identifier, preserving first-seen order for
+     deterministic diagnostics. *)
+  let order = ref [] in
+  let groups : (string, (string * Diagnostics.loc) list ref) Hashtbl.t =
+    Hashtbl.create 64 in
+  List.iter (fun (name, ns, loc) ->
+    match Hashtbl.find_opt groups name with
+    | Some r -> r := (ns, loc) :: !r
+    | None -> Hashtbl.add groups name (ref [(ns, loc)]); order := name :: !order
+  ) (List.rev !entries);
+  List.iter (fun name ->
+    let occs = List.rev !(Hashtbl.find groups name) in
+    if List.length occs > 1 then begin
+      let nss = List.sort_uniq compare (List.map fst occs) in
+      let message =
+        if List.length nss = 1 then
+          Printf.sprintf
+            "duplicate %s declaration '%s': declared %d times"
+            (List.hd nss) name (List.length occs)
+        else
+          Printf.sprintf
+            "name '%s' is declared in multiple namespaces (%s); a \
+             reference to it would be ambiguous"
+            name (String.concat ", " nss)
+      in
+      let related = List.map (fun (ns, (loc : Diagnostics.loc)) ->
+        if loc.Diagnostics.line > 0
+        then (loc, Printf.sprintf "declared here as %s" ns)
+        else (Diagnostics.no_loc,
+              Printf.sprintf "also declared as %s '%s'" ns name)
+      ) occs in
+      (* Point the primary span at the first occurrence that has a real loc. *)
+      let primary = match List.find_opt (fun (_, (l : Diagnostics.loc)) ->
+          l.Diagnostics.line > 0) occs with
+        | Some (_, l) -> l | None -> Diagnostics.no_loc in
+      Diagnostics.error ctx.diags ~code:"E278" ~loc:primary ~message
+        ~hint:"declaration names must be unique across compartments, \
+               parameters, lets, forcings, and tables (including after \
+               stratification expansion) — rename or remove one"
+        ~related ()
+    end
+  ) (List.rev !order)
+
 (** Build O(1) lookup tables from the declaration lists and dim_registry.
     Call after resolve_dimensions so expanded indexed param names are known. *)
 let build_lookup_tables ctx =
@@ -1162,13 +1347,10 @@ let rec try_eval_const_int (e : expr) : int option =
 let rec try_eval_const_instant_ymd ctx (e : expr) : (int * int * int, string) result =
   match e with
   | EFuncCall ("date", [("", EIdent (s, _))]) ->
-    (try Ok (parse_iso_date s)
-     with Failure msg -> Error msg)
+    parse_iso_date s
   | EIdent ("origin", _) ->
     (match ctx.origin with
-     | Some s ->
-       (try Ok (parse_iso_date s)
-        with Failure msg -> Error msg)
+     | Some s -> parse_iso_date s
      | None -> Error "_unanchored")
   | EFuncCall ("add_calendar_months", args) ->
     (match args with
@@ -1368,7 +1550,14 @@ let expand_date_range_to_consts ctx (args : (string * expr) list) : expr list =
     | Some origin_str ->
       let iso = format_iso_date ymd in
       (try parse_date_to_float origin_str iso ctx.time_unit
-       with Failure _ -> 0.0)
+       with Failure msg ->
+         (* M13 (gh#98): no silent `0.0` absorb. A failure here means the
+            `origin` string is malformed (the generated `iso` always
+            parses); surface it as a located E223 instead of computing a
+            garbage day offset. *)
+         Diagnostics.error ctx.diags ~code:"E223" ~loc:Diagnostics.no_loc
+           ~message:msg ();
+         0.0)
     | None ->
       (* Unanchored: dates are not meaningful relative to origin.
          We already errored upstream; return 0 defensively. *)
@@ -1717,7 +1906,28 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
        linear index is: i1*n2*n3*... + i2*n3*... + ... + iN.
        The IR and Rust runtime always expect exactly one index. *)
     let tdims = table_dims ctx base_name in
-    if tdims <> [] then
+    if tdims <> [] && List.length items <> List.length tdims then begin
+      (* gh#112: table-lookup arity guard. The stride math below maps over
+         the user's `items`, NOT the declared `tdims` — so an under-indexed
+         lookup (`C_age[a]` against `age × age`) silently produced a
+         partial-prefix linear index (a wrong cell), and an over-indexed one
+         read `tdims` out of range. Require exact arity before lowering.
+         Mirrors shape_index's E273 guard for shaped lets. *)
+      Diagnostics.error ctx.diags
+        ~code:"E202" ~loc:Diagnostics.no_loc
+        ~message:(Printf.sprintf
+          "table '%s' expects %d %s but was given %d"
+          base_name (List.length tdims)
+          (if List.length tdims = 1 then "index" else "indices")
+          (List.length items))
+        ~hint:(Printf.sprintf "table dimensions: [%s]"
+          (String.concat " \xc3\x97 " tdims))
+        ();
+      (* Continue with a placeholder so a single pass collects further
+         diagnostics; the compile aborts at phase end. *)
+      Ir.TableLookup (base_name, [Ir.Const 0.0])
+    end
+    else if tdims <> [] then
       let per_dim = List.mapi (fun i item ->
         let dim      = List.nth tdims i in
         let val_name = index_item_to_str env item in
@@ -1844,11 +2054,25 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
     in
     (match ctx.origin with
      | Some origin_str ->
-       (try Ir.Const (parse_date_to_float origin_str date_str ctx.time_unit)
-        with Failure msg ->
-          Diagnostics.error ctx.diags ~code:"E220" ~loc:Diagnostics.no_loc
-            ~message:msg ();
-          Ir.Const 0.0)
+       (* Validate the date string explicitly so an out-of-range or
+          malformed date gets the named E223 (gh#98, C6/M13) — not the
+          generic E220, and never a silent `0.0` shift. The origin was
+          validated up-front (M14), so the only remaining failure source
+          here is `date_str`. *)
+       (match parse_iso_date date_str with
+        | Error msg ->
+          Diagnostics.error ctx.diags ~code:"E223" ~loc:Diagnostics.no_loc
+            ~message:msg
+            ~hint:"date() takes a calendar date YYYY-MM-DD with month \
+                   01..12 and a day valid for that month (leap-aware)"
+            ();
+          Ir.Const 0.0
+        | Ok _ ->
+          (try Ir.Const (parse_date_to_float origin_str date_str ctx.time_unit)
+           with Failure msg ->
+             Diagnostics.error ctx.diags ~code:"E223" ~loc:Diagnostics.no_loc
+               ~message:msg ();
+             Ir.Const 0.0))
      | None ->
        Diagnostics.error ctx.diags ~code:"E220" ~loc:Diagnostics.no_loc
          ~message:"date() requires a top-level origin declaration, e.g. origin = date(\"2020-01-01\")"
@@ -2105,8 +2329,27 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
     Ir.Const 0.0
 
 and resolve_ident_name ctx name ~loc =
-  (* 1. Let binding? Inline it — unless it's a typed const (emitted as Param). *)
-  match Hashtbl.find_opt ctx.let_tbl name with
+  (* Name resolution order follows spec §26.10: compartments → parameters →
+     lets → forcings. `check_declaration_names` (gh#117) already makes a name
+     live in at most one namespace — a cross-namespace collision is a hard
+     E278 before we get here — so this order never changes the *result* on a
+     valid model; it pins the implementation to the documented precedence so
+     a future gap in the collision check can't silently re-introduce
+     let-wins-over-param resolution. *)
+  (* 1. Known expanded compartment? *)
+  if Hashtbl.mem ctx.expanded_comp_tbl name then Ir.Pop name
+  else if Hashtbl.mem ctx.comp_tbl name then begin
+    let expansions = expand_compartment_name ctx name in
+    if List.length expansions = 1 then Ir.Pop (List.hd expansions)
+    else Ir.PopSum expansions
+  end
+  (* 2. Parameter (scalar or fully-expanded indexed)? *)
+  else if Hashtbl.mem ctx.scalar_param_tbl name then
+    Ir.Param name
+  else if is_expanded_indexed_param_name ctx name then
+    Ir.Param name
+  (* 3. Let binding? Inline it — unless it's a typed const (emitted as Param). *)
+  else match Hashtbl.find_opt ctx.let_tbl name with
   | Some lb ->
     if lb.lkind <> None && is_const_expr lb.lbody then
       (* Typed const let → treat as parameter (dimcheck will see param_kind) *)
@@ -2119,18 +2362,8 @@ and resolve_ident_name ctx name ~loc =
     else
       normalize_expr (resolve_expr ctx [] lb.lbody)
   | None ->
-  (* 2. Known expanded compartment? *)
-  if Hashtbl.mem ctx.expanded_comp_tbl name then Ir.Pop name
-  else if Hashtbl.mem ctx.comp_tbl name then begin
-    let expansions = expand_compartment_name ctx name in
-    if List.length expansions = 1 then Ir.Pop (List.hd expansions)
-    else Ir.PopSum expansions
-  end
-  else if Hashtbl.mem ctx.scalar_param_tbl name then
-    Ir.Param name
-  else if is_expanded_indexed_param_name ctx name then
-    Ir.Param name
-  else if Hashtbl.mem ctx.func_tbl name then
+  (* 4. Forcing / time function? *)
+  if Hashtbl.mem ctx.func_tbl name then
     Ir.TimeFunc name
   else if name = "t" then
     Ir.Time
@@ -3082,7 +3315,7 @@ let rec flatten_expr_list ctx (dim_entries : table_dim_entry list) = function
   | other        -> [resolve_expr ctx [] other]
 
 (** Determine table source: External if `external("name")`, otherwise Inline. *)
-let table_source_of_expr ctx (dim_entries : table_dim_entry list) e =
+let table_source_of_expr ?table_name ctx (dim_entries : table_dim_entry list) e =
   match e with
   | EFuncCall ("external", args) ->
     (match extract_path_arg ctx "external" args with
@@ -3090,6 +3323,28 @@ let table_source_of_expr ctx (dim_entries : table_dim_entry list) e =
      | Some name -> Ir.External name)
   | _ ->
     let vals = flatten_expr_list ctx dim_entries e in
+    (* gh#112: an inline table flattens to a row-major value list. Verify the
+       cell count equals the product of declared dimension sizes — a too-short
+       table would otherwise fail late (or read a default) and a too-long one
+       would silently carry unused data. Only checked when every declared dim
+       has known levels (a dim error is reported elsewhere). *)
+    let dim_sizes = List.map (fun de ->
+      List.length (dim_values ctx (dim_name_of_entry de))) dim_entries in
+    let expected = List.fold_left ( * ) 1 dim_sizes in
+    (if dim_entries <> [] && not (List.exists (fun s -> s = 0) dim_sizes)
+        && List.length vals <> expected then
+       Diagnostics.error ctx.diags
+         ~code:"E202" ~loc:Diagnostics.no_loc
+         ~message:(Printf.sprintf
+           "table '%s' declares dimensions [%s] (%d cells) but its inline \
+            value has %d cell%s"
+           (match table_name with Some n -> n | None -> "<table>")
+           (String.concat " \xc3\x97 " (List.map dim_name_of_entry dim_entries))
+           expected (List.length vals)
+           (if List.length vals = 1 then "" else "s"))
+         ~hint:"an inline table must list exactly one value per cell, in \
+                row-major order (last dimension varies fastest)"
+         ());
     Ir.Inline vals
 
 let expand_tables ctx =
@@ -3152,7 +3407,7 @@ let expand_tables ctx =
           ~message:"multi-name table declaration requires read(...)" ();
         List.hd td.tnames
       in
-      let source = table_source_of_expr ctx dim_entries td.tvalue in
+      let source = table_source_of_expr ~table_name:name ctx dim_entries td.tvalue in
       let source = match source, table_unit with
         | Ir.Inline vs, Some u ->
           Ir.Inline (scale_table_values ctx ~table_name:name ~unit:u vs)
@@ -3216,6 +3471,40 @@ let expand_init ctx =
     if not (Hashtbl.mem tbl name) then Queue.add name order;
     Hashtbl.replace tbl name value
   in
+  (* gh#114: every emitted init key must name a real expanded compartment.
+     `expand_init` previously emitted a bare/concatenated key with no check,
+     so `init { S = N0 }` against a stratified `S` produced an init entry
+     named `S` (which is not an expanded cell — the real cells are
+     `S_child`, `S_adult`), silently starting those cells at 0. Distinguish
+     the two failure shapes for a precise, located E277. We emit exactly ONE
+     diagnostic per offending entry (reviewer feedback: the prior attempt
+     emitted a no-location E513 then a located E277 for one root cause). *)
+  let check_membership ie concrete_name =
+    if not (Hashtbl.mem ctx.expanded_comp_tbl concrete_name) then begin
+      let loc = diag_loc_of_ast_ctx ctx ie.iloc in
+      if Hashtbl.mem ctx.comp_tbl ie.icomp then begin
+        (* The base compartment exists, but this key is not a real cell:
+           a bare stratified reference, or a wrong/partial index set. *)
+        let cells = expand_compartment_name ctx ie.icomp in
+        Diagnostics.error ctx.diags ~code:"E277" ~loc
+          ~message:(Printf.sprintf
+            "initial condition '%s' does not name an expanded compartment \
+             cell — compartment '%s' is stratified and requires explicit \
+             strata in `init`"
+            concrete_name ie.icomp)
+          ~hint:(Printf.sprintf
+            "specify each cell, e.g. %s = ...   (cells: %s)"
+            (List.hd cells) (String.concat ", " cells))
+          ()
+      end else
+        Diagnostics.error ctx.diags ~code:"E277" ~loc
+          ~message:(Printf.sprintf
+            "initial condition '%s' names an unknown compartment" concrete_name)
+          ~hint:"check the `compartments` block; init keys must be real \
+                 (expanded) compartment cells"
+          ()
+    end
+  in
   List.iter (fun ie ->
     if ie.ibindings = [] then begin
       (* Positional or bare form *)
@@ -3230,6 +3519,7 @@ let expand_init ctx =
           ) ie.iindices in
           String.concat "_" (ie.icomp :: idx_vals)
       in
+      check_membership ie concrete_name;
       let resolved = normalize_expr (resolve_expr ctx [] ie.ivalue) in
       add_entry concrete_name resolved
     end else begin
@@ -3241,6 +3531,7 @@ let expand_init ctx =
           if parts = [] then ie.icomp
           else ie.icomp ^ "_" ^ String.concat "_" parts
         in
+        check_membership ie concrete_name;
         let resolved = normalize_expr (resolve_expr ctx env ie.ivalue) in
         add_entry concrete_name resolved
       ) combos
@@ -4285,7 +4576,25 @@ let check_hierarchical_cycles ctx =
   in
   Hashtbl.iter (fun node _ -> dfs node []) adj
 
-(* ── Shadowing check ──────────────────────────────────────────────────────── *)
+(* ── Origin / shadowing checks ────────────────────────────────────────────── *)
+
+(** M14 (gh#98): validate the top-level `origin = date("...")` string up
+    front, before any `origin_rata_die` / date conversion derives values
+    from it. A malformed or out-of-range origin previously produced a
+    nonsense `origin_rata_die` (and garbage internal-time conversions for
+    every `date()` literal) with no diagnostic. Emit a named E223. *)
+let check_origin ctx =
+  match ctx.origin with
+  | None -> ()
+  | Some s ->
+    (match parse_iso_date s with
+     | Ok _ -> ()
+     | Error msg ->
+       Diagnostics.error ctx.diags ~code:"E223" ~loc:Diagnostics.no_loc
+         ~message:(Printf.sprintf "origin: %s" msg)
+         ~hint:"origin must be a calendar date YYYY-MM-DD with month \
+                01..12 and a day valid for that month (leap-aware)"
+         ())
 
 (** Emit W103 for any let binding whose name also appears as a stratum value. *)
 let check_shadowing ctx =
@@ -5232,8 +5541,17 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     : Ir.model * context * model_summary =
   let ctx = empty_context ~source_dir ~filename () in
   collect_declarations ctx decls;
+  (* M14 (gh#98): validate origin date up front, before origin_rata_die /
+     date() conversion derives values from it. *)
+  check_origin ctx;
   (* Pass 1: resolve dimensions {} block, build dim_registry *)
   resolve_dimensions ctx;
+  (* gh#117: reject duplicate-within-namespace and cross-namespace
+     declaration names (both base AND fully-expanded/stratified names),
+     naming both declarations. Runs after resolve_dimensions (so expanded
+     names are known) and before build_lookup_tables (so the silent
+     Hashtbl.replace last-wins never gets a chance to mask a collision). *)
+  check_declaration_names ctx;
   (* Build O(1) lookup tables for resolve_expr *)
   build_lookup_tables ctx;
   (* W103 shadowing check: let bindings vs stratum values *)
@@ -5267,7 +5585,13 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     Ir.origin_rata_die    =
       (match ctx.origin with
        | None -> None
-       | Some s -> let (y, m, d) = parse_iso_date s in Some (days_of_date y m d));
+       | Some s ->
+         (* The origin was range-validated up-front by `check_origin` (M14,
+            gh#98); on the clean path this always parses. If it didn't, the
+            E223 already fired — fall back to None rather than emit garbage. *)
+         (match parse_iso_date s with
+          | Ok (y, m, d) -> Some (days_of_date y m d)
+          | Error _ -> None));
     Ir.compartments       = expanded_comps;
     Ir.transitions        = expanded_trs;
     Ir.ode_equations      = expand_ode_equations ctx;

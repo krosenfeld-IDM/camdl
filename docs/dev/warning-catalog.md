@@ -44,7 +44,10 @@ documented at each emit site in `ocaml/lib/compiler/`.)
 | E110      | parse          | unknown transition attribute `#[...]` (only `#[lineage]` is supported)                                                                             |
 | E200–E221 | semantic       | scoping / declaration / resolution errors (multiple variants); E221 = read() data-file header has too few columns for the table's index dimensions |
 | E222      | semantic       | table uses `read(...)` but declares no index dimensions                                                                                            |
+| E223      | semantic       | `date(...)` / `origin` ISO date is malformed or out of range (month 1–12, day valid for the month, leap-aware); mirrors Rust `caltime::parse_iso_date` |
 | E230–E276 | semantic       | observation, balance, simulation-block validation                                                                                                  |
+| E277      | semantic       | initial condition does not name an expanded compartment cell (bare stratified, or unknown compartment)                                             |
+| E278      | semantic       | declaration name is duplicated within a namespace or ambiguous across namespaces (compartments / parameters / lets / forcings / tables), including after stratification expansion |
 | E300      | dimensional    | transition rate has wrong dimension (e.g. per-capita where total propensity expected)                                                              |
 | E301      | dimensional    | exponent has non-dimensionless dimension                                                                                                           |
 | E302      | dimensional    | dimension mismatch (e.g. adding a count and a rate)                                                                                                |
@@ -77,6 +80,7 @@ documented at each emit site in `ocaml/lib/compiler/`.)
 | E510      | validate       | ODE equation for a non-real compartment                                                                                                            |
 | E511      | validate       | transition has zero delta for a compartment                                                                                                        |
 | E512      | validate       | hoisted binding references a parameter (gradient would be silently zeroed)                                                                          |
+| E513      | validate       | initial condition names a compartment absent from the expanded model (contract-boundary net; frontend reports the located E277)                     |
 | E600      | runtime config | rejected before backend dispatch                                                                                                                   |
 | E601      | semantic       | lineage tracking requires linear dependence on parent compartments                                                                                 |
 

@@ -6046,8 +6046,223 @@ let test_lint_warning_has_location () =
     Alcotest.(check bool) "L402 points at the compartment (line > 0)"
       true (d.loc.Diagnostics.line > 0)
 
+(* ── gh#112: table-lookup arity validation ──────────────────────────────────
+   A table declared `C_age : age × age` (rank 2) must be indexed with exactly
+   two indices. Under-indexing (`C_age[a]`) previously fell through the
+   `List.mapi (fun i item -> ... List.nth tdims i ...) items` loop, which
+   iterates over the user's *items* not the declared *tdims*, terminating short
+   and producing a partial-prefix linear index — a silently wrong cell.
+   Over-indexing read `tdims` out of range. Both must now be hard E202. *)
+
+let arity_model ~lookup = Printf.sprintf {|
+time_unit = 'days
+compartments { S, E, I, R }
+dimensions { age = [child, adult] }
+stratify(by = age)
+let N_local[a in age] = S[a] + E[a] + I[a] + R[a]
+parameters { beta : rate in [0.001, 0.5] }
+tables { C_age : age × age = [[12.0, 4.0], [4.0, 8.0]] }
+transitions {
+  infection[a in age] : S[a] --> E[a]
+    @ beta * S[a] * sum(b in age, %s * I[b] / N_local[b])
+  recovery[a in age]  : I[a] --> R[a] @ 0.1 * I[a]
+}
+init { S[child] = 100  I[child] = 1 }
+simulate { from = 0 'days  to = 10 'days }
+|} lookup
+
+let test_table_lookup_under_indexed_e202 () =
+  (* C_age is rank 2; supplying one index must error, not silently
+     resolve a prefix cell. *)
+  compile_expect_error_code ~code:"E202" ~contains:"C_age"
+    (arity_model ~lookup:"C_age[a]")
+
+let test_table_lookup_over_indexed_e202 () =
+  (* C_age is rank 2; supplying three indices must error. *)
+  compile_expect_error_code ~code:"E202" ~contains:"C_age"
+    (arity_model ~lookup:"C_age[a, b, a]")
+
+let test_table_lookup_correct_arity_ok () =
+  (* The two-index form still compiles (guard must not over-fire). *)
+  let _ = compile_expect_ok (arity_model ~lookup:"C_age[a, b]") in
+  ()
+
+(* ── gh#117: duplicate / cross-namespace declaration names ───────────────────
+   build_lookup_tables used Hashtbl.replace (silent last-wins). A duplicate
+   within a namespace, or the same name in two namespaces (e.g. a parameter and
+   a let both named `N`), must be a hard error naming both declarations — not a
+   silent resolution to whichever the lookup order happens to favour. *)
+
+let test_duplicate_parameter_rejected () =
+  compile_expect_error_code ~code:"E278" ~contains:"beta" {|
+    compartments { S, I }
+    parameters {
+      beta : rate in [0, 1]
+      beta : rate in [0, 1]
+    }
+    transitions { inf : S --> I @ beta * S * I }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
+let test_duplicate_let_rejected () =
+  compile_expect_error_code ~code:"E278" ~contains:"k" {|
+    compartments { S, I }
+    parameters { beta : rate in [0, 1] }
+    let k = 1.0
+    let k = 2.0
+    transitions { inf : S --> I @ beta * k * S * I }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
+let test_cross_namespace_param_and_let_rejected () =
+  (* `N` declared as both a parameter and a let: expressions would resolve to
+     one of them depending on lookup order — must be a hard ambiguity error. *)
+  compile_expect_error_code ~code:"E278" ~contains:"N" {|
+    compartments { S, I }
+    parameters {
+      beta : rate in [0, 1]
+      N    : count in [1, 1e9]
+    }
+    let N = S + I
+    transitions { inf : S --> I @ beta * S * I / N }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
+let test_cross_namespace_expanded_name_rejected () =
+  (* Reviewer feedback: the prior fix checked only BASE names, leaving a hole
+     on EXPANDED/stratified names. Here the bases DIFFER (`I_a` the
+     compartment vs `I` the indexed parameter) so a base-name-only check
+     passes — but `I[grp]` expands to `I_a`, `I_b`, and `I_a` collides with
+     the literal compartment `I_a`. The check must catch the expanded
+     collision. *)
+  compile_expect_error_code ~code:"E278" ~contains:"I_a" {|
+    compartments { S, I_a }
+    dimensions { grp = [a, b] }
+    parameters {
+      beta  : rate in [0, 1]
+      I[grp] : count in [0, 1000]
+    }
+    transitions { inf : S --> I_a @ beta * S * I_a }
+    init { S = 100  I_a = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |}
+
+(* ── gh#114: stratified initial conditions vs expanded compartments ──────────
+   `init { S = N0 }` where S is stratified into S_child/S_adult must be
+   rejected (the bare key S is not a real expanded compartment). An init for a
+   compartment that does not exist at all must also be rejected. A concrete
+   cell (`S[child]`) is accepted. Reviewer feedback: emit ONE located
+   diagnostic (E277), not a no-location E513 followed by a located E277. *)
+
+let init_strat_model ~init = Printf.sprintf {|
+time_unit = 'days
+compartments { S, E, I, R }
+dimensions { age = [child, adult] }
+stratify(by = age)
+parameters { beta : rate in [0.001, 0.5] }
+transitions {
+  infection[a in age] : S[a] --> E[a] @ beta * S[a] * I[a]
+  recovery[a in age]  : I[a] --> R[a] @ 0.1 * I[a]
+}
+init { %s }
+simulate { from = 0 'days  to = 10 'days }
+|} init
+
+let test_init_bare_stratified_rejected () =
+  compile_expect_error_code ~code:"E277" ~contains:"S"
+    (init_strat_model ~init:"S = 5000\n  I[child] = 10")
+
+let test_init_unknown_compartment_rejected () =
+  compile_expect_error_code ~code:"E277" ~contains:"X_child"
+    (init_strat_model ~init:"X[child] = 5000\n  I[child] = 10")
+
+let test_init_concrete_cell_ok () =
+  let _ = compile_expect_ok
+    (init_strat_model ~init:"S[child] = 4990\n  S[adult] = 5000\n  I[child] = 10") in
+  ()
+
+let test_init_bare_stratified_single_diagnostic () =
+  (* Reviewer feedback: exactly ONE diagnostic for the one root cause. *)
+  let src = init_strat_model ~init:"S = 5000\n  I[child] = 10" in
+  let diags = Compiler.collect_diagnostics ~name:"init_one_diag" src in
+  let errs = List.filter (fun (d : Diagnostics.diagnostic) ->
+    d.severity = Diagnostics.Error
+    && contains_substring ~needle:"S" d.message
+    && not (contains_substring ~needle:"undeclared" d.message)) diags in
+  Alcotest.(check int) "exactly one init-membership diagnostic for `S`"
+    1 (List.length errs);
+  (match errs with
+   | [d] -> Alcotest.(check string) "located E277" "E277" d.code
+   | _ -> ())
+
+(* ── gh#98: ISO date out-of-range validation ─────────────────────────────────
+   parse_iso_date did no month/day range check, so `date("2020-02-30")`
+   silently shifted to a garbage day offset with no diagnostic. Out-of-range
+   dates must now produce a NAMED diagnostic (E219). *)
+
+let date_model ~date = Printf.sprintf {|
+time_unit = 'days
+origin = date("2020-01-01")
+compartments { S, I, V }
+parameters {
+  beta     : rate        in [0, 1]
+  vacc_cov : probability in [0, 1]
+}
+transitions { inf : S --> I @ beta * S * I }
+interventions {
+  sia : transfer(fraction = vacc_cov, from = S, to = V)
+        at [ date("%s") ]
+}
+init { S = 100  I = 1 }
+simulate { from = origin  to = add_calendar_years(origin, 2) }
+|} date
+
+let test_date_invalid_day_rejected () =
+  compile_expect_error_code ~code:"E223" ~contains:"2020-02-30"
+    (date_model ~date:"2020-02-30")
+
+let test_date_invalid_month_rejected () =
+  compile_expect_error_code ~code:"E223" ~contains:"2020-13-01"
+    (date_model ~date:"2020-13-01")
+
+let test_date_feb29_leap_year_ok () =
+  (* 2020 is a leap year: Feb 29 is valid and must compile. *)
+  let _ = compile_expect_ok (date_model ~date:"2020-02-29") in
+  ()
+
+let test_date_feb29_non_leap_year_rejected () =
+  (* 2021 is not a leap year: Feb 29 must be rejected. *)
+  compile_expect_error_code ~code:"E223" ~contains:"2021-02-29"
+    (date_model ~date:"2021-02-29")
+
 let () =
   Alcotest.run "compiler" [
+    "table_lookup_arity", [
+      Alcotest.test_case "E202 under-indexed C_age[a] (rank 2)" `Quick test_table_lookup_under_indexed_e202;
+      Alcotest.test_case "E202 over-indexed C_age[a,b,a] (rank 2)" `Quick test_table_lookup_over_indexed_e202;
+      Alcotest.test_case "correct-arity C_age[a,b] still compiles" `Quick test_table_lookup_correct_arity_ok;
+    ];
+    "declaration_names", [
+      Alcotest.test_case "E278 duplicate parameter beta" `Quick test_duplicate_parameter_rejected;
+      Alcotest.test_case "E278 duplicate let k" `Quick test_duplicate_let_rejected;
+      Alcotest.test_case "E278 cross-namespace param+let N" `Quick test_cross_namespace_param_and_let_rejected;
+      Alcotest.test_case "E278 cross-namespace expanded name R0_a" `Quick test_cross_namespace_expanded_name_rejected;
+    ];
+    "init_membership", [
+      Alcotest.test_case "E277 bare stratified init S" `Quick test_init_bare_stratified_rejected;
+      Alcotest.test_case "E277 unknown compartment init X[child]" `Quick test_init_unknown_compartment_rejected;
+      Alcotest.test_case "concrete cell init S[child] ok" `Quick test_init_concrete_cell_ok;
+      Alcotest.test_case "single diagnostic for one root cause" `Quick test_init_bare_stratified_single_diagnostic;
+    ];
+    "iso_date_validation", [
+      Alcotest.test_case "E223 invalid day 2020-02-30" `Quick test_date_invalid_day_rejected;
+      Alcotest.test_case "E223 invalid month 2020-13-01" `Quick test_date_invalid_month_rejected;
+      Alcotest.test_case "leap-year Feb 29 2020 ok" `Quick test_date_feb29_leap_year_ok;
+      Alcotest.test_case "E223 non-leap Feb 29 2021" `Quick test_date_feb29_non_leap_year_rejected;
+    ];
     "golden", [
       Alcotest.test_case "sir_basic"      `Quick (test_golden "sir_basic");
       Alcotest.test_case "sir_demography" `Quick (test_golden "sir_demography");

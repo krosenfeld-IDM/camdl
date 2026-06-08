@@ -41,6 +41,25 @@ pub fn cmd_fit_methods() {
 
 // ─── New `camdl fit run` entry point (config_v2) ────────────────────────────
 
+/// gh#191: the model-capability gate must run on the fit-run path, PER STAGE.
+/// Each stage carries its own simulation backend (a config can mix e.g. an
+/// `ode` nl-sbplx scout with a `chain_binomial` pgas refine), so gating once
+/// against a single backend would be wrong; we check every stage's declared
+/// backend against the compiled model. Returns the first offending stage's
+/// message (prefixed with the stage name) so the user knows where to look.
+fn gate_run_stages_against_model(
+    stages: &[(&str, &config_v2::Stage)],
+    compiled: &sim::CompiledModel,
+) -> Result<(), String> {
+    for (stage_name, stage) in stages {
+        let backend = stage.backend().as_str();
+        if let Err(msg) = methods::check_model_capabilities(backend, compiled) {
+            return Err(format!("stage '{}': {}", stage_name, msg));
+        }
+    }
+    Ok(())
+}
+
 pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     use config_v2::{FitConfigV2, Stage, StartsFrom};
 
@@ -275,6 +294,42 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     } else {
         config.stages.iter().map(|(k, v)| (k.as_str(), v)).collect()
     };
+
+    // gh#191: gate the model's required capabilities against EACH stage's
+    // declared backend, before any fitting work. `profile` already runs this
+    // check, but `fit run` never did — so a real-compartment (ODE-coupled)
+    // model on a chain_binomial inference stage was silently mis-fit (the
+    // filter loops freeze the real reservoir at its init value). Fail fast
+    // with the actionable per-stage message instead.
+    {
+        // `required_capabilities()` is STRUCTURAL (transitions / compartments /
+        // balance) — the parameter VALUES are irrelevant to it. But
+        // `CompiledModel::new` requires every parameter to carry a value, and
+        // estimated parameters carry `value = None` in the IR (their start is
+        // resolved per-stage from `[estimate].start` later). So fill any
+        // value-less parameter with a harmless placeholder purely for this
+        // capability scan — without it the gate errored "parameter '<estimated>'
+        // has no value" on every `init = survey_top_k` / estimate-only fit
+        // (gh#191: the gate must not demand resolved params it doesn't use).
+        let mut cap_model = model.clone();
+        for p in &mut cap_model.parameters {
+            if p.value.is_none() {
+                p.value = Some(
+                    p.initial_value
+                        .or_else(|| p.bounds.map(|(lo, hi)| 0.5 * (lo + hi)))
+                        .unwrap_or(1.0),
+                );
+            }
+        }
+        let compiled = sim::CompiledModel::new(cap_model).unwrap_or_else(|e| {
+            eprintln!("error: {:?}", e);
+            std::process::exit(1);
+        });
+        if let Err(msg) = gate_run_stages_against_model(&stages_to_run, &compiled) {
+            eprintln!("error: {}", msg);
+            std::process::exit(1);
+        }
+    }
 
     // gh#audit-H12: --record-prequential and --record-ancestry only have
     // effect inside the Stage::PFilter arm of the stage match. clap
@@ -2151,6 +2206,114 @@ fn resolve_starts_from_arg(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── gh#191: per-stage capability gate on `fit run` ─────────────
+
+    /// A chain_binomial IF2 stage — the inference path that carries no
+    /// real reservoir state (gh#191).
+    fn chain_binomial_if2_stage() -> config_v2::Stage {
+        config_v2::Stage::IF2 {
+            backend: crate::run_meta::Backend::ChainBinomial,
+            chains: 1,
+            particles: 10,
+            iterations: 1,
+            cooling: 0.7,
+            cooling_target_iters: 1,
+            starts_from: config_v2::StartsFrom::default(),
+            init_method: Default::default(),
+            survey_path: None,
+            survey_top_k_n: None,
+            loglik_eval: config_v2::LoglikEvalConfig::default(),
+            gate: config_v2::GateConfig::default(),
+            dt_check: config_v2::DtCheckConfig::default(),
+        }
+    }
+
+    /// Load a golden envelope (`{ model: {...} }`) and fill null param
+    /// values so the model compiles — values are irrelevant to the
+    /// capability scan.
+    fn compiled_golden(rel: &str) -> sim::CompiledModel {
+        let path = format!("{}/../../../{}", env!("CARGO_MANIFEST_DIR"), rel);
+        let json = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let envv: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+        let mut model: ir::Model = serde_json::from_value(envv["model"].clone())
+            .unwrap_or_else(|e| panic!("deserialize {path}: {e}"));
+        for p in &mut model.parameters {
+            if p.value.is_none() {
+                p.value = Some(0.5);
+            }
+        }
+        sim::CompiledModel::new(model).unwrap_or_else(|e| panic!("compile {path}: {e:?}"))
+    }
+
+    #[test]
+    fn fit_run_rejects_real_compartments_on_chain_binomial_stage() {
+        // gh#191: `fit run` never gated the model against the per-stage
+        // backend, so a real-compartment (ODE-coupled) model on a
+        // chain_binomial inference stage was silently mis-fit — the filter
+        // loops freeze the real reservoir at its init value. The fit-run
+        // path must REJECT it with the REAL_COMPARTMENTS message, naming the
+        // offending stage.
+        let compiled = compiled_golden("ocaml/golden/sir_reservoir_mixed.ir.json");
+        assert!(
+            compiled
+                .required_capabilities()
+                .contains(sim::Capabilities::REAL_COMPARTMENTS),
+            "fixture must actually require REAL_COMPARTMENTS"
+        );
+        let stage = chain_binomial_if2_stage();
+        let stages = vec![("scout", &stage)];
+        let err = gate_run_stages_against_model(&stages, &compiled)
+            .expect_err("real-coupled model on a chain_binomial fit stage must be rejected");
+        assert!(err.contains("gh#191"), "should cite the tracking issue: {err}");
+        assert!(
+            err.contains("frozen"),
+            "should explain the frozen-reservoir reason: {err}"
+        );
+        assert!(err.contains("scout"), "should name the offending stage: {err}");
+    }
+
+    #[test]
+    fn fit_run_accepts_balance_on_chain_binomial_stage() {
+        // gh#192: a `balance{}` model is a chain-binomial-only construct the
+        // inference loops apply via step_one — `fit run` accepts it, so the
+        // gate must too (and not falsely reject it once wired in). Inject a
+        // balance{} block into the sir_basic golden (target = integer
+        // compartment R) so the only required capability is BALANCE.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ocaml/golden/sir_basic.ir.json"
+        );
+        let json = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let envv: serde_json::Value =
+            serde_json::from_str(&json).expect("parse sir_basic envelope");
+        let mut model: ir::Model = serde_json::from_value(envv["model"].clone())
+            .expect("deserialize sir_basic model");
+        for p in &mut model.parameters {
+            if p.value.is_none() {
+                p.value = Some(0.5);
+            }
+        }
+        model.balance = Some(ir::model::BalanceSpec {
+            target: "R".to_string(),
+            expr: ir::expr::Expr::param("N0"),
+        });
+        let compiled = sim::CompiledModel::new(model).expect("compile sir_basic + balance");
+        assert!(
+            compiled
+                .required_capabilities()
+                .contains(sim::Capabilities::BALANCE),
+            "fixture must actually require BALANCE"
+        );
+        let stage = chain_binomial_if2_stage();
+        let stages = vec![("scout", &stage)];
+        gate_run_stages_against_model(&stages, &compiled).unwrap_or_else(|e| {
+            panic!("fit run must ACCEPT a balance{{}} model on a chain_binomial stage: {e}")
+        });
+    }
 
     // ── validate_label ────────────────────────────────────────────
 

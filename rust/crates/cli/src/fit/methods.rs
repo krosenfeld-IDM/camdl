@@ -405,12 +405,16 @@ pub fn check_model_capabilities(
 ) -> Result<(), String> {
     use sim::Capabilities;
     let backend_caps = match backend {
-        // chain_binomial intentionally does NOT advertise REAL_COMPARTMENTS for
-        // INFERENCE: the filter loops carry no real state and never advance a
-        // reservoir, so a real-coupled model would be fit with its real
-        // compartments frozen at their init value — silently mis-fit (gh#191).
-        // Re-grant REAL_COMPARTMENTS here once inference advances real state.
-        "chain_binomial" => Capabilities::OVERDISPERSION,
+        // chain_binomial-inference grants OVERDISPERSION (NegBinomial draws)
+        // and BALANCE (`balance{}` is applied via step_one in the filter
+        // loops — gh#192; it was wrongly withheld, so `profile` falsely
+        // rejected balance{} models). It intentionally does NOT advertise
+        // REAL_COMPARTMENTS for INFERENCE: the filter loops carry no real
+        // state and never advance a reservoir, so a real-coupled model would
+        // be fit with its real compartments frozen at their init value —
+        // silently mis-fit (gh#191). Re-grant REAL_COMPARTMENTS here once
+        // inference advances real state.
+        "chain_binomial" => Capabilities::OVERDISPERSION | Capabilities::BALANCE,
         "ode"            => Capabilities::REAL_COMPARTMENTS,
         other            => return Err(format!(
             "check_model_capabilities: unknown backend '{}'", other
@@ -421,19 +425,37 @@ pub fn check_model_capabilities(
     if unsupported.is_empty() {
         return Ok(());
     }
-    let mut features = Vec::new();
-    if unsupported.contains(Capabilities::OVERDISPERSION) {
-        features.push(
+    // Iterate the unsupported bitflags (bitflags 2.x `iter_names`) rather than
+    // a hand if-ladder, so EVERY flag renders a non-blank message — an
+    // unsupported flag with no hand-written branch previously produced a
+    // blank `  - ` line (gh#192). `capability_hint` carries the rich
+    // per-flag hint text.
+    let features: Vec<String> = unsupported
+        .iter_names()
+        .map(|(name, flag)| capability_hint(name, flag))
+        .collect();
+    Err(format!(
+        "model requires capabilities not supported by backend '{}':\n  - {}",
+        backend,
+        features.join("\n  - "),
+    ))
+}
+
+/// Per-capability hint text for the unsupported-capability error. Keyed on the
+/// `Capabilities` flag; `name` is the bitflags constant name (used as the
+/// non-blank fallback for any flag without bespoke guidance, so the message
+/// can never be empty — gh#192).
+fn capability_hint(name: &str, flag: sim::Capabilities) -> String {
+    use sim::Capabilities;
+    match flag {
+        Capabilities::OVERDISPERSION =>
             "OVERDISPERSION: the model has `overdispersed(...)` transitions \
              whose process noise (σ²) the deterministic ODE skeleton \
              ignores. Switch to backend = \"chain_binomial\" (algorithms \
              if2 / pgas / pmmh) for stochastic-process inference, or \
              remove the overdispersed wrapper if the noise isn't \
-             load-bearing for your inference question.",
-        );
-    }
-    if unsupported.contains(Capabilities::REAL_COMPARTMENTS) {
-        features.push(
+             load-bearing for your inference question.".to_string(),
+        Capabilities::REAL_COMPARTMENTS =>
             "REAL_COMPARTMENTS: stochastic inference (backend = \
              \"chain_binomial\") does not yet advance real-valued \
              (ODE-coupled) compartments — they would be held frozen at their \
@@ -442,14 +464,19 @@ pub fn check_model_capabilities(
              backend = \"ode\" (which integrates the real compartments); \
              otherwise remove the real compartments, or use forward \
              simulation (`camdl simulate`) for real-coupled stochastic \
-             dynamics.",
-        );
+             dynamics.".to_string(),
+        Capabilities::BALANCE =>
+            "BALANCE: the model has a `balance{}` block (a population-residual \
+             compartment). Its firing semantics are chain-binomial-only \
+             (substep residual after transitions and events); the ODE backend \
+             conserves population algebraically and has no substep to apply \
+             it. Use backend = \"chain_binomial\", or remove the `balance{}` \
+             block.".to_string(),
+        // Any other flag (e.g. LINEAGES) still gets a named, non-blank line.
+        _ => format!(
+            "{name}: required by the model but not supported by this backend."
+        ),
     }
-    Err(format!(
-        "model requires capabilities not supported by backend '{}':\n  - {}",
-        backend,
-        features.join("\n  - "),
-    ))
 }
 
 /// Render the registry as a user-facing reference table.
@@ -668,5 +695,82 @@ mod tests {
         assert!(err.contains("frozen"), "should explain the frozen-reservoir reason: {err}");
         // ode integrates real compartments — still accepted.
         assert!(check_model_capabilities("ode", &compiled).is_ok());
+    }
+
+    /// Build a `CompiledModel` from the sir_basic golden with a `balance{}`
+    /// block injected (target = integer compartment `R`, expr = a resolvable
+    /// param). The chain-binomial inference path applies balance via
+    /// `step_one`, so the gate must ACCEPT it; the only required capability is
+    /// `BALANCE`. Avoids invoking camdlc (no version-guard dependency).
+    fn compiled_sir_with_balance() -> sim::CompiledModel {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ocaml/golden/sir_basic.ir.json"
+        );
+        let json =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let envv: serde_json::Value =
+            serde_json::from_str(&json).expect("parse sir_basic envelope");
+        let mut model: ir::Model = serde_json::from_value(envv["model"].clone())
+            .expect("deserialize sir_basic model");
+        for p in &mut model.parameters {
+            if p.value.is_none() {
+                p.value = Some(0.5);
+            }
+        }
+        // `R = N0` — target R is an integer compartment, N0 a declared param;
+        // value irrelevant to the capability scan, just needs to resolve.
+        model.balance = Some(ir::model::BalanceSpec {
+            target: "R".to_string(),
+            expr: ir::expr::Expr::param("N0"),
+        });
+        sim::CompiledModel::new(model).expect("compile sir_basic + balance")
+    }
+
+    #[test]
+    fn chain_binomial_inference_accepts_balance() {
+        // gh#192: `balance{}` is a chain-binomial-only construct that the
+        // inference filter loops apply via step_one — so the capability gate
+        // must ACCEPT it on chain_binomial. Before the fix the gate granted
+        // chain_binomial only OVERDISPERSION, so a balance{} model was
+        // falsely rejected on `profile` (the one path that calls the gate),
+        // even though fit/survey/pfilter ran it.
+        let compiled = compiled_sir_with_balance();
+        assert!(
+            compiled
+                .required_capabilities()
+                .contains(sim::Capabilities::BALANCE),
+            "fixture must actually require BALANCE"
+        );
+        check_model_capabilities("chain_binomial", &compiled).unwrap_or_else(|e| {
+            panic!("chain_binomial inference must ACCEPT balance{{}} models: {e}")
+        });
+    }
+
+    #[test]
+    fn unsupported_capability_message_is_never_blank() {
+        // gh#192 part 2: the error builder only had hand-written branches for
+        // OVERDISPERSION / REAL_COMPARTMENTS, so any OTHER unsupported flag
+        // (e.g. BALANCE on `ode`) rendered a blank `  - ` line that never
+        // named the missing capability. Drive an unsupported BALANCE through
+        // the ode backend (ode grants only REAL_COMPARTMENTS) and assert the
+        // message names the capability rather than printing an empty entry.
+        let compiled = compiled_sir_with_balance();
+        let err = check_model_capabilities("ode", &compiled)
+            .expect_err("balance{} on ode must be rejected");
+        assert!(
+            err.contains("BALANCE"),
+            "error must NAME the unsupported capability, not print a blank line: {err:?}"
+        );
+        // No empty bullet: every `  - ` entry must carry text after it.
+        for line in err.lines() {
+            assert_ne!(line.trim_end(), "  -", "bare blank bullet: {err:?}");
+            if let Some(rest) = line.trim_end().strip_prefix("  - ") {
+                assert!(
+                    !rest.trim().is_empty(),
+                    "blank capability bullet in message: {err:?}"
+                );
+            }
+        }
     }
 }

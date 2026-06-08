@@ -267,6 +267,15 @@ let diagnose_validate_error ctx (err : Validate.error) : Diagnostics.diagnostic 
             This is a compiler invariant — please file a bug.",
       (* Bindings are synthesized post-expansion with no source span. *)
       Diagnostics.no_loc
+    | InitUnknownCompartment s ->
+      "E513",
+      Printf.sprintf "initial condition '%s' names a compartment that does \
+                      not exist in the expanded model" s,
+      Some "init keys must be real (expanded) compartment cells; the \
+            frontend reports this with a located E277 — a bare E513 here \
+            means the IR was hand-written or has drifted",
+      (* The IR carries no per-init-entry source span. *)
+      Diagnostics.no_loc
   in
   Diagnostics.mk_error ~code ~loc ~message ?hint ()
 
@@ -472,13 +481,23 @@ let collect_detail ?(name = "model") ?(filename = "<input>") (src : string)
         The passes are pure now, so emit their lists into [d.ctx.diags] (the
         accumulator this function returns). *)
      let emit_all = List.iter (Diagnostics.emit d.ctx.diags) in
-     let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
-     emit_all vdiags;
-     if vdiags = [] then begin
-       emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
-       emit_all (Passtime.time "lint" (fun () -> run_lint d));
-       if not (Diagnostics.has_errors d.ctx.diags) then
-         emit_all (snd (differentiate_transitions d))
+     (* Short-circuit the post-expansion passes if the front end (expander)
+        already emitted errors — matching [compile], where
+        [compile_detail_result] returns [Error] before [run_validate] runs.
+        Skipping it here avoids emitting a *second*, less-located diagnostic
+        for a root cause the expander already reported with a located code
+        (e.g. an init-membership error: located E277 from [expand_init] would
+        otherwise be shadowed by a no-location E513 from [run_validate]).
+        gh#114 reviewer feedback: one root cause → one diagnostic. *)
+     if not (Diagnostics.has_errors d.ctx.diags) then begin
+       let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
+       emit_all vdiags;
+       if vdiags = [] then begin
+         emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
+         emit_all (Passtime.time "lint" (fun () -> run_lint d));
+         if not (Diagnostics.has_errors d.ctx.diags) then
+           emit_all (snd (differentiate_transitions d))
+       end
      end);
   (detail, diags, source)
 

@@ -387,6 +387,16 @@ pub fn plan_runs(
                     model_stem, shash, &sc.name, &sc_hash, seed,
                 );
                 let run_dir  = format!("{}/{}", runs_dir, run_path);
+                // gh#147 (deferred follow-up — CasSink migration): the cache key
+                // is now sound (model_hash folds in t_end/output cadence/origin/
+                // time_unit; see hashing::model_hash), but this hit test is still
+                // bare `traj.tsv` existence. A partial/aborted write (the design
+                // path writes traj.tsv non-atomically at ~L1246, with no
+                // Completed `run.json` checksum) can be read back as a valid hit.
+                // The full fix routes this through runid's atomic, checksummed
+                // CasStore commit + lookup (as the sim/ensemble path at ~L890
+                // already does) per docs/dev/proposals/2026-05-31-content-
+                // addressed-run-identity.md. Until then `--force` is the escape.
                 let traj_exists = std::path::Path::new(&format!("{}/traj.tsv", run_dir)).exists();
                 let decision = if !force && traj_exists {
                     RunDecision::CacheHit
@@ -1243,6 +1253,14 @@ fn run_design_experiment(
                             eprintln!("error: cannot create {}: {}", plan.run_dir, e);
                             return;
                         }
+                        // gh#147 (deferred follow-up — CasSink migration): this
+                        // write is non-atomic and the `run.json` below carries no
+                        // checksum/Completed marker, so an aborted run can leave a
+                        // truncated traj.tsv that `plan_runs` (~L390) reads back as
+                        // a cache hit. The CasSink migration (atomic checksummed
+                        // commit, as the sim/ensemble path at ~L890 uses) closes
+                        // this; see docs/dev/proposals/2026-05-31-content-
+                        // addressed-run-identity.md.
                         if let Err(e) = write_traj_tsv(&format!("{}/traj.tsv", plan.run_dir), &model, &traj, true) {
                             eprintln!("error: cannot write traj.tsv in {}: {}", plan.run_dir, e);
                             return;

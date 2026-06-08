@@ -1461,22 +1461,21 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 diag.log_posterior_trace = result.steps.iter()
                     .map(|s| s.log_likelihood + s.log_prior + focal_log_prior_offset)
                     .collect();
-                let best_ll = result.steps.iter()
-                    .map(|s| s.log_likelihood)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                // Report the MAP point's loglik for the rollup if it
-                // dominates the per-sample max (typical: map_loglik
-                // is the recorded best). Otherwise fall back to the
-                // per-sample max so the cell still reports a finite
-                // value when MAP tracking missed an early high-ll
-                // sample.
-                let final_ll = if result.map_loglik.is_finite() {
-                    result.map_loglik.max(best_ll)
-                } else if best_ll.is_finite() {
-                    best_ll
-                } else {
-                    f64::NEG_INFINITY
-                };
+                // gh#97: report the loglik that belongs to the saved
+                // MLE params. `mle_params = result.map_params` (below),
+                // and `pmmh.rs:478-483` sets `map_loglik` in lockstep
+                // with `map_params` — they are coherent by construction.
+                // The previous `result.map_loglik.max(best_ll)` reported
+                // the per-sample max loglik, which under any non-flat
+                // prior comes from a DIFFERENT θ than the MAP (the
+                // loglik-maximizing step is not the posterior-maximizing
+                // step). That paired a loglik from one θ with params
+                // from another — the same bug class f52d1ecd fixed on
+                // the IF2 path. If `map_loglik` is non-finite (the
+                // initial PF eval never reached a finite loglik), report
+                // it honestly; the renderer's `is_finite()` guard writes
+                // `-inf` rather than masking it.
+                let final_ll = result.map_loglik;
                 diag.completed = final_ll.is_finite();
                 // gh#109: PMMH carries the MAP joint log-posterior
                 // alongside the MLE-by-loglik. NaN-guard mirrors the

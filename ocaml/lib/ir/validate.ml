@@ -22,6 +22,7 @@ type error =
   | OdeForNonRealComp     of string
   | ZeroDelta             of string * string  (* transition, compartment *)
   | ParamInBinding        of string * string  (* binding name, param name *)
+  | InitUnknownCompartment of string          (* init key naming no compartment *)
 
 let error_to_string = function
   | DuplicateCompartment s -> Printf.sprintf "duplicate compartment: %s" s
@@ -39,6 +40,8 @@ let error_to_string = function
   | ZeroDelta (tr, c)    -> Printf.sprintf "zero delta for '%s' in transition '%s'" c tr
   | ParamInBinding (b, p) ->
     Printf.sprintf "parameter '%s' reachable from hoisted binding '%s'" p b
+  | InitUnknownCompartment s ->
+    Printf.sprintf "initial condition names unknown compartment: %s" s
 
 module SS = Set.Make(String)
 
@@ -186,6 +189,20 @@ let validate (m : model) : (unit, error list) result =
     | Some p -> errors := ParamInBinding (b.bname, p) :: !errors
     | None -> ()
   ) m.bindings;
+
+  (* Initial-condition reference check (gh#114). Every init key must name a
+     real compartment in the (already fully-expanded) IR. The OCaml expander
+     enforces this at the frontend (E277); this is the contract-boundary net
+     so a hand-written or drifted IR cannot start a cell that doesn't exist. *)
+  let init_keys = match m.initial_conditions with
+    | Explicit kvs         -> List.map fst kvs
+    | Parameterized kvs    -> List.map fst kvs
+    | FromDistribution kvs -> List.map fst kvs
+  in
+  List.iter (fun k ->
+    if not (SS.mem k comp_names)
+    then errors := InitUnknownCompartment k :: !errors
+  ) init_keys;
 
   if !errors = [] then Ok ()
   else Error (List.rev !errors)

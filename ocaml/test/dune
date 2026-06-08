@@ -18,6 +18,15 @@
  (libraries compiler ir alcotest)
  (deps (source_tree ../golden)))
 
+; Cross-language calendar-time golden (gh#98). Reads ir/golden/caltime.tsv
+; (the same file rust/crates/ir/tests/caltime_golden.rs reads) by resolving
+; the repo root at runtime — the TSV lives outside the ocaml dune root and
+; cannot be a (deps ...).
+(test
+ (name test_caltime_golden)
+ (modules test_caltime_golden)
+ (libraries compiler ir alcotest))
+
 (test
  (name test_dimcheck)
  (modules test_dimcheck)

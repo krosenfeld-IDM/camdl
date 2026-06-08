@@ -67,6 +67,8 @@ fn model_hash_for_test(ir_json: &str) -> String {
         "compartments", "transitions", "parameters", "tables",
         "time_functions", "interventions", "observations",
         "ode_equations", "initial_conditions",
+        // gh#147: calendar/time-axis context.
+        "origin", "origin_rata_die", "time_unit",
     ];
     for key in &structural_keys {
         if let Some(val) = obj.get(*key) {
@@ -74,6 +76,24 @@ fn model_hash_for_test(ir_json: &str) -> String {
             h.update(b"\x00");
             h.update(serde_json::to_string(val).unwrap().as_bytes());
             h.update(b"\x00");
+        }
+    }
+    // gh#147: output cadence (`output.times` only — format/flags are presentation).
+    if let Some(times) = obj.get("output").and_then(|o| o.as_object()).and_then(|o| o.get("times")) {
+        h.update(b"output.times\x00");
+        h.update(serde_json::to_string(times).unwrap().as_bytes());
+        h.update(b"\x00");
+    }
+    // gh#147: simulation horizon (`t_start`/`t_end` only — dt/seed/time_semantics excluded).
+    if let Some(sim) = obj.get("simulation").and_then(|s| s.as_object()) {
+        for key in ["t_start", "t_end"] {
+            if let Some(val) = sim.get(key) {
+                h.update(b"simulation.");
+                h.update(key.as_bytes());
+                h.update(b"\x00");
+                h.update(serde_json::to_string(val).unwrap().as_bytes());
+                h.update(b"\x00");
+            }
         }
     }
     if let Some(val) = obj.get("version") {

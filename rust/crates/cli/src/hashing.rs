@@ -3,12 +3,14 @@ use std::collections::HashMap;
 
 use crate::version;
 
-/// Structural hash of the IR: only fields that affect simulation semantics.
-/// Ignores t_end, output config, labels, and other non-structural fields.
-/// serde_json's Map is backed by BTreeMap (sorted keys), so serialization is deterministic.
+/// Structural hash of the IR: every field that affects the computed trajectory.
+/// Presentation-only fields (`output.format`, `simulation.time_semantics`) are
+/// excluded so `--format` / date rendering stay inert; the seed and `dt` ride in
+/// [`sim_hash`], not here. serde_json's Map is backed by BTreeMap (sorted keys),
+/// so serialization is deterministic.
 ///
 /// The on-disk IR is an *envelope* — `{ ir_version, validated_by, model: {…} }`
-/// — and every structural field below lives inside `model`. We descend into it.
+/// — and every field below lives inside `model`. We descend into it.
 /// gh#135: the previous code scanned the envelope's top level, found none of
 /// these keys, fed nothing to the hasher, and returned `SHA256("")` for every
 /// model. That made the sim cache blind to model structure: two different
@@ -17,6 +19,16 @@ use crate::version;
 /// key is absent only when the input is already a bare inner model; we fall
 /// back to scanning it directly so that case still hashes, and the post-hash
 /// guard catches the empty-input digest either way.
+///
+/// gh#147: the allowlist previously omitted the trajectory-determining
+/// non-structural fields — output cadence (`output.times`), the horizon
+/// (`simulation.t_start`/`t_end`), the calendar `origin`/`origin_rata_die`, and
+/// `time_unit`. Two models differing only in one of those hashed *equal*, so
+/// the `[design.*]` batch path (model_hash → sim_hash → run dir) served the
+/// first run's cached trajectory for the second. They are now folded in. We
+/// hash the trajectory-determining *sub-fields* of `output`/`simulation` rather
+/// than the whole blocks, so the presentation fields stay inert — mirroring the
+/// runid path's `resolve::normalize_for_hash` invariant.
 pub fn model_hash(ir_json: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(ir_json)
         .expect("model_hash: invalid JSON");
@@ -32,6 +44,10 @@ pub fn model_hash(ir_json: &str) -> String {
         "compartments", "transitions", "parameters", "tables",
         "time_functions", "interventions", "observations",
         "ode_equations", "initial_conditions",
+        // gh#147: calendar/time-axis context. `origin`/`origin_rata_die` anchor
+        // wall-clock dates and calendar-aware forcings; `time_unit` fixes the
+        // meaning of the numeric time axis. All change the run.
+        "origin", "origin_rata_die", "time_unit",
     ];
     for key in &structural_keys {
         if let Some(val) = obj.get(*key) {
@@ -39,6 +55,29 @@ pub fn model_hash(ir_json: &str) -> String {
             h.update(b"\x00");
             h.update(serde_json::to_string(val).unwrap().as_bytes());
             h.update(b"\x00");
+        }
+    }
+    // gh#147: the output cadence — `output.times` (Regular{start,step,end} or
+    // AtTimes[…]) — determines which rows the trajectory emits. `output.format`
+    // and the `trajectory`/`observations` selection flags are presentation, so
+    // we hash only `times`.
+    if let Some(times) = obj.get("output").and_then(|o| o.as_object()).and_then(|o| o.get("times")) {
+        h.update(b"output.times\x00");
+        h.update(serde_json::to_string(times).unwrap().as_bytes());
+        h.update(b"\x00");
+    }
+    // gh#147: the simulation horizon `t_start`/`t_end` bounds the run. `dt` and
+    // the seed ride in sim_hash; `time_semantics` is presentation — so we hash
+    // only the horizon bounds here.
+    if let Some(sim) = obj.get("simulation").and_then(|s| s.as_object()) {
+        for key in ["t_start", "t_end"] {
+            if let Some(val) = sim.get(key) {
+                h.update(b"simulation.");
+                h.update(key.as_bytes());
+                h.update(b"\x00");
+                h.update(serde_json::to_string(val).unwrap().as_bytes());
+                h.update(b"\x00");
+            }
         }
     }
     if let Some(val) = obj.get("version") {
@@ -324,6 +363,107 @@ mod tests {
             "models differing in a parameter value must hash differently (gh#135)");
         assert_ne!(model_hash(v1), EMPTY_SHA256);
         assert_ne!(model_hash(v2), EMPTY_SHA256);
+    }
+
+    // gh#147: model_hash's allowlist previously omitted trajectory-determining
+    // fields (`output` cadence, `simulation.t_end`, calendar `origin`,
+    // `time_unit`). Two models differing only in one of those hashed EQUAL, so
+    // the `[design.*]` batch path (model_hash → sim_hash → run dir) served the
+    // first run's cached trajectory for the second — a silent wrong answer.
+    // These pin that each trajectory-determining field re-keys the hash, while
+    // presentation-only fields (`output.format`, `simulation.time_semantics`)
+    // stay inert.
+
+    /// Minimal enveloped IR with templated output schedule, simulation block,
+    /// origin, and time_unit so each test perturbs exactly one field.
+    fn ir_with(times: &str, t_end: f64, origin: &str, origin_rd: &str, time_unit: &str,
+               format: &str, time_semantics: &str) -> String {
+        format!(
+            r#"{{"ir_version":"0.9","validated_by":"camdlc","model":{{
+                "compartments":["S","I","R"],
+                "transitions":[{{"name":"inf","rate":"beta*S*I"}}],
+                "parameters":[{{"name":"beta","value":0.3}}],
+                "time_unit":"{time_unit}",
+                "origin":{origin},
+                "origin_rata_die":{origin_rd},
+                "output":{{"times":{times},"format":"{format}","trajectory":true,"observations":false}},
+                "simulation":{{"t_start":0.0,"t_end":{t_end},"time_semantics":"{time_semantics}","dt":1.0,"rng_seed":null}}
+            }}}}"#
+        )
+    }
+
+    #[test]
+    fn model_hash_t_end_invalidates() {
+        // gh#147: two models differing only in simulation.t_end must hash
+        // differently — a longer horizon is a different trajectory.
+        let a = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        let b = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 200.0,
+                        "null", "null", "days", "tsv", "continuous");
+        assert_ne!(model_hash(&a), model_hash(&b),
+            "a t_end change must re-key model_hash (gh#147)");
+    }
+
+    #[test]
+    fn model_hash_output_cadence_invalidates() {
+        // gh#147: two models differing only in the output schedule (cadence)
+        // must hash differently — they emit different rows.
+        let a = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        let b = ir_with("{\"regular\":{\"start\":0.0,\"step\":7.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        assert_ne!(model_hash(&a), model_hash(&b),
+            "an output-cadence change must re-key model_hash (gh#147)");
+    }
+
+    #[test]
+    fn model_hash_output_at_times_invalidates() {
+        // gh#147: an explicit at-times output schedule change must re-key.
+        let a = ir_with("{\"at_times\":[1.0,2.0,3.0]}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        let b = ir_with("{\"at_times\":[1.0,2.0,4.0]}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        assert_ne!(model_hash(&a), model_hash(&b),
+            "an at-times output schedule change must re-key model_hash (gh#147)");
+    }
+
+    #[test]
+    fn model_hash_origin_invalidates() {
+        // gh#147: the calendar origin maps internal t to wall-clock dates and
+        // anchors calendar-aware forcings; changing it changes the run.
+        let a = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "\"2020-01-01\"", "737425", "days", "tsv", "continuous");
+        let b = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "\"2021-01-01\"", "737791", "days", "tsv", "continuous");
+        assert_ne!(model_hash(&a), model_hash(&b),
+            "a calendar-origin change must re-key model_hash (gh#147)");
+    }
+
+    #[test]
+    fn model_hash_time_unit_invalidates() {
+        // gh#147: time_unit sets the meaning of the time axis (days vs weeks);
+        // the same numeric schedule under a different unit is a different run.
+        let a = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        let b = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "weeks", "tsv", "continuous");
+        assert_ne!(model_hash(&a), model_hash(&b),
+            "a time_unit change must re-key model_hash (gh#147)");
+    }
+
+    #[test]
+    fn model_hash_presentation_fields_are_inert() {
+        // gh#147 (and the resolve.rs `presentation_fields_are_inert` invariant):
+        // output.format (tsv/csv) and simulation.time_semantics never affect the
+        // computed trajectory — they render views. Folding them into the key
+        // would over-invalidate the cache. The base case is identical; only the
+        // presentation fields differ.
+        let a = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "days", "tsv", "continuous");
+        let b = ir_with("{\"regular\":{\"start\":0.0,\"step\":1.0,\"end\":100.0}}", 100.0,
+                        "null", "null", "days", "csv", "discrete");
+        assert_eq!(model_hash(&a), model_hash(&b),
+            "output.format / simulation.time_semantics must NOT re-key model_hash");
     }
 
     #[test]

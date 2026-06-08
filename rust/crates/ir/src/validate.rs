@@ -50,6 +50,20 @@ pub enum ValidationError {
              a parameter is either fitted under a single-level prior or pooled \
              under a hierarchical prior, not both")]
     PriorAndHierarchicalBothSet(String),
+
+    #[error("intervention '{intervention}' action references unknown compartment '{compartment}'")]
+    UnknownCompartmentInIntervention { intervention: String, compartment: String },
+
+    #[error("balance constraint targets unknown compartment '{0}'")]
+    UnknownCompartmentInBalance(String),
+
+    #[error("initial condition references unknown compartment '{0}'")]
+    UnknownCompartmentInInitialConditions(String),
+
+    #[error("table lookup of '{table}' has wrong arity: {got} indices but the IR table \
+             is rank-1 (multi-dimensional tables are pre-flattened by the compiler to a \
+             single linear index, so a lookup must carry exactly 1 index)")]
+    TableLookupArity { table: String, got: usize },
 }
 
 pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
@@ -172,6 +186,95 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
         check_likelihood_exprs(&obs.likelihood, &ctx, &mut errors);
     }
 
+    // ── Intervention & event action target checks (gh#123) ────────────────────
+    //
+    // Interventions (`interventions {}`) and events (`events {}`, marked
+    // `always_active`) both lower to `Intervention` in the IR. Every action
+    // names compartment(s) it modifies; a dangling target reaches the runtime
+    // as a silent no-op or an out-of-range panic. Validate the names — and
+    // recurse into the action value/count/fraction expressions, which may
+    // reference params/compartments/tables.
+    for iv in &model.interventions {
+        let check_target = |comp: &str, errors: &mut Vec<ValidationError>| {
+            if !comp_names.contains(comp) {
+                errors.push(ValidationError::UnknownCompartmentInIntervention {
+                    intervention: iv.name.clone(),
+                    compartment: comp.to_string(),
+                });
+            }
+        };
+        for action in &iv.actions {
+            use crate::intervention::Action;
+            match action {
+                Action::FractionTransfer(ft) => {
+                    check_target(&ft.src, &mut errors);
+                    check_target(&ft.dst, &mut errors);
+                    check_expr(&ft.fraction, &ctx, false, &mut errors);
+                }
+                Action::AbsoluteTransfer(at) => {
+                    check_target(&at.src, &mut errors);
+                    check_target(&at.dst, &mut errors);
+                    check_expr(&at.count, &ctx, false, &mut errors);
+                }
+                Action::Set(s) => {
+                    check_target(&s.compartment, &mut errors);
+                    check_expr(&s.value, &ctx, false, &mut errors);
+                }
+                Action::Add(a) => {
+                    check_target(&a.compartment, &mut errors);
+                    check_expr(&a.count, &ctx, false, &mut errors);
+                }
+            }
+        }
+    }
+
+    // ── Balance constraint target check (gh#123) ──────────────────────────────
+    //
+    // The balance constraint overwrites its target compartment with `expr`
+    // every substep. A dangling target silently does nothing.
+    if let Some(b) = &model.balance {
+        if !comp_names.contains(b.target.as_str()) {
+            errors.push(ValidationError::UnknownCompartmentInBalance(b.target.clone()));
+        }
+        check_expr(&b.expr, &ctx, false, &mut errors);
+    }
+
+    // ── Initial-condition key checks (gh#114 Rust-side) ────────────────────────
+    //
+    // Every init key must resolve to a declared (expanded) compartment — a
+    // stratified model can otherwise carry an init value for nonexistent `S`
+    // while the real cells (e.g. `S_child_kano`) default to zero, silently
+    // starting the epidemic in an empty population. The Parameterized variant
+    // also carries an expression per key; recurse into it.
+    {
+        use crate::model::InitialConditions;
+        let check_init_key = |comp: &str, errors: &mut Vec<ValidationError>| {
+            if !comp_names.contains(comp) {
+                errors.push(ValidationError::UnknownCompartmentInInitialConditions(
+                    comp.to_string(),
+                ));
+            }
+        };
+        match &model.initial_conditions {
+            InitialConditions::Explicit(map) => {
+                for k in map.keys() {
+                    check_init_key(k, &mut errors);
+                }
+            }
+            InitialConditions::Parameterized(map) => {
+                for (k, e) in map {
+                    check_init_key(k, &mut errors);
+                    check_expr(e, &ctx, false, &mut errors);
+                }
+            }
+            InitialConditions::FromDistribution(map) => {
+                for k in map.keys() {
+                    check_init_key(k, &mut errors);
+                }
+            }
+        }
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -232,6 +335,22 @@ fn check_expr(expr: &Expr, ctx: &RefCtx<'_>, allow_projected: bool, errors: &mut
         Expr::TableLookup(w) => {
             if !ctx.table_names.contains(w.table_lookup.table.as_str()) {
                 errors.push(ValidationError::UnknownTable(w.table_lookup.table.clone()));
+            }
+            // Arity check (gh#123, reviewer feedback on the prior #123 attempt):
+            // the IR table is rank-1 — the OCaml compiler pre-flattens any
+            // multi-dimensional table to a single linear index, and the
+            // runtime evaluator rejects any other count (propensity.rs /
+            // resolved_expr.rs). A lookup carrying ≠1 index is malformed IR; we
+            // reject it here at the contract boundary rather than deferring to a
+            // runtime eval error. This is an item-count (arity) check, NOT an
+            // out-of-range linear-index check — the runtime already rejects a
+            // fully out-of-range index via OobPolicy::Error (gh#112 is the
+            // OCaml-side under-index-selects-wrong-cell fix, not this).
+            if w.table_lookup.indices.len() != 1 {
+                errors.push(ValidationError::TableLookupArity {
+                    table: w.table_lookup.table.clone(),
+                    got: w.table_lookup.indices.len(),
+                });
             }
             for idx in &w.table_lookup.indices {
                 check_expr(idx, ctx, allow_projected, errors);
@@ -354,5 +473,191 @@ mod tests {
         p.name = "beta_extra".into();
         m.parameters.push(p);
         validate(&m).expect("only hierarchical set must validate");
+    }
+
+    // ── gh#123: reference checks for intervention/event targets, balance,
+    //    init keys, and table-lookup arity ──────────────────────────────────
+
+    use crate::intervention::{
+        Action, FractionTransfer, Intervention, InterventionSchedule, SetAction,
+    };
+    use crate::model::{BalanceSpec, InitialConditions};
+    use crate::expr::{Expr, TableLookupExpr, TableLookupWrap};
+    use crate::table::{OobPolicy, Table, TableSource};
+
+    /// (1a) An intervention `set`/`add` action whose target compartment does
+    /// not exist must be rejected. The runtime would otherwise silently no-op
+    /// or panic on an out-of-range index (gh#123).
+    #[test]
+    fn intervention_set_target_unknown_compartment_is_rejected() {
+        let mut m = load_sir();
+        m.interventions.push(Intervention {
+            name: "shock".into(),
+            base_name: None,
+            schedule: InterventionSchedule::AtTimes(vec![10.0]),
+            actions: vec![Action::Set(SetAction {
+                compartment: "Q".into(), // not declared (model has S, I, R)
+                value: Expr::const_(0.0),
+            })],
+            always_active: false,
+        });
+        let errs = validate(&m).expect_err("must reject intervention targeting unknown 'Q'");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::UnknownCompartmentInIntervention { intervention, compartment }
+                    if intervention == "shock" && compartment == "Q")),
+            "expected UnknownCompartmentInIntervention for 'shock'/'Q', got: {:?}", errs);
+    }
+
+    /// (1b) An event (always_active intervention) `transfer` action whose
+    /// `dst` does not exist must be rejected — events fire every substep, so a
+    /// dangling target is a hard model bug.
+    #[test]
+    fn event_transfer_dst_unknown_compartment_is_rejected() {
+        let mut m = load_sir();
+        m.interventions.push(Intervention {
+            name: "import".into(),
+            base_name: None,
+            schedule: InterventionSchedule::AtTimes(vec![1.0]),
+            actions: vec![Action::FractionTransfer(FractionTransfer {
+                src: "S".into(),         // declared
+                dst: "Nowhere".into(),   // not declared
+                fraction: Expr::const_(0.1),
+            })],
+            always_active: true,
+        });
+        let errs = validate(&m).expect_err("must reject transfer to unknown 'Nowhere'");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::UnknownCompartmentInIntervention { intervention, compartment }
+                    if intervention == "import" && compartment == "Nowhere")),
+            "expected UnknownCompartmentInIntervention for 'import'/'Nowhere', got: {:?}", errs);
+    }
+
+    /// (2) A balance constraint whose target compartment does not exist must be
+    /// rejected. The runtime overwrites the target each substep; a dangling
+    /// target silently does nothing.
+    #[test]
+    fn balance_target_unknown_compartment_is_rejected() {
+        let mut m = load_sir();
+        m.balance = Some(BalanceSpec {
+            target: "Residual".into(), // not declared
+            expr: Expr::const_(0.0),
+        });
+        let errs = validate(&m).expect_err("must reject balance targeting unknown 'Residual'");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::UnknownCompartmentInBalance(c) if c == "Residual")),
+            "expected UnknownCompartmentInBalance for 'Residual', got: {:?}", errs);
+    }
+
+    /// (3) gh#114 Rust-side: an initial-condition key that does not resolve to
+    /// a declared (expanded) compartment must be rejected. A stratified model
+    /// can otherwise carry an init value for nonexistent `S` while the real
+    /// cells default to zero — a plausible-but-wrong epidemic.
+    #[test]
+    fn init_key_unknown_compartment_is_rejected() {
+        let mut m = load_sir();
+        // sir_basic uses Parameterized init keyed on S/I; add a dangling key.
+        match &mut m.initial_conditions {
+            InitialConditions::Parameterized(map) => {
+                map.insert("S_ghost".into(), Expr::const_(0.0));
+            }
+            other => panic!("expected Parameterized init in sir_basic, got {:?}", other),
+        }
+        let errs = validate(&m).expect_err("must reject init key for unknown 'S_ghost'");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::UnknownCompartmentInInitialConditions(c) if c == "S_ghost")),
+            "expected UnknownCompartmentInInitialConditions for 'S_ghost', got: {:?}", errs);
+    }
+
+    /// (4) A table-lookup whose index ARITY differs from the IR table's rank
+    /// (1, since the compiler pre-flattens multi-dim tables to a single linear
+    /// index) must be rejected by validation, not deferred to a runtime eval
+    /// error. This is the arity check, NOT an out-of-range linear index (the
+    /// runtime already rejects out-of-range via OobPolicy::Error).
+    #[test]
+    fn table_lookup_wrong_arity_is_rejected() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        // A two-index lookup against the rank-1 IR table: wrong arity.
+        let two_index_lookup = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::const_(0.0), Expr::const_(1.0)],
+            },
+        });
+        // Plant the lookup in a transition rate (a checked Expr location).
+        m.transitions[0].rate = two_index_lookup;
+        let errs = validate(&m).expect_err("must reject 2-index lookup against rank-1 table");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::TableLookupArity { table, got } if table == "kernel" && *got == 2)),
+            "expected TableLookupArity for 'kernel' got=2, got: {:?}", errs);
+    }
+
+    /// Negative control for arity: a correct single-index lookup must validate.
+    #[test]
+    fn table_lookup_single_index_is_accepted() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        m.transitions[0].rate = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::const_(0.0)],
+            },
+        });
+        validate(&m).expect("single-index lookup against rank-1 table must validate");
+    }
+
+    /// Negative control: the unmodified sir_basic model (with valid init keys,
+    /// no interventions, no balance) must validate.
+    #[test]
+    fn sir_basic_validates() {
+        let m = load_sir();
+        validate(&m).expect("sir_basic.ir.json must validate");
+    }
+
+    /// Regression guard for the gh#123/gh#114 reference checks: every committed
+    /// golden IR (which exercises real interventions, balance, stratified init,
+    /// and table lookups) must still validate. A false positive in the new
+    /// checks — rejecting legitimate compiler-emitted IR — would surface here.
+    #[test]
+    fn all_golden_ir_validates() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ir/golden");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(dir).expect("read ir/golden dir") {
+            let path = entry.expect("dir entry").path();
+            let is_ir = path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with(".ir.json"))
+                .unwrap_or(false);
+            if !is_ir {
+                continue;
+            }
+            let s = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let m = crate::from_str(&s)
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+            validate(&m)
+                .unwrap_or_else(|errs| panic!("{} must validate, got: {:?}", path.display(), errs));
+            checked += 1;
+        }
+        assert!(checked > 0, "no golden .ir.json files found under {dir}");
     }
 }

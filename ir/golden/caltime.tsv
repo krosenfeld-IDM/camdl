@@ -1,0 +1,74 @@
+# Cross-language calendar-time golden table (gh#98).
+#
+# The OCaml compiler (ocaml/lib/compiler/expander.ml: parse_iso_date /
+# days_of_date / parse_date_to_float) and the Rust runtime
+# (rust/crates/ir/src/caltime.rs: parse_iso_date / rata_die /
+# date_to_internal) independently parse ISO dates and convert them to
+# internal time. They MUST agree on exactly which strings parse and on the
+# resulting day offset / internal-t, or a date() literal that compiles on
+# one side produces a different time on the other (the §5.6 two-parser
+# failure mode the typed-time proposal flagged).
+#
+# Both ocaml/test/test_caltime_golden.ml and
+# rust/crates/ir/tests/caltime_golden.rs read THIS file and assert the
+# rows. Keep it as the single source of truth.
+#
+# Columns (tab-separated):
+#   origin       ISO origin date (anchored t=0)
+#   date         ISO date to convert (may carry a zone designator / surrounding whitespace)
+#   time_unit    days | weeks | months | years
+#   expect       accept | reject
+#   delta_days   integer rata_die(date) - rata_die(origin); "-" for reject rows
+#   t            internal time = delta_days / days_per_unit(time_unit); "-" for reject rows
+#
+# Every value was computed from the OCaml implementation and hand-checked
+# against the proleptic-Gregorian calendar (leap rules, month lengths).
+origin	date	time_unit	expect	delta_days	t
+# ── Leap-year rules ──────────────────────────────────────────────────────
+# 2020 is a leap year (div 4, not div 100): Jan 1 -> Dec 31 = 365 days.
+2020-01-01	2020-12-31	days	accept	365	365
+# Full leap year = 366 days.
+2020-01-01	2021-01-01	days	accept	366	366
+# 2021 is not a leap year: full year = 365 days.
+2021-01-01	2022-01-01	days	accept	365	365
+# 2000 is a leap year (div 400): Jan(31) + Feb(29) = 60 days to Mar 1.
+2000-01-01	2000-03-01	days	accept	60	60
+# 1900 is NOT a leap year (div 100, not div 400): Jan(31) + Feb(28) = 59.
+1900-01-01	1900-03-01	days	accept	59	59
+# ── Month boundaries (Feb length leap-aware) ─────────────────────────────
+# Feb 28 -> Mar 1 spans Feb 29 in a leap year: +2 days.
+2020-02-28	2020-03-01	days	accept	2	2
+# Feb 28 -> Mar 1 in a non-leap year: +1 day.
+2021-02-28	2021-03-01	days	accept	1	1
+# ── Dates near / at the proleptic-Gregorian epoch (<= 1583 CE) ────────────
+# 1583 is not a leap year: Jan 1 -> Dec 31 = 364 days.
+1583-01-01	1583-12-31	days	accept	364	364
+# ── Negative deltas (date before origin) ─────────────────────────────────
+2020-06-15	2020-06-10	days	accept	-5	-5
+# ── Non-day time units ───────────────────────────────────────────────────
+# 28 days = 4 weeks exactly.
+2020-01-01	2020-01-29	weeks	accept	28	4
+# A full leap year in 'years units: 366 / 365.2425 = 1.002073965...
+2020-01-01	2021-01-01	years	accept	366	1.002073965
+# Operational anchor used by the SIA golden models (2013 origin).
+2013-01-01	2013-11-01	days	accept	304	304
+# ── Zone designators are accepted and DISCARDED (a bare date is a civil day) ─
+# Trailing Z: 2020-03-15 is 74 days after 2020-01-01 (31 + 29 + 14).
+2020-01-01	2020-03-15Z	days	accept	74	74
+# Numeric offset +HH:MM is also discarded.
+2020-01-01	2020-03-15+06:00	days	accept	74	74
+# ── Surrounding whitespace is trimmed ────────────────────────────────────
+2020-01-01	 2020-07-01 	days	accept	182	182
+# ── Out-of-range / malformed dates MUST be rejected (gh#98 C6) ───────────
+# Day 30 of February does not exist.
+2020-01-01	2020-02-30	days	reject	-	-
+# Month 13 does not exist.
+2020-01-01	2020-13-01	days	reject	-	-
+# Feb 29 in a non-leap year does not exist.
+2020-01-01	2021-02-29	days	reject	-	-
+# Day 00 does not exist.
+2020-01-01	2020-01-00	days	reject	-	-
+# Day 31 of April does not exist (April has 30 days).
+2020-01-01	2020-04-31	days	reject	-	-
+# A time-of-day suffix is not supported (v1 accepts a bare date only).
+2020-01-01	2020-03-15T12:00:00	days	reject	-	-
