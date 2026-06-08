@@ -114,7 +114,7 @@ blocks a later one (noted). `[ ]` todo · `[~]` in progress · `[x]` done.
 - [ ] **D1 — closure driver.** Extract `fixed_step_substep(state, .., advance)`;
   route chain/tau/ode through it; Gillespie via `apply_boundary_effects`. Remove the
   `// → FixedStepLifecycle` markers. Byte-identical.
-- [x] **D3 — drop tau-leap** — `<SHA>` (scheduling-spine-v2 §D / Step 4). Done as a
+- [x] **D3 — drop tau-leap** — `761c812` (scheduling-spine-v2 §D / Step 4). Done as a
   **pure delete**, not a kernel-extraction. tau-leap's niche (approximate
   fixed-step stochastic forward, multiple firings per substep against frozen
   rates) is already covered by chain-binomial on the production path — its
