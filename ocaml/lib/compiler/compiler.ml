@@ -189,7 +189,9 @@ let diagnose_validate_error (err : Validate.error) : Diagnostics.diagnostic =
       Some "stratification produced two transitions with the same name"
     | DuplicateParameter s ->
       "E502",
-      Printf.sprintf "duplicate parameter: '%s'" s, None
+      Printf.sprintf "duplicate parameter: '%s'" s,
+      Some "two `parameters` entries (or a stratified family) share this name; \
+            rename or remove one"
     | UnknownCompartment s ->
       "E503",
       Printf.sprintf "unknown compartment referenced: '%s'" s,
@@ -200,13 +202,17 @@ let diagnose_validate_error (err : Validate.error) : Diagnostics.diagnostic =
       Some "check the parameters block for a matching declaration"
     | UnknownTable s ->
       "E505",
-      Printf.sprintf "unknown table referenced: '%s'" s, None
+      Printf.sprintf "unknown table referenced: '%s'" s,
+      Some "check the `tables` block for a matching declaration"
     | UnknownTimeFunction s ->
       "E506",
-      Printf.sprintf "unknown time_function referenced: '%s'" s, None
+      Printf.sprintf "unknown time_function referenced: '%s'" s,
+      Some "check the `time_functions` block for a matching declaration"
     | UnknownTransition s ->
       "E507",
-      Printf.sprintf "unknown transition referenced in observation: '%s'" s, None
+      Printf.sprintf "unknown transition referenced in observation: '%s'" s,
+      Some "check the transition name against the `transitions` block; \
+            stratified transitions expand to `<base>_<stratum>`"
     | RealCompartmentInStoichiometry (tr, c) ->
       "E508",
       Printf.sprintf "real-valued compartment '%s' cannot appear in \
