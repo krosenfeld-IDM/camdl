@@ -5793,6 +5793,23 @@ let test_compile_outcome_late_error_is_value_not_raise () =
   Alcotest.(check bool) "compile_outcome: E507 surfaced as a value"
     true (count_diags_with_code o.Compiler.diagnostics "E507" >= 1)
 
+(* gh#181: decl-keyed post-expansion (validate) errors now carry the source
+   loc of the offending declaration instead of no_loc. *)
+let test_validate_decl_error_has_location () =
+  let src = {|
+    compartments { S, I, X : real }
+    parameters { beta : rate in [0, 1] }
+    transitions { infection : S --> I @ beta * S * I }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} in
+  let diags = Compiler.collect_diagnostics ~name:"loc_e509" src in
+  match List.find_opt (fun (d : Diagnostics.diagnostic) -> d.code = "E509") diags with
+  | None -> Alcotest.failf "expected E509 (real compartment with no ODE)"
+  | Some d ->
+    Alcotest.(check bool) "E509 carries a real source location (line > 0)"
+      true (d.loc.Diagnostics.line > 0)
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -5961,6 +5978,9 @@ let () =
     "compile_outcome", [
       Alcotest.test_case "clean model returns Some value, no errors" `Quick test_compile_outcome_clean_returns_value;
       Alcotest.test_case "late error is a value, not a raise"        `Quick test_compile_outcome_late_error_is_value_not_raise;
+    ];
+    "diagnostic_locations", [
+      Alcotest.test_case "decl-keyed validate error carries a loc"   `Quick test_validate_decl_error_has_location;
     ];
     "trig_primitives", [
       Alcotest.test_case "pi resolves to Const ≈ π"                 `Quick test_trig_pi_resolves_to_const;

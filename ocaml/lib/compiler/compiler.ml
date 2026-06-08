@@ -176,64 +176,83 @@ let constant_fold = ref true
     the parser/expander miss (e.g. unknown reference in a let-binding
     that expands into a rate, or a `Real` compartment with no ODE).
     A separate code range makes that distinction visible in output. *)
-let diagnose_validate_error (err : Validate.error) : Diagnostics.diagnostic =
+let diagnose_validate_error ctx (err : Validate.error) : Diagnostics.diagnostic =
   let open Validate in
-  let (code, message, hint) = match err with
+  (* Decl-keyed errors map their named symbol back to its declaration's source
+     loc (prefix-matched through stratification). Reference errors (E503–E507)
+     name a symbol that does NOT exist, so the useful loc is the enclosing
+     construct, which validate does not yet carry — they stay no_loc here. *)
+  let comp_loc = Expander.compartment_loc ctx in
+  let tr_loc   = Expander.transition_loc  ctx in
+  let par_loc  = Expander.param_loc       ctx in
+  let (code, message, hint, loc) = match err with
     | DuplicateCompartment s ->
       "E500",
       Printf.sprintf "duplicate compartment after expansion: '%s'" s,
-      Some "stratification produced two compartments with the same name"
+      Some "stratification produced two compartments with the same name",
+      comp_loc s
     | DuplicateTransition s ->
       "E501",
       Printf.sprintf "duplicate transition after expansion: '%s'" s,
-      Some "stratification produced two transitions with the same name"
+      Some "stratification produced two transitions with the same name",
+      tr_loc s
     | DuplicateParameter s ->
       "E502",
       Printf.sprintf "duplicate parameter: '%s'" s,
       Some "two `parameters` entries (or a stratified family) share this name; \
-            rename or remove one"
+            rename or remove one",
+      par_loc s
     | UnknownCompartment s ->
       "E503",
       Printf.sprintf "unknown compartment referenced: '%s'" s,
-      Some "check stratification / spelling against the compartments block"
+      Some "check stratification / spelling against the compartments block",
+      Diagnostics.no_loc
     | UnknownParameter s ->
       "E504",
       Printf.sprintf "unknown parameter referenced: '%s'" s,
-      Some "check the parameters block for a matching declaration"
+      Some "check the parameters block for a matching declaration",
+      Diagnostics.no_loc
     | UnknownTable s ->
       "E505",
       Printf.sprintf "unknown table referenced: '%s'" s,
-      Some "check the `tables` block for a matching declaration"
+      Some "check the `tables` block for a matching declaration",
+      Diagnostics.no_loc
     | UnknownTimeFunction s ->
       "E506",
       Printf.sprintf "unknown time_function referenced: '%s'" s,
-      Some "check the `time_functions` block for a matching declaration"
+      Some "check the `time_functions` block for a matching declaration",
+      Diagnostics.no_loc
     | UnknownTransition s ->
       "E507",
       Printf.sprintf "unknown transition referenced in observation: '%s'" s,
       Some "check the transition name against the `transitions` block; \
-            stratified transitions expand to `<base>_<stratum>`"
+            stratified transitions expand to `<base>_<stratum>`",
+      Diagnostics.no_loc
     | RealCompartmentInStoichiometry (tr, c) ->
       "E508",
       Printf.sprintf "real-valued compartment '%s' cannot appear in \
                       stoichiometry of transition '%s'" c tr,
       Some "real compartments have continuous dynamics (ODE); mixing them \
-            into transition stoichiometry is ill-defined"
+            into transition stoichiometry is ill-defined",
+      tr_loc tr
     | MissingOdeEquation s ->
       "E509",
       Printf.sprintf "real-valued compartment '%s' has no ODE equation" s,
-      Some "add an `ode { ... }` block with dX/dt for this compartment"
+      Some "add an `ode { ... }` block with dX/dt for this compartment",
+      comp_loc s
     | OdeForNonRealComp s ->
       "E510",
       Printf.sprintf "ODE equation for '%s', which is not a real-valued \
                       compartment" s,
-      Some "only compartments declared `: real` can have ODE equations"
+      Some "only compartments declared `: real` can have ODE equations",
+      comp_loc s
     | ZeroDelta (tr, c) ->
       "E511",
       Printf.sprintf "transition '%s' has zero delta for compartment '%s'" tr c,
-      Some "a zero-delta stoichiometry entry has no effect; remove it"
+      Some "a zero-delta stoichiometry entry has no effect; remove it",
+      tr_loc tr
   in
-  Diagnostics.mk_error ~code ~loc:Diagnostics.no_loc ~message ?hint ()
+  Diagnostics.mk_error ~code ~loc ~message ?hint ()
 
 (** Run post-expansion structural validation.
 
@@ -251,7 +270,7 @@ let diagnose_validate_error (err : Validate.error) : Diagnostics.diagnostic =
 let run_validate (d : compile_detail) : Diagnostics.diagnostic list =
   match Validate.validate d.model with
   | Ok () -> []
-  | Error errs -> List.map diagnose_validate_error errs
+  | Error errs -> List.map (diagnose_validate_error d.ctx) errs
 
 (** Run Dimcheck on a compiled model and route results into the diagnostic
     context. Exposed so `camdlc check` runs the same pass as `camdlc compile`;

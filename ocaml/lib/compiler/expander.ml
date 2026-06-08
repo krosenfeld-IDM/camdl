@@ -526,6 +526,46 @@ let diag_loc_of_ast_ctx ctx (l : Ast.loc) : Diagnostics.loc =
   { Diagnostics.file; line = l.line; col = l.col;
     end_line = l.end_line; end_col = l.end_col }
 
+(** Map a (possibly expansion-mangled) symbol back to the source loc of its
+    base declaration, by the same prefix convention expansion uses (`base`,
+    or `base_<stratum>…`). [Diagnostics.no_loc] if no base decl matches (e.g.
+    the symbol is an unknown reference, not a declared name). Generalizes the
+    per-transition [tr_loc] the autodiff pass uses. *)
+let find_decl_loc ctx ~(decls : 'a list) ~(name_of : 'a -> string)
+    ~(loc_of : 'a -> Ast.loc) (name : string) : Diagnostics.loc =
+  match
+    List.find_opt (fun d ->
+      let b = name_of d in
+      let bl = String.length b and nl = String.length name in
+      name = b || (nl > bl && String.sub name 0 bl = b && name.[bl] = '_'))
+      decls
+  with
+  | Some d -> diag_loc_of_ast_ctx ctx (loc_of d)
+  | None -> Diagnostics.no_loc
+
+(* Per-kind loc lookups over the retained base declarations. The decls keep
+   their source locs and are never overwritten to the expanded set, so these
+   resolve an IR symbol (possibly stratified) back to its declaration line. *)
+let compartment_loc ctx name =
+  find_decl_loc ctx ~decls:ctx.comp_decls
+    ~name_of:(fun (c : compartment_decl) -> c.cname)
+    ~loc_of:(fun c -> c.cloc) name
+
+let transition_loc ctx name =
+  find_decl_loc ctx ~decls:ctx.orig_transitions
+    ~name_of:(fun (t : transition_decl) -> t.trname)
+    ~loc_of:(fun t -> t.trloc) name
+
+let param_loc ctx name =
+  find_decl_loc ctx ~decls:ctx.param_decls
+    ~name_of:(function PScalar s -> s.pname | PIndexed s -> s.pname)
+    ~loc_of:(function PScalar s -> s.ploc | PIndexed s -> s.ploc) name
+
+let obs_loc ctx name =
+  find_decl_loc ctx ~decls:ctx.obs_decls
+    ~name_of:(fun (o : obs_decl) -> o.oname)
+    ~loc_of:(fun o -> o.oloc) name
+
 let reserved_time_names = ["t"; "t_start"; "t_end"; "dt"]
 let reserved_math_names = ["pi"; "e"]                       (* gh#58 *)
 
