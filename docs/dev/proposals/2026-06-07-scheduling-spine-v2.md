@@ -253,8 +253,11 @@ Then, each behind a byte-identical A/B gate:
    project CLAUDE.md, spec, cheatsheet, the backend-rationalization note).
 5. **Target=Parameter forward (E)** — additive; ships independently.
 
-Steps 1–3 are byte-identical (Step-0 oracles + existing gates are the guard). 4 is the
-number-moving one (tau adopts chain's conventions, pinned). 5 is additive.
+Steps 1–3 are byte-identical (Step-0 oracles + existing gates are the guard). 4 is a
+pure delete — byte-identical for the surviving backends (only tau's own golden rows go);
+its one identity ripple is that runid's `Backend` enum re-indexes when `TauLeap` is
+removed, so chain/ode run_ids shift going forward (Gillespie, index 0, is unchanged) —
+alpha-acceptable, no literal is pinned. 5 is additive.
 
 ## Out of scope (named siblings, not this proposal)
 
