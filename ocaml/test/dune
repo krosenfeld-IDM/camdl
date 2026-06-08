@@ -20,6 +20,11 @@
  (modules test_lint)
  (libraries ir alcotest))
 
+(test
+ (name test_expr_analysis)
+ (modules test_expr_analysis)
+ (libraries ir alcotest fmt))
+
 ; --json-errors render path (gh#170). Drives Compiler.compile with
 ; Diagnostics.json_errors_mode set and captures stderr, so it exercises
 ; the real CLI render path (not collect_diagnostics). Asserts the
