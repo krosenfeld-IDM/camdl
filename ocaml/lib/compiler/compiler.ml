@@ -314,10 +314,14 @@ let run_dimcheck (d : compile_detail) : Diagnostics.diagnostic list =
     [run_dimcheck] so both `camdlc compile` and `camdlc check` run it. *)
 let run_lint (d : compile_detail) : Diagnostics.diagnostic list =
   List.map (fun (l : Lint.diagnostic) ->
+    let loc = match l.compartment with
+      | Some c -> Expander.compartment_loc d.ctx c
+      | None   -> Diagnostics.no_loc
+    in
     match l.severity with
     | Lint.Warning ->
       Diagnostics.mk_warning
-        ~code:l.code ~loc:Diagnostics.no_loc
+        ~code:l.code ~loc
         ~message:l.message ?detail:l.detail ?hint:l.hint ()
   ) (Lint.check_model d.model).diagnostics
 

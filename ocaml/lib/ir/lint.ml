@@ -29,6 +29,9 @@ type diagnostic = {
   message  : string;
   detail   : string option;
   hint     : string option;
+  (* The compartment a compartment-scoped lint (L402) concerns, so the compiler
+     can resolve it to a source loc. Lint runs on the IR, which has no spans. *)
+  compartment : string option;
 }
 
 type result = {
@@ -205,6 +208,7 @@ let check_dead_compartments (m : model) : diagnostic list =
       detail = None;
       hint =
         Some "remove it, or wire it into a transition / init / observation";
+      compartment = Some name;
     }
   ) dead
 

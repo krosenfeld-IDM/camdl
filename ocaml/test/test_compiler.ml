@@ -5857,6 +5857,22 @@ let test_dimcheck_error_has_location () =
     Alcotest.(check bool) "E300 points at the transition (line > 0)"
       true (d.loc.Diagnostics.line > 0)
 
+(* gh#181: lint L402 (dead compartment) points at the compartment. *)
+let test_lint_warning_has_location () =
+  let src = {|
+    compartments { S, I, Z }
+    parameters { beta : rate in [0, 1] }
+    transitions { infection : S --> I @ beta * S * I }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} in
+  let diags = Compiler.collect_diagnostics ~name:"loc_l402" src in
+  match List.find_opt (fun (d : Diagnostics.diagnostic) -> d.code = "L402") diags with
+  | None -> Alcotest.failf "expected L402 (dead compartment)"
+  | Some d ->
+    Alcotest.(check bool) "L402 points at the compartment (line > 0)"
+      true (d.loc.Diagnostics.line > 0)
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -6030,6 +6046,7 @@ let () =
       Alcotest.test_case "decl-keyed validate error carries a loc"   `Quick test_validate_decl_error_has_location;
       Alcotest.test_case "reference validate error carries a loc"    `Quick test_validate_reference_error_has_location;
       Alcotest.test_case "dimcheck error carries a loc"              `Quick test_dimcheck_error_has_location;
+      Alcotest.test_case "lint warning carries a loc"                `Quick test_lint_warning_has_location;
     ];
     "trig_primitives", [
       Alcotest.test_case "pi resolves to Const ≈ π"                 `Quick test_trig_pi_resolves_to_const;
