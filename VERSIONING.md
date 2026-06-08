@@ -69,12 +69,12 @@ is what lets the changelog and SemVer bump be derived mechanically.
 
 ## Cutting a release
 
-1. Pick the version from the commit types since the last tag (the
-   `/release-notes` skill computes the recommended bump).
-2. Draft notes with the `/release-notes` skill: a deterministic changelog spine
-   (git-cliff or equivalent) plus a user-facing narrative grouped by area, with
-   migration steps for every breaking change. The maintainer edits.
-3. Update `CHANGELOG.md`, tag `vX.Y.Z`, and publish the notes.
+The step-by-step procedure — tag conventions, the alpha → beta → 1.0 ladder,
+the manifest bumps, the changelog/notes flow, and the pre-release checklist —
+lives in the runbook, [`RELEASING.md`](RELEASING.md). In brief: pick the version
+from the commit types since the last tag, regenerate the changelog spine and
+draft the notes with the `/release-notes` skill, bump every manifest, then tag
+`vX.Y.Z` and publish.
 
 The version is a promise to users, not a build counter — bump it for what changed
 in the surface above, and say what changed in language they can act on.
