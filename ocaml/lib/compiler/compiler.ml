@@ -181,7 +181,7 @@ let constant_fold = ref true
     the parser/expander miss (e.g. unknown reference in a let-binding
     that expands into a rate, or a `Real` compartment with no ODE).
     A separate code range makes that distinction visible in output. *)
-let diagnose_validate_error ctx (err : Validate.error) : unit =
+let diagnose_validate_error (err : Validate.error) : Diagnostics.diagnostic =
   let open Validate in
   let (code, message, hint) = match err with
     | DuplicateCompartment s ->
@@ -232,8 +232,7 @@ let diagnose_validate_error ctx (err : Validate.error) : unit =
       Printf.sprintf "transition '%s' has zero delta for compartment '%s'" tr c,
       Some "a zero-delta stoichiometry entry has no effect; remove it"
   in
-  Diagnostics.error ctx.Expander.diags
-    ~code ~loc:Diagnostics.no_loc ~message ?hint ()
+  Diagnostics.mk_error ~code ~loc:Diagnostics.no_loc ~message ?hint ()
 
 (** Run post-expansion structural validation.
 
@@ -248,31 +247,28 @@ let diagnose_validate_error ctx (err : Validate.error) : unit =
     Order: post-expansion, pre-dimcheck. Dimcheck ICEs on unknown
     params, so running Validate first gives the user a clean
     "unknown parameter 'foo'" error instead of a dimcheck trace. *)
-let run_validate (d : compile_detail) : bool =
+let run_validate (d : compile_detail) : Diagnostics.diagnostic list =
   match Validate.validate d.model with
-  | Ok () -> false
-  | Error errs ->
-    List.iter (diagnose_validate_error d.ctx) errs;
-    true
+  | Ok () -> []
+  | Error errs -> List.map diagnose_validate_error errs
 
 (** Run Dimcheck on a compiled model and route results into the diagnostic
     context. Exposed so `camdlc check` runs the same pass as `camdlc compile`;
     previously `check` skipped dimcheck entirely (GH #9). *)
-let run_dimcheck (d : compile_detail) : unit =
-  if not !no_dim_check then begin
-    let dc_result = Dimcheck.check_model d.model in
-    List.iter (fun (dc : Dimcheck.diagnostic) ->
+let run_dimcheck (d : compile_detail) : Diagnostics.diagnostic list =
+  if !no_dim_check then []
+  else
+    List.map (fun (dc : Dimcheck.diagnostic) ->
       match dc.severity with
       | Dimcheck.Error ->
-        Diagnostics.error d.ctx.diags
+        Diagnostics.mk_error
           ~code:dc.code ~loc:Diagnostics.no_loc
           ~message:dc.message ?detail:dc.detail ?hint:dc.hint ()
       | Dimcheck.Info ->
-        Diagnostics.info d.ctx.diags
+        Diagnostics.mk_info
           ~code:dc.code ~loc:Diagnostics.no_loc
           ~message:dc.message ?detail:dc.detail ?hint:dc.hint ()
-    ) dc_result.diagnostics
-  end
+    ) (Dimcheck.check_model d.model).diagnostics
 
 (** Run the model linter on a compiled model and route its results into
     the diagnostic context as non-blocking warnings. Lints (L4xx) flag
@@ -280,26 +276,25 @@ let run_dimcheck (d : compile_detail) : unit =
     compartment); they render with hint text but never set [has_errors],
     so the build does not fail on a lint. Called right after
     [run_dimcheck] so both `camdlc compile` and `camdlc check` run it. *)
-let run_lint (d : compile_detail) : unit =
-  let lint_result = Lint.check_model d.model in
-  List.iter (fun (l : Lint.diagnostic) ->
+let run_lint (d : compile_detail) : Diagnostics.diagnostic list =
+  List.map (fun (l : Lint.diagnostic) ->
     match l.severity with
     | Lint.Warning ->
-      Diagnostics.warning d.ctx.diags
+      Diagnostics.mk_warning
         ~code:l.code ~loc:Diagnostics.no_loc
         ~message:l.message ?detail:l.detail ?hint:l.hint ()
-  ) lint_result.diagnostics
+  ) (Lint.check_model d.model).diagnostics
 
 (** Autodiff pass: differentiate every transition rate w.r.t. all
-    parameters, returning the transition list with [rate_grad] filled in.
-    If a rate contains `mod` over a parameter, differentiation raises
-    [Failure] — caught per-transition, emitting E600 (with source
-    location) into [d.ctx.diags] and leaving that transition's
-    [rate_grad] empty. Side effect is confined to the diagnostic context;
-    this never renders or aborts, so it is shared verbatim by [compile]
-    (which short-circuits on the resulting errors) and
-    [collect_diagnostics] (which does not). *)
-let differentiate_transitions (d : compile_detail) : Ir.transition list =
+    parameters, returning the transition list with [rate_grad] filled in,
+    paired with any diagnostics produced. If a rate contains `mod` over a
+    parameter, differentiation raises [Failure] — caught per-transition,
+    producing an E600 (with source location) in the returned list and
+    leaving that transition's [rate_grad] empty. Pure: it neither emits
+    into a context nor renders, so [compile] (which short-circuits on the
+    resulting errors) and [collect_diagnostics] (which does not) share it. *)
+let differentiate_transitions (d : compile_detail)
+    : Ir.transition list * Diagnostics.diagnostic list =
   let param_names = List.map (fun (p : Ir.parameter) -> p.name) d.model.Ir.parameters in
   let tr_loc name =
     (* Find the original (pre-expansion) transition declaration by prefix
@@ -312,20 +307,24 @@ let differentiate_transitions (d : compile_detail) : Ir.transition list =
     | Some td -> Expander.diag_loc_of_ast_ctx d.ctx td.trloc
     | None -> Diagnostics.no_loc
   in
-  Passtime.time "autodiff" (fun () ->
-    List.map (fun (t : Ir.transition) ->
-      match (try Ok (Autodiff.differentiate_rate t.rate param_names)
-             with Failure msg -> Error msg) with
-      | Ok rate_grad -> { t with Ir.rate_grad }
-      | Error msg ->
-        Diagnostics.error d.ctx.diags
-          ~code:"E600"
-          ~loc:(tr_loc t.name)
-          ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
-          ~hint:"mod is not differentiable; replace with a conditional guard"
-          ();
-        { t with Ir.rate_grad = [] }
-    ) d.model.Ir.transitions)
+  let diags = ref [] in
+  let transitions =
+    Passtime.time "autodiff" (fun () ->
+      List.map (fun (t : Ir.transition) ->
+        match (try Ok (Autodiff.differentiate_rate t.rate param_names)
+               with Failure msg -> Error msg) with
+        | Ok rate_grad -> { t with Ir.rate_grad }
+        | Error msg ->
+          diags := Diagnostics.mk_error
+                     ~code:"E600"
+                     ~loc:(tr_loc t.name)
+                     ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
+                     ~hint:"mod is not differentiable; replace with a conditional guard"
+                     () :: !diags;
+          { t with Ir.rate_grad = [] }
+      ) d.model.Ir.transitions)
+  in
+  (transitions, List.rev !diags)
 
 (** Sparse-coupling constant-fold (on by default): resolves
     constant-indexed inline-table lookups and drops zero-W terms from FOI
@@ -342,15 +341,22 @@ let maybe_constant_fold (m : Ir.model) : Ir.model =
 let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model, string) result =
   match compile_detail_result ~name ~filename src with
   | Ok d ->
-    (* Post-expansion structural validation (M1 / C5 in the
-       2026-04-19 compiler review). *)
-    if Passtime.time "validate" (fun () -> run_validate d) then
+    (* Post-expansion passes are pure (return diagnostic lists); emit them
+       into [d.ctx.diags] — the accumulator [report_and_exit]/[has_errors]
+       read — to preserve behaviour exactly. The fold that replaces this
+       bridge with a single [outcome] is the next gh#181 step.
+       Validate first (M1 / C5 in the 2026-04-19 compiler review). *)
+    let emit_all = List.iter (Diagnostics.emit d.ctx.diags) in
+    let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
+    emit_all vdiags;
+    if vdiags <> [] then
       Diagnostics.report_and_exit d.ctx.diags d.source;
-    Passtime.time "dimcheck" (fun () -> run_dimcheck d);
-    Passtime.time "lint" (fun () -> run_lint d);
+    emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
+    emit_all (Passtime.time "lint" (fun () -> run_lint d));
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
-    let transitions = differentiate_transitions d in
+    let (transitions, gdiags) = differentiate_transitions d in
+    emit_all gdiags;
     if Diagnostics.has_errors d.ctx.diags then
       Diagnostics.report_and_exit d.ctx.diags d.source;
     (* Single render of any collected non-blocking diagnostics
@@ -407,12 +413,17 @@ let collect_detail ?(name = "model") ?(filename = "<input>") (src : string)
      (* Same staged pipeline as [compile], minus rendering/abort: Validate
         first (it gates dimcheck, which ICEs on unknown params), then
         dimcheck + lint, then autodiff. Short-circuit after Validate matches
-        [compile]; downstream passes run only on a structurally-valid model. *)
-     if not (Passtime.time "validate" (fun () -> run_validate d)) then begin
-       Passtime.time "dimcheck" (fun () -> run_dimcheck d);
-       Passtime.time "lint" (fun () -> run_lint d);
+        [compile]; downstream passes run only on a structurally-valid model.
+        The passes are pure now, so emit their lists into [d.ctx.diags] (the
+        accumulator this function returns). *)
+     let emit_all = List.iter (Diagnostics.emit d.ctx.diags) in
+     let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
+     emit_all vdiags;
+     if vdiags = [] then begin
+       emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
+       emit_all (Passtime.time "lint" (fun () -> run_lint d));
        if not (Diagnostics.has_errors d.ctx.diags) then
-         ignore (differentiate_transitions d)
+         emit_all (snd (differentiate_transitions d))
      end);
   (detail, diags, source)
 

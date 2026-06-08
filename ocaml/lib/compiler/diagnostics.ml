@@ -243,13 +243,26 @@ let report_and_exit t cache =
 
 (* ── Shorthand constructors ──────────────────────────────────────────────── *)
 
+(* Pure constructors: build a [diagnostic] without emitting. The
+   post-expansion passes return [diagnostic list] and let the caller emit
+   (gh#181), so they construct via these; the expansion phase still emits
+   directly through [error]/[warning]/[info] below. *)
+let mk_error ~code ~loc ~message ?detail ?hint ?(related=[]) () =
+  { severity=Error; code; loc; message; detail; hint; related }
+
+let mk_warning ~code ~loc ~message ?detail ?hint ?(related=[]) () =
+  { severity=Warning; code; loc; message; detail; hint; related }
+
+let mk_info ~code ~loc ~message ?detail ?hint ?(related=[]) () =
+  { severity=Info; code; loc; message; detail; hint; related }
+
 let error t ~code ~loc ~message ?detail ?hint ?(related=[]) () =
-  emit t { severity=Error; code; loc; message; detail; hint; related }
+  emit t (mk_error ~code ~loc ~message ?detail ?hint ~related ())
 
 let warning t ~code ~loc ~message ?detail ?hint ?(related=[]) () =
-  emit t { severity=Warning; code; loc; message; detail; hint; related }
+  emit t (mk_warning ~code ~loc ~message ?detail ?hint ~related ())
 
 (** Info diagnostic — non-blocking, dimmed style, distinct from
     Warning in JSON output. See `severity` type above. *)
 let info t ~code ~loc ~message ?detail ?hint ?(related=[]) () =
-  emit t { severity=Info; code; loc; message; detail; hint; related }
+  emit t (mk_info ~code ~loc ~message ?detail ?hint ~related ())
