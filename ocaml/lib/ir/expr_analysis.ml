@@ -13,13 +13,16 @@
 
      Const  <  Data  <  Param  <  Time  <  State  <  Projected
 
-   so `join` is "the one further along the chain". The chosen order makes
-   the existing booleans clean projections:
+   so `join` is "the one further along the chain". `references_state` is a
+   clean projection of this lattice:
      references_state(e)  ≡  dep e ⊒ State   (State or Projected)
-     param-free(e)        ≡  dep e ≠ Param   (a binding body is param-free
-                              iff its class is not exactly Param — the
-                              expander hoists only Const/Data/Time/State
-                              bodies, never Param).
+
+   NOTE: the lattice does NOT capture "references a param". `join` keeps only
+   the MOST-dynamic class, so `beta * S` classifies as `State` (the `Param` is
+   absorbed) even though it references `beta`. "Param-free" — the hoist/autodiff
+   invariant that a `BindingRef` differentiates to 0 (E512) — is therefore a
+   separate STRUCTURAL check (`Validate.references_param`), NOT a projection of
+   this lattice. Do not use `dep e ≠ Param` to mean param-free; it is not.
 
    Pure and total: every constructor of `Ir.expr` is classified, no
    exceptions, no side effects. *)
