@@ -44,10 +44,14 @@
 //! removes anything. While the dead `.lock` exists, every other claimant's
 //! `create_new(.lock)` fails and funnels into the reclaim path, where
 //! `.reclaim` blocks it — so two processes can never both delete `.lock` and
-//! both enter the critical section. (A `.reclaim` left behind by a process
-//! killed within the few-syscall reclaim window makes the leaf refuse until it
-//! is removed by hand or self-healed on the next no-lock acquire — safe, never
-//! corrupting; the window holds no fit work.)
+//! both enter the critical section. A claimant never touches another's live
+//! `.reclaim`/`.lock.new` serializers (clearing them would re-open the
+//! double-reclaim race), so a serializer left behind by a process killed within
+//! the few-syscall reclaim window is *not* cleared on the next acquire: it makes
+//! the leaf refuse a dead-lock reclaim until removed. That is safe, never
+//! corrupting — the serializers are excluded from the manifest + orphan scan and
+//! the window holds no fit work — and the proper home for sweeping such debris
+//! is the store-open lifecycle sweep, not the claim path.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -719,6 +723,13 @@ fn collect_own_files(
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
+        // Skip the reserved lock siblings BEFORE stat'ing them. A concurrent
+        // claimant churns `.reclaim`/`.lock.new` in this same leaf; if such a
+        // transient is enumerated by `read_dir` then removed before our
+        // `metadata()`, the `?` would bubble `Io(NotFound)` out of finalize.
+        if dir == root && is_reserved(&name) {
+            continue;
+        }
         let meta = entry.metadata()?;
         if meta.is_dir() {
             if dir == root && children.contains_key(&name) {
@@ -726,9 +737,6 @@ fn collect_own_files(
             }
             collect_own_files(root, &entry.path(), children, out)?;
         } else {
-            if dir == root && is_reserved(&name) {
-                continue;
-            }
             let bytes = fs::read(entry.path())?;
             out.insert(
                 rel_key(root, &entry.path()),
@@ -816,6 +824,14 @@ fn reclaim_or_refuse(dir: &Path, lock: &Path) -> Result<(), CasError> {
     if !matches!(holder, Some(p) if p != 0 && !pid_is_alive(p)) {
         return Err(fail(holder.unwrap_or(0)));
     }
+    // TEST-ONLY: fire after the dead-check, before acquiring `.reclaim`. A test
+    // parks the losing reclaimer here while a concurrent winner completes a full
+    // takeover (its live PID over `.lock`) and releases `.reclaim`; on resume
+    // this thread re-acquires the recycled `.reclaim`, and the re-confirm below
+    // must catch the now-live lock and refuse rather than double-reclaim. Inert
+    // in non-test builds.
+    #[cfg(test)]
+    reclaim_preacquire_hook(lock);
     // Serialize the reclaim: only the `.reclaim` holder may remove `.lock`.
     // Contention here means another process is already reclaiming/claiming.
     let reclaim = dir.join(".reclaim");
@@ -825,6 +841,19 @@ fn reclaim_or_refuse(dir: &Path, lock: &Path) -> Result<(), CasError> {
         }
         Err(e) if e.kind() == ErrorKind::AlreadyExists => return Err(fail(holder.unwrap_or(0))),
         Err(e) => return Err(e.into()),
+    }
+    // Re-confirm the holder is STILL the dead PID we saw, now that we hold
+    // `.reclaim`. Between the dead-check above and acquiring `.reclaim`, a
+    // concurrent reclaimer can complete a full takeover (atomic-rename its own
+    // live PID over `.lock`) AND release `.reclaim` — letting us re-acquire the
+    // now-free `.reclaim` and take over a lock that is no longer dead, putting
+    // two claimants in the critical section. The `.reclaim` O_EXCL gate only
+    // serializes the takeover, not the run, and the PID we validated is stale
+    // by the time we own the gate; so the liveness check must be redone here.
+    let now = read_lock_pid(lock);
+    if now != holder {
+        let _ = fs::remove_file(&reclaim);
+        return Err(fail(now.unwrap_or(0)));
     }
     // Take over the dead `.lock` WITHOUT ever leaving it absent. A bare
     // claimant's `create_new(.lock)` must always fail (file present) so it
@@ -863,14 +892,31 @@ fn reclaim_or_refuse(dir: &Path, lock: &Path) -> Result<(), CasError> {
 fn clear_except_lock(dir: &Path) -> Result<(), CasError> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        if entry.file_name() == std::ffi::OsStr::new(".lock") {
+        let name = entry.file_name();
+        // Never touch the lock serializers: a concurrent claimant legitimately
+        // churns `.reclaim`/`.lock.new` in this leaf, and `.lock` is ours.
+        // These are not crashed-run debris for us to clear.
+        if is_reserved(&name.to_string_lossy()) {
             continue;
         }
         let p = entry.path();
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(&p)?;
+        // Tolerate a sibling that vanished between the `read_dir` snapshot and
+        // here (a concurrent claimant's transient): it is already gone, which
+        // is the outcome we wanted — not our error.
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let r = if ft.is_dir() {
+            fs::remove_dir_all(&p)
         } else {
-            fs::remove_file(&p)?;
+            fs::remove_file(&p)
+        };
+        if let Err(e) = r {
+            if e.kind() != ErrorKind::NotFound {
+                return Err(e.into());
+            }
         }
     }
     Ok(())
@@ -936,6 +982,32 @@ static RECLAIM_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn reclaim_gap_hook(lock: &Path) {
     let guard = RECLAIM_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(h) = guard.as_ref() {
+        h(lock);
+    }
+}
+
+/// TEST-ONLY hook fired inside `reclaim_or_refuse` AFTER the dead-PID check but
+/// BEFORE `.reclaim` is acquired — the instant a losing reclaimer has committed
+/// to "the holder is dead" on a now-stale read. A test drives a concurrent
+/// winner through a full takeover here and asserts the loser, on resume, is
+/// refused (the `.reclaim`-recycle / double-reclaim proof). Held behind an
+/// `Arc` and invoked with the mutex released (the driven winner re-enters this
+/// hook, so holding the lock across the call would self-deadlock); a fire-once
+/// guard in the test keeps it from firing on the winner's own reclaim.
+#[cfg(test)]
+type ReclaimPreacquireHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
+#[cfg(test)]
+static RECLAIM_PREACQUIRE_HOOK: std::sync::Mutex<Option<ReclaimPreacquireHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn reclaim_preacquire_hook(lock: &Path) {
+    let hook = RECLAIM_PREACQUIRE_HOOK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(h) = hook {
         h(lock);
     }
 }

@@ -626,6 +626,126 @@ fn mode_b_clear_window_is_not_quarantined() {
     cleanup(&root);
 }
 
+/// Deterministic proof of the `.reclaim`-recycle double-reclaim race in
+/// `reclaim_or_refuse` (the residual that `mode_b_reclaim_is_exclusive_under_
+/// concurrency` only catches probabilistically, and only on fast filesystems).
+///
+/// `reclaim_or_refuse` reads the holder PID once, dead-checks it, then acquires
+/// `.reclaim`. The `.reclaim` O_EXCL gate is released at the END of the function
+/// — *before* the critical section — so it is recyclable. A losing reclaimer
+/// that read the dead PID, then stalled before `create_new(.reclaim)`, can — by
+/// the time it owns the recycled `.reclaim` — be looking at a lock a concurrent
+/// winner already took over (live PID). Without re-confirming the holder under
+/// `.reclaim`, the loser renames its own PID over the winner's live `.lock` and
+/// enters the critical section too: TWO claimants clearing + finalizing the
+/// same leaf (`max_cs == 2`), a silent double-write of a fit result.
+///
+/// The `RECLAIM_PREACQUIRE_HOOK` parks the loser at exactly that point and
+/// drives a winner through a full takeover first; the loser must then be
+/// refused (re-confirm catches the now-live lock), not double-reclaim.
+#[test]
+fn mode_b_reclaim_recycle_is_exclusive() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let _serial = super::RECLAIM_HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let root = tmp_root("reclaim_recycle");
+    let store = Arc::new(FsCasStore::new(&root));
+    let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
+
+    // A definitely-dead PID for the planted lock (so a reclaim is warranted).
+    let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+    let dead_pid = child.id();
+    child.wait().expect("reap");
+
+    // Plant a crashed run: a `Running` leaf + orphan whose `.lock` holder is dead.
+    fs::remove_dir_all(&leaf).ok();
+    let c = store.claim_streaming(&leaf, record(id(0xaa))).unwrap();
+    c.write("orphan_chain.tsv", b"partial").unwrap();
+    drop(c);
+    fs::write(leaf.join(".lock"), dead_pid.to_string()).unwrap();
+
+    let fired = Arc::new(AtomicBool::new(false));
+    let winner_done = Arc::new(AtomicBool::new(false));
+    // Peak concurrent occupants of the critical section. Exclusivity ⇒ 1.
+    let max_cs = Arc::new(AtomicUsize::new(0));
+
+    // RAII disarm: clear the process-global hook on every exit path.
+    struct Disarm;
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            *super::RECLAIM_PREACQUIRE_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+    let _disarm = Disarm;
+
+    {
+        let store_h = Arc::clone(&store);
+        let leaf_h = leaf.clone();
+        let fired_h = Arc::clone(&fired);
+        let winner_done_h = Arc::clone(&winner_done);
+        let max_cs_h = Arc::clone(&max_cs);
+        let mut guard = super::RECLAIM_PREACQUIRE_HOOK.lock().unwrap();
+        *guard = Some(Arc::new(move |_lock: &std::path::Path| {
+            // Fire ONCE — on the loser's reclaim, not the winner's re-entrant one.
+            if fired_h.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            // Drive the winner through a FULL takeover (live PID over `.lock`,
+            // releases `.reclaim`) and leave it in the critical section — Running,
+            // NOT finalized — so the leaf stays clobberable. StreamClaim has no
+            // Drop, so the on-disk live `.lock` + Running record persist after
+            // the thread exits.
+            let store2 = Arc::clone(&store_h);
+            let leaf2 = leaf_h.clone();
+            let max_cs2 = Arc::clone(&max_cs_h);
+            let winner_done2 = Arc::clone(&winner_done_h);
+            std::thread::spawn(move || {
+                let claim = store2
+                    .claim_streaming(&leaf2, record(id(0xaa)))
+                    .expect("winner must reclaim the dead lock");
+                claim.write("chain_winner/trace.tsv", b"sweep\tll\n1\t-1.0\n").unwrap();
+                max_cs2.fetch_max(1, Ordering::SeqCst); // winner occupies the CS
+                winner_done2.store(true, Ordering::SeqCst);
+                std::mem::forget(claim); // keep the live `.lock` (no Drop, but be explicit)
+            })
+            .join()
+            .unwrap();
+        }));
+    }
+
+    // MAIN thread is the LOSER: resolve → Reclaim → create_new(.lock) fails (dead
+    // lock present) → reclaim_or_refuse → dead-check passes → [hook parks it while
+    // the winner takes over] → resume. With the re-confirm it must be REFUSED;
+    // without it, it recycles `.reclaim`, takes over the winner's live lock, and
+    // enters the CS too.
+    let loser = store.claim_streaming(&leaf, record(id(0xaa)));
+    *super::RECLAIM_PREACQUIRE_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+    assert!(fired.load(Ordering::SeqCst), "pre-acquire hook never fired — window not exercised");
+    assert!(winner_done.load(Ordering::SeqCst), "winner never reached the critical section");
+
+    match loser {
+        Err(CasError::FitInProgress { .. }) | Err(CasError::AlreadyCompleted { .. }) => {}
+        Ok(_) => {
+            max_cs.fetch_max(2, Ordering::SeqCst); // loser illegally entered too
+            panic!(
+                "the loser was NOT refused — it recycled `.reclaim` and took over \
+                 a live `.lock` (double-reclaim: two claimants in the critical \
+                 section, max_cs=2)"
+            );
+        }
+        Err(e) => panic!("loser hit an unexpected error: {e:?}"),
+    }
+    assert_eq!(
+        max_cs.load(Ordering::SeqCst),
+        1,
+        "exactly one claimant may hold the critical section",
+    );
+    cleanup(&root);
+}
+
 #[test]
 fn mode_b_reclaim_is_exclusive_under_concurrency() {
     use std::sync::atomic::{AtomicUsize, Ordering};
