@@ -1586,7 +1586,7 @@ impl engine::RunSink for StreamSink {
                 if n_draws > 1 { write!(out, "{}\t", draw_idx + 1).map_err(|e| e.to_string())?; }
                 write!(out, "{}", snap.t).map_err(|e| e.to_string())?;
                 if let Some(o) = date_origin {
-                    let d = ir::caltime::internal_to_date(o, snap.t, &model.time_unit)
+                    let d = ir::caltime::internal_to_date_hires(o, snap.t, &model.time_unit)
                         .map_err(|e| format!("error rendering date: {}", e))?;
                     write!(out, "\t{}", d).map_err(|e| e.to_string())?;
                 }
@@ -1692,7 +1692,7 @@ impl StreamSink {
                     let t_val = self.obs_data[0][row_idx].time;
                     write!(out, "{}", t_val).unwrap();
                     if let Some((o, tu)) = date_render {
-                        let d = ir::caltime::internal_to_date(o, t_val, tu)
+                        let d = ir::caltime::internal_to_date_hires(o, t_val, tu)
                             .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
                         write!(out, "\t{}", d).unwrap();
                     }
@@ -1734,7 +1734,7 @@ impl StreamSink {
                     if n_draws > 1 { write!(out, "{}\t", row.draw).unwrap(); }
                     write!(out, "{}", row.time).unwrap();
                     if let Some((o, tu)) = date_render {
-                        let d = ir::caltime::internal_to_date(o, row.time, tu)
+                        let d = ir::caltime::internal_to_date_hires(o, row.time, tu)
                             .unwrap_or_else(|e| { eprintln!("error rendering date: {}", e); std::process::exit(1); });
                         write!(out, "\t{}", d).unwrap();
                     }

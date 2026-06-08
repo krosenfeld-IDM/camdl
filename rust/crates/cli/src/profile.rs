@@ -261,7 +261,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         // Resolve [fixed] (file load, scenario, inline overlay) the
         // same way `camdl survey --fit` and `camdl fit run` do.
         let mut fixed_cfg = fit_cfg.fixed.clone();
-        fixed_cfg.expand_from_scenario(&model_pre)
+        fixed_cfg.expand_from_scenario(&model_pre, &fit_cfg.estimate)
             .unwrap_or_else(|e| {
                 eprintln!("error: --fit toml [fixed].expand_from_scenario: {}", e);
                 std::process::exit(1);

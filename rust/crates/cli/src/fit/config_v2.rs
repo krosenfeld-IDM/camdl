@@ -658,7 +658,20 @@ impl FixedParams {
     /// See `resolve_with_model` for the design rationale on
     /// mutual-exclusion of `from_scenario` with `from_file` and
     /// inline `values`.
-    pub fn expand_from_scenario(&mut self, model: &ir::Model) -> Result<(), String> {
+    /// `estimate` is the fit's `[estimate]` map. gh#37: parameters that
+    /// appear in `[estimate]` are carved OUT of the scenario import — a
+    /// single `baseline` scenario can serve both forward-sim and the
+    /// fit's `[fixed]` source, importing everything EXCEPT the estimated
+    /// params. The carve-out is structural (a param can't be both
+    /// estimated and fixed; `validate` enforces `estimate ∩ fixed = ∅`),
+    /// so removing same-named keys does NOT muddy scenario semantics the
+    /// way an inline override with a *different number* would. Inline
+    /// overrides still error (preserved).
+    pub fn expand_from_scenario(
+        &mut self,
+        model: &ir::Model,
+        estimate: &IndexMap<String, EstimateSpecV2>,
+    ) -> Result<(), String> {
         let Some(scen_name) = self.from_scenario.clone() else { return Ok(()); };
 
         if self.from_file.is_some() {
@@ -689,7 +702,14 @@ impl FixedParams {
                     else { available.join(", ") })
             })?;
 
+        // gh#37 carve-out: import every scenario param EXCEPT the ones
+        // being estimated. An estimated param is, by definition, not a
+        // fixed param — `validate`'s `estimate ∩ fixed = ∅` check would
+        // otherwise reject the import.
         for (k, &v) in &preset.params {
+            if estimate.contains_key(k) {
+                continue;
+            }
             self.values.insert(k.clone(), v);
         }
         self.from_scenario = None;
@@ -1660,6 +1680,20 @@ impl FitConfigV2 {
         }
 
         Ok(config)
+    }
+
+    /// gh#37: expand `[fixed] from_scenario = "name"` in-place, carving
+    /// out the parameters that appear in `[estimate]`. Thin wrapper over
+    /// `FixedParams::expand_from_scenario` that forwards `&self.estimate`
+    /// — the carve-out needs to see which params are being estimated so
+    /// a single scenario can serve both forward-sim and the fit's
+    /// `[fixed]` source ("import everything EXCEPT the estimated params").
+    ///
+    /// Call this once per fit-pipeline entry point AFTER the model is
+    /// loaded but BEFORE `validate(&model_params)` (the every-param-
+    /// resolved check needs to see the scenario-expanded values).
+    pub fn expand_fixed_from_scenario(&mut self, model: &ir::Model) -> Result<(), String> {
+        self.fixed.expand_from_scenario(model, &self.estimate)
     }
 
     /// Seed-independent content hash for the fit directory. Keyed on
@@ -3282,7 +3316,7 @@ cooling = 0.9
             from_scenario: Some("gh33_only".into()),
             values: IndexMap::new(),
         };
-        fixed.expand_from_scenario(&model).unwrap();
+        fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap();
         assert!(fixed.from_scenario.is_none(), "expansion clears from_scenario");
         let resolved = fixed.resolve().unwrap();
         assert_eq!(resolved.len(), 4);
@@ -3298,9 +3332,9 @@ cooling = 0.9
             from_scenario: Some("gh33_idem".into()),
             values: IndexMap::new(),
         };
-        fixed.expand_from_scenario(&model).unwrap();
+        fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap();
         // Second call must be a no-op (from_scenario is already None).
-        fixed.expand_from_scenario(&model).unwrap();
+        fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap();
         assert_eq!(fixed.values.len(), 1);
     }
 
@@ -3312,7 +3346,7 @@ cooling = 0.9
             from_scenario: Some("gh33_typo".into()),
             values: IndexMap::new(),
         };
-        let err = fixed.expand_from_scenario(&model).unwrap_err();
+        let err = fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap_err();
         assert!(err.contains("gh33_typo"), "error names the bad scenario: {}", err);
         assert!(err.contains("gh33_present"), "error lists what is available: {}", err);
     }
@@ -3330,7 +3364,7 @@ cooling = 0.9
             from_scenario: Some("gh33_inline".into()),
             values,
         };
-        let err = fixed.expand_from_scenario(&model).unwrap_err();
+        let err = fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap_err();
         assert!(err.contains("does not allow inline overrides"),
             "error explains the design choice: {}", err);
         assert!(err.contains("beta"),
@@ -3345,9 +3379,120 @@ cooling = 0.9
             from_scenario: Some("gh33_file".into()),
             values: IndexMap::new(),
         };
-        let err = fixed.expand_from_scenario(&model).unwrap_err();
+        let err = fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap_err();
         assert!(err.contains("mutually exclusive") && err.contains("from_file"),
             "error names the conflict: {}", err);
+    }
+
+    /// Build a minimal `EstimateSpecV2` (all fields at their declared
+    /// defaults) for tests that only care about the *set* of estimated
+    /// names, not the search knobs.
+    fn estimate_set(names: &[&str]) -> IndexMap<String, EstimateSpecV2> {
+        let mut m = IndexMap::new();
+        for name in names {
+            m.insert((*name).to_string(), EstimateSpecV2 {
+                bounds: None,
+                transform: None,
+                prior: None,
+                ivp: false,
+                rw_sd: None,
+                start: None,
+            });
+        }
+        m
+    }
+
+    #[test]
+    fn from_scenario_carves_out_estimated_params() {
+        // gh#37: a single `baseline` scenario serves both forward-sim and
+        // the fit's [fixed] source. `from_scenario = "baseline"` imports
+        // everything from baseline EXCEPT the parameters being estimated.
+        // Here `beta` is estimated, so the resolved fixed map is the
+        // scenario's set MINUS {beta} — no "in both [estimate] and [fixed]"
+        // error.
+        let model = model_with_scenario("baseline", &[
+            ("beta", 0.3), ("gamma", 0.1), ("N0", 1000.0), ("I0", 10.0),
+        ]);
+        let mut fixed = FixedParams {
+            from_file: None,
+            from_scenario: Some("baseline".into()),
+            values: IndexMap::new(),
+        };
+        fixed.expand_from_scenario(&model, &estimate_set(&["beta"])).unwrap();
+        assert!(fixed.from_scenario.is_none(), "expansion clears from_scenario");
+        let resolved = fixed.resolve().unwrap();
+        assert!(!resolved.contains_key("beta"),
+            "estimated param `beta` must be carved out of the fixed import: {:?}",
+            resolved);
+        assert_eq!(resolved.get("gamma"), Some(&0.1));
+        assert_eq!(resolved.get("N0"), Some(&1000.0));
+        assert_eq!(resolved.get("I0"), Some(&10.0));
+        assert_eq!(resolved.len(), 3, "exactly the non-estimated scenario params");
+    }
+
+    #[test]
+    fn config_expand_fixed_from_scenario_carves_out_estimated_params() {
+        // gh#37: the FitConfigV2-level wrapper forwards `&self.estimate`
+        // so the carve-out can see which params are estimated. End-to-end
+        // at the config level: from_scenario="baseline" + [estimate] beta
+        // resolves with no estimate∩fixed overlap.
+        let model = model_with_scenario("baseline", &[
+            ("beta", 0.3), ("gamma", 0.1), ("N0", 1000.0), ("I0", 10.0),
+        ]);
+        let mut config = parse(r#"
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+from_scenario = "baseline"
+
+[stages.mle]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 8
+particles = 1000
+iterations = 80
+cooling = 0.70
+        "#).unwrap();
+        config.expand_fixed_from_scenario(&model).unwrap();
+        assert!(config.fixed.from_scenario.is_none());
+        assert!(!config.fixed.values.contains_key("beta"),
+            "estimated param carved out: {:?}", config.fixed.values);
+        assert_eq!(config.fixed.values.get("gamma"), Some(&0.1));
+        assert_eq!(config.fixed.values.len(), 3);
+    }
+
+    #[test]
+    fn from_scenario_still_rejects_inline_override_with_different_value() {
+        // gh#37: the carve-out enables "import minus estimated" but the
+        // override case — inline value with a DIFFERENT number for a
+        // scenario key — is still a hard error (silent semantic mutation
+        // of a named scenario). Here baseline.set.gamma = 0.1 but the
+        // fit.toml inlines gamma = 0.5.
+        let model = model_with_scenario("baseline", &[
+            ("beta", 0.3), ("gamma", 0.1),
+        ]);
+        let mut values = IndexMap::new();
+        values.insert("gamma".to_string(), 0.5);
+        let mut fixed = FixedParams {
+            from_file: None,
+            from_scenario: Some("baseline".into()),
+            values,
+        };
+        // `gamma` is NOT estimated — it is an inline override that
+        // disagrees with the scenario. Must still error.
+        let err = fixed.expand_from_scenario(&model, &estimate_set(&["beta"]))
+            .unwrap_err();
+        assert!(err.contains("does not allow inline overrides"),
+            "override-with-different-value still errors: {}", err);
+        assert!(err.contains("gamma"),
+            "error names the offending key: {}", err);
     }
 
     #[test]

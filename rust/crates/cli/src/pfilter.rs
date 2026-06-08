@@ -274,6 +274,29 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         }
     }
 
+    // gh#174: reject a positive incidence observation at the model origin
+    // (zero-width first window → -Inf masquerading as filter degeneracy).
+    // Checked per stream before the filter runs. The --flow override rewrites
+    // the single stream's projection to an incidence flow-sum regardless of
+    // the IR block, so treat that case as incidence explicitly.
+    let t_start = compiled.model.simulation.t_start;
+    for (stream_obs, ir_obs) in per_stream_obs.iter().zip(bound_ir.iter()) {
+        let times: Vec<f64> = stream_obs.iter().map(|o| o.time).collect();
+        let first_value = stream_obs.first().map(|o| o.value).unwrap_or(0.0);
+        let incidence_override = ir::observation::Projection::CumulativeFlow(String::new());
+        let effective_projection = if flow_name.is_some() {
+            &incidence_override
+        } else {
+            &ir_obs.projection
+        };
+        if let Err(e) = crate::util::check_incidence_origin_window(
+            &ir_obs.name, effective_projection, t_start, &times, first_value,
+        ) {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+
     // Build process + observation model via traits
     let compiled = std::sync::Arc::new(compiled);
     let process = ChainBinomialProcess::new(compiled.clone(), dt);

@@ -230,10 +230,21 @@ camdl pfilter model.camdl --data cases_dated.tsv ...
 - **`camdl simulate --dates`** adds a calendar `date` column (the inverse map)
   alongside the canonical numeric `t` in trajectory and observation output
   (single-file and `--obs-dir`). Without `--dates`, output is byte-identical to
-  before. Requires `origin`.
+  before. Requires `origin`. A whole-day timepoint renders as a bare
+  `YYYY-MM-DD`; a **sub-day** timepoint (a fractional snapshot step under a
+  sub-day `dt`, the hot-epidemic regime) renders the floor date with the
+  fractional day appended as a `+<frac>d` delta — e.g. `t = 0.25` under `'days`
+  from a `2020-02-28` origin is `2020-02-28+0.25d`. This keeps the column
+  one-to-one with the timepoint: distinct sub-day rows get distinct labels
+  rather than silently coalescing onto the same date (gh#108). The suffix is a
+  fractional-day delta, deliberately *not* the `YYYY-MM-DDTHH:MM` datetime form
+  (datetimes are out of scope — see "Not supported (yet)" below); a consumer
+  grouping on the date column can split on `+` to recover the calendar day.
 - **`camdl fit summary`** renders `instant`-kind estimands as dates when the
   model has an `origin` (e.g. `tau = 23.0  (2020-02-13)`); `duration` estimands
-  render as spans. Numeric `t` stays the canonical, diff-stable value.
+  render as spans. Numeric `t` stays the canonical, diff-stable value. A point
+  estimate is a single value (never a column joined on), so its date annotation
+  rounds to the nearest whole day for readability.
 
 ## International / multi-source data
 

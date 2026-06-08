@@ -140,7 +140,7 @@ impl FitRunConfig {
         // pre-processor produces the IndexMap fed into the unified
         // resolver as `fit_toml_fixed`.
         let mut fixed_cfg = fit.fixed.clone();
-        fixed_cfg.expand_from_scenario(&model_pre)?;
+        fixed_cfg.expand_from_scenario(&model_pre, &fit.estimate)?;
         let fixed_resolved: indexmap::IndexMap<String, f64> =
             fixed_cfg.resolve_with_model(&model_pre)?;
 
@@ -295,6 +295,21 @@ impl FitRunConfig {
             let projection = sim::inference::multi_stream_obs::StreamProjection::from_ir(
                 &obs_model.projection, &compiled, stream_name,
             )?;
+
+            // gh#174: reject a positive incidence observation at the model
+            // origin (zero-width first window → -Inf masquerading as filter
+            // degeneracy). Hard error before any stage runs.
+            {
+                let obs_times: Vec<f64> = obs.iter().map(|o| o.time).collect();
+                let first_value = obs.first().map(|o| o.value).unwrap_or(0.0);
+                crate::util::check_incidence_origin_window(
+                    stream_name,
+                    &obs_model.projection,
+                    compiled.model.simulation.t_start,
+                    &obs_times,
+                    first_value,
+                )?;
+            }
 
             // Validate all streams share the same observation times
             let times: Vec<f64> = obs.iter().map(|o| o.time).collect();
@@ -921,15 +936,32 @@ pub fn derive_transform_with_bounds(
             _ => Transform::None,
         };
     }
+    // For unconstrained-scale kinds (`instant`, `real`, unknown), a
+    // finite search box still has to be enforced or IF2 walks the
+    // particle out of bounds (gh#66: a bounded `instant` seed-time
+    // escaped to τ = −968 / −inf-likelihood). When both bounds are
+    // finite, use the scaled-logit (it maps `[lo, hi]` regardless of
+    // sign, so a negative lower bound is fine); otherwise there is no
+    // box to clamp to, so leave it unconstrained.
+    let bounded_or_none = |lo: f64, hi: f64| {
+        if lo.is_finite() && hi.is_finite() {
+            Transform::Logit { lo, hi }
+        } else {
+            Transform::None
+        }
+    };
     if let Some(ref kind) = ir_param.param_kind {
         match kind.as_str() {
             "probability" => Transform::Logit { lo: lower, hi: upper },
             // `duration` is a positive span → log scale, like rate/count.
             "rate" | "positive" | "count" | "duration" => Transform::Log { lo: lower, hi: upper },
             // `instant` is an origin-relative point that may be negative
-            // (a seed before the anchor) → unconstrained real scale.
-            "instant" => Transform::None,
-            _ => Transform::None,
+            // (a seed before the anchor): unconstrained scale unless the
+            // fit declares a finite search box, in which case clamp to it.
+            "instant" => bounded_or_none(lower, upper),
+            // `real` (and any unknown kind) is unconstrained, but a
+            // finite search box must still be honoured.
+            _ => bounded_or_none(lower, upper),
         }
     } else {
         if lower >= 0.0 { Transform::Log { lo: lower, hi: upper } } else { Transform::None }
@@ -3500,6 +3532,98 @@ dt = 1.0
         assert!(log_sd_tight < log_sd_wide,
             "tighter bounds must yield smaller log-scale rw_sd \
              (wide_log_sd={}, tight_log_sd={})", log_sd_wide, log_sd_tight);
+    }
+
+    // ── Bounded real/instant params honour fit bounds (gh#66) ────────
+    //
+    // `derive_transform_with_bounds` mapped `real` (the `_` fallback)
+    // and `instant` to `Transform::None`, which applies NO clamping.
+    // A bounded real/instant param could then random-walk arbitrarily
+    // far outside its declared search bounds during IF2 (the issue
+    // observed a seed-time param escaping to τ = −968). When finite
+    // bounds are present, the scaled-logit (`Transform::Logit`) must
+    // be used so IF2 perturbations stay in `[lo, hi]` — matching the
+    // other bounded kinds and inference-spec §3.2 rule #2. With no
+    // finite bounds, `Transform::None` is still correct.
+
+    #[test]
+    fn real_param_with_bounds_gets_bounded_transform_not_none() {
+        // A `real` param WITH finite fit bounds must NOT get
+        // Transform::None (which lets IF2 escape the box). It must get
+        // the scaled-logit that clamps to the search bounds.
+        let (model, compiled) = make_one_param_model("tau", 0.0, 55.0, Some("real"));
+        let base_params = compiled.default_params.clone();
+        let specs = vec![ParamSpec {
+            name: "tau".into(),
+            rw_sd: None,
+            transform: None,
+            ivp: false,
+            bounds: Some((0.0, 55.0)),
+        }];
+        let result = build_if2_params_from_specs(&model, &compiled, &base_params, &specs)
+            .expect("ok");
+        match &result[0].transform {
+            Transform::Logit { lo, hi } => {
+                assert_eq!(*lo, 0.0, "scaled-logit lo must track fit bounds");
+                assert_eq!(*hi, 55.0, "scaled-logit hi must track fit bounds");
+            }
+            other => panic!(
+                "bounded `real` must get a bounded (scaled-logit) transform, \
+                 not {:?} — Transform::None lets IF2 escape the search box (gh#66)",
+                other),
+        }
+    }
+
+    #[test]
+    fn instant_param_with_negative_bounds_gets_bounded_transform_not_none() {
+        // `instant` is origin-relative and may be negative (a seed
+        // before the anchor). The scaled-logit handles a negative lower
+        // bound fine — it maps the whole [lo, hi] interval regardless of
+        // sign — so a bounded `instant` must clamp, not escape.
+        let (model, compiled) = make_one_param_model("tau", -30.0, 30.0, Some("instant"));
+        let base_params = compiled.default_params.clone();
+        let specs = vec![ParamSpec {
+            name: "tau".into(),
+            rw_sd: None,
+            transform: None,
+            ivp: false,
+            bounds: Some((-30.0, 30.0)),
+        }];
+        let result = build_if2_params_from_specs(&model, &compiled, &base_params, &specs)
+            .expect("ok");
+        match &result[0].transform {
+            Transform::Logit { lo, hi } => {
+                assert_eq!(*lo, -30.0, "scaled-logit lo must track fit bounds (negative ok)");
+                assert_eq!(*hi, 30.0, "scaled-logit hi must track fit bounds");
+            }
+            other => panic!(
+                "bounded `instant` must get a bounded transform, not {:?} (gh#66)",
+                other),
+        }
+    }
+
+    #[test]
+    fn unbounded_real_param_stays_none() {
+        // No finite bounds → there is no box to clamp to, so an
+        // unconstrained real remains Transform::None (no regression for
+        // genuinely-unbounded params).
+        use ir::parameter::Parameter;
+        let real_param = Parameter {
+            name: "tau".into(), value: Some(0.0), bounds: None, prior: None,
+            transform: None, initial_value: None,
+            param_kind: Some("real".into()), param_dim: None, hierarchical: None,
+        };
+        let instant_param = Parameter {
+            param_kind: Some("instant".into()), ..real_param.clone()
+        };
+        // (0.0, INFINITY) is the resolved (lo, hi) when no bounds exist
+        // (see build_if2_params_from_specs `(None, None) => (0.0, INF)`).
+        let t_real = derive_transform_with_bounds(&real_param, None, (0.0, f64::INFINITY));
+        let t_instant = derive_transform_with_bounds(&instant_param, None, (0.0, f64::INFINITY));
+        assert!(matches!(t_real, Transform::None),
+            "unbounded real must stay None, got {:?}", t_real);
+        assert!(matches!(t_instant, Transform::None),
+            "unbounded instant must stay None, got {:?}", t_instant);
     }
 
     // ── Cold-cooling Â suppression (gh#45) ───────────────────────────

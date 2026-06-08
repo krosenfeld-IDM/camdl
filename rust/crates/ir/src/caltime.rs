@@ -172,12 +172,63 @@ pub fn date_from_rata_die(rd: i64) -> (i64, i64, i64) {
 }
 
 /// Render an internal time back to an ISO date, given `origin` and `time_unit`
-/// (inverse of [`date_to_internal`]). Rounds to the nearest whole day.
+/// (inverse of [`date_to_internal`]). Rounds to the nearest whole day, so the
+/// result is always a bare `YYYY-MM-DD`.
+///
+/// This is the **point-estimate annotation** renderer: a single fitted instant
+/// (`fit summary`'s `instant`-kind estimands) shows a readable calendar date
+/// while the numeric `t` stays canonical. There is one row per estimate, so a
+/// rounded date can never coalesce distinct points. For the `--dates` *column*
+/// of simulation output — one row per `dt`-grid timepoint, which a user may
+/// join on — use [`internal_to_date_hires`], which keeps sub-day timepoints
+/// distinct (gh#108).
 pub fn internal_to_date(origin: &str, t: f64, time_unit: &str) -> Result<String, CalError> {
     let (oy, om, od) = parse_iso_date(origin)?;
     let delta_days = (t * days_per_unit(time_unit)?).round() as i64;
     let (y, m, d) = date_from_rata_die(rata_die(oy, om, od) + delta_days);
     Ok(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+/// Render an internal time back to a calendar label that stays **one-to-one
+/// with the timepoint**, for the `--dates` output column (gh#108).
+///
+/// A whole-day offset renders as a bare `YYYY-MM-DD` — identical to
+/// [`internal_to_date`], so integer-day steps are unchanged. A **sub-day**
+/// offset (a fractional `dt < 1 day`, the canonical hot-epidemic regime)
+/// renders the floor date with the fractional day appended as a `+<frac>d`
+/// suffix (e.g. `2020-01-01+0.25d`). Without this, `dt = 0.5` would coalesce
+/// `t = 0.0, 0.5, 1.0` onto `origin+0, origin+1, origin+1` — silently lossy for
+/// a column users group/join on. The suffix is a fractional-day **delta**,
+/// deliberately not the `YYYY-MM-DDTHH:MM` datetime form (datetimes are rejected
+/// on input and out of scope — `docs/dates.md`).
+pub fn internal_to_date_hires(origin: &str, t: f64, time_unit: &str) -> Result<String, CalError> {
+    let (oy, om, od) = parse_iso_date(origin)?;
+    let offset = t * days_per_unit(time_unit)?;
+    // Floor to the calendar day; the remainder is the fractional day in [0, 1).
+    // `floor`/remainder is well-defined for negative offsets (pre-origin dates),
+    // unlike `round`, which would split a tie inconsistently across the sign.
+    let floor_day = offset.floor();
+    // Quantize the fractional day to absorb float noise from non-day units
+    // (e.g. a "whole" date under `'years` lands on 13.999999999 days). Six
+    // decimals resolves any practical sub-day `dt` while snapping near-integers
+    // back to a bare date.
+    let frac = ((offset - floor_day) * 1e6).round() / 1e6;
+    let (floor_day, frac) = if frac >= 1.0 {
+        // Quantization pushed the fraction up to a full day; carry it.
+        (floor_day + 1.0, 0.0)
+    } else {
+        (floor_day, frac)
+    };
+    let (y, m, d) = date_from_rata_die(rata_die(oy, om, od) + floor_day as i64);
+    let date = format!("{y:04}-{m:02}-{d:02}");
+    if frac == 0.0 {
+        Ok(date)
+    } else {
+        // Trim trailing zeros from the fractional-day suffix: 0.250000 → 0.25.
+        let frac_str = format!("{frac:.6}");
+        let frac_str = frac_str.trim_end_matches('0');
+        Ok(format!("{date}+{frac_str}d"))
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +275,60 @@ mod tests {
             .abs()
             < 1e-12);
         assert!(matches!(days_per_unit("fortnights"), Err(CalError::UnknownUnit(_))));
+    }
+
+    #[test]
+    fn subday_timepoints_render_distinctly() {
+        // gh#108: with a sub-day `dt` the `--dates` column must not coalesce
+        // distinct timepoints onto the same calendar label. t=0.0 and t=0.25
+        // are genuinely different instants and must render to DISTINCT strings.
+        let d0 = internal_to_date_hires("2020-01-01", 0.0, "days").unwrap();
+        let d_quarter = internal_to_date_hires("2020-01-01", 0.25, "days").unwrap();
+        let d_half = internal_to_date_hires("2020-01-01", 0.5, "days").unwrap();
+        assert_ne!(d0, d_quarter, "t=0.0 and t=0.25 must render distinctly");
+        assert_ne!(d_quarter, d_half, "t=0.25 and t=0.5 must render distinctly");
+        // Whole-day offsets keep the bare YYYY-MM-DD form (no fractional suffix).
+        assert_eq!(d0, "2020-01-01");
+        assert_eq!(internal_to_date_hires("2020-01-01", 1.0, "days").unwrap(), "2020-01-02");
+        // The fractional suffix is a `+<frac>d` delta on the floor date.
+        assert_eq!(d_quarter, "2020-01-01+0.25d");
+        assert_eq!(d_half, "2020-01-01+0.5d");
+        // The full sub-day-step sequence from the issue stays one-to-one:
+        // t = 0.0, 0.5, 1.0, 1.5, 2.0 must yield five distinct labels.
+        let seq: Vec<String> = [0.0, 0.5, 1.0, 1.5, 2.0]
+            .iter()
+            .map(|&t| internal_to_date_hires("2020-01-01", t, "days").unwrap())
+            .collect();
+        let mut uniq = seq.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), seq.len(), "sub-day steps must not coalesce: {seq:?}");
+    }
+
+    #[test]
+    fn hires_negative_subday_and_whole_day_carry() {
+        // Negative (pre-origin) sub-day offset: floor goes to the day below and
+        // the fraction is the positive remainder — distinct from the bare date.
+        // -0.25 days → floor day -1 (2019-12-31), frac 0.75.
+        let neg = internal_to_date_hires("2020-01-01", -0.25, "days").unwrap();
+        assert_eq!(neg, "2019-12-31+0.75d");
+        let neg_whole = internal_to_date_hires("2020-01-01", -1.0, "days").unwrap();
+        assert_eq!(neg_whole, "2019-12-31", "a whole pre-origin day stays bare");
+        // Whole-day round-trip parity with the rounded renderer for integer t.
+        for date in ["2019-01-01", "2020-02-29", "2020-12-31", "2026-05-22"] {
+            let t = date_to_internal("2020-02-28", date, "days").unwrap();
+            assert_eq!(internal_to_date_hires("2020-02-28", t, "days").unwrap(), date);
+        }
+    }
+
+    #[test]
+    fn rounded_renderer_keeps_bare_date_for_subday() {
+        // `internal_to_date` is the point-estimate annotation renderer: it must
+        // keep rounding to a bare YYYY-MM-DD (the `fit summary` contract), even
+        // for a fractional instant. Only `internal_to_date_hires` is sub-day.
+        assert_eq!(internal_to_date("2020-01-01", 0.25, "days").unwrap(), "2020-01-01");
+        assert_eq!(internal_to_date("2020-01-01", 0.5, "days").unwrap(), "2020-01-02");
+        assert_eq!(internal_to_date("2020-01-01", 1.4, "days").unwrap(), "2020-01-02");
     }
 
     #[test]

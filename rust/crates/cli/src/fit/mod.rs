@@ -183,7 +183,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     // values map by looking up the named scenario in the model. Must
     // happen after model load but before validate, so the every-param-
     // resolved check sees the expanded values.
-    config.fixed.expand_from_scenario(&model).unwrap_or_else(|e| {
+    config.expand_fixed_from_scenario(&model).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });

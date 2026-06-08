@@ -607,7 +607,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         // a value writer on `model.parameters[*].value`. The unified
         // resolver writes those values.
         let mut fixed_cfg = config.fixed.clone();
-        fixed_cfg.expand_from_scenario(&model_pre)?;
+        fixed_cfg.expand_from_scenario(&model_pre, &config.estimate)?;
         let fixed_resolved_indexmap: IndexMap<String, f64> =
             fixed_cfg.resolve_with_model(&model_pre)?;
 

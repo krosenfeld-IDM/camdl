@@ -256,6 +256,27 @@ troughs) indicates model misspecification.
 6. RESET: clear flow accumulators for the next observation interval
 ```
 
+### Incidence observations and the model origin
+
+An incidence observation (`incidence(...)`, i.e. a `cumulative_flow` projection)
+is scored against the flow accumulated over the window
+`(previous observation, this observation]`. The very first window starts at the
+model origin (internal time 0, or `t_start`), so an incidence row placed *at*
+the origin has a zero-width accumulation window: its expected count is
+identically 0. A positive count at the origin is therefore impossible
+(`-Inf` likelihood), and `camdl pfilter` / `camdl fit` reject it before the
+filter runs with a diagnostic naming the convention and the three remedies:
+
+- drop the origin row;
+- shift the observation times to interval *ends* (date each row at the end of
+  its accumulation window); or
+- move the model origin earlier so the first observation has a full preceding
+  interval.
+
+A zero count at the origin is consistent with the zero-width window and is
+accepted. (Prevalence observations — `current_pop` — read state at the instant
+and are unaffected: there is no accumulation window.)
+
 ### The `--trace` output
 
 ```
