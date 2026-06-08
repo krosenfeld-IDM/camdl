@@ -313,10 +313,14 @@ stoichiometry + rate expression), observation models, parameters, and initial
 conditions.
 
 The expression language (`expr`) is a pure, total, first-order AST over
-`Const | Param | Pop | PopSum | Time | BinOp | UnOp | Cond | TimeFunc | TableLookup`.
-No recursion, no binding — propensities evaluate in bounded time. `Cond` guards
-against division-by-zero in Gillespie. `TableLookup` keeps stratified models
-compact (contact matrices, age-specific rates).
+`Const | Param | Pop | PopSum | Time | Dt | BinOp | UnOp | Cond | TimeFunc | TableLookup | Projected | UncheckedDim | Reduce | BindingRef`.
+No recursion, no lexical binding — propensities evaluate in bounded time. `Cond`
+guards against division-by-zero in Gillespie. `TableLookup` keeps stratified
+models compact (contact matrices, age-specific rates). `Dt` exposes the runtime
+integrator step (gh#54); `Projected` is the observation-projection value (in
+likelihoods); `UncheckedDim` is the dimensional escape; `Reduce` is an n-ary sum
+(left-fold, matching the OCaml Add-chain order); `BindingRef` references a
+hoisted model-level binding (a shared subexpression resolved by slot).
 
 ### Rust crate dependency order
 
