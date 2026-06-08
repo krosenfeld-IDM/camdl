@@ -91,6 +91,7 @@ grid; it orchestrates fits rather than being a single stage.
 camdl check model.camdl                       # dimension + type check
 camdl simulate model.camdl --param beta=0.4 --backend chain_binomial
 camdl inspect model.camdl --summary           # compiled structure
+camdl inspect model.camdl --cost-report       # per-step eval cost analysis
 ```
 
 `simulate` is forward only: a model, parameters, a scenario, a seed → a

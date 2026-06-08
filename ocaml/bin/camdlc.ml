@@ -34,6 +34,7 @@ let () =
   | "inspect" :: rest ->
     let files     = ref [] in
     let summary   = ref false in
+    let cost_report = ref false in
     let comps     = ref false in
     let transitions_pat = ref None in
     let do_transitions  = ref false in
@@ -50,6 +51,7 @@ let () =
     let rec parse = function
       | [] -> ()
       | "--summary"      :: tl -> summary := true;         parse tl
+      | "--cost-report"  :: tl -> cost_report := true;     parse tl
       | "--dims"         :: tl -> dims    := true;         parse tl
       | "--compartments" :: tl -> comps   := true;         parse tl
       | "--parameters"   :: tl -> do_parameters := true;   parse tl
@@ -91,7 +93,8 @@ let () =
       | p :: _ -> p
     in
     let cmd =
-      if !dims              then Inspect.Dims
+      if !cost_report       then Inspect.CostReport
+      else if !dims         then Inspect.Dims
       else if !do_tables    then Inspect.Tables !tables_pat
       else if !comps             then Inspect.Compartments
       else if !do_parameters then Inspect.Parameters

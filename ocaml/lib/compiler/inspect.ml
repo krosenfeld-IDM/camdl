@@ -279,6 +279,218 @@ let run_summary ppf (model : Ir.model) ctx (sum : Expander.model_summary) =
   num sum.interv_count;
   Fmt.pf ppf " (0 active by default)@\n"
 
+(* ── --cost-report ───────────────────────────────────────────────────────────
+   A read-only cost analysis of the compiled IR: where the per-step
+   evaluation work concentrates, what the sparse-coupling fold collapses, how
+   much shared bindings are reused, and which rewrite-eligible idioms appear.
+   It is the analogue of the runtime `eval_stats` (numerical pathologies) for
+   *cost*. Nothing here mutates the model — the constant-fold comparison runs
+   on a local copy. Gradient-node costs are NOT reported: inspect compiles the
+   front-end only (no autodiff), so `rate_grad` is empty here. *)
+
+(* Total node count of an expression tree (every constructor counts as 1). *)
+let rec expr_node_count (e : Ir.expr) : int =
+  let open Ir in
+  match e with
+  | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _
+  | BindingRef _ | Projected -> 1
+  | BinOp b -> 1 + expr_node_count b.left + expr_node_count b.right
+  | UnOp u  -> 1 + expr_node_count u.arg
+  | Cond c  -> 1 + expr_node_count c.pred + expr_node_count c.then_ + expr_node_count c.else_
+  | TableLookup (_, idxs) -> 1 + List.fold_left (fun a i -> a + expr_node_count i) 0 idxs
+  | Reduce terms -> 1 + List.fold_left (fun a t -> a + expr_node_count t) 0 terms
+  | UncheckedDim u -> 1 + expr_node_count u.inner
+
+(* Total Reduce-term count across an expr tree (sum of arities of all Reduce
+   nodes). Walks into every child so nested Reduces all count. *)
+let rec reduce_term_count (e : Ir.expr) : int =
+  let open Ir in
+  match e with
+  | Reduce terms ->
+    List.length terms
+    + List.fold_left (fun a t -> a + reduce_term_count t) 0 terms
+  | BinOp b -> reduce_term_count b.left + reduce_term_count b.right
+  | UnOp u  -> reduce_term_count u.arg
+  | Cond c  -> reduce_term_count c.pred + reduce_term_count c.then_ + reduce_term_count c.else_
+  | TableLookup (_, idxs) -> List.fold_left (fun a i -> a + reduce_term_count i) 0 idxs
+  | UncheckedDim u -> reduce_term_count u.inner
+  | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _
+  | BindingRef _ | Projected -> 0
+
+(* Count BindingRefs to [name] within an expr tree. *)
+let rec count_bindingref name (e : Ir.expr) : int =
+  let open Ir in
+  match e with
+  | BindingRef n -> if n = name then 1 else 0
+  | BinOp b -> count_bindingref name b.left + count_bindingref name b.right
+  | UnOp u  -> count_bindingref name u.arg
+  | Cond c  -> count_bindingref name c.pred + count_bindingref name c.then_ + count_bindingref name c.else_
+  | TableLookup (_, idxs) -> List.fold_left (fun a i -> a + count_bindingref name i) 0 idxs
+  | Reduce terms -> List.fold_left (fun a t -> a + count_bindingref name t) 0 terms
+  | UncheckedDim u -> count_bindingref name u.inner
+  | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _ | Projected -> 0
+
+(* All rate exprs of a model (the cost surface inspect can see — gradients are
+   absent in front-end-only compilation, and bindings are counted separately
+   so their bodies are NOT included here). *)
+let rate_exprs (m : Ir.model) : Ir.expr list =
+  List.map (fun (t : Ir.transition) -> t.rate) m.transitions
+
+(* `1 - exp(x)` shaped subexprs: the numerically-unstable hazard-probability
+   form. As x → 0, exp(x) → 1 and the subtraction loses precision to
+   catastrophic cancellation — the form `expm1` / `prob_q_from_rate_dt` exists
+   to avoid (inference/numerics.rs). Matches BinOp(Sub, Const 1.0, UnOp(Exp, _))
+   for any exponent (the cancellation is in the `1 - ·`, independent of the
+   argument's shape). Counts every occurrence anywhere in the tree. *)
+let rec count_hazard_idioms (e : Ir.expr) : int =
+  let open Ir in
+  let here = match e with
+    | BinOp { op = Sub; left = Const 1.0;
+              right = UnOp { op = Exp; _ } } -> 1
+    | _ -> 0
+  in
+  here + (match e with
+    | BinOp b -> count_hazard_idioms b.left + count_hazard_idioms b.right
+    | UnOp u  -> count_hazard_idioms u.arg
+    | Cond c  -> count_hazard_idioms c.pred + count_hazard_idioms c.then_ + count_hazard_idioms c.else_
+    | TableLookup (_, idxs) -> List.fold_left (fun a i -> a + count_hazard_idioms i) 0 idxs
+    | Reduce terms -> List.fold_left (fun a t -> a + count_hazard_idioms t) 0 terms
+    | UncheckedDim u -> count_hazard_idioms u.inner
+    | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _
+    | BindingRef _ | Projected -> 0)
+
+(* Structural hash of an expr, for detecting duplicated subexpressions. A
+   simple recursive polynomial hash over the constructor shape + leaf payloads.
+   Collisions are possible but harmless: this drives an advisory count only. *)
+let rec expr_hash (e : Ir.expr) : int =
+  let open Ir in
+  let mix tag parts = List.fold_left (fun h p -> (h * 31 + p) land max_int) (tag * 2654435761 land max_int) parts in
+  match e with
+  | Const f -> mix 1 [ Hashtbl.hash f ]
+  | Param p -> mix 2 [ Hashtbl.hash p ]
+  | Pop c -> mix 3 [ Hashtbl.hash c ]
+  | PopSum cs -> mix 4 [ Hashtbl.hash cs ]
+  | Time -> mix 5 []
+  | Dt -> mix 6 []
+  | TimeFunc n -> mix 7 [ Hashtbl.hash n ]
+  | BindingRef n -> mix 8 [ Hashtbl.hash n ]
+  | Projected -> mix 9 []
+  | BinOp b -> mix 10 [ Hashtbl.hash b.op; expr_hash b.left; expr_hash b.right ]
+  | UnOp u -> mix 11 [ Hashtbl.hash u.op; expr_hash u.arg ]
+  | Cond c -> mix 12 [ expr_hash c.pred; expr_hash c.then_; expr_hash c.else_ ]
+  | TableLookup (n, idxs) -> mix 13 (Hashtbl.hash n :: List.map expr_hash idxs)
+  | Reduce terms -> mix 14 (List.map expr_hash terms)
+  | UncheckedDim u -> mix 15 [ expr_hash u.inner ]
+
+(* Number of distinct non-trivial subexpressions that recur ≥ [threshold]
+   times across all given roots. "Non-trivial" excludes single-node leaves
+   (a repeated `Const 0.0` is not interesting). Uses [expr_hash] as the
+   structural key. *)
+let count_duplicated_subexprs ?(threshold = 3) (roots : Ir.expr list) : int =
+  let counts : (int, int) Hashtbl.t = Hashtbl.create 256 in
+  let rec walk (e : Ir.expr) =
+    let open Ir in
+    (if expr_node_count e > 1 then
+       let h = expr_hash e in
+       Hashtbl.replace counts h (1 + (Option.value ~default:0 (Hashtbl.find_opt counts h))));
+    match e with
+    | BinOp b -> walk b.left; walk b.right
+    | UnOp u  -> walk u.arg
+    | Cond c  -> walk c.pred; walk c.then_; walk c.else_
+    | TableLookup (_, idxs) -> List.iter walk idxs
+    | Reduce terms -> List.iter walk terms
+    | UncheckedDim u -> walk u.inner
+    | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _
+    | BindingRef _ | Projected -> ()
+  in
+  List.iter walk roots;
+  Hashtbl.fold (fun _ n acc -> if n >= threshold then acc + 1 else acc) counts 0
+
+let run_cost_report ppf (model : Ir.model) _ctx =
+  let lbl s = Term_style.dim_style Fmt.string ppf s in
+  let num n = Term_style.bold Fmt.string ppf (fmt_number n) in
+  (* Header: model name in bold blue (matches run_summary). *)
+  Term_style.bold (Term_style.transition Fmt.string) ppf model.name;
+  Fmt.pf ppf " cost report@\n@\n";
+
+  (* ── Counts ─────────────────────────────────────────────────────── *)
+  let n_tr = List.length model.transitions in
+  let n_bind = List.length model.bindings in
+  let rates = rate_exprs model in
+  let total_nodes = List.fold_left (fun a e -> a + expr_node_count e) 0 rates in
+  (* Max rate-expr node count, with the holding transition's name. *)
+  let (max_nodes, max_name) =
+    List.fold_left (fun (mx, nm) (t : Ir.transition) ->
+      let c = expr_node_count t.rate in
+      if c > mx then (c, t.name) else (mx, nm)) (0, "") model.transitions
+  in
+  lbl "  transitions       "; num n_tr; Fmt.pf ppf "@\n";
+  lbl "  bindings          "; num n_bind; Fmt.pf ppf "@\n";
+  lbl "  rate nodes        "; num total_nodes; Fmt.pf ppf " total, ";
+  num max_nodes; Fmt.pf ppf " max";
+  if max_name <> "" then (
+    Fmt.pf ppf " (";
+    Term_style.transition Fmt.string ppf max_name;
+    Fmt.pf ppf ")");
+  Fmt.pf ppf "@\n";
+
+  (* ── Constant-fold collapse (Reduce terms before/after) ─────────── *)
+  let folded = Constant_fold.fold_model model in
+  let folded_rates = rate_exprs folded in
+  let reduce_before = List.fold_left (fun a e -> a + reduce_term_count e) 0 rates in
+  let reduce_after  = List.fold_left (fun a e -> a + reduce_term_count e) 0 folded_rates in
+  lbl "  Reduce terms      "; num reduce_before; Fmt.pf ppf " before fold ";
+  Term_style.dim_style Fmt.string ppf "\xe2\x86\x92 ";  (* → *)
+  num reduce_after; Fmt.pf ppf " after";
+  (if reduce_before > 0 then
+     let pct = 100.0 *. float_of_int (reduce_before - reduce_after) /. float_of_int reduce_before in
+     Fmt.pf ppf " (%.0f%% collapsed)" pct);
+  Fmt.pf ppf "@\n";
+
+  (* ── Top bindings by reuse ──────────────────────────────────────── *)
+  let bind_dep = Expr_analysis.model_binding_deps model in
+  let binding_rows =
+    List.map (fun (b : Ir.binding) ->
+      let refs = List.fold_left (fun a e -> a + count_bindingref b.bname e) 0 rates in
+      let size = expr_node_count b.bexpr in
+      let saved = if refs > 1 then (refs - 1) * size else 0 in
+      (b.bname, Expr_analysis.dep_name (bind_dep b.bname), size, refs, saved))
+      model.bindings
+  in
+  (* Sort by node-visits saved (descending), then by refs. *)
+  let binding_rows =
+    List.sort (fun (_, _, _, r1, s1) (_, _, _, r2, s2) ->
+      if s2 <> s1 then compare s2 s1 else compare r2 r1) binding_rows
+  in
+  Fmt.pf ppf "@\n";
+  lbl "  top bindings by reuse";
+  Fmt.pf ppf "@\n";
+  if binding_rows = [] then (
+    Fmt.pf ppf "    "; Term_style.dim_style Fmt.string ppf "none"; Fmt.pf ppf "@\n")
+  else (
+    let top = List.filteri (fun i _ -> i < 8) binding_rows in
+    List.iter (fun (name, dep, size, refs, saved) ->
+      Fmt.pf ppf "    ";
+      Term_style.table Fmt.string ppf name;
+      Fmt.pf ppf "  ";
+      Term_style.dim_style Fmt.string ppf dep;
+      Fmt.pf ppf "  size="; num size;
+      Fmt.pf ppf "  refs="; num refs;
+      Fmt.pf ppf "  ~saved="; num saved;
+      Fmt.pf ppf "@\n") top);
+
+  (* ── Rewrite-eligible idioms ────────────────────────────────────── *)
+  (* Idiom search spans rate bodies AND binding bodies (a hazard idiom or a
+     shared subexpr may have been hoisted). *)
+  let all_exprs = rates @ List.map (fun (b : Ir.binding) -> b.bexpr) model.bindings in
+  let hazard = List.fold_left (fun a e -> a + count_hazard_idioms e) 0 all_exprs in
+  let dups = count_duplicated_subexprs all_exprs in
+  Fmt.pf ppf "@\n";
+  lbl "  rewrite-eligible idioms";
+  Fmt.pf ppf "@\n";
+  Fmt.pf ppf "    1 - exp(x) hazard forms    "; num hazard; Fmt.pf ppf "@\n";
+  Fmt.pf ppf "    duplicated subexprs (\xe2\x89\xa53)   "; num dups; Fmt.pf ppf "@\n"
+
 (* ── --compartments ──────────────────────────────────────────────────────── *)
 
 let run_compartments ppf (model : Ir.model) ctx =
@@ -1020,6 +1232,7 @@ type inspect_cmd =
   | LetBinding of string
   | Dims
   | Tables of string option             (* pattern *)
+  | CostReport
 
 type inspect_opts = {
   cmd      : inspect_cmd;
@@ -1080,7 +1293,9 @@ let run_inspect path opts =
      | Dims ->
        run_dims ppf model ctx
      | Tables pat ->
-       run_tables ppf model ctx pat)
+       run_tables ppf model ctx pat
+     | CostReport ->
+       run_cost_report ppf model ctx)
 
 (** Run 'camdl check': run the FULL front-end pipeline and show the summary.
 

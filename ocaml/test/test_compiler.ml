@@ -332,6 +332,99 @@ let test_binding_invariant_catches_poisoned_binding () =
     Alcotest.(check bool) "ParamInBinding fired for the poisoned binding"
       true fired
 
+(* ── Cost report (--cost-report) ──────────────────────────────────────────────
+   The cost report is read-only over the (unfolded) expanded model plus a local
+   Constant_fold pass. On the sparse-ring model the report must show the
+   sparse-coupling fold collapsing the FOI Reduce (after < before), the hoisted
+   N[l] bindings carrying their expected reference counts, and the duplicated
+   guarded-FOI subexprs surfacing. The renderer is also smoke-run to a buffer to
+   confirm it produces output without raising. *)
+
+(** Compile the sparse-ring fixture unfolded (mirrors inspect's front-end-only
+    path), so the report's local fold has something to collapse. *)
+let sparse_ring_unfolded () =
+  with_fold_disabled (fun () ->
+    match Compiler.compile ~name:"sparse_ring" sparse_ring_src with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "compile failed: %s" e)
+
+let test_cost_report_numbers_sane () =
+  let m = sparse_ring_unfolded () in
+  let rates = List.map (fun (t : Ir.transition) -> t.rate) m.transitions in
+  (* Reduce terms: the fold strictly collapses the sparse coupling sum. *)
+  let reduce_before =
+    List.fold_left (fun a e -> a + Inspect.reduce_term_count e) 0 rates in
+  let folded = Constant_fold.fold_model m in
+  let folded_rates = List.map (fun (t : Ir.transition) -> t.rate) folded.transitions in
+  let reduce_after =
+    List.fold_left (fun a e -> a + Inspect.reduce_term_count e) 0 folded_rates in
+  Alcotest.(check bool) "fold strictly shrinks Reduce terms"
+    true (reduce_after < reduce_before);
+  (* 4 patches × P=4-term FOI Reduce = 16 terms before; k=2 sparse ring → 8. *)
+  Alcotest.(check int) "Reduce terms before fold" 16 reduce_before;
+  Alcotest.(check int) "Reduce terms after fold" 8 reduce_after;
+  (* The hoisted N[l] bindings exist and are referenced from the rates. The
+     ring couples each patch to 2 neighbours, and N[l] appears both in the
+     direct I[l]/N[l] term and in every neighbour's coupling term, so each
+     binding is referenced more than once (the reuse the report highlights). *)
+  let n_binding = List.find_opt (fun (b : Ir.binding) -> b.bname = "N_p0") m.bindings in
+  (match n_binding with
+   | None -> Alcotest.fail "expected hoisted binding N_p0"
+   | Some b ->
+     let refs = List.fold_left (fun a e -> a + Inspect.count_bindingref b.bname e) 0 rates in
+     Alcotest.(check bool) "N_p0 is referenced more than once (reuse)" true (refs > 1));
+  (* Duplicated guarded-FOI subexprs surface (the repeated
+     `if N[q] > 0 then I[q]/N[q] else 0` guards appear ≥3 times). *)
+  let all_exprs = rates @ List.map (fun (b : Ir.binding) -> b.bexpr) m.bindings in
+  let dups = Inspect.count_duplicated_subexprs all_exprs in
+  Alcotest.(check bool) "duplicated subexprs detected" true (dups > 0)
+
+let test_cost_report_renders_without_raising () =
+  let m = sparse_ring_unfolded () in
+  (* Smoke: render to a buffer. ctx is unused by run_cost_report (it takes
+     _ctx), so we compile through the detail path to obtain one. *)
+  let buf = Buffer.create 512 in
+  let ppf = Format.formatter_of_buffer buf in
+  (* run_cost_report ignores ctx; pass the model's own via a detail compile. *)
+  let detail =
+    match Compiler.compile_detail_result ~name:"sparse_ring" sparse_ring_src with
+    | Ok d -> d
+    | Error e -> Alcotest.failf "detail compile failed: %s" e
+  in
+  Inspect.run_cost_report ppf m detail.ctx;
+  Format.pp_print_flush ppf ();
+  let out = Buffer.contents buf in
+  (* Substring search without pulling in Str. *)
+  let contains hay needle =
+    let nlen = String.length needle and hlen = String.length hay in
+    let rec at i =
+      if i + nlen > hlen then false
+      else if String.sub hay i nlen = needle then true
+      else at (i + 1)
+    in nlen = 0 || at 0
+  in
+  Alcotest.(check bool) "report mentions 'cost report'" true (contains out "cost report");
+  Alcotest.(check bool) "report mentions Reduce terms" true (contains out "Reduce terms")
+
+(** Hazard-idiom detector is live: `1 - exp(x)` is recognized. *)
+let test_cost_report_hazard_idiom_detected () =
+  let m = match Compiler.compile ~name:"hazard" {|
+    time_unit = 'days
+    compartments { S, I }
+    parameters { gamma : rate }
+    transitions {
+      recovery : I --> S  @ I * (1 - exp(-gamma * dt)) / dt
+    }
+    init { S = 990  I = 10 }
+    simulate { from = 0 'days  to = 30 'days }
+  |} with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "hazard model compile failed: %s" e
+  in
+  let rates = List.map (fun (t : Ir.transition) -> t.rate) m.transitions in
+  let hz = List.fold_left (fun a e -> a + Inspect.count_hazard_idioms e) 0 rates in
+  Alcotest.(check int) "one 1 - exp(x) hazard form detected" 1 hz
+
 (* min/max wire through the DSL surface to the already-supported Ir.BinOp
    Min/Max (the IR, Rust eval, dimcheck, and autodiff already handle them). *)
 let test_min_max_wire_to_binop () =
@@ -6011,6 +6104,14 @@ let () =
         `Quick test_binding_invariant_clean_on_spatial;
       Alcotest.test_case "poisoned binding (Param spliced in) raises E512"
         `Quick test_binding_invariant_catches_poisoned_binding;
+    ];
+    "cost_report", [
+      Alcotest.test_case "sparse-ring numbers are sane (Reduce 16→8, reuse, dups)"
+        `Quick test_cost_report_numbers_sane;
+      Alcotest.test_case "renders to a buffer without raising"
+        `Quick test_cost_report_renders_without_raising;
+      Alcotest.test_case "1 - exp(x) hazard idiom detected"
+        `Quick test_cost_report_hazard_idiom_detected;
     ];
     "min_max", [
       Alcotest.test_case "min/max wire to BinOp Min/Max" `Quick test_min_max_wire_to_binop;
