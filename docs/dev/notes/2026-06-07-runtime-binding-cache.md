@@ -128,29 +128,89 @@ long-run end.** The busy-sample ratio (9429/3291 = 2.87×) corroborates the wall
 ## A surprise the after-profile surfaced — the cache's own cost
 
 The residual gap between realized 2.74× and the 2.96× Amdahl prediction is
-visible in the after profile: `std::thread::local::LocalKey::with` jumps to
-**12.4%** of the busy thread (plus `_tlv_get_addr`), the thread-local indirection
-now paid on every `BindingRef` hit. The proposal's original `EvalCtx`-by-
-reference design would avoid it by passing the cache buffer as a borrow instead
-of a thread-local lookup. Deferred: 2.74× already lands, and the EvalCtx form
-touches every `eval_resolved` call site. It is the obvious next increment if this
-path is profiled again.
+visible in the after profile: `std::thread::local::LocalKey::with` is **12.4%**
+of the busy thread, `FnOnce::call_once` 9.0%, `_tlv_get_addr` 4.3% — **25.7%** of
+the busy thread is thread-local closure machinery, the indirection paid on every
+`BindingRef` access. The hypothesis: reach the cache by reference instead —
+resolve the thread-local *once* per propensity vector, thread a `&BindingCacheCells`
+through the loop, and each `BindingRef` becomes a slice index. Predicted ~1.2×.
+
+## The EvalCtx-by-reference experiment — a measured negative result
+
+We built it and measured it. The result refuted the prediction: **no speedup.**
+
+Implementation (since reverted): an `EvalCtx::bind_cache: Option<&BindingCacheCells>`
+field; `with_binding_cache` resolves the thread-local once (a `&mut` resize/gen-bump
+prelude, then a shared `Cell`-interior-mutable borrow for the whole loop); each
+`BindingRef` reads `ctx.bind_cache` and indexes. The cache is `Some` only on the
+`eval_propensities` path (and `ode_derivs`); `None` everywhere else. Byte-identical
+— the A/B gate produced the **same trajectory hashes** as the thread-local design,
+and the full `cargo test -p sim` (493 tests) passed.
+
+Controlled A/B — both release binaries built from the same tree (thread-local at
+HEAD vs by-ref working tree), timed **interleaved** under identical load, 9 runs:
+
+```
+                   wall min (s)   wall median (s)
+  thread-local        3.301           3.495
+  by-reference        3.317           3.369
+  ratio (by-ref/TL)   1.005           0.964      ← brackets 1.0 = no difference
+```
+
+The min and median straddle 1.0 in opposite directions: the designs are
+runtime-equivalent within noise. The profile shows *why* — the by-ref version did
+exactly what it promised at the symbol level, yet wall-clock was flat:
+
+```
+                          thread-local      by-reference
+  TLS closure machinery       25.7%             0.0%      ← eliminated, as predicted
+  eval_resolved               36.3%            63.2%      ← absorbed the same work
+```
+
+The 25.7% "thread-local overhead" was **not reclaimable work**. Inlining the
+cache access into `eval_resolved` (slice index + `Cell` get/set + generation
+compare) does the same arithmetic the `LocalKey::with` closure did; the samples
+re-attribute from the closure to `eval_resolved` and the total is unchanged.
+macOS `_tlv_get_addr` is cheap enough that resolving the thread-local per
+`BindingRef` was never the bottleneck — the leaf-profile made it *look* like a
+lever because the work landed on a distinct, suggestively-named symbol. The real
+floor is `eval_resolved`'s actual arithmetic (the irreducible FOI sum and the
+miss-path `PopSum` evals), which neither design touches.
+
+**Decision: reverted.** A 20-file change that threads a field through every
+`EvalCtx` site, leaks a `pub BindingCacheCells`, and touches four inference
+modules — for zero measured runtime gain — does not earn its place. The
+thread-local design is simpler *and* equal-performance. Evidence profile:
+`docs/dev/notes/assets/2026-06-08-binding-cache-byref-experiment.json.gz`.
+
+Lesson: a leaf-profile symbol at 25% is a *hypothesis*, not a lever. Confirm a
+predicted speedup with a controlled before/after binary A/B before banking it —
+re-attributable work (a closure's body that inlines into its caller) shows up as
+removable but isn't.
+
+Incidental finding (kept as a note, not acted on): the thread-local design does
+**not** cache the ODE backend — `ode_derivs` evaluates its rate/derivative vector
+outside `eval_propensities`, so it never enters the cache scope. The by-ref
+experiment extended caching there (113k hits, byte-identical). That is a
+separable ~1-line `CacheScope` addition if ODE-backend throughput ever matters;
+not pursued — ODE is deterministic and not the spatial-inference workload.
 
 ## ROI ceiling
 
-`eval_resolved` was ~79% of the busy thread and is now ~36%. The remaining
-compiler-addressable headroom is small: even driving `eval_resolved` to zero
-caps at `1/0.21 ≈ 4.8×` over the original, of which 2.74× is banked. The rest of
-the budget (RNG, CAS output hashing, allocation) is not compiler-addressable.
-This is not an order-of-magnitude lever; it is a clean ~2.7× with a known ~1.1×
-follow-up (the EvalCtx form) still on the table.
+`eval_resolved` was ~79% of the busy thread and is now ~36% (under the cache,
+thread-local form). Even driving it to zero caps at `1/0.21 ≈ 4.8×` over the
+original, of which **2.74× is banked**. The rest of the budget (RNG, CAS output
+hashing, allocation) is not compiler-addressable, and the by-ref experiment
+showed the cache-access mechanism itself is *not* a further lever. This is a
+clean ~2.7×, not an order of magnitude, and the obvious micro-optimization of the
+cache path has been tried and refuted.
 
 ## Next
 
-- (If revisited) move the cache from thread-local to an `EvalCtx` borrow to
-  reclaim the ~12% thread-local overhead.
+- The cache-access mechanism is settled (thread-local; by-ref tried and refuted).
 - The sparse-coupling fold gap (0% collapse on dense / `read()`-loaded W) is a
   separate lever for a different model class; not pursued here.
+- ODE-backend caching is available (~1-line) if that path ever becomes hot.
 
 ## Repro
 

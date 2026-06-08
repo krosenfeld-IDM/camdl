@@ -105,7 +105,11 @@ isolation via thread-locality) are unchanged.
 
 Cost of the deviation: a thread-local access (`LocalKey::with` + `_tlv_get_addr`)
 on every `BindingRef`, ~12% of the after-profile busy thread. The `EvalCtx`-by-
-reference form would reclaim it; deferred (the realized 2.74× already lands).
+reference form was subsequently built and benchmarked to reclaim it — and a
+controlled binary A/B measured **no speedup** (the eliminated thread-local
+samples re-attribute to `eval_resolved`; total work is unchanged). The
+thread-local form is therefore the final design. See the negative-result writeup
+in `../notes/2026-06-07-runtime-binding-cache.md`.
 
 ## Expected speedup
 
@@ -151,11 +155,13 @@ wall = best-of-3, profile = samply busy-thread leaf attribution.
 **Realized 2.74× — at the long-run end of the estimate, not the short-run
 anchor.** Busy-sample ratio (2.87×) corroborates the wall-clock. `eval_resolved`
 dropped 6.2× in absolute samples; the residual gap to the 2.96× Amdahl
-prediction is the cache's own cost, now visible in the after profile:
+prediction is the cache's own cost, visible in the after profile:
 `thread::local::LocalKey::with` 12.4% + `_tlv_get_addr` — the thread-local
 indirection on every `BindingRef`. Passing the cache by reference through
-`EvalCtx` (the original sketch above, vs the as-built thread-local) would reclaim
-that; deferred as a follow-up since 2.74× already lands. Profile artifacts:
+`EvalCtx` (the original sketch above) was tried to reclaim that and a controlled
+A/B measured **no speedup** — the eliminated thread-local samples re-attribute to
+`eval_resolved` rather than disappearing (negative-result writeup in the note).
+The thread-local form stands. Profile artifacts:
 `docs/dev/notes/assets/2026-06-07-binding-cache-{before,after}.json.gz` (+
 `.syms.json` sidecars).
 
