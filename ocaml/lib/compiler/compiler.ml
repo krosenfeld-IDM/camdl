@@ -180,11 +180,18 @@ let diagnose_validate_error ctx (err : Validate.error) : Diagnostics.diagnostic 
   let open Validate in
   (* Decl-keyed errors map their named symbol back to its declaration's source
      loc (prefix-matched through stratification). Reference errors (E503–E507)
-     name a symbol that does NOT exist, so the useful loc is the enclosing
-     construct, which validate does not yet carry — they stay no_loc here. *)
+     name a symbol that does NOT exist, so they point at the enclosing
+     construct (transition / ODE compartment / observation) via [site_loc]. *)
   let comp_loc = Expander.compartment_loc ctx in
   let tr_loc   = Expander.transition_loc  ctx in
   let par_loc  = Expander.param_loc       ctx in
+  let obs_loc  = Expander.obs_loc         ctx in
+  (* A reference error's loc is its enclosing construct's declaration. *)
+  let site_loc = function
+    | Validate.InTransition  n -> tr_loc n
+    | Validate.InOde         c -> comp_loc c
+    | Validate.InObservation n -> obs_loc n
+  in
   let (code, message, hint, loc) = match err with
     | DuplicateCompartment s ->
       "E500",
@@ -202,32 +209,32 @@ let diagnose_validate_error ctx (err : Validate.error) : Diagnostics.diagnostic 
       Some "two `parameters` entries (or a stratified family) share this name; \
             rename or remove one",
       par_loc s
-    | UnknownCompartment s ->
+    | UnknownCompartment (s, site) ->
       "E503",
       Printf.sprintf "unknown compartment referenced: '%s'" s,
       Some "check stratification / spelling against the compartments block",
-      Diagnostics.no_loc
-    | UnknownParameter s ->
+      site_loc site
+    | UnknownParameter (s, site) ->
       "E504",
       Printf.sprintf "unknown parameter referenced: '%s'" s,
       Some "check the parameters block for a matching declaration",
-      Diagnostics.no_loc
-    | UnknownTable s ->
+      site_loc site
+    | UnknownTable (s, site) ->
       "E505",
       Printf.sprintf "unknown table referenced: '%s'" s,
       Some "check the `tables` block for a matching declaration",
-      Diagnostics.no_loc
-    | UnknownTimeFunction s ->
+      site_loc site
+    | UnknownTimeFunction (s, site) ->
       "E506",
       Printf.sprintf "unknown time_function referenced: '%s'" s,
       Some "check the `time_functions` block for a matching declaration",
-      Diagnostics.no_loc
-    | UnknownTransition s ->
+      site_loc site
+    | UnknownTransition (s, site) ->
       "E507",
       Printf.sprintf "unknown transition referenced in observation: '%s'" s,
       Some "check the transition name against the `transitions` block; \
             stratified transitions expand to `<base>_<stratum>`",
-      Diagnostics.no_loc
+      site_loc site
     | RealCompartmentInStoichiometry (tr, c) ->
       "E508",
       Printf.sprintf "real-valued compartment '%s' cannot appear in \

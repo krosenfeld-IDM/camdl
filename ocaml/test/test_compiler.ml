@@ -5810,6 +5810,33 @@ let test_validate_decl_error_has_location () =
     Alcotest.(check bool) "E509 carries a real source location (line > 0)"
       true (d.loc.Diagnostics.line > 0)
 
+(* gh#181: a reference error (E507, dangling observation transition) points at
+   its enclosing observation rather than no_loc. *)
+let test_validate_reference_error_has_location () =
+  let src = {|
+    compartments { S, I, R }
+    parameters { beta : rate in [0,1]  gamma : rate in [0,1]  rho : probability in [0,1] }
+    transitions {
+      infection : S --> I @ beta * S * I
+      recovery  : I --> R @ gamma * I
+    }
+    observations {
+      cases : {
+        projected  = incidence(recoveryX)
+        every      = 1 'days
+        likelihood = poisson(rate = rho * projected)
+      }
+    }
+    init { S = 100  I = 1 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} in
+  let diags = Compiler.collect_diagnostics ~name:"loc_e507" src in
+  match List.find_opt (fun (d : Diagnostics.diagnostic) -> d.code = "E507") diags with
+  | None -> Alcotest.failf "expected E507 (dangling observation transition)"
+  | Some d ->
+    Alcotest.(check bool) "E507 points at the enclosing observation (line > 0)"
+      true (d.loc.Diagnostics.line > 0)
+
 let () =
   Alcotest.run "compiler" [
     "golden", [
@@ -5981,6 +6008,7 @@ let () =
     ];
     "diagnostic_locations", [
       Alcotest.test_case "decl-keyed validate error carries a loc"   `Quick test_validate_decl_error_has_location;
+      Alcotest.test_case "reference validate error carries a loc"    `Quick test_validate_reference_error_has_location;
     ];
     "trig_primitives", [
       Alcotest.test_case "pi resolves to Const ≈ π"                 `Quick test_trig_pi_resolves_to_const;

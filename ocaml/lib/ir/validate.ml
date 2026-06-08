@@ -1,14 +1,22 @@
 open Ir
 
+(* Where a reference error occurred — the enclosing construct, so the compiler
+   can point the diagnostic at its declaration (the referenced name itself does
+   not exist, so it has no decl loc). *)
+type site =
+  | InTransition  of string   (* transition name *)
+  | InOde         of string   (* compartment whose ODE derivative *)
+  | InObservation of string   (* observation name *)
+
 type error =
   | DuplicateCompartment  of string
   | DuplicateTransition   of string
   | DuplicateParameter    of string
-  | UnknownCompartment    of string
-  | UnknownParameter      of string
-  | UnknownTable          of string
-  | UnknownTimeFunction   of string
-  | UnknownTransition     of string
+  | UnknownCompartment    of string * site
+  | UnknownParameter      of string * site
+  | UnknownTable          of string * site
+  | UnknownTimeFunction   of string * site
+  | UnknownTransition     of string * site
   | RealCompartmentInStoichiometry of string * string  (* transition, compartment *)
   | MissingOdeEquation    of string
   | OdeForNonRealComp     of string
@@ -18,11 +26,11 @@ let error_to_string = function
   | DuplicateCompartment s -> Printf.sprintf "duplicate compartment: %s" s
   | DuplicateTransition  s -> Printf.sprintf "duplicate transition: %s" s
   | DuplicateParameter   s -> Printf.sprintf "duplicate parameter: %s" s
-  | UnknownCompartment   s -> Printf.sprintf "unknown compartment: %s" s
-  | UnknownParameter     s -> Printf.sprintf "unknown parameter: %s" s
-  | UnknownTable         s -> Printf.sprintf "unknown table: %s" s
-  | UnknownTimeFunction  s -> Printf.sprintf "unknown time_function: %s" s
-  | UnknownTransition    s -> Printf.sprintf "unknown transition: %s" s
+  | UnknownCompartment  (s, _) -> Printf.sprintf "unknown compartment: %s" s
+  | UnknownParameter    (s, _) -> Printf.sprintf "unknown parameter: %s" s
+  | UnknownTable        (s, _) -> Printf.sprintf "unknown table: %s" s
+  | UnknownTimeFunction (s, _) -> Printf.sprintf "unknown time_function: %s" s
+  | UnknownTransition   (s, _) -> Printf.sprintf "unknown transition: %s" s
   | RealCompartmentInStoichiometry (tr, c) ->
     Printf.sprintf "real compartment '%s' in stoichiometry of '%s'" c tr
   | MissingOdeEquation s -> Printf.sprintf "real compartment '%s' has no ODE equation" s
@@ -42,19 +50,19 @@ let uniq_check name_of xs constructor errors =
   let set = Hashtbl.fold (fun k () s -> SS.add k s) seen SS.empty in
   set
 
-let check_expr_refs ~comps ~params ~tables ~tfs errors e =
+let check_expr_refs ~site ~comps ~params ~tables ~tfs errors e =
   let rec go = function
     | Const _ | Time | Dt | Projected -> ()
-    | Param p -> if not (SS.mem p params) then errors := UnknownParameter p :: !errors
-    | Pop   c -> if not (SS.mem c comps)  then errors := UnknownCompartment c :: !errors
-    | PopSum cs -> List.iter (fun c -> if not (SS.mem c comps) then errors := UnknownCompartment c :: !errors) cs
+    | Param p -> if not (SS.mem p params) then errors := UnknownParameter (p, site) :: !errors
+    | Pop   c -> if not (SS.mem c comps)  then errors := UnknownCompartment (c, site) :: !errors
+    | PopSum cs -> List.iter (fun c -> if not (SS.mem c comps) then errors := UnknownCompartment (c, site) :: !errors) cs
     | BinOp b -> go b.left; go b.right
     | UnOp u  -> go u.arg
     | Cond c  -> go c.pred; go c.then_; go c.else_
     | TimeFunc n ->
-      if not (SS.mem n tfs) then errors := UnknownTimeFunction n :: !errors
+      if not (SS.mem n tfs) then errors := UnknownTimeFunction (n, site) :: !errors
     | TableLookup (t, idxs) ->
-      (if not (SS.mem t tables) then errors := UnknownTable t :: !errors);
+      (if not (SS.mem t tables) then errors := UnknownTable (t, site) :: !errors);
       List.iter go idxs
     | UncheckedDim u -> go u.inner
     | Reduce terms -> List.iter go terms
@@ -79,19 +87,19 @@ let validate (m : model) : (unit, error list) result =
   let tables     = List.map (fun (t: table)         -> t.name) m.tables        |> SS.of_list in
   let tfs        = List.map (fun (f: time_function) -> f.name) m.time_functions |> SS.of_list in
 
-  let check_expr_r e = check_expr_refs ~comps:comp_names ~params ~tables ~tfs errors e in
+  let check_expr_r ~site e = check_expr_refs ~site ~comps:comp_names ~params ~tables ~tfs errors e in
 
   (* stoichiometry *)
   List.iter (fun (tr: transition) ->
     List.iter (fun (comp, delta) ->
       if not (SS.mem comp comp_names)
-      then errors := UnknownCompartment comp :: !errors
+      then errors := UnknownCompartment (comp, InTransition tr.name) :: !errors
       else if SS.mem comp real_comps
       then errors := RealCompartmentInStoichiometry (tr.name, comp) :: !errors;
       if delta = 0
       then errors := ZeroDelta (tr.name, comp) :: !errors
     ) tr.stoichiometry;
-    check_expr_r tr.rate
+    check_expr_r ~site:(InTransition tr.name) tr.rate
   ) m.transitions;
 
   (* ODE equations *)
@@ -102,17 +110,18 @@ let validate (m : model) : (unit, error list) result =
   List.iter (fun (eq: ode_equation) ->
     if not (SS.mem eq.compartment real_comps)
     then errors := OdeForNonRealComp eq.compartment :: !errors;
-    check_expr_r eq.derivative
+    check_expr_r ~site:(InOde eq.compartment) eq.derivative
   ) m.ode_equations;
 
   (* observations *)
   List.iter (fun (obs: observation_model) ->
+    let here = InObservation obs.name in
     (match obs.projection with
      | CumulativeFlow tn ->
-       if not (SS.mem tn tr_set) then errors := UnknownTransition tn :: !errors
+       if not (SS.mem tn tr_set) then errors := UnknownTransition (tn, here) :: !errors
      | CumulativeFlowSum tns ->
        List.iter (fun tn ->
-         if not (SS.mem tn tr_set) then errors := UnknownTransition tn :: !errors
+         if not (SS.mem tn tr_set) then errors := UnknownTransition (tn, here) :: !errors
        ) tns
      | _ -> ());
     (* Walk observation-likelihood expressions. The likelihood AST
@@ -123,13 +132,14 @@ let validate (m : model) : (unit, error list) result =
        catches the `bata` typo here. m9 in the 2026-04-19 review —
        previously this branch was commented out, so these checks ran
        nowhere. *)
+    let chk e = check_expr_r ~site:here e in
     (match obs.likelihood with
-     | Poisson      { rate }                    -> check_expr_r rate
-     | NegBinomial  { mean; dispersion }        -> check_expr_r mean; check_expr_r dispersion
-     | Normal       { mean; sd }                -> check_expr_r mean; check_expr_r sd
-     | Binomial     { n; p }                    -> check_expr_r n; check_expr_r p
-     | BetaBinomial { n; alpha; beta }          -> check_expr_r n; check_expr_r alpha; check_expr_r beta
-     | Bernoulli    { p }                       -> check_expr_r p)
+     | Poisson      { rate }                    -> chk rate
+     | NegBinomial  { mean; dispersion }        -> chk mean; chk dispersion
+     | Normal       { mean; sd }                -> chk mean; chk sd
+     | Binomial     { n; p }                    -> chk n; chk p
+     | BetaBinomial { n; alpha; beta }          -> chk n; chk alpha; chk beta
+     | Bernoulli    { p }                       -> chk p)
   ) m.observations;
 
   if !errors = [] then Ok ()
