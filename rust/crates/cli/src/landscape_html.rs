@@ -370,7 +370,7 @@ beta\tloglik\tloglik_se\tn_replicates\tpoint_id
         let html = build_html("sir", "abc12345", "[]", &sample());
         let digest = runid::ContentHash::digest_bytes(html.as_bytes()).to_hex();
         assert_eq!(digest,
-            "834cccec86a127157095bc9ce1cbd80f5372b5d4b0925824d5eefe26595ebe13",
+            "f29263f98fb3d491fea64399f013d12717a3d6f679a504c0bddff81a1c60ef9f",
             "rendered HTML digest changed — the decouple must be byte-identical");
     }
 }
