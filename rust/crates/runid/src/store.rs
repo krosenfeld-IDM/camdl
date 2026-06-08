@@ -405,6 +405,14 @@ impl FsCasStore {
         // stale run.json), preserving only our fresh `.lock`.
         clear_except_lock(&dir)?;
 
+        // TEST-ONLY: fire at the instant the leaf holds our live `.lock` but no
+        // `run.json` (just cleared, not yet rewritten). A concurrent claimant
+        // reading the leaf here sees `Lookup::Miss`; the gate must route it
+        // through the live `.lock` (→ `FitInProgress`), not quarantine the dir
+        // out from under us. Inert in non-test builds.
+        #[cfg(test)]
+        clear_gap_hook(&dir);
+
         let mut rec = running;
         rec.status = RunStatus::Running;
         rec.artifacts = BTreeMap::new();
@@ -436,6 +444,11 @@ impl FsCasStore {
                     if same_identity_on_disk(&cand, &expected.run_id) {
                         return Ok(ClaimOutcome::Reclaim(cand));
                     }
+                    // Never quarantine a leaf a live process is holding: route
+                    // it to the `.lock` gate (`reclaim_or_refuse`) instead.
+                    if held_by_live_lock(&cand) {
+                        return Ok(ClaimOutcome::Fresh(cand));
+                    }
                     self.quarantine(&cand)?;
                     return Ok(ClaimOutcome::Fresh(cand));
                 }
@@ -443,7 +456,16 @@ impl FsCasStore {
                 // advance to the disambiguated candidate, never touch it.
                 Lookup::Collision(_) => continue,
                 // Dir exists with no run.json: an orphaned partial → quarantine.
+                // But a live `.lock` holder transiently shows no run.json while
+                // it runs `clear_except_lock` then rewrites it; quarantining
+                // there would rip the dir out from under the active holder and
+                // race its writes to a `NotFound`. A live lock ⇒ not orphan
+                // debris: route to the `.lock` gate, which refuses with
+                // `FitInProgress` (live) or reclaims (dead) — never quarantines.
                 Lookup::Miss => {
+                    if held_by_live_lock(&cand) {
+                        return Ok(ClaimOutcome::Fresh(cand));
+                    }
                     self.quarantine(&cand)?;
                     return Ok(ClaimOutcome::Fresh(cand));
                 }
@@ -768,6 +790,18 @@ fn read_lock_pid(lock: &Path) -> Option<u32> {
     fs::read_to_string(lock).ok().and_then(|s| s.trim().parse().ok())
 }
 
+/// Whether `dir` is currently held by a live `.lock` holder — i.e. some
+/// process is actively claiming/reclaiming this leaf right now. Used to keep
+/// `resolve_claim_dir` from quarantining a leaf out from under its legitimate
+/// holder: while the holder runs `clear_except_lock` it transiently removes
+/// `run.json`, and a concurrent claimant that read the leaf in that window
+/// would otherwise see `Lookup::Miss` and `rename` the whole (actively
+/// written) dir away — racing the holder's own writes to a `NotFound` error.
+/// A live `.lock` means "not orphan debris, route to the lock gate instead".
+fn held_by_live_lock(dir: &Path) -> bool {
+    matches!(read_lock_pid(&dir.join(".lock")), Some(p) if p != 0 && pid_is_alive(p))
+}
+
 /// A `.lock` already exists at claim time. Reclaim it iff its holder PID is
 /// **provably dead**, serializing the reclaim through a `.reclaim` lock so
 /// concurrent reclaimers can never both remove `.lock` and both enter the
@@ -903,6 +937,35 @@ fn reclaim_gap_hook(lock: &Path) {
     let guard = RECLAIM_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(h) = guard.as_ref() {
         h(lock);
+    }
+}
+
+/// TEST-ONLY hook fired inside `claim_streaming` at the instant the winning
+/// claimant holds the `.lock` (its own live PID) but has just `clear_except_lock`'d
+/// the leaf — so `run.json` is transiently absent. A test installs a closure to
+/// drive a concurrent claimant through `claim_streaming` at that instant and
+/// assert it does NOT quarantine the actively-held leaf (the `Lookup::Miss`
+/// false-orphan race). `None` for every test that does not opt in.
+///
+/// Held behind an `Arc` (not a `Box` like the reclaim hook) and invoked with
+/// the mutex *released*: the closure drives a concurrent claimant whose own
+/// `claim_streaming` may re-enter `clear_gap_hook`, so holding the mutex across
+/// the call would self-deadlock. Cloning the `Arc` under the lock and calling
+/// through the clone keeps re-entry lock-free.
+#[cfg(test)]
+type ClearGapHook = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
+#[cfg(test)]
+static CLEAR_GAP_HOOK: std::sync::Mutex<Option<ClearGapHook>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn clear_gap_hook(dir: &Path) {
+    let hook = CLEAR_GAP_HOOK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(h) = hook {
+        h(dir);
     }
 }
 

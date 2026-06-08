@@ -506,6 +506,126 @@ fn mode_b_reclaim_gap_is_not_exploitable() {
     cleanup(&root);
 }
 
+/// Deterministic proof of the `Lookup::Miss` false-orphan race in
+/// `resolve_claim_dir`.
+///
+/// When a claimant wins the `.lock` and runs `clear_except_lock`, the leaf
+/// holds its live `.lock` but `run.json` is transiently absent (just cleared,
+/// not yet rewritten). A *concurrent* claimant that reads the leaf in that
+/// window sees `Lookup::Miss` ("dir exists, no run.json") and — on the buggy
+/// code — treats it as orphan debris: it `rename`s the whole dir into
+/// quarantine, out from under the active holder. The holder's next write
+/// (`write_record_atomic`'s `rename(run.json.tmp → run.json)`) then fails with
+/// `Io(NotFound)` because its directory was moved — the exact symptom seen
+/// under CI concurrency (`unexpected claim error: Io(NotFound)`).
+///
+/// The `CLEAR_GAP_HOOK` fires at exactly that window and drives a real
+/// concurrent claimant of the SAME identity through `claim_streaming` there.
+/// Under the fix the intruder sees the live `.lock` and routes to the lock
+/// gate → `FitInProgress` (refused, no quarantine). The holder then completes
+/// cleanly. Buggy: the holder's finalize errors / the leaf is clobbered.
+#[test]
+fn mode_b_clear_window_is_not_quarantined() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // The clear-gap hook is a process-global; serialize against the other
+    // hook-installing tests (they share RECLAIM_HOOK_TEST_LOCK).
+    let _serial = super::RECLAIM_HOOK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let root = tmp_root("clear_window");
+    let store = Arc::new(FsCasStore::new(&root));
+    let leaf = root.join("fits").join("fit-aaaaaaaa").join("01-scout-bbbbbbbb");
+
+    // A definitely-dead PID for the planted crashed lock, so the winner
+    // reclaims it (→ enters claim_streaming → clear_except_lock → hook).
+    let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+    let dead_pid = child.id();
+    child.wait().expect("reap");
+
+    // Plant a crashed run: a `Running` leaf + orphan whose `.lock` holder is dead.
+    fs::remove_dir_all(&leaf).ok();
+    let c = store.claim_streaming(&leaf, record(id(0xaa))).unwrap();
+    c.write("orphan_chain.tsv", b"partial").unwrap();
+    drop(c);
+    fs::write(leaf.join(".lock"), dead_pid.to_string()).unwrap();
+
+    let fired = Arc::new(AtomicBool::new(false));
+    // True iff the intruder was refused (correct: a live `.lock` holds the
+    // leaf, so the gate routes to `reclaim_or_refuse` → `FitInProgress`).
+    let intruder_refused = Arc::new(AtomicBool::new(false));
+
+    // RAII disarm: restore the hook to `None` on every exit path (incl. an
+    // assertion unwind), so it can never leak into another test.
+    struct DisarmOnDrop;
+    impl Drop for DisarmOnDrop {
+        fn drop(&mut self) {
+            *super::CLEAR_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+    let _disarm = DisarmOnDrop;
+
+    {
+        let store_h = Arc::clone(&store);
+        let leaf_h = leaf.clone();
+        let fired_h = Arc::clone(&fired);
+        let refused_h = Arc::clone(&intruder_refused);
+        let mut guard = super::CLEAR_GAP_HOOK.lock().unwrap();
+        *guard = Some(Arc::new(move |_dir: &std::path::Path| {
+            if fired_h.swap(true, Ordering::SeqCst) {
+                return; // fire only on the first claim's clear window
+            }
+            let leaf2 = leaf_h.clone();
+            let store2 = Arc::clone(&store_h);
+            let refused2 = Arc::clone(&refused_h);
+            std::thread::spawn(move || {
+                match store2.claim_streaming(&leaf2, record(id(0xaa))) {
+                    // The buggy code quarantines the held leaf and the intruder
+                    // wins a `Fresh` claim — which the fix forbids.
+                    Ok(claim) => {
+                        claim
+                            .write("chain_intruder/trace.tsv", b"sweep\tll\n1\t-1.0\n")
+                            .unwrap();
+                        claim.finalize(record(id(0xaa))).unwrap();
+                    }
+                    // Correct: a live `.lock` holds the leaf → refused.
+                    Err(CasError::FitInProgress { .. }) | Err(CasError::AlreadyCompleted { .. }) => {
+                        refused2.store(true, Ordering::SeqCst);
+                    }
+                    Err(e) => panic!("intruder hit an unexpected error: {e:?}"),
+                }
+            })
+            .join()
+            .unwrap();
+        }));
+    }
+
+    // The reclaiming winner runs: reclaims the dead lock, clears the leaf
+    // (firing the hook with the intruder), then writes `Running`. On the buggy
+    // code its dir is quarantined mid-write → the write fails `Io(NotFound)`.
+    let winner = store.claim_streaming(&leaf, record(id(0xaa)));
+
+    *super::CLEAR_GAP_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+
+    let claim = winner.expect("winner's claim must succeed — its leaf was quarantined out from under it (Io NotFound)");
+    claim
+        .write("chain_winner/trace.tsv", b"sweep\tll\n1\t-2.0\n")
+        .unwrap();
+    claim.finalize(record(id(0xaa))).unwrap();
+
+    assert!(fired.load(Ordering::SeqCst), "the clear-gap hook never fired — the window was not exercised");
+    assert!(
+        intruder_refused.load(Ordering::SeqCst),
+        "the intruder was NOT refused — it quarantined a leaf held by a live `.lock` (the false-orphan race is open)"
+    );
+    // The winner's leaf must be a single intact Completed Hit, not clobbered.
+    assert!(
+        matches!(store.lookup(&leaf, &LeafIdentity::new(id(0xaa))), Lookup::Hit(_)),
+        "the winner's Completed leaf must be intact, not clobbered/quarantined"
+    );
+    cleanup(&root);
+}
+
 #[test]
 fn mode_b_reclaim_is_exclusive_under_concurrency() {
     use std::sync::atomic::{AtomicUsize, Ordering};
