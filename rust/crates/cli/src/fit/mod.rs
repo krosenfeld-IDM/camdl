@@ -833,6 +833,11 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         let mut stage_best_loglik: Option<f64> = None;
         let mut stage_best_chain: Option<usize> = None;
 
+        // Surface the registry caveat for Beta/Experimental methods, once per
+        // executing stage (after the cache-hit skip above, so reused stages
+        // stay silent). Registry-driven so it can't drift from `fit methods`.
+        methods::emit_status_banner(stage.method_name(), stage.backend().as_str());
+
         match stage {
             Stage::IF2 { backend, chains, particles, iterations, cooling, cooling_target_iters, init_method, survey_path, survey_top_k_n, loglik_eval, gate, dt_check, .. } => {
                 // clean_eval comes straight from the stage TOML — it is part of

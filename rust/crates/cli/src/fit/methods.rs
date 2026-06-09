@@ -145,9 +145,10 @@ pub fn lookup(algorithm: &str, backend: &str) -> Option<&'static InferenceMethod
 
 /// Validate a `(algorithm, backend)` pair at config-load time.
 ///
-/// On success returns the registry entry (so callers can read `status_note`
-/// for runtime banners). On failure returns a fully-formed multi-line error
-/// message that names a structural reason and suggests the right alternative.
+/// On failure returns a fully-formed multi-line error message that names a
+/// structural reason and suggests the right alternative. On success the entry
+/// is returned, but the runtime caveat banner is driven by `status_note` /
+/// `emit_status_banner` below rather than by callers inspecting the `Ok`.
 pub fn validate_combo(
     algorithm: &str,
     backend: &str,
@@ -156,6 +157,29 @@ pub fn validate_combo(
         return Ok(m);
     }
     Err(render_invalid_combo(algorithm, backend))
+}
+
+/// The registry caveat for a `(algorithm, backend)` pair — its `status_note` if
+/// the pair is registered and carries a non-empty note, else `None`. Single
+/// source of truth for the runtime caveat banner (`emit_status_banner`); the
+/// same field drives `camdl fit methods`, so the two can never drift.
+pub fn status_note(algorithm: &str, backend: &str) -> Option<&'static str> {
+    lookup(algorithm, backend)
+        .map(|m| m.status_note)
+        .filter(|s| !s.is_empty())
+}
+
+/// Print the registry caveat banner to stderr when the chosen method is
+/// Beta/Experimental (non-empty `status_note`). No-op for Stable methods and
+/// for unregistered pairs (those fail earlier in `validate_combo`). Driven
+/// entirely by the registry so the banner text and `camdl fit methods` stay in
+/// lockstep — this replaces the previously hand-coded, PMMH-only banner.
+pub fn emit_status_banner(algorithm: &str, backend: &str) {
+    use owo_colors::OwoColorize;
+    if let Some(note) = status_note(algorithm, backend) {
+        eprintln!("{}", format!("⚠ {note}").yellow());
+        eprintln!();
+    }
 }
 
 /// Per-pair structural reasons for known invalid combinations. Hand-crafted
@@ -669,6 +693,35 @@ mod tests {
             out[pf_idx..pf_line_end].contains("diagnostic"),
             "pfilter line should mark it as diagnostic"
         );
+    }
+
+    #[test]
+    fn status_note_is_the_single_source_for_runtime_caveats() {
+        // G4 (docs/dev/capabilities-system.md): the runtime caveat banner is
+        // driven by the registry `status_note`, not hand-coded per method.
+        // `status_note()` is what the fit/profile dispatch paths call, so this
+        // pins the contract — a hand-coded banner can no longer drift from the
+        // registry text, and Beta methods can't silently lack a runtime caveat.
+        assert!(
+            status_note("pmmh", "chain_binomial").is_some_and(|n| n.contains("T > 500")),
+            "experimental PMMH must surface its caveat at runtime"
+        );
+        // The bug this closes: Beta NLopt caveats never reached runtime before
+        // — only PMMH had a hand-coded banner.
+        assert!(
+            status_note("nl-sbplx", "ode").is_some_and(|n| n.contains("Phase 1")),
+            "Beta nl-sbplx caveat must surface at runtime, not just in `fit methods`"
+        );
+        assert!(
+            status_note("nl-bobyqa", "ode").is_some(),
+            "Beta nl-bobyqa carries a caveat"
+        );
+        // Stable methods: no banner.
+        assert_eq!(status_note("if2", "chain_binomial"), None);
+        assert_eq!(status_note("pgas", "chain_binomial"), None);
+        assert_eq!(status_note("pfilter", "chain_binomial"), None);
+        // Unregistered pair: no banner (validate_combo emits the hard error).
+        assert_eq!(status_note("pgas", "ode"), None);
     }
 
     #[test]

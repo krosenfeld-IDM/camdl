@@ -100,12 +100,9 @@ pub fn run_stage(
     resume: bool,
     starts_from: Option<&str>,
 ) -> Result<(), String> {
-    eprintln!("\x1b[33m⚠ PMMH is experimental. For models with T > 500 observations,\x1b[0m");
-    eprintln!("\x1b[33m  acceptance rates may be too low for reliable posterior sampling.\x1b[0m");
-    eprintln!("\x1b[33m  Correlated pseudo-marginal (rho config) helps but has limits\x1b[0m");
-    eprintln!("\x1b[33m  on discrete-state models. PGAS is planned for production use.\x1b[0m");
-    eprintln!();
-
+    // The experimental-PMMH caveat banner is emitted by the dispatch
+    // chokepoint (`methods::emit_status_banner`), driven by the registry
+    // `status_note` so it can't drift from `camdl fit methods`.
     let collector = DiagnosticCollector::new("pmmh");
     let estimate = &fit.estimate;
 

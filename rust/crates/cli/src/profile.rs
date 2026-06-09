@@ -111,6 +111,8 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         eprintln!("error: {}", msg);
         std::process::exit(1);
     }
+    // Registry-driven caveat for Beta/Experimental methods (e.g. pmmh, nl-*).
+    crate::fit::methods::emit_status_banner(algo_name, backend_name);
     let profile_algo = match algo_name {
         "if2"       => ProfileAlgo::If2,
         "pmmh"      => ProfileAlgo::Pmmh,
