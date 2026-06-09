@@ -3,32 +3,40 @@
 Audience: colleagues who aren't sold on static typing. **Every "before" below is
 real code from this repo (file:line), and several are bugs that actually shipped
 or are open right now** — not contrived strawmen. Dual purpose: (1) a concrete
-argument that the *type system*, not just more tests, would have made whole
+argument that the _type system_, not just more tests, would have made whole
 classes of these unrepresentable; (2) the type-solvable slice of the open
 backlog, with the fix design for each (see the work-list at the end).
 
 ## The thesis in one paragraph
 
-A test checks *"did the output change?"* A type checks *"is this state even
-constructible?"* The bugs below passed CI precisely because the **wrong state was
-representable** and the suite happened to exercise only the path where it looked
-fine. The recurring smell across this codebase is **one semantic implemented as N
-hand-maintained copies the compiler doesn't force to agree** (a value fn and its
-gradient; a production hash and its test reimplementation; an OCaml parser and its
-Rust mirror) plus **loosely-typed boundaries** (`Option<f64>`, `f64`-for-everything,
-string-concatenated references, `as i64` casts). Each example shows the loose type,
-why the compiler stayed silent, and the tighter type that turns the bug into a
-compile error or an unrepresentable state. The honest accounting — what typing does
-*not* catch, and the cost — is at the end.
+A test checks _"did the output change?"_ A type checks _"is this state even
+constructible?"_ The bugs below passed CI precisely because the **wrong state
+was representable** and the suite happened to exercise only the path where it
+looked fine. The recurring smell across this codebase is **one semantic
+implemented as N hand-maintained copies the compiler doesn't force to agree** (a
+value fn and its gradient; a production hash and its test reimplementation; an
+OCaml parser and its Rust mirror) plus **loosely-typed boundaries**
+(`Option<f64>`, `f64`-for-everything, string-concatenated references, `as i64`
+casts). Each example shows the loose type, why the compiler stayed silent, and
+the tighter type that turns the bug into a compile error or an unrepresentable
+state. The honest accounting — what typing does _not_ catch, and the cost — is
+at the end.
 
 ---
 
 ## 1. ParamValue ADT: "estimated" is a typed state, not a missing f64
 
-**Technique:** ADT / make illegal states unrepresentable (Option<f64> → Fixed | Estimated)  
-**Solves:** gh#191  ·  **M-class**
+**Technique:** ADT / make illegal states unrepresentable (Option<f64> → Fixed |
+Estimated)\
+**Solves:** gh#191 · **M-class**
 
-**The bug.** The gh#191 capability gate builds a CompiledModel from the raw IR to scan structural capabilities, but CompiledModel::new errors "parameter '<x>' has no value" for ESTIMATED parameters — which legitimately carry value=None until their start is resolved per-stage from [estimate].start. A purely structural check (transitions/compartments/balance) refused to run on any estimate-only fit, so the gate had to be papered over with fake placeholder values.
+**The bug.** The gh#191 capability gate builds a CompiledModel from the raw IR
+to scan structural capabilities, but CompiledModel::new errors "parameter '<x>'
+has no value" for ESTIMATED parameters — which legitimately carry value=None
+until their start is resolved per-stage from [estimate].start. A purely
+structural check (transitions/compartments/balance) refused to run on any
+estimate-only fit, so the gate had to be papered over with fake placeholder
+values.
 
 **Before (real code):**
 
@@ -69,7 +77,16 @@ let compiled = sim::CompiledModel::new(cap_model).unwrap_or_else(...);
 if let Err(msg) = gate_run_stages_against_model(&stages_to_run, &compiled) { ... }
 ```
 
-**Why the compiler stayed silent.** `Option<f64>` collapses two semantically distinct states into one `None`: "the user forgot to supply a value" (a real error) and "this parameter is estimated, its value is resolved later from [estimate].start" (legal, expected). The type carries no evidence of which one a `None` is, so every consumer must guess from context. CompiledModel::new guessed "error" — correct for a forward simulate, wrong for a structural capability scan. The compiler can't flag the mismatch because the absence of a value is, at the type level, exactly the same thing in both call sites. The doc comment on the field even spells the conflation out ("must be supplied at runtime" vs "value present") without distinguishing the estimated case at all.
+**Why the compiler stayed silent.** `Option<f64>` collapses two semantically
+distinct states into one `None`: "the user forgot to supply a value" (a real
+error) and "this parameter is estimated, its value is resolved later from
+[estimate].start" (legal, expected). The type carries no evidence of which one a
+`None` is, so every consumer must guess from context. CompiledModel::new guessed
+"error" — correct for a forward simulate, wrong for a structural capability
+scan. The compiler can't flag the mismatch because the absence of a value is, at
+the type level, exactly the same thing in both call sites. The doc comment on
+the field even spells the conflation out ("must be supplied at runtime" vs
+"value present") without distinguishing the estimated case at all.
 
 **After (the typed design):**
 
@@ -107,16 +124,41 @@ let v = match &p.value {
 // check (structural) never touches a value, and there is no None to backfill.
 ```
 
-**What this still doesn't catch (honest).** The ADT removes the "estimated == missing" conflation and the placeholder loop, but it does NOT by itself solve gh#191's substantive bug: real (ODE) reservoir state is frozen at init in the filter loops because ParticleState carries no real compartments — that's a missing-feature/dynamics bug, untouched by parameter typing (gh#191's real fix is the interim REAL_COMPARTMENTS gate plus carrying the reservoir in ParticleState). The type also can't enforce that Estimated.bounds is well-ordered (lo < hi) or that a Fixed value lies in any sane domain — those stay validation-time checks unless you go further with a refined/newtype bound. And serde will still happily deserialize an Estimated param in a context (plain forward `simulate`) that has no estimator to resolve it; making *that* unrepresentable needs a separate resolved-vs-unresolved model type (a "parse, don't validate" boundary), not just this enum.
+**What this still doesn't catch (honest).** The ADT removes the "estimated ==
+missing" conflation and the placeholder loop, but it does NOT by itself solve
+gh#191's substantive bug: real (ODE) reservoir state is frozen at init in the
+filter loops because ParticleState carries no real compartments — that's a
+missing-feature/dynamics bug, untouched by parameter typing (gh#191's real fix
+is the interim REAL_COMPARTMENTS gate plus carrying the reservoir in
+ParticleState). The type also can't enforce that Estimated.bounds is
+well-ordered (lo < hi) or that a Fixed value lies in any sane domain — those
+stay validation-time checks unless you go further with a refined/newtype bound.
+And serde will still happily deserialize an Estimated param in a context (plain
+forward `simulate`) that has no estimator to resolve it; making _that_
+unrepresentable needs a separate resolved-vs-unresolved model type (a "parse,
+don't validate" boundary), not just this enum.
 
 ---
 
 ## 2. One (value, grad) traversal beats two hand-synced density functions: the gamma-multiplier term that exists in the score but not the energy
 
-**Technique:** AD type / single source: collapse two separately-maintained functions (one returns the log-density VALUE, one returns its GRADIENT) into a single traversal that returns `(value, grad)` together — or a dual-number `Ad` type — so a density term cannot be present in one and absent in the other.  
-**Solves:** gh#197 (OPEN, the headline bug), gh#200 (OPEN, same value/grad-divergence class — gradient scores deterministic source-less transitions as Poisson while the value uses an exact-count check), gh#79 (OPEN, "Restructure shared gamma-density iterator in pgas value+gradient" — the exact dual-source refactor). Earlier instances of the same shape were patched one-off as gh#20 (gamma grad added) and gh#76 (obs grad added).  ·  **M-class**
+**Technique:** AD type / single source: collapse two separately-maintained
+functions (one returns the log-density VALUE, one returns its GRADIENT) into a
+single traversal that returns `(value, grad)` together — or a dual-number `Ad`
+type — so a density term cannot be present in one and absent in the other.\
+**Solves:** gh#197 (OPEN, the headline bug), gh#200 (OPEN, same
+value/grad-divergence class — gradient scores deterministic source-less
+transitions as Poisson while the value uses an exact-count check), gh#79 (OPEN,
+"Restructure shared gamma-density iterator in pgas value+gradient" — the exact
+dual-source refactor). Earlier instances of the same shape were patched one-off
+as gh#20 (gamma grad added) and gh#76 (obs grad added). · **M-class**
 
-**The bug.** In PGAS+NUTS, the log-likelihood VALUE (`complete_data_loglik`, pgas.rs) adds the gamma-multiplier density term to `transition_ll`, but the GRADIENT (`complete_data_loglik_grad`, pgas_grad.rs) adds the gamma term's derivative to `grad` while never adding the term's value to `log_p`. NUTS therefore integrates a Hamiltonian whose force (∂/∂σ²) does not match its energy (log_p), so the σ² (overdispersion) posterior is biased.
+**The bug.** In PGAS+NUTS, the log-likelihood VALUE (`complete_data_loglik`,
+pgas.rs) adds the gamma-multiplier density term to `transition_ll`, but the
+GRADIENT (`complete_data_loglik_grad`, pgas_grad.rs) adds the gamma term's
+derivative to `grad` while never adding the term's value to `log_p`. NUTS
+therefore integrates a Hamiltonian whose force (∂/∂σ²) does not match its energy
+(log_p), so the σ² (overdispersion) posterior is biased.
 
 **Before (real code):**
 
@@ -140,7 +182,18 @@ Verification that the value site is missing on the grad side:
 The grad fn returns `(log_p, grad)` at :460 with log_p missing the term whose gradient is in grad.
 ```
 
-**Why the compiler stayed silent.** Both functions satisfy the type `-> Result<(f64, Vec<f64>), SimError>` (grad) and `-> Result<LogLikComponents, SimError>` (value). The contract that binds them — "every term contributing to `grad` must also contribute to `log_p`, with the SAME shape/scale/gamma_idx iteration" — is stated only in a doc comment ("Mirrors the gamma-density loop in `pgas::complete_data_loglik` exactly … same source_group iteration order, same gamma_idx accounting", pgas_grad.rs:265-268). `f64` is `f64`: the compiler cannot see that one `f64` is the integral of the other. Two independent loops over `model.source_groups` can drift (a term added to one, a guard tightened in only one — exactly gh#200) and still typecheck. Nothing forces the value and its derivative to be produced by the same code path.
+**Why the compiler stayed silent.** Both functions satisfy the type
+`-> Result<(f64, Vec<f64>), SimError>` (grad) and
+`-> Result<LogLikComponents, SimError>` (value). The contract that binds them —
+"every term contributing to `grad` must also contribute to `log_p`, with the
+SAME shape/scale/gamma_idx iteration" — is stated only in a doc comment
+("Mirrors the gamma-density loop in `pgas::complete_data_loglik` exactly … same
+source_group iteration order, same gamma_idx accounting", pgas_grad.rs:265-268).
+`f64` is `f64`: the compiler cannot see that one `f64` is the integral of the
+other. Two independent loops over `model.source_groups` can drift (a term added
+to one, a guard tightened in only one — exactly gh#200) and still typecheck.
+Nothing forces the value and its derivative to be produced by the same code
+path.
 
 **After (the typed design):**
 
@@ -181,19 +234,48 @@ Make the value and its gradient impossible to author separately by computing the
 The point: there is no longer a place to write a term's derivative without its value. The grad fn's return is literally `(acc.val, acc.grad)` from one accumulator; omitting the gamma value would require omitting its gradient too (and then the term simply isn't there on either side — which is at least *consistent*, the property NUTS actually needs).
 ```
 
-**What this still doesn't catch (honest).** Honest limits a skeptic should weigh:
-1. An `Ad` type guarantees val/grad consistency PER TERM, but does not guarantee the per-term math is correct: a wrong analytic derivative inside `log_gamma_density_ad` (e.g. a sign error in `dlg_dscale`) is consistent val-vs-grad and still typechecks. Catching that needs a finite-difference check test, not types. (camdl deliberately uses compiler-emitted symbolic derivatives, not runtime autodiff — so the `Ad` here is a discipline for the hand-written density terms, and the FD test stays mandatory.)
-2. It does not by itself fix gh#200's other half: the divergence there is in the *iteration predicate* (deterministic source-less transitions scored as Poisson on one side, exact-count on the other). A shared `Ad`-returning iterator fixes it only if both sides are forced to call that one iterator; if the value path keeps its own loop, the predicate can still drift. The structural fix (gh#79) is "one iterator, two consumers," which the `Ad` return enables but a careless refactor could still bypass.
-3. `Ad` carries a `Vec<f64>` of length d per scalar — allocation/perf cost in a hot PGAS inner loop. A real implementation would want a fixed-size or arena-backed gradient buffer, or to keep the single-traversal-returning-(value,grad) form (cheaper) rather than a per-scalar dual number. The teaching point (single source of truth for value+grad) holds for either; the dual-number sketch is the clearer illustration, the single-traversal form is the one you'd ship.
+**What this still doesn't catch (honest).** Honest limits a skeptic should
+weigh:
+
+1. An `Ad` type guarantees val/grad consistency PER TERM, but does not guarantee
+   the per-term math is correct: a wrong analytic derivative inside
+   `log_gamma_density_ad` (e.g. a sign error in `dlg_dscale`) is consistent
+   val-vs-grad and still typechecks. Catching that needs a finite-difference
+   check test, not types. (camdl deliberately uses compiler-emitted symbolic
+   derivatives, not runtime autodiff — so the `Ad` here is a discipline for the
+   hand-written density terms, and the FD test stays mandatory.)
+2. It does not by itself fix gh#200's other half: the divergence there is in the
+   _iteration predicate_ (deterministic source-less transitions scored as
+   Poisson on one side, exact-count on the other). A shared `Ad`-returning
+   iterator fixes it only if both sides are forced to call that one iterator; if
+   the value path keeps its own loop, the predicate can still drift. The
+   structural fix (gh#79) is "one iterator, two consumers," which the `Ad`
+   return enables but a careless refactor could still bypass.
+3. `Ad` carries a `Vec<f64>` of length d per scalar — allocation/perf cost in a
+   hot PGAS inner loop. A real implementation would want a fixed-size or
+   arena-backed gradient buffer, or to keep the
+   single-traversal-returning-(value,grad) form (cheaper) rather than a
+   per-scalar dual number. The teaching point (single source of truth for
+   value+grad) holds for either; the dual-number sketch is the clearer
+   illustration, the single-traversal form is the one you'd ship.
 
 ---
 
 ## 3. resolve-don't-stringly-type: indexed references lowered by positional String.concat drop the dimension label
 
-**Technique:** resolve don't stringly-type (parse to a typed, dimension-checked reference instead of a positionally-concatenated string)  
-**Solves:** gh#111 (OPEN — the resolver was never built), gh#112 (CLOSED, fixed in f61db93a as a worked example: table-lookup arity). Per the issue, #111's resolver subsumes upstream Highs #9/#10/#12 and parts of #13.  ·  **L-class**
+**Technique:** resolve don't stringly-type (parse to a typed, dimension-checked
+reference instead of a positionally-concatenated string)\
+**Solves:** gh#111 (OPEN — the resolver was never built), gh#112 (CLOSED, fixed
+in f61db93a as a worked example: table-lookup arity). Per the issue, #111's
+resolver subsumes upstream Highs #9/#10/#12 and parts of #13. · **L-class**
 
-**The bug.** An indexed reference like S[patch = p] or S[sex = female, age = child] is lowered by throwing away the dimension label and gluing the index values onto the base name positionally with String.concat "_". A named index whose label does not match the declaration order, an under-indexed reference, or an over-arity reference all produce a wrong/phantom concrete name rather than an error — silently binding the wrong compartment, flow, or table cell that downstream force-of-infection and likelihood depend on.
+**The bug.** An indexed reference like S[patch = p] or S[sex = female, age =
+child] is lowered by throwing away the dimension label and gluing the index
+values onto the base name positionally with String.concat "_". A named index
+whose label does not match the declaration order, an under-indexed reference, or
+an over-arity reference all produce a wrong/phantom concrete name rather than an
+error — silently binding the wrong compartment, flow, or table cell that
+downstream force-of-infection and likelihood depend on.
 
 **Before (real code):**
 
@@ -216,7 +298,20 @@ ocaml/lib/compiler/expander.ml:2007-2009 — the lowering site, positional conca
 The same `index_item_to_str` + `String.concat "_"` shape repeats at expander.ml:1968, 1993, 2004, 4215, 4239, 4311, 4341, 4350, 4375, 3520, 3532, 4477 (compartments, transition flows, indexed time functions, indexed params, interventions ASet/AAdd, cumulative-flow projections, observations). The type of the input is `index_item = IPosn of expr | INamed of string * expr` (ast.ml:38-40) and `EIndex of string * index_item list` (ast.ml:52) — `base` is just a `string` and there is no carried declared-dimension vector, so nothing forces a consistency check.
 ```
 
-**Why the compiler stayed silent.** The reference's *identity* is a bare `string` (`EIndex of string * index_item list`) and its lowered form is another bare `string` (`Ir.Param`/compartment name produced by `String.concat`). The dimension vector of the referenced object is never reified into a type: `index_item_to_str` takes one `index_item` in isolation, with no access to "what dimensions does `base` declare and in what order," so OCaml's exhaustive match on `INamed (label, _)` *can* bind `label` but the surrounding function has nothing to validate it against — discarding it with `_` typechecks fine. List length (arity) and label-to-dimension membership are runtime list facts, not type-level facts, so `List.map index_item_to_str items` over an items list of any length, in any order, is well-typed. The compiler enforces that you produced *a* string, never that the string names a real cell. (gh#112 showed the dual: `List.mapi` ran over `items` not `tdims`, so a too-short item list typechecked and produced a partial-prefix linear index.)
+**Why the compiler stayed silent.** The reference's _identity_ is a bare
+`string` (`EIndex of string * index_item list`) and its lowered form is another
+bare `string` (`Ir.Param`/compartment name produced by `String.concat`). The
+dimension vector of the referenced object is never reified into a type:
+`index_item_to_str` takes one `index_item` in isolation, with no access to "what
+dimensions does `base` declare and in what order," so OCaml's exhaustive match
+on `INamed (label, _)` _can_ bind `label` but the surrounding function has
+nothing to validate it against — discarding it with `_` typechecks fine. List
+length (arity) and label-to-dimension membership are runtime list facts, not
+type-level facts, so `List.map index_item_to_str items` over an items list of
+any length, in any order, is well-typed. The compiler enforces that you produced
+_a_ string, never that the string names a real cell. (gh#112 showed the dual:
+`List.mapi` ran over `items` not `tdims`, so a too-short item list typechecked
+and produced a partial-prefix linear index.)
 
 **After (the typed design):**
 
@@ -243,16 +338,44 @@ Resolve at the EIndex site to a typed reference, against the object's declared d
 checks each `v` is a real level of that dimension (membership), checks no dimension is bound twice, and decides omitted dimensions: error in a scalar position, expand to `RFlowSum` in an expression/projection position (spec's omitted-dimension summation). Only a fully-resolved `comp_id` can be turned into a name. Because the lowering now consumes a `resolved_ref` (a `comp_id` carries the proof it was built from a validated dim_binding per declared dimension), there is no code path that emits a concrete name from a label-dropped, under-arity, or out-of-order index list — the positional `String.concat` is deleted, and `S[patch = p]` can no longer alias `S_p` by position.
 ```
 
-**What this still doesn't catch (honest).** Types here buy validity-by-construction of the *reference* (right arity, real dimension, real level, label honored), not correctness of the *model*. What this still does NOT catch: (1) the modeler binding the wrong-but-valid level — `S[age = child]` when they meant `adult` is two legal `comp_id`s and indistinguishable to any type; (2) whether expanding an omitted dimension to a *sum* (RFlowSum) is what the epidemiologist intended vs. an error they'd want flagged — that's a spec policy choice the type only encodes once you've decided it; (3) the dimension/level *names themselves* are still strings sourced from the DSL, so a typo in a `dimensions{}` declaration produces a valid-but-wrong universe of levels that resolution will faithfully honor; (4) it does nothing for the numeric/units correctness of the expression the reference sits inside (that's dimcheck's job). And the resolver only helps if every lowering site is actually migrated to consume `resolved_ref` — until the ~14 `index_item_to_str`/`String.concat` sites are all replaced, a single un-migrated site re-opens the stringly-typed hole, which is why gh#111 remains open after gh#112's localized table-only fix.
+**What this still doesn't catch (honest).** Types here buy
+validity-by-construction of the _reference_ (right arity, real dimension, real
+level, label honored), not correctness of the _model_. What this still does NOT
+catch: (1) the modeler binding the wrong-but-valid level — `S[age = child]` when
+they meant `adult` is two legal `comp_id`s and indistinguishable to any type;
+(2) whether expanding an omitted dimension to a _sum_ (RFlowSum) is what the
+epidemiologist intended vs. an error they'd want flagged — that's a spec policy
+choice the type only encodes once you've decided it; (3) the dimension/level
+_names themselves_ are still strings sourced from the DSL, so a typo in a
+`dimensions{}` declaration produces a valid-but-wrong universe of levels that
+resolution will faithfully honor; (4) it does nothing for the numeric/units
+correctness of the expression the reference sits inside (that's dimcheck's job).
+And the resolver only helps if every lowering site is actually migrated to
+consume `resolved_ref` — until the ~14 `index_item_to_str`/`String.concat` sites
+are all replaced, a single un-migrated site re-opens the stringly-typed hole,
+which is why gh#111 remains open after gh#112's localized table-only fix.
 
 ---
 
 ## 4. Derive the content hash from the type, not a hand-maintained allowlist
 
-**Technique:** derive don't hand-list (make "enumerate every input" a property of the type, via #[derive(RunInput)] / a content-hash trait, instead of a string allowlist humans maintain — and route every consumer, incl. tests, through that one impl)  
-**Solves:** gh#147 (closed — fixed by extending the allowlist, the worked example); gh#189 and gh#190 (both open, both M-class, both cite the derive design as the fix: "field-add re-keys automatically via #[derive(RunInput)]")  ·  **M-class**
+**Technique:** derive don't hand-list (make "enumerate every input" a property
+of the type, via #[derive(RunInput)] / a content-hash trait, instead of a string
+allowlist humans maintain — and route every consumer, incl. tests, through that
+one impl)\
+**Solves:** gh#147 (closed — fixed by extending the allowlist, the worked
+example); gh#189 and gh#190 (both open, both M-class, both cite the derive
+design as the fix: "field-add re-keys automatically via #[derive(RunInput)]") ·
+**M-class**
 
-**The bug.** `model_hash` keyed the simulation cache off a hand-written allowlist of IR field names. The list omitted `output` cadence, `simulation.t_end`, `origin`/`origin_rata_die`, and `time_unit`, so two models differing only in (e.g.) the run horizon or calendar origin hashed equal — the second run was silently served the first run's cached trajectory. A silent wrong answer in software that informs public-health decisions, not a crash. The same allowlist was hand-copied into 3 integration tests (`model_hash_for_test`), a forked source-of-truth free to drift from production.
+**The bug.** `model_hash` keyed the simulation cache off a hand-written
+allowlist of IR field names. The list omitted `output` cadence,
+`simulation.t_end`, `origin`/`origin_rata_die`, and `time_unit`, so two models
+differing only in (e.g.) the run horizon or calendar origin hashed equal — the
+second run was silently served the first run's cached trajectory. A silent wrong
+answer in software that informs public-health decisions, not a crash. The same
+allowlist was hand-copied into 3 integration tests (`model_hash_for_test`), a
+forked source-of-truth free to drift from production.
 
 **Before (real code):**
 
@@ -293,7 +416,17 @@ fn model_hash_for_test(ir_json: &str) -> String {
 // pmmh_bad_init_skip.rs:65 — three hand replicas of one algorithm.
 ```
 
-**Why the compiler stayed silent.** The cache key is computed by iterating a `[&str]` literal and `obj.get(key)`-ing an untyped `serde_json::Value`. The IR's real field set is data the compiler never sees at the hash site: adding `time_unit` to the schema (OCaml + Rust IR types) does not change the `&str` array, and the type checker has no obligation linking "field on the model type" to "string in this list." So omitting a trajectory-determining field is well-typed — it compiles, runs, and returns a hash that happens to ignore that field. The test replicas are even worse: the only thing tying `model_hash_for_test` to `model_hash` is a doc-comment ("Replicate `crate::hashing::model_hash`"), which the compiler cannot enforce. Both can drift to green independently.
+**Why the compiler stayed silent.** The cache key is computed by iterating a
+`[&str]` literal and `obj.get(key)`-ing an untyped `serde_json::Value`. The IR's
+real field set is data the compiler never sees at the hash site: adding
+`time_unit` to the schema (OCaml + Rust IR types) does not change the `&str`
+array, and the type checker has no obligation linking "field on the model type"
+to "string in this list." So omitting a trajectory-determining field is
+well-typed — it compiles, runs, and returns a hash that happens to ignore that
+field. The test replicas are even worse: the only thing tying
+`model_hash_for_test` to `model_hash` is a doc-comment ("Replicate
+`crate::hashing::model_hash`"), which the compiler cannot enforce. Both can
+drift to green independently.
 
 **After (the typed design):**
 
@@ -334,16 +467,42 @@ struct ModelInput {
 // second hand impl — killing the `model_hash_for_test` fork by construction.
 ```
 
-**What this still doesn't catch (honest).** Honest gaps a skeptic should hold onto: (1) The derive guarantees every *field* is hashed, but the *include/exclude* policy is still a human judgement — marking a genuinely trajectory-determining field `#[run_input(provenance)]` re-creates the exact gh#147 bug, just spelled differently. The win is that the omission is now an explicit, reviewable annotation at the field, not an invisible absence from a far-away string list. (2) It does not catch impurity — if `f` reads `dt`, the clock, or an env var the input type doesn't enumerate, the hash is still blind to it; the proposal flags this separately (the degeneracy watchdog reads wall-clock) and that is exactly the shape of open gh#189/#190 (`dt`/`obs_alignment`/holdout-bytes missing from a *different* identity payload). (3) `schema_version` is a manual escape hatch: a semantic meaning-change to a field that keeps its bytes (e.g. reinterpreting an existing number) still needs a human to bump the version — the type cannot see that. (4) As of HEAD the migration is incomplete: `runid` + the derive exist, but live `hashing.rs::model_hash` was *not* ported onto it (gh#147 was closed by appending strings), so the allowlist and the three test replicas are still in the tree — the type-level fix is built but not yet routed through here.
+**What this still doesn't catch (honest).** Honest gaps a skeptic should hold
+onto: (1) The derive guarantees every _field_ is hashed, but the
+_include/exclude_ policy is still a human judgement — marking a genuinely
+trajectory-determining field `#[run_input(provenance)]` re-creates the exact
+gh#147 bug, just spelled differently. The win is that the omission is now an
+explicit, reviewable annotation at the field, not an invisible absence from a
+far-away string list. (2) It does not catch impurity — if `f` reads `dt`, the
+clock, or an env var the input type doesn't enumerate, the hash is still blind
+to it; the proposal flags this separately (the degeneracy watchdog reads
+wall-clock) and that is exactly the shape of open gh#189/#190
+(`dt`/`obs_alignment`/holdout-bytes missing from a _different_ identity
+payload). (3) `schema_version` is a manual escape hatch: a semantic
+meaning-change to a field that keeps its bytes (e.g. reinterpreting an existing
+number) still needs a human to bump the version — the type cannot see that. (4)
+As of HEAD the migration is incomplete: `runid` + the derive exist, but live
+`hashing.rs::model_hash` was _not_ ported onto it (gh#147 was closed by
+appending strings), so the allowlist and the three test replicas are still in
+the tree — the type-level fix is built but not yet routed through here.
 
 ---
 
 ## 5. newtypes for time scalars: making the StepClock dt/grid_dt swap a compile error
 
-**Technique:** newtype (one f64 field per semantic role) — distinct types for distinct quantities so a transposition fails to typecheck  
-**Solves:** Review finding #11 (StepClock dual-dt invariant rides on adjacent bare f64). No matching open gh# issue found in-tree; this is the audit/teaching example. Same hazard class as time_to_step(t, dt) transposition.  ·  **L-class**
+**Technique:** newtype (one f64 field per semantic role) — distinct types for
+distinct quantities so a transposition fails to typecheck\
+**Solves:** Review finding #11 (StepClock dual-dt invariant rides on adjacent
+bare f64). No matching open gh# issue found in-tree; this is the audit/teaching
+example. Same hazard class as time_to_step(t, dt) transposition. · **L-class**
 
-**The bug.** step_one takes the realized substep length and the nominal model grid as two adjacent bare f64 params (dt, grid_dt) with distinct meanings — dt drives the transition probability/overdispersion math, grid_dt keys intervention/event firing. Transposing them at a call site compiles, passes every on-grid golden (where dt == grid_dt), and silently corrupts only the off-grid inference path (PGAS/correlated-PF clipping to an off-grid observation) — i.e. exactly the runs that feed a posterior.
+**The bug.** step_one takes the realized substep length and the nominal model
+grid as two adjacent bare f64 params (dt, grid_dt) with distinct meanings — dt
+drives the transition probability/overdispersion math, grid_dt keys
+intervention/event firing. Transposing them at a call site compiles, passes
+every on-grid golden (where dt == grid_dt), and silently corrupts only the
+off-grid inference path (PGAS/correlated-PF clipping to an off-grid observation)
+— i.e. exactly the runs that feed a posterior.
 
 **Before (real code):**
 
@@ -381,7 +540,16 @@ pub fn time_to_step(t: f64, dt: f64) -> i64 {
 }
 ```
 
-**Why the compiler stayed silent.** All three quantities are f64, so the type checker treats `step_dt` and `dt` (grid) as interchangeable in adjacent argument positions; `step_one(..., dt, step_dt, ...)` typechecks identically. The invariant "evaluate the kernel on dt_actual, key fire-steps on grid_dt" lives only in a doc comment and a parameter name, neither of which the compiler enforces. The same is true of `time_to_step(t, dt)`: `time_to_step(dt, t)` is well-typed and silently wrong. The on-grid Snap forward path and every single-dt golden have dt == grid_dt, so the swap is observationally identical there — the divergence only appears when an Exact inference substep is clipped to an off-grid observation, which is the one path with no golden coverage.
+**Why the compiler stayed silent.** All three quantities are f64, so the type
+checker treats `step_dt` and `dt` (grid) as interchangeable in adjacent argument
+positions; `step_one(..., dt, step_dt, ...)` typechecks identically. The
+invariant "evaluate the kernel on dt_actual, key fire-steps on grid_dt" lives
+only in a doc comment and a parameter name, neither of which the compiler
+enforces. The same is true of `time_to_step(t, dt)`: `time_to_step(dt, t)` is
+well-typed and silently wrong. The on-grid Snap forward path and every single-dt
+golden have dt == grid_dt, so the swap is observationally identical there — the
+divergence only appears when an Exact inference substep is clipped to an
+off-grid observation, which is the one path with no golden coverage.
 
 **After (the typed design):**
 
@@ -415,16 +583,37 @@ pub fn time_to_step(t: Time, grid: GridDt) -> i64 { (t.0 / grid.0).round() as i6
 // #[repr(transparent)] keeps it zero-cost.
 ```
 
-**What this still doesn't catch (honest).** Newtypes catch the transposition of two arguments of *different* roles, not two of the *same* role: swapping two `Time` args (e.g. `t0`/`t1` in `interval_steps(t0, t1, dt)`) still typechecks — only the `dt1 >= dt0` debug_assert guards that. They don't enforce the numeric invariant itself: nothing stops a caller constructing `GridDt(step_dt.0)` and re-introducing the bug, because the wrap is an explicit, unchecked coercion (the boundary where you read an f64 off the IR or out of cfg.dt is still a trust point). They add no protection against the values being *computed* wrong upstream (a mis-clipped `step_dt` is a valid `Dt`). And `PartialOrd`/arithmetic impls must be written deliberately — a careless `impl Add<Dt> for Time` that also accepts `GridDt` would re-open the hole. The off-grid path still needs the existing bit-exactness test (`substep_is_bit_exact_dt_min_not_t_to_minus_t`) — types pin *which* quantity flows where, not *that the float math is right*.
+**What this still doesn't catch (honest).** Newtypes catch the transposition of
+two arguments of _different_ roles, not two of the _same_ role: swapping two
+`Time` args (e.g. `t0`/`t1` in `interval_steps(t0, t1, dt)`) still typechecks —
+only the `dt1 >= dt0` debug_assert guards that. They don't enforce the numeric
+invariant itself: nothing stops a caller constructing `GridDt(step_dt.0)` and
+re-introducing the bug, because the wrap is an explicit, unchecked coercion (the
+boundary where you read an f64 off the IR or out of cfg.dt is still a trust
+point). They add no protection against the values being _computed_ wrong
+upstream (a mis-clipped `step_dt` is a valid `Dt`). And `PartialOrd`/arithmetic
+impls must be written deliberately — a careless `impl Add<Dt> for Time` that
+also accepts `GridDt` would re-open the hole. The off-grid path still needs the
+existing bit-exactness test (`substep_is_bit_exact_dt_min_not_t_to_minus_t`) —
+types pin _which_ quantity flows where, not _that the float math is right_.
 
 ---
 
 ## 6. parse-don't-validate: a typed Count at the IR/compile boundary, not a raw f64 cast at simulation time
 
-**Technique:** parse, don't validate (smart-constructor newtype `Count`) + resolve-don't-stringly-type (range-check the table index at compile time so the eval path is infallible / has no panic)  
-**Solves:** gh#124 (CLOSED, used as worked example), gh#127 (OPEN, the OOB table panic in resolved_expr.rs). Couples to gh#123 (validator completeness).  ·  **L-class**
+**Technique:** parse, don't validate (smart-constructor newtype `Count`) +
+resolve-don't-stringly-type (range-check the table index at compile time so the
+eval path is infallible / has no panic)\
+**Solves:** gh#124 (CLOSED, used as worked example), gh#127 (OPEN, the OOB table
+panic in resolved_expr.rs). Couples to gh#123 (validator completeness). ·
+**L-class**
 
-**The bug.** Compartment initial-condition values flow as raw `f64` all the way into the simulator, where they are cast `*val as i64` / `v.round() as i64` with no finiteness, nonnegativity, or integrality check — so `I0 = -3`, `NaN`, `0.6`, or `1e20` silently become a wrong i64 seed. Separately, a dynamic table-lookup index that goes out of range `panic!`s inside the per-substep, per-particle hot evaluator instead of being rejected at compile time.
+**The bug.** Compartment initial-condition values flow as raw `f64` all the way
+into the simulator, where they are cast `*val as i64` / `v.round() as i64` with
+no finiteness, nonnegativity, or integrality check — so `I0 = -3`, `NaN`, `0.6`,
+or `1e20` silently become a wrong i64 seed. Separately, a dynamic table-lookup
+index that goes out of range `panic!`s inside the per-substep, per-particle hot
+evaluator instead of being rejected at compile time.
 
 **Before (real code):**
 
@@ -465,7 +654,18 @@ ResolvedExpr::TableLookup { table_idx, oob, table_len, index } => {
 }
 ```
 
-**Why the compiler stayed silent.** The IR's `InitialConditions::Explicit` carries `f64` and the int-compartment slot is `i64`. `as i64` is Rust's total, lossy, *infallible* primitive cast: `NaN as i64 == 0`, `-3.0 as i64 == -3`, `0.6 as i64 == 0`, `1e20 as i64` saturates. The compiler is *satisfied* — every f64 maps to some i64, so there is no type to make it reject. The type `f64` literally encodes "any float, including the invalid ones"; the validity predicate (finite ∧ ≥0 ∧ integral) lives only in the programmer's head, not in the type, so nothing forces a check before the cast. Likewise the table index is a runtime f64 with the in-range invariant unstated in any type; the only enforcement point is a runtime branch in the evaluator, and the chosen failure mode there is `panic!` — which the type system also can't see as "this function can fail," because a panic is not in the return type.
+**Why the compiler stayed silent.** The IR's `InitialConditions::Explicit`
+carries `f64` and the int-compartment slot is `i64`. `as i64` is Rust's total,
+lossy, _infallible_ primitive cast: `NaN as i64 == 0`, `-3.0 as i64 == -3`,
+`0.6 as i64 == 0`, `1e20 as i64` saturates. The compiler is _satisfied_ — every
+f64 maps to some i64, so there is no type to make it reject. The type `f64`
+literally encodes "any float, including the invalid ones"; the validity
+predicate (finite ∧ ≥0 ∧ integral) lives only in the programmer's head, not in
+the type, so nothing forces a check before the cast. Likewise the table index is
+a runtime f64 with the in-range invariant unstated in any type; the only
+enforcement point is a runtime branch in the evaluator, and the chosen failure
+mode there is `panic!` — which the type system also can't see as "this function
+can fail," because a panic is not in the return type.
 
 **After (the typed design):**
 
@@ -506,16 +706,42 @@ let checked = TableIdx::new(table_idx_val, table_len)
 // (per gh#127's fix) — never panic! — converting the model assertion into a per-particle error.
 ```
 
-**What this still doesn't catch (honest).** Honest limits a skeptic should hear: (1) `Count` only makes the *count* valid in isolation — it does not make the *sum* of counts equal N, nor catch a biologically wrong-but-valid seed like `I0 = 10^6` in a population of 1000; that's a cross-field invariant a single newtype can't express. (2) For a *dynamic* table index whose value depends on simulation state, no compile-time `TableIdx` can prove in-range — the index isn't known until eval, so the best types buy you is forcing the eval path to return `Result` (a controlled per-particle error) instead of `panic!`; the *possibility* of OOB at runtime is irreducible, types only relocate it from panic to a typed error. (3) The smart constructor's correctness still rests on a hand-written predicate (the `1e-9` integrality tolerance, the finite/nonneg checks) — if that predicate is wrong, the type faithfully enforces the wrong thing; types move the check to one auditable place but don't verify the check itself. (4) Nothing here stops a future contributor from writing a fresh `as i64` elsewhere — you'd need a lint (e.g. clippy `cast_possible_truncation`) or a grep gate to keep the boundary the *only* cast site.
+**What this still doesn't catch (honest).** Honest limits a skeptic should hear:
+(1) `Count` only makes the _count_ valid in isolation — it does not make the
+_sum_ of counts equal N, nor catch a biologically wrong-but-valid seed like
+`I0 = 10^6` in a population of 1000; that's a cross-field invariant a single
+newtype can't express. (2) For a _dynamic_ table index whose value depends on
+simulation state, no compile-time `TableIdx` can prove in-range — the index
+isn't known until eval, so the best types buy you is forcing the eval path to
+return `Result` (a controlled per-particle error) instead of `panic!`; the
+_possibility_ of OOB at runtime is irreducible, types only relocate it from
+panic to a typed error. (3) The smart constructor's correctness still rests on a
+hand-written predicate (the `1e-9` integrality tolerance, the finite/nonneg
+checks) — if that predicate is wrong, the type faithfully enforces the wrong
+thing; types move the check to one auditable place but don't verify the check
+itself. (4) Nothing here stops a future contributor from writing a fresh
+`as i64` elsewhere — you'd need a lint (e.g. clippy `cast_possible_truncation`)
+or a grep gate to keep the boundary the _only_ cast site.
 
 ---
 
 ## 7. Make a dropped derivative an explicit typed state, not a silent Const 0.0
 
-**Technique:** make silent states explicit (ADT: Deriv = Known of expr | Unsupported of reason) — turn an implicit "I gave up and returned 0" into a value the caller is forced to handle  
-**Solves:** #119 (parametric forcing/table params un-estimable — frozen on the Rust side AND zero-gradient on the OCaml side), #128 (unknown rate_grad keys; same silent-wrong-posterior class), #180 (open: parametric DerivedExpr projection drops a chain-rule term — same "dropped derivative term" shape)  ·  **M-class**
+**Technique:** make silent states explicit (ADT: Deriv = Known of expr |
+Unsupported of reason) — turn an implicit "I gave up and returned 0" into a
+value the caller is forced to handle\
+**Solves:** #119 (parametric forcing/table params un-estimable — frozen on the
+Rust side AND zero-gradient on the OCaml side), #128 (unknown rate_grad keys;
+same silent-wrong-posterior class), #180 (open: parametric DerivedExpr
+projection drops a chain-rule term — same "dropped derivative term" shape) ·
+**M-class**
 
-**The bug.** OCaml autodiff differentiates TimeFunc and TableLookup nodes to Const 0.0 unconditionally. A parameter that enters a transition rate ONLY through a forcing function (e.g. seasonal amplitude) or a table entry gets a silent zero gradient: it's omitted from rate_grad, the likelihood is flat along that axis, and NUTS/PGAS report a clean-looking posterior that is just the prior. No error, anywhere.
+**The bug.** OCaml autodiff differentiates TimeFunc and TableLookup nodes to
+Const 0.0 unconditionally. A parameter that enters a transition rate ONLY
+through a forcing function (e.g. seasonal amplitude) or a table entry gets a
+silent zero gradient: it's omitted from rate_grad, the likelihood is flat along
+that axis, and NUTS/PGAS report a clean-looking posterior that is just the
+prior. No error, anywhere.
 
 **Before (real code):**
 
@@ -539,7 +765,17 @@ runs `mentions param` over the operands and `failwith`s if the param is present
 rather than returning a silent 0. TimeFunc/TableLookup predate that discipline.
 ```
 
-**Why the compiler stayed silent.** `differentiate : expr -> string -> expr` has return type `expr`, and `Const 0.0` is a perfectly well-typed `expr`. "True zero derivative" (param absent) and "I cannot/did-not differentiate this, here's a zero placeholder" are the same inhabitant of the type, so the compiler has no way to distinguish them and no obligation it can impose on the caller. Worse, `TimeFunc of string` carries only the forcing's NAME — the parametric arguments (amplitude/period/phase) live in a separate `time_function` record (ir.ml:147-156), reachable via that string. So at the `TimeFunc _` node the function literally cannot see whether `param` is involved; returning 0 is locally type-correct and locally blind. Same for `TableLookup (_, args)`: the dependence is in `args`, but the arm ignores them.
+**Why the compiler stayed silent.** `differentiate : expr -> string -> expr` has
+return type `expr`, and `Const 0.0` is a perfectly well-typed `expr`. "True zero
+derivative" (param absent) and "I cannot/did-not differentiate this, here's a
+zero placeholder" are the same inhabitant of the type, so the compiler has no
+way to distinguish them and no obligation it can impose on the caller. Worse,
+`TimeFunc of string` carries only the forcing's NAME — the parametric arguments
+(amplitude/period/phase) live in a separate `time_function` record
+(ir.ml:147-156), reachable via that string. So at the `TimeFunc _` node the
+function literally cannot see whether `param` is involved; returning 0 is
+locally type-correct and locally blind. Same for `TableLookup (_, args)`: the
+dependence is in `args`, but the arm ignores them.
 
 **After (the typed design):**
 
@@ -588,77 +824,94 @@ un-freezing the forcing/table caches is necessary for the gradient to be
 meaningful; this is the OCaml half that stops emitting a zero for it.)
 ```
 
-**What this still doesn't catch (honest).** The ADT guarantees no SILENT zero — it does not guarantee a CORRECT non-zero derivative. (1) If you choose to emit `Unsupported` for parametric forcings rather than implementing the analytic ∂/∂amplitude etc., the param is still un-estimable — but now it's a loud compile error telling the user to reparameterize, not a fake posterior. (2) `mentions`/`forcing_mentions` is a syntactic check; it can over-refuse (param textually present but cancels out) — a false positive that errors a model that was actually fine, which is the safe direction but still a friction. (3) It does nothing for #180's gated DerivedExpr-projection chain-rule term, which lives in the Rust obs-gradient path (obs_model.rs), not this OCaml pass — same shape, different file. (4) The type does not force the differentiation RULES to be mathematically right (the quotient/power rules could be wrong and still typecheck as `Known`); only finite-difference validation tests cover that. The ADT moves "did we drop it" into the type system; "is the kept derivative correct" stays a test obligation.
+**What this still doesn't catch (honest).** The ADT guarantees no SILENT zero —
+it does not guarantee a CORRECT non-zero derivative. (1) If you choose to emit
+`Unsupported` for parametric forcings rather than implementing the analytic
+∂/∂amplitude etc., the param is still un-estimable — but now it's a loud compile
+error telling the user to reparameterize, not a fake posterior. (2)
+`mentions`/`forcing_mentions` is a syntactic check; it can over-refuse (param
+textually present but cancels out) — a false positive that errors a model that
+was actually fine, which is the safe direction but still a friction. (3) It does
+nothing for #180's gated DerivedExpr-projection chain-rule term, which lives in
+the Rust obs-gradient path (obs_model.rs), not this OCaml pass — same shape,
+different file. (4) The type does not force the differentiation RULES to be
+mathematically right (the quotient/power rules could be wrong and still
+typecheck as `Known`); only finite-difference validation tests cover that. The
+ADT moves "did we drop it" into the type system; "is the kept derivative
+correct" stays a test obligation.
 
 ---
 
 ## Dual-purpose work-list: which open issues each technique retires
 
 These aren't hypothetical — each technique above maps to concrete open (or
-just-closed-as-worked-example) issues. The M-class column is the part that doubles
-as the next batch of backlog knockdown.
+just-closed-as-worked-example) issues. The M-class column is the part that
+doubles as the next batch of backlog knockdown.
 
-| technique | M-class | L-class |
-| --- | --- | --- |
-| ADT `ParamValue` (estimated ≠ missing) | #191 (gate half) | — |
-| One `(value, grad)` traversal / AD type | — | #197, #200, #79 |
-| resolve-don't-stringly-type (`CompartmentId`) | #112 (arity, done) | #111 (resolver) |
-| derive-the-hash-from-the-type | #189, #190 | — (#147 done) |
-| newtypes (`Time`/`Dt`/`GridDt`, `Count`, idx) | #101, #107, #177 | review #11 |
-| parse-don't-validate (`Count` at the boundary) | #124 (done), #126, #127, #134 | — |
-| make-the-dropped-derivative-explicit (`Deriv`) | #128 (done) | #119, #180 |
-| checked casts / typed effect amounts | #198, #199, #122, #125 | — |
+| technique                                      | M-class                       | L-class         |
+| ---------------------------------------------- | ----------------------------- | --------------- |
+| ADT `ParamValue` (estimated ≠ missing)         | #191 (gate half)              | —               |
+| One `(value, grad)` traversal / AD type        | —                             | #197, #200, #79 |
+| resolve-don't-stringly-type (`CompartmentId`)  | #112 (arity, done)            | #111 (resolver) |
+| derive-the-hash-from-the-type                  | #189, #190                    | — (#147 done)   |
+| newtypes (`Time`/`Dt`/`GridDt`, `Count`, idx)  | #101, #107, #177              | review #11      |
+| parse-don't-validate (`Count` at the boundary) | #124 (done), #126, #127, #134 | —               |
+| make-the-dropped-derivative-explicit (`Deriv`) | #128 (done)                   | #119, #180      |
+| checked casts / typed effect amounts           | #198, #199, #122, #125        | —               |
 
-≈ **13 M-class + ~6 L-class** issues are type-addressable. The rest of the backlog
-(~49) is genuinely isolated features / ergonomics / docs that no type collapses.
+≈ **13 M-class + ~6 L-class** issues are type-addressable. The rest of the
+backlog (~49) is genuinely isolated features / ergonomics / docs that no type
+collapses.
 
 ## Where types do NOT help (so skeptics trust the rest)
 
-Static types make *illegal states unrepresentable*; they cannot tell you whether a
-*representable* computation is mathematically correct. These remain pure
+Static types make _illegal states unrepresentable_; they cannot tell you whether
+a _representable_ computation is mathematically correct. These remain pure
 tests/oracles work, untouched by any amount of typing:
 
 - **Numerical/algorithmic correctness** — the Gillespie inhomogeneous-Poisson
   sampler bias (#95), 100%-divergent NUTS on stratified models (#175), whether a
-  gradient *formula* is right. A perfectly-typed `Ad` value still computes the wrong
-  number if the math is wrong.
+  gradient _formula_ is right. A perfectly-typed `Ad` value still computes the
+  wrong number if the math is wrong.
 - **"Equals the true posterior"** — you can't type-check that a particle-filter
   marginal converges to ground truth (#201); that needs an analytic oracle.
-- **Cross-language *value* agreement** — types/codegen can pin that both sides
-  *parse the same shape*, but a finite-state oracle (the `caltime.tsv` golden) is
-  what proves they compute the same *number*.
+- **Cross-language _value_ agreement** — types/codegen can pin that both sides
+  _parse the same shape_, but a finite-state oracle (the `caltime.tsv` golden)
+  is what proves they compute the same _number_.
 
 The bugs that "passed tests" this codebase actually split ~evenly: the
 value/gradient divergence (#197) was **type-preventable**; "is the marginal
-correct" (#201) was **not**. Types and oracles are orthogonal axes — you need both.
+correct" (#201) was **not**. Types and oracles are orthogonal axes — you need
+both.
 
 ## The honest fraction
 
-Of the *hard bugs* remaining (excluding features/ergonomics/docs, which aren't
-defects), roughly **45–55% would have been unrepresentable or compile-caught** under
-the type designs above — concentrated in IR construction/validation and the
-value/gradient seam. Of the *whole* backlog it's only ~20%, because about half the
-backlog isn't bugs at all. So "use more types" is **half** the answer; the other
-half is "stop testing for *change*, start testing for *correctness*" (the oracle /
-meta-test discipline).
+Of the _hard bugs_ remaining (excluding features/ergonomics/docs, which aren't
+defects), roughly **45–55% would have been unrepresentable or compile-caught**
+under the type designs above — concentrated in IR construction/validation and
+the value/gradient seam. Of the _whole_ backlog it's only ~20%, because about
+half the backlog isn't bugs at all. So "use more types" is **half** the answer;
+the other half is "stop testing for _change_, start testing for _correctness_"
+(the oracle / meta-test discipline).
 
 ## Cost, and where to deploy (this matters for the DSL)
 
 Types aren't free: pervasive phantom-types / GADTs ossify the grammar and slow
 iteration, and camdl explicitly values a **small, human-readable DSL** a
 non-software-engineer epidemiologist can read at a glance. The ROI is steeply
-**concentrated at the bug-dense boundaries** — deploy the techniques here and stop:
+**concentrated at the bug-dense boundaries** — deploy the techniques here and
+stop:
 
-1. **The compiled IR** — parse-don't-validate: resolve references and range-check
-   values *once* into a type that can only hold valid states (examples 1, 3, 6).
-   This is the single biggest lever.
-2. **The value/gradient seam** — one traversal / an `Ad` type so they can't diverge
-   (example 2).
-3. **Identity & the FFI contract** — derive the content hash from the type; codegen
-   both IR sides from one schema (example 4).
-4. **Scalars & indices** — cheap newtypes where confusing two is a wrong-vaccination-
-   plan bug, not everywhere (example 5).
+1. **The compiled IR** — parse-don't-validate: resolve references and
+   range-check values _once_ into a type that can only hold valid states
+   (examples 1, 3, 6). This is the single biggest lever.
+2. **The value/gradient seam** — one traversal / an `Ad` type so they can't
+   diverge (example 2).
+3. **Identity & the FFI contract** — derive the content hash from the type;
+   codegen both IR sides from one schema (example 4).
+4. **Scalars & indices** — cheap newtypes where confusing two is a
+   wrong-vaccination- plan bug, not everywhere (example 5).
 
-Beyond those four seams, the marginal type costs more than it saves. The point isn't
-"more types" — it's *make the bug **class** unrepresentable at the seam where it
-keeps biting.*
+Beyond those four seams, the marginal type costs more than it saves. The point
+isn't "more types" — it's _make the bug **class** unrepresentable at the seam
+where it keeps biting._
