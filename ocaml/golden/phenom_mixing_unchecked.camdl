@@ -1,0 +1,82 @@
+# SEIRS with phenomenological α-mixing — the `unchecked_dim` escape hatch.
+#
+# Golden-coverage purpose: the only model golden exercising `unchecked_dim`
+# (spec §2.2.2) and the `deterministic()` rate wrapper (spec §9.8).
+#
+# The α-mixing force of infection `(I + iota)^alpha` (He, Ionides & King 2010) is
+# a published, empirically-validated formulation whose non-integer exponent makes
+# `P^alpha` dimensionally undefined. `unchecked_dim(…, dim = population, reason =…)`
+# asserts the population dimension so the surrounding rate (beta(t) · [P] · S/pop)
+# type-checks as a population rate; the assertion is narrow and reviewed. `iota`
+# is a small importation-like influx that keeps the base positive (and the Pow
+# finite) even when I = 0.
+#
+# The waning flow is wrapped in `deterministic(…)`: it is modelled as a smooth,
+# noise-free flux (rounded mean per substep in the chain-binomial backend).
+
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+let N = S + E + I + R
+
+parameters {
+  sigma : rate
+  gamma : rate
+  omega : rate         # waning rate, R --> S
+  iota  : count        # phenomenological influx (keeps (I+iota)^alpha > 0)
+  alpha : positive     # mixing exponent (≈ 0.97; non-integer → unchecked_dim)
+  amp   : real         # seasonal amplitude of beta(t)
+  I0    : count
+}
+
+forcing {
+  beta : sinusoidal 'per_day {
+    baseline  = 0.6
+    amplitude = amp
+    period    = 365.25
+    phase     = 0.0
+  }
+  pop : sinusoidal 'count {
+    baseline  = 1000000.0
+    amplitude = 0.0
+    period    = 365.25
+    phase     = 0.0
+  }
+}
+
+transitions {
+  infection : S --> E
+    @ beta(t) * unchecked_dim((I + iota)^alpha,
+                              dim = population,
+                              reason = "He, Ionides & King 2010 α-mixing exponent")
+             * S / pop(t)
+  progression : E --> I  @ sigma * E
+  recovery    : I --> R  @ gamma * I
+  waning      : R --> S  @ deterministic(omega * R)
+}
+
+init {
+  S = 999000
+  I = I0
+}
+
+simulate {
+  from = 0 'days
+  to   = 3 'years
+}
+
+scenarios {
+  baseline {
+    label = "α-mixing SEIRS (He 2010 style)"
+    set = {
+      sigma = 0.2
+      gamma = 0.1
+      omega = 0.01
+      iota  = 5
+      alpha = 0.97
+      amp   = 0.15
+      I0    = 100
+    }
+  }
+}

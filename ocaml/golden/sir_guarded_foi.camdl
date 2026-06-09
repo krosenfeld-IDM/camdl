@@ -1,0 +1,81 @@
+# SIR metapopulation with a divide-by-zero-guarded force of infection.
+#
+# Golden-coverage purpose: this is the only golden that exercises the
+# conditional expression node `if … then … else` (IR `Cond`). The smoke
+# harness (smoke_all_golden.rs) explicitly recommends exactly this guard,
+# yet no model golden uses one.
+#
+# Model: three districts coupled by a mobility matrix w[p, q]. Each district's
+# per-capita infection pressure divides by its own population N[p]. A district
+# that is unpopulated in a given scenario — here `outpost`, which starts empty —
+# would make that an undefined 0/0 and poison the rate with NaN. The guard
+#   if N[q] > 0 then I[q] / N[q] else 0.0
+# keeps the force of infection finite for empty districts. This is standard
+# defensive practice in spatial models; here the `else` branch genuinely fires
+# every step for `outpost`, so both branches of the Cond are covered. Unlike a
+# prevalence-threshold behavioural switch, a div-by-zero guard introduces no
+# discontinuity or chattering in the dynamics.
+
+time_unit = 'days
+
+compartments { S, I, R }
+
+dimensions {
+  patch = [urban, rural, outpost]
+}
+
+stratify(by = patch)
+
+parameters {
+  beta  : rate        in [0.0, 2.0]
+  gamma : rate        in [0.0, 1.0]
+  rho   : probability in [0.0, 1.0]   # weight on imported (between-district) pressure
+}
+
+tables {
+  # Mobility coupling: w[p, q] = infection pressure contributed by district q
+  # onto district p. Symmetric here; the outpost column/row stays small.
+  w : patch × patch = [[0.0, 0.4, 0.1],
+                       [0.4, 0.0, 0.1],
+                       [0.1, 0.1, 0.0]]
+}
+
+let N[p in patch] = S[p] + I[p] + R[p]
+
+transitions {
+  # Guarded force of infection. Both the local term (index p) and each imported
+  # term inside the sum (index q) divide by a patch population that may be zero.
+  infection[p in patch] : S[p] --> I[p]
+    @ beta * S[p] * ( (if N[p] > 0 then I[p] / N[p] else 0.0)
+                      + rho * sum(q in patch, w[p, q] * (if N[q] > 0 then I[q] / N[q] else 0.0)) )
+  recovery[p in patch]  : I[p] --> R[p]
+    @ gamma * I[p]
+}
+
+init {
+  S[urban] = 9990
+  I[urban] = 10
+  S[rural] = 2000
+  # outpost is unpopulated in this scenario → N[outpost] = 0 (guard fires here)
+}
+
+simulate {
+  from = 0 'days
+  to   = 200 'days
+}
+
+scenarios {
+  baseline {
+    label = "default  (R0 ≈ 4 in urban)"
+    set = {
+      beta  = 0.4
+      gamma = 0.1
+      rho   = 0.3
+    }
+  }
+  high_mobility {
+    label = "stronger between-district coupling"
+    extends = baseline
+    scale   = { rho = 2.0 }
+  }
+}

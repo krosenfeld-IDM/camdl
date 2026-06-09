@@ -1,0 +1,62 @@
+# Near-elimination SEIR sustained by annual seasonal importation.
+#
+# Golden-coverage purpose: the only model golden exercising the `events {}`
+# block, the `add()` action, and the `every … at_day` recurring schedule
+# (spec §13.5–13.7). Events fire every substep and are NOT cleared by the smoke
+# harness (unlike interventions), so this path actually runs in smoke.
+#
+# Model: a setting where local transmission alone does not sustain the disease;
+# infection is reintroduced once a year on a fixed calendar day by importation
+# (returning travellers / seasonal migration). The population starts fully
+# susceptible with no infection; the first import on day 200 seeds the initial
+# outbreak, and each subsequent annual import lands in an increasingly immune
+# population. The event firing — not the initial conditions — is what introduces
+# infection, which makes the construct legible.
+
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+let N = S + E + I + R
+
+parameters {
+  beta  : rate
+  sigma : rate
+  gamma : rate
+  N0    : count
+  seed  : count   # infectious individuals imported per annual event
+}
+
+transitions {
+  infection   : S --> E  @ beta * S * I / N
+  progression : E --> I  @ sigma * E
+  recovery    : I --> R  @ gamma * I
+}
+
+events {
+  # Annual importation: every ~year, on day 200 of the period, add `seed`
+  # infectious individuals. No infection exists until the first import fires.
+  importation : add(I, seed) every 365.25 'days at_day 200
+}
+
+init {
+  S = N0
+}
+
+simulate {
+  from = 0 'days
+  to   = 3 'years
+}
+
+scenarios {
+  baseline {
+    label = "import-driven recurrent outbreaks"
+    set = {
+      beta  = 0.45
+      sigma = 0.2
+      gamma = 0.1
+      N0    = 100000
+      seed  = 10
+    }
+  }
+}

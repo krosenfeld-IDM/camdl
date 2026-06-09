@@ -1,0 +1,84 @@
+# SEIR reconciled to a known (seasonally varying) census population via `balance`.
+#
+# Golden-coverage purpose: the only model golden exercising the `balance {}`
+# constraint (spec §13.8) and a count-valued forcing. `balance` is a
+# chain-binomial-only capability, so this is also the first model golden to
+# drive that dispatch path in the smoke harness — which, unlike interventions,
+# does NOT clear events/balance, so the constraint actually fires here.
+#
+# Model: a regional SEIR whose total population is not modelled by explicit
+# births and deaths but is instead known from an external census that varies
+# seasonally (e.g. seasonal labour migration in and out of the region). The
+# removed/immune compartment R is the residual that reconciles the tracked
+# S/E/I to that census every substep:
+#     balance { R = census(t) - S - E - I }
+# This is the spec's canonical balance use. R is the natural slack — it grows
+# as the epidemic accumulates recoveries — so, with the tracked compartments
+# initialised below the census trough, the constraint never forces a
+# compartment negative.
+
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+# Typed `let` (kind annotation). Because balance makes R the residual, this live
+# total reconciles to census(t) after each substep.
+let N : count = S + E + I + R
+
+parameters {
+  beta      : rate
+  sigma     : rate
+  gamma     : rate
+  pop_mean  : count   # mean census population
+  pop_amp   : count   # seasonal swing in the census population
+  I0        : count
+  immune0   : count   # pre-existing immune at t=0 (kept above pop_amp so R ≥ 0)
+}
+
+forcing {
+  # Known total population over time (external census), varying seasonally.
+  census : sinusoidal 'count {
+    baseline  = pop_mean
+    amplitude = pop_amp
+    period    = 365.25
+    phase     = 0.0
+  }
+}
+
+transitions {
+  infection   : S --> E  @ beta * S * I / N
+  progression : E --> I  @ sigma * E
+  recovery    : I --> R  @ gamma * I
+}
+
+balance {
+  # Applied last each substep: R absorbs the difference between the known
+  # census total and the tracked S/E/I compartments.
+  R = census(t) - S - E - I
+}
+
+init {
+  S = pop_mean - I0 - immune0
+  I = I0
+  R = immune0
+}
+
+simulate {
+  from = 0 'days
+  to   = 2 'years
+}
+
+scenarios {
+  baseline {
+    label = "seasonal census, endemic SEIR"
+    set = {
+      beta     = 0.4
+      sigma    = 0.2
+      gamma    = 0.1
+      pop_mean = 1000000
+      pop_amp  = 20000
+      I0       = 1000
+      immune0  = 50000
+    }
+  }
+}

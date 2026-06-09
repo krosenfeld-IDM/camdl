@@ -1,0 +1,77 @@
+# Seasonal influenza SEIR with a data-driven transmission forcing.
+#
+# Golden-coverage purpose: the only model golden exercising an `interpolated`
+# forcing (spec §7) — the file-read + interpolation path. The forcing values are
+# read from a companion TSV at compile time and baked into the IR as
+# (times, values) knots, so the runtime needs no file. Pairs with a
+# neg_binomial observation of weekly cases (the standard surveillance likelihood).
+#
+# Model: transmission is modulated by an externally measured seasonal
+# transmissibility index `clim(t)` (e.g. a temperature/humidity-derived contact
+# index), supplied as a monthly time series and interpolated linearly between
+# knots. Weekly reported cases are an under-ascertained, over-dispersed count.
+
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+let N = S + E + I + R
+
+parameters {
+  beta  : rate           # baseline transmission (modulated by clim(t))
+  sigma : rate
+  gamma : rate
+  rho   : probability    # reporting fraction
+  k     : positive       # neg-binomial dispersion
+  N0    : count
+  I0    : count
+}
+
+forcing {
+  # Seasonal transmissibility index, read from a monthly TSV and interpolated.
+  clim : interpolated 'ratio {
+    data      = "data/flu_forcing.tsv"
+    time_col  = t
+    value_col = force
+    method    = "linear"
+  }
+}
+
+transitions {
+  infection   : S --> E  @ beta * clim(t) * S * I / N
+  progression : E --> I  @ sigma * E
+  recovery    : I --> R  @ gamma * I
+}
+
+observations {
+  weekly_cases : {
+    projected  = incidence(infection)
+    every      = 7 'days
+    likelihood = neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+simulate {
+  from = 0 'days
+  to   = 2 'years
+}
+
+scenarios {
+  baseline {
+    label = "climate-forced seasonal influenza"
+    set = {
+      beta  = 0.55
+      sigma = 0.5
+      gamma = 0.33
+      rho   = 0.05
+      k     = 3.0
+      N0    = 500000
+      I0    = 50
+    }
+  }
+}
