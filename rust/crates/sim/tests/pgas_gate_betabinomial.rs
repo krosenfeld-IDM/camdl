@@ -139,7 +139,7 @@ fn gh76_pgas_runs_betabinomial_routed_param_with_nuts() {
         hierarchical: None,
         transform: None,
         initial_value: None,
-        param_kind: Some("positive".into()),
+        param_kind: Some(ir::parameter::ParamKind::Positive),
         param_dim: None,
     });
     model.observations = vec![build_betabinomial_obs_block("alpha_obs")];
@@ -241,7 +241,7 @@ fn gh76_pgas_refuses_parametric_derived_projection_param() {
         hierarchical: None,
         transform: None,
         initial_value: None,
-        param_kind: Some("positive".into()),
+        param_kind: Some(ir::parameter::ParamKind::Positive),
         param_dim: None,
     });
     model.observations = vec![build_parametric_derived_proj_block("scale_obs")];

@@ -1678,7 +1678,7 @@ mod tests {
                 compartment: "S".into(),
                 count: ir::expr::Expr::Const(ir::expr::ConstExpr { value: 0.0 }),
             })],
-            always_active,
+            kind: if always_active { ir::intervention::InterventionKind::Event } else { ir::intervention::InterventionKind::Scenario },
         }
     }
 

@@ -577,19 +577,26 @@ let intervention_to_json (iv : intervention) : Yojson.Safe.t =
     @ (match iv.base_name with None -> [] | Some s -> [("base_name", str s)])
     @ [ ("schedule", intervention_schedule_to_json iv.schedule);
         ("actions",  arr (List.map action_to_json iv.actions)); ]
-    @ (if iv.always_active then [("always_active", `Bool true)] else [])
+    (* Skip-emit the default (Scenario), mirroring the former
+       always_active skip-false discipline: scenario interventions carry no
+       key, events carry `"kind": "event"`. *)
+    @ (match iv.kind with Event -> [("kind", str "event")] | Scenario -> [])
   )
 
 let intervention_of_json j =
-  { name          = as_string (member "name" j);
-    base_name     = (match member_opt "base_name" j with
-                     | Some (`String s) -> Some s
-                     | _ -> None);
-    schedule      = intervention_schedule_of_json (member "schedule" j);
-    actions       = List.map action_of_json (as_list (member "actions" j));
-    always_active = (match member_opt "always_active" j with
-                     | Some (`Bool b) -> b
-                     | _ -> false);
+  { name      = as_string (member "name" j);
+    base_name = (match member_opt "base_name" j with
+                 | Some (`String s) -> Some s
+                 | _ -> None);
+    schedule  = intervention_schedule_of_json (member "schedule" j);
+    actions   = List.map action_of_json (as_list (member "actions" j));
+    kind      = (match member_opt "kind" j with
+                 | Some (`String "event")    -> Event
+                 | Some (`String "scenario") -> Scenario
+                 | Some `Null | None         -> Scenario
+                 | Some _ ->
+                   fail "intervention '%s': kind must be \"scenario\" or \"event\""
+                     (as_string (member "name" j)));
   }
 
 (* ── Observation model ───────────────────────────────────────────────────── *)
@@ -793,7 +800,7 @@ let parameter_to_json (p : parameter) : Yojson.Safe.t =
     ("hierarchical",  match p.hierarchical  with None -> null | Some h  -> hierarchical_prior_to_json h);
     ("transform",     match p.transform     with None -> null | Some tr -> transform_to_json tr);
     ("initial_value", match p.initial_value with None -> null | Some v  -> flt v);
-    ("param_kind",    match p.param_kind    with None -> null | Some k  -> str k);
+    ("param_kind",    match p.param_kind    with None -> null | Some k  -> str (param_kind_name k));
     ("param_dim",     match p.param_dim     with None -> null | Some (p_exp, t_exp) -> arr [int p_exp; int t_exp]);
   ]
 
@@ -821,7 +828,13 @@ let parameter_of_json j =
     hierarchical;
     transform     = (match member_opt "transform"     j with Some `Null | None -> None | Some t -> Some (transform_of_json  t));
     initial_value = (match member_opt "initial_value" j with Some `Null | None -> None | Some v -> Some (as_float v));
-    param_kind    = (match member_opt "param_kind"    j with Some `Null | None -> None | Some k -> Some (as_string k));
+    param_kind    = (match member_opt "param_kind"    j with
+      | Some `Null | None -> None
+      | Some k -> (match param_kind_of_name (as_string k) with
+                   | Some pk -> Some pk
+                   | None    -> fail "unknown param_kind '%s' (expected one of \
+                                      rate|probability|count|positive|real|instant|duration)"
+                                  (as_string k)));
     param_dim     = (match member_opt "param_dim"     j with
       | Some (`List [p; t]) -> Some (as_int p, as_int t)
       | _ -> None);

@@ -243,19 +243,20 @@ let constrain_known st ~code ~message d expected =
 
 (* ── Param dim from kind ────────────────────────────────────────────────── *)
 
-let param_dim_of_kind st kind =
+let param_dim_of_kind st (kind : param_kind option) =
   match kind with
-  | Some "rate"           -> Known (make 0 (-1))
-  | Some "probability"    -> Known dimensionless
-  | Some "count"          -> Known population
+  | Some Rate           -> Known (make 0 (-1))
+  | Some Probability    -> Known dimensionless
+  | Some Count          -> Known population
   (* Both time kinds carry dimension [T] (2026-05-22 calendar-time §6.7):
      `instant` (origin-relative point) and `duration` (relative span). This
      gives the checker time coverage — `rate + instant` is an E302 dimension
      mismatch, `rate * duration` is dimensionless. The instant/duration
      distinction is for *rendering* (date vs span), not for checking. *)
-  | Some "instant"        -> Known (make 0 1)
-  | Some "duration"       -> Known (make 0 1)
-  | _                     -> fresh_var st
+  | Some Instant        -> Known (make 0 1)
+  | Some Duration       -> Known (make 0 1)
+  (* Positive / Real / unannotated: no declared dimension — inferred. *)
+  | Some Positive | Some Real | None -> fresh_var st
 
 (* ── Initialize state from model ────────────────────────────────────────── *)
 
@@ -539,8 +540,11 @@ let init_table_dims st (tables : table list) =
     let dim = match tbl.cell_kind with
       | Some _ ->
         (* gh#32: explicit cell-type annotation. Stamp the table with
-           the declared dim — exactly the way scalar parameters work. *)
-        param_dim_of_kind st tbl.cell_kind
+           the declared dim — exactly the way scalar parameters work.
+           [cell_kind] is still a free string (out of scope of the typed
+           param_kind enum); an unrecognised kind maps to [None] → a fresh
+           dim var, matching the prior catch-all behaviour. *)
+        param_dim_of_kind st (Option.bind tbl.cell_kind param_kind_of_name)
       | None ->
         match tbl.source with
         | External _ -> fresh_var st  (* can't know *)

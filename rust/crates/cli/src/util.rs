@@ -1743,7 +1743,7 @@ pub fn apply_scenario_filter(
             return false;
         }
         // Events stay on unless explicitly disabled above.
-        if iv.always_active {
+        if iv.kind.is_event() {
             return true;
         }
         // Toggleable interventions: enable list or wildcard required.
@@ -1768,7 +1768,7 @@ pub fn print_scheduled_actions_summary(
 ) {
     // Split declared actions into events vs toggleable interventions.
     let (decl_events, decl_interv): (Vec<_>, Vec<_>) = model_before_filter
-        .interventions.iter().partition(|iv| iv.always_active);
+        .interventions.iter().partition(|iv| iv.kind.is_event());
     let active_names: std::collections::HashSet<&str> = model_after_filter
         .interventions.iter().map(|iv| iv.name.as_str()).collect();
 
@@ -2664,7 +2664,7 @@ mod tests {
             base_name: base.map(str::to_owned),
             schedule: InterventionSchedule::AtTimes(vec![10.0]),
             actions: vec![],
-            always_active,
+            kind: if always_active { ir::intervention::InterventionKind::Event } else { ir::intervention::InterventionKind::Scenario },
         }
     }
 

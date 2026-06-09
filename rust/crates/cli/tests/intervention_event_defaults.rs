@@ -34,7 +34,7 @@ fn mixed_model_ir() -> String {
     // gh#audit-C8. Wrap in IR envelope so the binary's
     // envelope-aware deserializer (ir::from_str) accepts it.
     r#"{
-      "ir_version": "0.9",
+      "ir_version": "0.10",
       "validated_by": "test-fixture",
       "model": {
         "name": "mixed", "version": "0.3", "time_unit": "days",
@@ -65,7 +65,7 @@ fn mixed_model_ir() -> String {
             "name": "bump",
             "schedule": { "at_times": [5.0] },
             "actions": [ { "add": { "compartment": "S", "count": { "const": 100.0 } } } ],
-            "always_active": true
+            "kind": "event"
           },
           {
             "name": "sia",
@@ -73,7 +73,7 @@ fn mixed_model_ir() -> String {
             "actions": [ { "fraction_transfer": {
               "src": "S", "dst": "V", "fraction": { "const": 0.5 }
             } } ],
-            "always_active": false
+            "kind": "scenario"
           }
         ],
         "model_structure": null, "balance": null

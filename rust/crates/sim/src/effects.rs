@@ -268,7 +268,7 @@ pub fn due_effects(
         if !fire_steps[iv_idx].contains(&current_step) {
             continue;
         }
-        if iv.always_active {
+        if iv.kind.is_event() {
             out.event_idx.push(iv_idx);
         } else {
             out.intervention_idx.push(iv_idx);
@@ -628,7 +628,7 @@ mod tests {
                 base_name: None,
                 schedule: InterventionSchedule::AtTimes(vec![1.0]),
                 actions,
-                always_active: false,
+                kind: ir::intervention::InterventionKind::Scenario,
             }],
             observations: vec![],
             bindings: vec![],
@@ -902,7 +902,7 @@ mod tests {
                 base_name: None,
                 schedule: InterventionSchedule::AtTimes(vec![1.0]),
                 actions,
-                always_active: false,
+                kind: ir::intervention::InterventionKind::Scenario,
             }],
             observations: vec![],
             bindings: vec![],
@@ -1007,7 +1007,7 @@ mod tests {
                 compartment: "I".into(),
                 value: Expr::const_(1.0),
             })],
-            always_active: always,
+            kind: if always { ir::intervention::InterventionKind::Event } else { ir::intervention::InterventionKind::Scenario },
         };
         let m = Model {
             name: "due_effects_test".into(),
@@ -1103,7 +1103,7 @@ mod tests {
                 compartment: "I".into(),
                 value: Expr::const_(1.0),
             })],
-            always_active: always,
+            kind: if always { ir::intervention::InterventionKind::Event } else { ir::intervention::InterventionKind::Scenario },
         };
         // Declaration order: evt_a(ev), camp_a(iv), evt_b(ev), camp_b(iv).
         let interventions = vec![

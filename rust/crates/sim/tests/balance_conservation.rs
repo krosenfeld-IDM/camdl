@@ -85,7 +85,7 @@ fn balance_model() -> CompiledModel {
                 dst: "R".into(),
                 fraction: Expr::const_(0.2),
             })],
-            always_active: false,
+            kind: ir::intervention::InterventionKind::Scenario,
         }],
         observations: vec![],
         bindings: vec![],

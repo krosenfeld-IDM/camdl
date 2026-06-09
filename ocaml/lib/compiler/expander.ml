@@ -2893,6 +2893,18 @@ let param_kind_to_string = function
   | PInstant     -> "instant"
   | PDuration    -> "duration"
 
+(* AST parameter-kind → typed IR [Ir.param_kind] enum (the gh#191 type-swap).
+   Distinct from [param_kind_to_string], which lowers to the free-string
+   [table.cell_kind] field still kept as a string. *)
+let ir_param_kind_of_ast : Ast.param_type -> Ir.param_kind = function
+  | PRate        -> Ir.Rate
+  | PProbability -> Ir.Probability
+  | PPositive    -> Ir.Positive
+  | PCount       -> Ir.Count
+  | PReal        -> Ir.Real
+  | PInstant     -> Ir.Instant
+  | PDuration    -> Ir.Duration
+
 let rec eval_const_expr ctx = function
   | EConst f -> f
   | EUnit (f, u) -> unit_to_model_time ctx f u
@@ -3194,7 +3206,7 @@ let expand_parameters ctx =
     match pd with
     | PScalar { pname; pbounds; pkind; pdim; pprior; ploc } ->
       let bounds = resolve_bounds ctx pbounds in
-      let pk = Some (param_kind_to_string pkind) in
+      let pk = Some (ir_param_kind_of_ast pkind) in
       let loc = diag_loc_of_ast_ctx ctx ploc in
       let (prior, hierarchical) = match pprior with
         | None -> (None, None)
@@ -3215,7 +3227,7 @@ let expand_parameters ctx =
     | PIndexed { pname; pdims = [dim]; pbounds; pkind; pdim; pprior; ploc } ->
       let vals = dim_values ctx dim in
       let bounds = resolve_bounds ctx pbounds in
-      let pk = Some (param_kind_to_string pkind) in
+      let pk = Some (ir_param_kind_of_ast pkind) in
       let loc = diag_loc_of_ast_ctx ctx ploc in
       let (prior, hierarchical) = match pprior with
         | None -> (None, None)
@@ -3269,7 +3281,7 @@ let expand_parameters ctx =
              Ir.hierarchical  = None;
              Ir.transform     = None;
              Ir.initial_value = None;
-             Ir.param_kind    = Some (param_kind_to_string pk);
+             Ir.param_kind    = Some (ir_param_kind_of_ast pk);
              Ir.param_dim     = None;
            }
     | _ -> None
@@ -4073,7 +4085,7 @@ let expand_time_functions ctx : Ir.time_function list =
     end
   ) ctx.func_decls
 
-let expand_scheduled_actions ctx decls ~always_active =
+let expand_scheduled_actions ctx decls ~(kind : Ir.intervention_kind) =
   let t_start = match ctx.simulate with
     | None    -> 0.0
     | Some sd -> resolve_float_expr ctx sd.sim_from
@@ -4260,13 +4272,13 @@ let expand_scheduled_actions ctx decls ~always_active =
           [Ir.AddAction { Ir.add_compartment = concrete; Ir.add_count = resolve_expr ctx env expr }]
       in
       Some { Ir.name = iv_name; Ir.base_name; Ir.schedule; Ir.actions;
-             Ir.always_active = always_active }
+             Ir.kind }
     ) combos
   ) decls
 
 let expand_interventions ctx =
-  expand_scheduled_actions ctx ctx.interv_decls ~always_active:false
-  @ expand_scheduled_actions ctx ctx.event_decls ~always_active:true
+  expand_scheduled_actions ctx ctx.interv_decls ~kind:Ir.Scenario
+  @ expand_scheduled_actions ctx ctx.event_decls ~kind:Ir.Event
 
 (* ── Observation model expansion ─────────────────────────────────────────── *)
 

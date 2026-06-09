@@ -1521,7 +1521,7 @@ pub fn run_pgas(
     // misfire. (Scheduled non-active interventions are already not applied in the
     // PGAS producer path under either policy.)
     if config.step_policy == StepPolicy::Exact
-        && model.model.interventions.iter().any(|iv| iv.always_active)
+        && model.model.interventions.iter().any(|iv| iv.kind.is_event())
     {
         return Err(SimError::Validation(
             "exact obs-alignment is not yet supported for models with always-active \

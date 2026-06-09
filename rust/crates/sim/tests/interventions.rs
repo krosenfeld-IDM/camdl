@@ -88,7 +88,7 @@ fn test_fraction_transfer_uses_floor_not_round() {
         name: "test_iv".into(),
         base_name: None,
         schedule: InterventionSchedule::AtTimes(vec![30.0]),
-        always_active: false, actions: vec![
+        kind: ir::intervention::InterventionKind::Scenario, actions: vec![
             Action::FractionTransfer(FractionTransfer {
                 src: "S".into(),
                 dst: "V".into(),
@@ -121,7 +121,7 @@ fn test_fraction_transfer_floor_larger() {
         name: "test_iv".into(),
         base_name: None,
         schedule: InterventionSchedule::AtTimes(vec![30.0]),
-        always_active: false, actions: vec![
+        kind: ir::intervention::InterventionKind::Scenario, actions: vec![
             Action::FractionTransfer(FractionTransfer {
                 src: "S".into(),
                 dst: "V".into(),
@@ -165,7 +165,7 @@ fn chain_binomial_fires_scheduled_intervention_exactly_once() {
         name: "sia".into(),
         base_name: None,
         schedule: InterventionSchedule::AtTimes(vec![10.0]),
-        always_active: false,
+        kind: ir::intervention::InterventionKind::Scenario,
         actions: vec![Action::FractionTransfer(FractionTransfer {
             src: "S".into(),
             dst: "V".into(),

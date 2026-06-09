@@ -206,12 +206,21 @@ type action =
   | Set              of set_action
   | AddAction        of add_action
 
+(* Distinguishes the two DSL constructs that both lower to [intervention]:
+   `interventions {}` (scenario-toggled) and `events {}` (fire every substep
+   unconditionally). Replaces the former [always_active: bool] (gh#107) — a
+   named enum names the distinction and extends to a future kind (e.g.
+   reactive, gh#204) instead of bolting on a second bool. *)
+type intervention_kind =
+  | Scenario   (* interventions {} — toggled by enable/disable/set/scale *)
+  | Event      (* events {}        — fires unconditionally every substep   *)
+
 type intervention = {
   name:          string;
   base_name:     string option;
   schedule:      intervention_schedule;
   actions:       action list;
-  always_active: bool;
+  kind:          intervention_kind;
 }
 
 (* ── Observation model ───────────────────────────────────────────────────────── *)
@@ -275,6 +284,41 @@ type prior_dist =
 
 type transform = Log | Logit | Identity
 
+(* DSL parameter-type keyword (the [param_kind] production in parser.mly:
+   `rate`, `probability`, `count`, `positive`, `real`, `instant`,
+   `duration`). Was a free [string option]; the typed enum is rejected at IR
+   deserialisation rather than re-parsed by every consumer (the gh#191
+   stringly-typed surface). The dimensional meaning of each kind lives in
+   [Dimcheck.param_dim_of_kind]; `instant`/`duration` are time-typed ([T]) per
+   the 2026-05-22 calendar-time proposal. *)
+type param_kind =
+  | Rate
+  | Probability
+  | Count
+  | Positive
+  | Real
+  | Instant
+  | Duration
+
+let param_kind_name = function
+  | Rate        -> "rate"
+  | Probability -> "probability"
+  | Count       -> "count"
+  | Positive    -> "positive"
+  | Real        -> "real"
+  | Instant     -> "instant"
+  | Duration    -> "duration"
+
+let param_kind_of_name = function
+  | "rate"        -> Some Rate
+  | "probability" -> Some Probability
+  | "count"       -> Some Count
+  | "positive"    -> Some Positive
+  | "real"        -> Some Real
+  | "instant"     -> Some Instant
+  | "duration"    -> Some Duration
+  | _             -> None
+
 (** Distribution family for a hierarchical (pooled) prior leaf.
     Mirrors [prior_dist] variants but excludes Fixed (no meaning for
     a hierarchically-parameterised prior). Serialises to/from the same
@@ -331,7 +375,7 @@ type parameter = {
   hierarchical:  hierarchical_prior option;  (* Some iff a leaf in a hierarchical pool; mutually exclusive with prior. *)
   transform:     transform option;
   initial_value: float option;
-  param_kind:    string option;  (* DSL type: "rate", "probability", "positive", "count", "real" *)
+  param_kind:    param_kind option;  (* DSL type keyword; see [param_kind] above *)
   param_dim:     (int * int) option;  (* explicit dimension annotation: (P exponent, T exponent) *)
 }
 

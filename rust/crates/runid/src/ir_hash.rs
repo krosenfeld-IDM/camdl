@@ -26,7 +26,7 @@
 
 use ir::expr::{BinOp, Expr, UnOp};
 use ir::intervention::{
-    Action, Intervention, InterventionSchedule, RecurringSchedule,
+    Action, Intervention, InterventionKind, InterventionSchedule, RecurringSchedule,
 };
 use ir::model::{
     BalanceSpec, Binding, Compartment, CompartmentKind, Dimension, InitialConditions, Model,
@@ -36,7 +36,7 @@ use ir::observation::{
     Likelihood, ObservationModel, ObservationSchedule, Projection, RegularSchedule,
 };
 use ir::ode_equation::OdeEquation;
-use ir::parameter::{HierarchicalKind, HierarchicalPrior, Parameter, PriorDist, Transform};
+use ir::parameter::{HierarchicalKind, HierarchicalPrior, ParamKind, Parameter, PriorDist, Transform};
 use ir::table::{OobPolicy, Table, TableSource};
 use ir::time_func::{TimeFuncKind, TimeFunction};
 use ir::transition::{
@@ -328,6 +328,23 @@ impl ContentAddressed for Transform {
             Transform::Log => 0,
             Transform::Logit => 1,
             Transform::Identity => 2,
+        };
+        h.write_u32(idx);
+    }
+}
+
+impl ContentAddressed for ParamKind {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::parameter::ParamKind");
+        // Permanent variant indices (run-id stability) — new kinds append.
+        let idx: u32 = match self {
+            ParamKind::Rate        => 0,
+            ParamKind::Probability => 1,
+            ParamKind::Count       => 2,
+            ParamKind::Positive    => 3,
+            ParamKind::Real        => 4,
+            ParamKind::Instant     => 5,
+            ParamKind::Duration    => 6,
         };
         h.write_u32(idx);
     }
@@ -643,7 +660,19 @@ impl ContentAddressed for Intervention {
         self.base_name.hash_into(h);
         self.schedule.hash_into(h);
         self.actions.hash_into(h);
-        self.always_active.hash_into(h);
+        self.kind.hash_into(h);
+    }
+}
+
+impl ContentAddressed for InterventionKind {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::intervention::InterventionKind");
+        // Permanent variant indices (run-id stability) — new kinds append.
+        let idx: u32 = match self {
+            InterventionKind::Scenario => 0,
+            InterventionKind::Event    => 1,
+        };
+        h.write_u32(idx);
     }
 }
 

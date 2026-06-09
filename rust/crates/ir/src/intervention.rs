@@ -67,6 +67,34 @@ pub enum Action {
 
 // ── Intervention ──────────────────────────────────────────────────────────────
 
+/// Distinguishes the two DSL constructs that both lower to [`Intervention`]
+/// (gh#107). Replaces the former `always_active: bool` — a named enum names
+/// the distinction and extends to a future kind (e.g. reactive, gh#204)
+/// instead of bolting on a second bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionKind {
+    /// `interventions {}` — toggled by enable/disable/set/scale scenarios.
+    #[default]
+    Scenario,
+    /// `events {}` — fires unconditionally every substep.
+    Event,
+}
+
+impl InterventionKind {
+    /// True for `Scenario` — the serialisation default, skipped on the wire
+    /// (mirrors the former `always_active` skip-false discipline, so a
+    /// scenario intervention carries no `kind` key).
+    pub fn is_scenario(&self) -> bool {
+        matches!(self, Self::Scenario)
+    }
+    /// True for `Event` — fires unconditionally, not scenario-toggled.
+    /// Reads at call sites exactly where `always_active` did.
+    pub fn is_event(&self) -> bool {
+        matches!(self, Self::Event)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Intervention {
     pub name:     String,
@@ -74,9 +102,9 @@ pub struct Intervention {
     pub base_name: Option<String>,
     pub schedule: InterventionSchedule,
     pub actions:  Vec<Action>,
-    /// If true, this event fires unconditionally (not toggled by scenarios).
-    /// Events declared in `events {}` have this set to true.
-    /// Interventions declared in `interventions {}` default to false.
-    #[serde(default)]
-    pub always_active: bool,
+    /// Which DSL construct declared this — `Event` (fires unconditionally,
+    /// from `events {}`) or `Scenario` (scenario-toggled, from
+    /// `interventions {}`). Absent on the wire ⇒ `Scenario` (the default).
+    #[serde(default, skip_serializing_if = "InterventionKind::is_scenario")]
+    pub kind: InterventionKind,
 }

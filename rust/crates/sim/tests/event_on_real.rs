@@ -69,7 +69,7 @@ fn model_with_real_event() -> CompiledModel {
                 compartment: "W".into(),
                 count: Expr::const_(2.5),
             })],
-            always_active: true,
+            kind: ir::intervention::InterventionKind::Event,
         }],
         observations: vec![],
         bindings: vec![],

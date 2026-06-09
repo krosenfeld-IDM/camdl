@@ -5000,7 +5000,8 @@ let test_origin_rata_die_emitted () =
   Alcotest.(check (option int)) "origin_rata_die = days_of_date"
     (Some expected) m.Ir.origin_rata_die;
   let kind_of n =
-    (List.find (fun (p : Ir.parameter) -> p.name = n) m.Ir.parameters).param_kind in
+    Option.map Ir.param_kind_name
+      (List.find (fun (p : Ir.parameter) -> p.name = n) m.Ir.parameters).param_kind in
   Alcotest.(check (option string)) "tau is instant" (Some "instant") (kind_of "tau");
   Alcotest.(check (option string)) "gen is duration" (Some "duration") (kind_of "gen")
 
@@ -5168,7 +5169,8 @@ let test_typed_time_pos_duration_param_bounds_with_months () =
   |} in
   (* `delay` is recorded as duration kind. *)
   let kind_of n =
-    (List.find (fun (p : Ir.parameter) -> p.name = n) m.Ir.parameters).param_kind in
+    Option.map Ir.param_kind_name
+      (List.find (fun (p : Ir.parameter) -> p.name = n) m.Ir.parameters).param_kind in
   Alcotest.(check (option string)) "delay is duration" (Some "duration") (kind_of "delay")
 
 let test_typed_time_pos_unanchored_months_axis () =

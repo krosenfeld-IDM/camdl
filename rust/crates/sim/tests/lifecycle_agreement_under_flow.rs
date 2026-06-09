@@ -90,7 +90,7 @@ fn flow_model() -> CompiledModel {
                     compartment: "V".into(),
                     count: Expr::const_(100.0),
                 })],
-                always_active: true,
+                kind: ir::intervention::InterventionKind::Event,
             },
             // scheduled INTERVENTION: set V to 50 at t=8.
             Intervention {
@@ -101,7 +101,7 @@ fn flow_model() -> CompiledModel {
                     compartment: "V".into(),
                     value: Expr::const_(50.0),
                 })],
-                always_active: false,
+                kind: ir::intervention::InterventionKind::Scenario,
             },
         ],
         observations: vec![],

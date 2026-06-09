@@ -493,7 +493,8 @@
       "properties": {
         "name": { "type": "string" },
         "schedule": { "$ref": "#/definitions/intervention_schedule" },
-        "actions": { "type": "array", "items": { "$ref": "#/definitions/action" } }
+        "actions": { "type": "array", "items": { "$ref": "#/definitions/action" } },
+        "kind": { "type": "string", "enum": ["scenario", "event"] }
       }
     },
 
@@ -796,7 +797,12 @@
         "hierarchical": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/hierarchical_prior" }] },
         "transform": { "oneOf": [{ "type": "null" }, { "type": "string", "enum": ["log", "logit", "identity"] }] },
         "initial_value": { "type": ["number", "null"] },
-        "param_kind": { "type": ["string", "null"] },
+        "param_kind": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "enum": ["rate", "probability", "count", "positive", "real", "instant", "duration"] }
+          ]
+        },
         "param_dim": {
           "oneOf": [
             { "type": "null" },

@@ -190,7 +190,7 @@ fn load_calendar_context(fit_dir: &Path) -> CalendarContext {
     let instant_params = model
         .parameters
         .iter()
-        .filter(|p| p.param_kind.as_deref() == Some("instant"))
+        .filter(|p| p.param_kind == Some(ir::parameter::ParamKind::Instant))
         .map(|p| p.name.clone())
         .collect();
     CalendarContext {

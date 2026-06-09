@@ -107,7 +107,7 @@ let test_add_same_dim () =
   (* rate = beta * (S + I) — should be OK: T^-1 * P = P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1" (param "beta" *. (pop "S" +. pop "I"))]
     () in
   let r = Dimcheck.check_model m in
@@ -117,7 +117,7 @@ let test_add_mismatched_dim () =
   (* rate = beta * (S + t) — P + T mismatch → E302 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1" (param "beta" *. (pop "S" +. Time))]
     () in
   let r = Dimcheck.check_model m in
@@ -127,7 +127,7 @@ let test_mul_dims_add () =
   (* Pop("S") * Param("beta":rate) = P * T^-1 = P*T^-1 — valid rate *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1" (pop "S" *. param "beta")]
     () in
   let r = Dimcheck.check_model m in
@@ -138,7 +138,7 @@ let test_div_dims_subtract () =
      As a rate this would be wrong, but we wrap it correctly. *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1"
       (param "beta" *. pop "N" *. (pop "S" /. pop "N"))]
     () in
@@ -161,8 +161,8 @@ let test_sir_correct () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "R"; mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[
       mk_transition "infection"
         (param "beta" *. pop "S" *. pop "I" /. pop "N");
@@ -178,7 +178,7 @@ let test_sir_missing_s () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "infection"
         (param "beta" *. pop "I" /. pop "N")]
     () in
@@ -190,7 +190,7 @@ let test_sir_wrong_param_kind () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "probability") "p"]
+    ~parameters:[mk_param ~kind:(Some Ir.Probability) "p"]
     ~transitions:[mk_transition "infection"
         (param "p" *. pop "S" *. pop "I" /. pop "N")]
     () in
@@ -201,7 +201,7 @@ let test_recovery_correct () =
   (* gamma * I → T^-1 * P = P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "I"; mk_compartment "R"]
-    ~parameters:[mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[mk_transition "recovery" (param "gamma" *. pop "I")]
     () in
   let r = Dimcheck.check_model m in
@@ -211,7 +211,7 @@ let test_inflow_correct () =
   (* mu * N → T^-1 * P = P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "mu"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "mu"]
     ~transitions:[mk_transition "birth" (param "mu" *. pop "N")]
     () in
   let r = Dimcheck.check_model m in
@@ -220,7 +220,7 @@ let test_inflow_correct () =
 let test_inflow_bare_rate () =
   (* mu alone → T^-1 — wrong for rate *)
   let m = empty_model
-    ~parameters:[mk_param ~kind:(Some "rate") "mu"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "mu"]
     ~transitions:[mk_transition "birth" (param "mu")]
     () in
   let r = Dimcheck.check_model m in
@@ -233,7 +233,7 @@ let test_iota_bare_const_rejected () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "infection"
         (param "beta" *. (pop "I" +. const 1e-6) *. pop "S" /. pop "N")]
     () in
@@ -245,8 +245,8 @@ let test_iota_typed_param_ok () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "count") "iota"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Count) "iota"]
     ~transitions:[mk_transition "infection"
         (param "beta" *. (pop "I" +. param "iota") *. pop "S" /. pop "N")]
     () in
@@ -259,8 +259,8 @@ let test_typed_let_count_accepted () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "count") ~value:(Some 1e-6) "iota"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Count) ~value:(Some 1e-6) "iota"]
     ~transitions:[mk_transition "infection"
         (param "beta" *. (pop "I" +. param "iota") *. pop "S" /. pop "N")]
     () in
@@ -272,7 +272,7 @@ let test_typed_let_rate_accepted () =
      → Param("mu") with param_kind="rate", value=Some 0.0002 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") ~value:(Some 0.0002) "mu"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) ~value:(Some 0.0002) "mu"]
     ~transitions:[mk_transition "death" (param "mu" *. pop "S")]
     () in
   let r = Dimcheck.check_model m in
@@ -284,7 +284,7 @@ let test_untyped_const_rejected () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "infection"
         (param "beta" *. (pop "I" +. const 1e-6) *. pop "S" /. pop "N")]
     () in
@@ -296,7 +296,7 @@ let test_e302_hint_for_pop_plus_const () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "infection"
         (param "beta" *. (pop "I" +. const 1e-6) *. pop "S" /. pop "N")]
     () in
@@ -320,7 +320,7 @@ let test_param_consistent () =
   (* alpha used as rate in both transitions → OK *)
   let m = empty_model
     ~compartments:[mk_compartment "A"; mk_compartment "B"; mk_compartment "C"]
-    ~parameters:[mk_param ~kind:(Some "rate") "alpha"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "alpha"]
     ~transitions:[
       mk_transition "t1" (param "alpha" *. pop "A");
       mk_transition "t2" (param "alpha" *. pop "B");
@@ -338,7 +338,7 @@ let test_param_inconsistent () =
      alpha alone would be T^-1 which is E300. *)
   let m = empty_model
     ~compartments:[mk_compartment "A"; mk_compartment "B"]
-    ~parameters:[mk_param ~kind:(Some "positive") "alpha"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) "alpha"]
     ~transitions:[
       mk_transition "t1" (param "alpha" *. pop "A");  (* alpha inferred T^-1 *)
       mk_transition "t2" (param "alpha");  (* alpha alone = T^-1, E300 *)
@@ -356,8 +356,8 @@ let test_exp_dimensionless_ok () =
      Wrap: rate * S * exp(p) → T^-1 * P * 1 = P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r";
-                 mk_param ~kind:(Some "probability") "p"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r";
+                 mk_param ~kind:(Some Ir.Probability) "p"]
     ~transitions:[mk_transition "t1"
         (param "r" *. pop "S" *. exp_ (param "p"))]
     () in
@@ -368,7 +368,7 @@ let test_exp_dimensioned_fail () =
   (* exp(Pop("S")) → S is P, E301 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. pop "S" *. exp_ (pop "S"))]
     () in
@@ -379,7 +379,7 @@ let test_log_dimensionless_ok () =
   (* log(S / N) → P / P = 1, log(1) = OK *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. pop "N" *. log_ (pop "S" /. pop "N"))]
     () in
@@ -390,7 +390,7 @@ let test_log_dimensioned_fail () =
   (* log(S) → S is P, E301 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. pop "S" *. log_ (pop "S"))]
     () in
@@ -403,7 +403,7 @@ let test_zero_compatible_with_pop () =
   (* S + Const(0.0) → OK (Any + P = P) *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. (pop "S" +. const 0.0))]
     () in
@@ -414,7 +414,7 @@ let test_bare_const_is_dimensionless () =
   (* Const(3.14) * S → 1 * P = P. Wrap: r * 3.14 * S → P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. const 3.14 *. pop "S")]
     () in
@@ -427,7 +427,7 @@ let test_cond_branches_match () =
   (* cond(I > 0, beta*S, 0.0) — both branches should be P*T^-1 (with 0.0 = Any) *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1"
         (cond (gt (pop "I") (const 0.0))
            (param "beta" *. pop "S")
@@ -440,7 +440,7 @@ let test_cond_branches_mismatch () =
   (* cond(I > 0, S, beta) — P vs T^-1 → E302 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1"
         (cond (gt (pop "I") (const 0.0))
            (pop "S")
@@ -457,7 +457,7 @@ let test_balance_population_ok () =
     ~compartments:[mk_compartment "S"; mk_compartment "E";
                    mk_compartment "I"; mk_compartment "R";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[mk_transition "t1" (param "gamma" *. pop "I")]
     ~balance:(Some {
       balance_target = "R";
@@ -471,7 +471,7 @@ let test_balance_wrong_dim () =
   (* balance_expr = gamma (a rate param) → T^-1, should be P → E305 *)
   let m = empty_model
     ~compartments:[mk_compartment "R"]
-    ~parameters:[mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[mk_transition "t1" (param "gamma" *. pop "R")]
     ~balance:(Some {
       balance_target = "R";
@@ -485,7 +485,7 @@ let test_ode_derivative_correct () =
   (* d(V)/dt = -decay * V → T^-1 * P = P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "V"]
-    ~parameters:[mk_param ~kind:(Some "rate") "decay"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "decay"]
     ~ode_equations:[{
       compartment = "V";
       derivative = UnOp { op = Neg; arg = param "decay" *. pop "V" };
@@ -512,8 +512,8 @@ let test_underdetermined_emits_info () =
   (* alpha:positive * beta_p:positive * I — two unknowns, underdetermined → I300 *)
   let m = empty_model
     ~compartments:[mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "positive") "alpha";
-                 mk_param ~kind:(Some "positive") "beta_p"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) "alpha";
+                 mk_param ~kind:(Some Ir.Positive) "beta_p"]
     ~transitions:[mk_transition "t1"
         (param "alpha" *. param "beta_p" *. pop "I")]
     () in
@@ -526,8 +526,8 @@ let test_partially_determined () =
      Single unknown should be resolved. *)
   let m = empty_model
     ~compartments:[mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "positive") "alpha";
-                 mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) "alpha";
+                 mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1"
         (param "alpha" *. param "beta" *. pop "I")]
     () in
@@ -549,7 +549,7 @@ let test_sqrt_even_powers () =
   (* sqrt(S * I) → sqrt(P^2) = P. Wrap: r * sqrt(S*I) → P*T^-1 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. sqrt_ (pop "S" *. pop "I"))]
     () in
@@ -560,7 +560,7 @@ let test_sqrt_odd_powers_fail () =
   (* sqrt(S * t) → sqrt(P * T) = sqrt(P^1 * T^1) — odd exponents → E304 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "r"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "r"]
     ~transitions:[mk_transition "t1"
         (param "r" *. sqrt_ (pop "S" *. Time))]
     () in
@@ -573,8 +573,8 @@ let test_dim_annotation_dimensionless () =
   (* amplitude : real [1] — explicitly dimensionless, used as multiplier *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "real") ~dim:(Some (0, 0)) "amplitude"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Real) ~dim:(Some (0, 0)) "amplitude"]
     ~transitions:[mk_transition "t1"
         (param "amplitude" *. param "beta" *. pop "S")]
     () in
@@ -590,7 +590,7 @@ let test_dim_annotation_pop_rate () =
   (* mu : positive [P/T] — population-level rate, used alone as transition rate *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "positive") ~dim:(Some (1, -1)) "mu"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) ~dim:(Some (1, -1)) "mu"]
     ~transitions:[mk_transition "t1" (param "mu")]
     () in
   let r = Dimcheck.check_model m in
@@ -606,8 +606,8 @@ let test_dim_annotation_resolves_i300 () =
      With annotation [1] on alpha, it becomes determined. *)
   let m = empty_model
     ~compartments:[mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "positive") ~dim:(Some (0, 0)) "alpha";
-                 mk_param ~kind:(Some "positive") "beta_p"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) ~dim:(Some (0, 0)) "alpha";
+                 mk_param ~kind:(Some Ir.Positive) "beta_p"]
     ~transitions:[mk_transition "t1"
         (param "alpha" *. param "beta_p" *. pop "I")]
     () in
@@ -624,7 +624,7 @@ let test_dim_annotation_conflict () =
   (* mu : positive [1] used as mu * S — gives 1 * P = P, not P*T^-1 → E300 *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "positive") ~dim:(Some (0, 0)) "mu"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) ~dim:(Some (0, 0)) "mu"]
     ~transitions:[mk_transition "t1" (param "mu" *. pop "S")]
     () in
   let r = Dimcheck.check_model m in
@@ -725,8 +725,8 @@ let test_unknown_unknown_linking_conflict () =
      This should work fine — no conflict. *)
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I"]
-    ~parameters:[mk_param ~kind:(Some "positive") "alpha";
-                 mk_param ~kind:(Some "positive") "kappa"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) "alpha";
+                 mk_param ~kind:(Some Ir.Positive) "kappa"]
     ~transitions:[
       mk_transition "t1" (param "alpha" *. pop "S");
       mk_transition "t2" (param "kappa" *. pop "I");
@@ -744,8 +744,8 @@ let test_unknown_unknown_linking_catches_conflict () =
      Should produce E302 or E303. *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "positive") "alpha";
-                 mk_param ~kind:(Some "positive") "kappa"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) "alpha";
+                 mk_param ~kind:(Some Ir.Positive) "kappa"]
     ~transitions:[
       mk_transition "t1" (param "alpha" *. pop "S");
       mk_transition "t2" (param "kappa");
@@ -765,8 +765,8 @@ let test_e303_cross_transition () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I"; mk_compartment "R";
                    mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "positive") "alpha";
-                 mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Positive) "alpha";
+                 mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[
       mk_transition "infection"
         (param "alpha" *. pop "S" *. pop "I" /. pop "N");
@@ -786,8 +786,8 @@ let test_check_phase_no_duplicates () =
   let m = empty_model
     ~compartments:[mk_compartment "S"; mk_compartment "I";
                    mk_compartment "R"; mk_compartment "N"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[
       mk_transition "infection"
         (param "beta" *. pop "S" *. pop "I" /. pop "N");
@@ -803,7 +803,7 @@ let test_check_phase_single_error () =
   (* A model with one clear error should report it exactly once. *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[mk_transition "t1" (param "beta")]
     () in
   let r = Dimcheck.check_model m in
@@ -821,7 +821,7 @@ let param_dim_of name (r : Dimcheck.result) =
 let test_instant_dim_is_time () =
   (* An `instant`-kind parameter carries dimension [T] (P^0 T^1). *)
   let m = empty_model
-    ~parameters:[mk_param ~kind:(Some "instant") "tau"]
+    ~parameters:[mk_param ~kind:(Some Ir.Instant) "tau"]
     () in
   let r = Dimcheck.check_model m in
   Alcotest.(check (option (pair int int))) "instant is [T]"
@@ -831,7 +831,7 @@ let test_instant_dim_is_time () =
 let test_duration_dim_is_time () =
   (* A `duration`-kind parameter carries dimension [T] (P^0 T^1). *)
   let m = empty_model
-    ~parameters:[mk_param ~kind:(Some "duration") "gen_interval"]
+    ~parameters:[mk_param ~kind:(Some Ir.Duration) "gen_interval"]
     () in
   let r = Dimcheck.check_model m in
   Alcotest.(check (option (pair int int))) "duration is [T]"
@@ -844,8 +844,8 @@ let test_rate_plus_instant_e302 () =
      time coverage: adding a time to a population (or rate) is a real bug. *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "instant") "tau"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Instant) "tau"]
     ~transitions:[mk_transition "t1" (param "beta" *. (pop "S" +. param "tau"))]
     () in
   let r = Dimcheck.check_model m in
@@ -857,8 +857,8 @@ let test_rate_times_duration_ok () =
      A valid per-capita-style rate built from a duration — no error. *)
   let m = empty_model
     ~compartments:[mk_compartment "S"]
-    ~parameters:[mk_param ~kind:(Some "probability") "beta";
-                 mk_param ~kind:(Some "duration") "gen_interval"]
+    ~parameters:[mk_param ~kind:(Some Ir.Probability) "beta";
+                 mk_param ~kind:(Some Ir.Duration) "gen_interval"]
     ~transitions:[mk_transition "t1"
                     ((param "beta" /. param "gen_interval") *. pop "S")]
     () in
@@ -870,8 +870,8 @@ let test_instant_vector_each_is_time () =
      component carries [T], the case a per-report fixed estimand set could
      not handle. Expansion produces independent scalar params per cell. *)
   let m = empty_model
-    ~parameters:[mk_param ~kind:(Some "instant") "tau_a";
-                 mk_param ~kind:(Some "instant") "tau_b"]
+    ~parameters:[mk_param ~kind:(Some Ir.Instant) "tau_a";
+                 mk_param ~kind:(Some Ir.Instant) "tau_b"]
     () in
   let r = Dimcheck.check_model m in
   let dim n = Option.map (fun a -> (a.(0), a.(1))) (param_dim_of n r) in

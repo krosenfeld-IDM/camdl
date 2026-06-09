@@ -105,6 +105,49 @@ pub enum Transform {
     Identity,
 }
 
+// ── Parameter kind ──────────────────────────────────────────────────────────
+
+/// DSL parameter-type keyword (the `param_kind` production in
+/// `parser.mly`). Was `Option<String>`; the typed enum is rejected at IR
+/// deserialisation rather than re-parsed at every consumer (the gh#191
+/// stringly-typed surface). Each kind's dimensional meaning lives in the
+/// OCaml `Dimcheck.param_dim_of_kind`; `Instant`/`Duration` are time-typed
+/// (`[T]`) per the 2026-05-22 calendar-time proposal. Serialises to the same
+/// snake_case strings the field has always used (`"rate"`, …), so the type
+/// swap is byte-compatible with existing IR JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamKind {
+    Rate,
+    Probability,
+    Count,
+    Positive,
+    Real,
+    Instant,
+    Duration,
+}
+
+impl ParamKind {
+    /// The snake_case string used in IR JSON (mirrors the `serde` rename).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rate        => "rate",
+            Self::Probability => "probability",
+            Self::Count       => "count",
+            Self::Positive    => "positive",
+            Self::Real        => "real",
+            Self::Instant     => "instant",
+            Self::Duration    => "duration",
+        }
+    }
+}
+
+impl std::fmt::Display for ParamKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ── Parameter declaration ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -124,10 +167,11 @@ pub struct Parameter {
     pub hierarchical:  Option<HierarchicalPrior>,
     pub transform:     Option<Transform>,
     pub initial_value: Option<f64>,
-    /// DSL parameter type: "rate", "probability", "positive", "count", "real".
-    /// Used by inference to choose the default transform.
+    /// DSL parameter-type keyword (typed enum; see [`ParamKind`]).
+    /// Used by inference to choose the default transform. `None` = no
+    /// annotation (dimension inferred by the compiler).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub param_kind:    Option<String>,
+    pub param_kind:    Option<ParamKind>,
     /// Explicit dimension annotation from the DSL `[dim]` syntax.
     /// Two-element array: `[P_exponent, T_exponent]`.
     /// E.g., `[0, -1]` = per-capita rate (T⁻¹), `[1, -1]` = population rate (P·T⁻¹).

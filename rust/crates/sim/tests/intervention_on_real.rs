@@ -38,7 +38,7 @@ fn intervention_set_on_real_compartment_is_exact() {
             compartment: "W".into(),
             value: Expr::const_(42.5),
         })],
-        always_active: false,
+        kind: ir::intervention::InterventionKind::Scenario,
     });
 
     let compiled = CompiledModel::new(model.clone()).unwrap();
@@ -84,7 +84,7 @@ fn intervention_set_negative_on_real_compartment_errors() {
             compartment: "W".into(),
             value: Expr::const_(-5.0),
         })],
-        always_active: false,
+        kind: ir::intervention::InterventionKind::Scenario,
     });
 
     let compiled = CompiledModel::new(model.clone()).unwrap();

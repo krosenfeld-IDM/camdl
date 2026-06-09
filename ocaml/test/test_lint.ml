@@ -142,8 +142,8 @@ let n_binding : binding = { bname = "N"; bexpr = pop "S" +. pop "I" +. pop "R" }
 let test_dead_compartment_flagged () =
   let m = empty_model
     ~compartments:(sir_compartments @ [mk_compartment "X"])
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[infection_tr; recovery_tr]
     ~bindings:[n_binding]
     () in
@@ -167,7 +167,7 @@ let test_binding_only_not_dead () =
       (param "beta" *. pop "S" *. pop "I" /. pop "N") in
   let m = empty_model
     ~compartments:sir_compartments
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[infection_no_r]
     ~bindings:[n_binding]   (* N = S + I + R — R lives only here *)
     () in
@@ -192,7 +192,7 @@ let test_observation_only_not_dead () =
       likelihood = Poisson { rate = Projected } } in
   let m = empty_model
     ~compartments:sir_compartments
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[infection_no_r]
     ~observations:[obs]   (* R lives only in this projection *)
     () in
@@ -215,7 +215,7 @@ let test_derived_observation_only_not_dead () =
       likelihood = Normal { mean = Projected; sd = const 1.0 } } in
   let m = empty_model
     ~compartments:sir_compartments
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[infection_no_r]
     ~observations:[obs]
     () in
@@ -234,7 +234,7 @@ let test_init_target_only_not_dead () =
       (param "beta" *. pop "S" *. pop "I") in
   let m = empty_model
     ~compartments:sir_compartments
-    ~parameters:[mk_param ~kind:(Some "rate") "beta"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta"]
     ~transitions:[infection_no_r]
     ~initial_conditions:(Explicit [("S", 999.0); ("I", 1.0); ("R", 0.0)])
     () in
@@ -247,8 +247,8 @@ let test_init_target_only_not_dead () =
 let test_clean_sir_no_lint () =
   let m = empty_model
     ~compartments:sir_compartments
-    ~parameters:[mk_param ~kind:(Some "rate") "beta";
-                 mk_param ~kind:(Some "rate") "gamma"]
+    ~parameters:[mk_param ~kind:(Some Ir.Rate) "beta";
+                 mk_param ~kind:(Some Ir.Rate) "gamma"]
     ~transitions:[infection_tr; recovery_tr]
     ~bindings:[n_binding]
     () in

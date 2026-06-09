@@ -314,7 +314,7 @@ fn snapshot_reads_post_intervention_state() {
             name: "halve_S".into(),
             base_name: None,
             schedule: InterventionSchedule::AtTimes(vec![5.0]),
-            always_active: true, // fire without scenario gating
+            kind: ir::intervention::InterventionKind::Event, // fire without scenario gating
             actions: vec![Action::FractionTransfer(FractionTransfer {
                 src: "S".into(),
                 dst: "V".into(),

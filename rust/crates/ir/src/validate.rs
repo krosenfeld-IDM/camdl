@@ -608,7 +608,7 @@ mod tests {
                 compartment: "Q".into(), // not declared (model has S, I, R)
                 value: Expr::const_(0.0),
             })],
-            always_active: false,
+            kind: crate::intervention::InterventionKind::Scenario,
         });
         let errs = validate(&m).expect_err("must reject intervention targeting unknown 'Q'");
         assert!(
@@ -633,7 +633,7 @@ mod tests {
                 dst: "Nowhere".into(),   // not declared
                 fraction: Expr::const_(0.1),
             })],
-            always_active: true,
+            kind: crate::intervention::InterventionKind::Event,
         });
         let errs = validate(&m).expect_err("must reject transfer to unknown 'Nowhere'");
         assert!(

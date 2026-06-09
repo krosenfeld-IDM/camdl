@@ -966,18 +966,21 @@ pub fn derive_transform_with_bounds(
             Transform::None
         }
     };
-    if let Some(ref kind) = ir_param.param_kind {
-        match kind.as_str() {
-            "probability" => Transform::Logit { lo: lower, hi: upper },
+    if let Some(kind) = ir_param.param_kind {
+        // Exhaustive over ParamKind (no `_`): a new kind is a compile error
+        // here, forcing an explicit transform decision (the gh#191 payoff).
+        use ir::parameter::ParamKind::*;
+        match kind {
+            Probability => Transform::Logit { lo: lower, hi: upper },
             // `duration` is a positive span → log scale, like rate/count.
-            "rate" | "positive" | "count" | "duration" => Transform::Log { lo: lower, hi: upper },
+            Rate | Positive | Count | Duration => Transform::Log { lo: lower, hi: upper },
             // `instant` is an origin-relative point that may be negative
             // (a seed before the anchor): unconstrained scale unless the
             // fit declares a finite search box, in which case clamp to it.
-            "instant" => bounded_or_none(lower, upper),
-            // `real` (and any unknown kind) is unconstrained, but a
-            // finite search box must still be honoured.
-            _ => bounded_or_none(lower, upper),
+            Instant => bounded_or_none(lower, upper),
+            // `real` is unconstrained, but a finite search box must still
+            // be honoured.
+            Real => bounded_or_none(lower, upper),
         }
     } else {
         if lower >= 0.0 { Transform::Log { lo: lower, hi: upper } } else { Transform::None }
@@ -3399,7 +3402,7 @@ dt = 1.0
     // tightened. LHS made the bug visible (init draws spanning model
     // bounds, not fit bounds).
 
-    fn make_one_param_model(name: &str, lo: f64, hi: f64, kind: Option<&str>)
+    fn make_one_param_model(name: &str, lo: f64, hi: f64, kind: Option<ir::parameter::ParamKind>)
         -> (ir::Model, sim::CompiledModel)
     {
         use ir::{
@@ -3418,7 +3421,7 @@ dt = 1.0
             parameters: vec![Parameter {
                 name: name.into(), value: Some((lo + hi) * 0.5),
                 bounds: Some((lo, hi)), prior: None, transform: None,
-                initial_value: None, param_kind: kind.map(|k| k.to_string()),
+                initial_value: None, param_kind: kind,
                 param_dim: None, hierarchical: None,
             }],
             initial_conditions: InitialConditions::Explicit({
@@ -3440,7 +3443,7 @@ dt = 1.0
 
     #[test]
     fn fit_bounds_tighten_estimated_param_lower_upper() {
-        let (model, compiled) = make_one_param_model("beta", 0.0, 1.0, Some("rate"));
+        let (model, compiled) = make_one_param_model("beta", 0.0, 1.0, Some(ir::parameter::ParamKind::Rate));
         let base_params = compiled.default_params.clone();
         let specs = vec![ParamSpec {
             name: "beta".into(),
@@ -3461,7 +3464,7 @@ dt = 1.0
         // Transform clamp ranges drive IF2 particle clamping. If they
         // don't track fit bounds, the inference walks particles out to
         // model bounds even when the user tightened.
-        let (model, compiled) = make_one_param_model("beta", 1e-5, 1.0, Some("rate"));
+        let (model, compiled) = make_one_param_model("beta", 1e-5, 1.0, Some(ir::parameter::ParamKind::Rate));
         let base_params = compiled.default_params.clone();
         let specs = vec![ParamSpec {
             name: "beta".into(),
@@ -3484,7 +3487,7 @@ dt = 1.0
     #[test]
     fn fit_bounds_outside_model_bounds_rejected() {
         // A fit must not loosen physical bounds the model declared.
-        let (model, compiled) = make_one_param_model("beta", 0.0, 1.0, Some("rate"));
+        let (model, compiled) = make_one_param_model("beta", 0.0, 1.0, Some(ir::parameter::ParamKind::Rate));
         let base_params = compiled.default_params.clone();
         let specs = vec![ParamSpec {
             name: "beta".into(),
@@ -3503,7 +3506,7 @@ dt = 1.0
     fn fit_bounds_none_falls_back_to_model_bounds() {
         // Profile / pfilter pass bounds: None — they should keep using
         // the model-declared bounds verbatim.
-        let (model, compiled) = make_one_param_model("beta", 0.01, 2.0, Some("rate"));
+        let (model, compiled) = make_one_param_model("beta", 0.01, 2.0, Some(ir::parameter::ParamKind::Rate));
         let base_params = compiled.default_params.clone();
         let specs = vec![ParamSpec {
             name: "beta".into(),
@@ -3528,7 +3531,7 @@ dt = 1.0
         // takes to traverse the search box. (Natural-scale rw_sd isn't
         // directly comparable across bound widths because the midpoint
         // changes with the bounds.)
-        let (model, compiled) = make_one_param_model("beta", 1e-6, 1.0, Some("rate"));
+        let (model, compiled) = make_one_param_model("beta", 1e-6, 1.0, Some(ir::parameter::ParamKind::Rate));
         let base_params = compiled.default_params.clone();
         let wide = vec![ParamSpec {
             name: "beta".into(), rw_sd: None, transform: None, ivp: false,
@@ -3567,7 +3570,7 @@ dt = 1.0
         // A `real` param WITH finite fit bounds must NOT get
         // Transform::None (which lets IF2 escape the box). It must get
         // the scaled-logit that clamps to the search bounds.
-        let (model, compiled) = make_one_param_model("tau", 0.0, 55.0, Some("real"));
+        let (model, compiled) = make_one_param_model("tau", 0.0, 55.0, Some(ir::parameter::ParamKind::Real));
         let base_params = compiled.default_params.clone();
         let specs = vec![ParamSpec {
             name: "tau".into(),
@@ -3596,7 +3599,7 @@ dt = 1.0
         // before the anchor). The scaled-logit handles a negative lower
         // bound fine — it maps the whole [lo, hi] interval regardless of
         // sign — so a bounded `instant` must clamp, not escape.
-        let (model, compiled) = make_one_param_model("tau", -30.0, 30.0, Some("instant"));
+        let (model, compiled) = make_one_param_model("tau", -30.0, 30.0, Some(ir::parameter::ParamKind::Instant));
         let base_params = compiled.default_params.clone();
         let specs = vec![ParamSpec {
             name: "tau".into(),
@@ -3627,10 +3630,10 @@ dt = 1.0
         let real_param = Parameter {
             name: "tau".into(), value: Some(0.0), bounds: None, prior: None,
             transform: None, initial_value: None,
-            param_kind: Some("real".into()), param_dim: None, hierarchical: None,
+            param_kind: Some(ir::parameter::ParamKind::Real), param_dim: None, hierarchical: None,
         };
         let instant_param = Parameter {
-            param_kind: Some("instant".into()), ..real_param.clone()
+            param_kind: Some(ir::parameter::ParamKind::Instant), ..real_param.clone()
         };
         // (0.0, INFINITY) is the resolved (lo, hi) when no bounds exist
         // (see build_if2_params_from_specs `(None, None) => (0.0, INF)`).

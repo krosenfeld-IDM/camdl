@@ -73,7 +73,7 @@ fn periodic_xfer_model(at_day: f64, period: f64, end: f64, model_dt: Option<f64>
             end,
             period,
         }),
-        always_active: false,
+        kind: ir::intervention::InterventionKind::Scenario,
         actions: vec![
             Action::AbsoluteTransfer(AbsoluteTransfer {
                 src: "S".into(),
@@ -207,7 +207,7 @@ fn at_times_intervention_fire_count_dt_invariant() {
         name: "at_times_xfer".into(),
         base_name: None,
         schedule: InterventionSchedule::AtTimes(vec![10.0, 20.0, 30.0, 40.0, 50.0]),
-        always_active: false,
+        kind: ir::intervention::InterventionKind::Scenario,
         actions: vec![
             Action::AbsoluteTransfer(AbsoluteTransfer {
                 src: "S".into(),

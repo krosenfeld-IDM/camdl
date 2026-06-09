@@ -114,7 +114,7 @@ fn representative_model() -> Model {
                 compartment: "I".into(),
                 value: Expr::const_(0.0),
             })],
-            always_active: false,
+            kind: ir::intervention::InterventionKind::Scenario,
         }],
         observations: vec![ObservationModel {
             name: "cases".into(),
@@ -140,7 +140,7 @@ fn representative_model() -> Model {
             hierarchical: None,
             transform: Some(Transform::Log),
             initial_value: Some(0.4),
-            param_kind: Some("rate".into()),
+            param_kind: Some(ir::parameter::ParamKind::Rate),
             param_dim: Some((0, -1)),
         }],
         bindings: vec![Binding {
@@ -195,10 +195,13 @@ fn representative_model() -> Model {
 /// this value; an unintended change to any hand impl trips it.
 #[test]
 fn model_golden_hash() {
-    // Updated when representative_model()'s table out_of_bounds went
-    // Clamp -> Error (Clamp/Wrap removed). No real model used Clamp/Wrap, so
-    // produced run_ids are unaffected; only this hand-built fixture moved.
-    const GOLDEN: &str = "ae7d5325233cbd6c6108e5f1b73b757424093822a7c883df629b41a72e383cf8";
+    // Updated for the gh#191/gh#107 typed-surface encoding change (IR 0.10):
+    // `Parameter.param_kind` String -> `ParamKind` enum and `Intervention`
+    // `always_active: bool` -> `kind: InterventionKind` now hash via typed
+    // variant indices, not a string/bool. This intentionally moves every
+    // run_id; the version handshake (ir/VERSION 0.9 -> 0.10) signposts it.
+    // (Prior value moved when table out_of_bounds went Clamp/Wrap -> Error.)
+    const GOLDEN: &str = "d51517eec14d8c26bc92ecb779daf328c7df722ed6c53e49cb46fbff51f86253";
     let got = representative_model().content_hash().to_hex();
     assert_eq!(got, GOLDEN, "ir Model golden hash changed (got {got})");
 }

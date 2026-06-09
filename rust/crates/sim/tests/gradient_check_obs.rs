@@ -531,7 +531,7 @@ fn build_discretized_normal_seir() -> ir::Model {
         hierarchical: None,
         transform: None,
         initial_value: None,
-        param_kind: Some("positive".to_string()),
+        param_kind: Some(ir::parameter::ParamKind::Positive),
         param_dim: None,
     });
 
@@ -680,7 +680,7 @@ fn build_beta_binomial_seir() -> ir::Model {
             hierarchical: None,
             transform: None,
             initial_value: None,
-            param_kind: Some("positive".to_string()),
+            param_kind: Some(ir::parameter::ParamKind::Positive),
             param_dim: None,
         });
     }

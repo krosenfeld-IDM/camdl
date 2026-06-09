@@ -59,7 +59,7 @@ fn param(name: &str, value: f64) -> Parameter {
         name: name.into(), value: Some(value),
         bounds: None, prior: None, hierarchical: None,
         transform: None, initial_value: None,
-        param_kind: Some("rate".into()), param_dim: None,
+        param_kind: Some(ir::parameter::ParamKind::Rate), param_dim: None,
     }
 }
 
@@ -116,7 +116,7 @@ fn sir_with_seed_event() -> Model {
             compartment: "I".into(),
             count: Expr::Const(ConstExpr { value: 5.0 }),
         })],
-        always_active: true,
+        kind: ir::intervention::InterventionKind::Event,
     };
 
     let mut init = HashMap::new();
@@ -197,7 +197,7 @@ fn seir_with_seed_event(n_seed: i64, tau: f64) -> Model {
             compartment: "E".into(),
             count: Expr::Const(ConstExpr { value: n_seed as f64 }),
         })],
-        always_active: true,
+        kind: ir::intervention::InterventionKind::Event,
     };
 
     let mut init = HashMap::new();
@@ -449,7 +449,7 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
 fn exact_alignment_rejected_on_always_active_event_model() {
     let model = seir_with_seed_event(5, 10.0); // founders_arrive: always_active
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
-    assert!(compiled.model.interventions.iter().any(|iv| iv.always_active),
+    assert!(compiled.model.interventions.iter().any(|iv| iv.kind.is_event()),
         "fixture precondition: model has an always-active event");
     let params = compiled.default_params.clone();
 

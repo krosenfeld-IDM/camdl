@@ -77,7 +77,7 @@ fn death_model(event_times: Option<Vec<f64>>) -> CompiledModel {
                 compartment: "N".into(),
                 count: Expr::const_(1.0),
             })],
-            always_active: true,
+            kind: ir::intervention::InterventionKind::Event,
         }],
         None => vec![],
     };
