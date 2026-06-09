@@ -319,3 +319,50 @@ S-class knockdown, leaving only the tricky tier.
 consolidation, #111 resolver, #95 sampler, #119/#186 frozen-params, #197/#200
 grad-drift [inference agent], #129 re-test, ABC #203, reactive #204, etc.).
 
+---
+
+## Deep root-cause map: fix-once-resolve-many (2026-06-08, vs the 70-open backlog)
+
+**The deepest smell (the common root under RC1/RC5/the capability fork/the
+OCaml↔Rust mirrors):** *one mathematical semantic is implemented as N
+independently hand-maintained copies the type system doesn't force to agree, and
+the suite exercises only one copy at a time.*
+
+**Shared clusters, ranked (each fix closes several at once):**
+
+| fix-once | retires (open) | effort | note |
+| --- | --- | --- | --- |
+| Split forcing/table fields Constant‖Parametric + autodiff-through (never `Const 0.0`) | #119, #186, #128, #180 | L | params inside forcings are frozen-value AND zero-gradient |
+| One ref-integrity + range validation pass (both IR sides; release-time) | #127, #126, #134, #13 | M | OOB panic, debug-only dt asserts, date-range, calendar literals |
+| One whole-IR digest for all run/cache identity (delete `model_hash` allowlist) | #189, #190, #129 | M | RC5; folds obs_alignment/holdout-content/priors into the fit hash |
+| One `(value, grad)` PGAS density traversal + value-of-grad==value oracle | #197, #200, #79 | M | RC1; **inference agent's lane** |
+| `collect_real_comp_deps` + recompute after rk4 (real-coupled rates) | #120, #95 | L | #95 also needs a separate inhomogeneous-Poisson sampler RFC |
+| `resolve_indexed_ref` dimension-aware resolver (delete string-concat lowering) | #111 (+#112 done) | L | proposal-grade; RC4 umbrella |
+| (backend × ExecMode) derived capabilities, one gate | #191 | M | RC2 proposal v2 |
+
+**Isolated (~49):** no shared root — independent ergonomics / features / docs
+(#12, #50, #55/#56, #60, #70, #72, #82, #83, #84, #99, #101, #102/#103, #107,
+#121, #122, #125, #138, #140, #141, #143, #146, #149, #154/#159, #155, #156,
+#166, #167, #169, #171/#172, #182, #184, #185, #187, #198/#199, #201, #202,
+#203, #204, …). These are one-at-a-time; no smell collapses them.
+
+**Why bugs pass tests (forensic) — and the meta-test that closes each class:**
+1. *Value/grad asymmetric oracle* — FD-checks grad vs a SEPARATE value-fn → a
+   term dropped from the grad-fn's OWN value is invisible. → assert
+   `complete_data_loglik_grad(θ).0 == complete_data_loglik(θ)` per fixture.
+2. *Unit test on a hand-patched input the production caller never produces* —
+   #191's test pre-filled value-less params + called the gate directly. → one
+   dispatch-level e2e per gate (drive `camdl fit run` on a real fixture).
+3. *Forked source-of-truth* — test reimplements the semantic (model_hash ×3) →
+   tests nothing. → route every consumer through ONE fn; delete the reimpls;
+   cross-language/arena equivalence golden.
+4. *Self-referential / tautological assertion* — balance conservation holds by
+   construction. → assert against an INDEPENDENT recomputation.
+5. *Missing known-correct oracle* — #201 PF marginal promised, never built. →
+   analytic finite-state forward-filter oracle + recovery-asserts.
+
+**Takeaway:** count won't drop much further via automation (~49 are isolated);
+the remaining LEVERAGE is the ~6 shared clusters (deliberate structural strikes,
+several proposal-grade / one inference-owned) + the meta-test suite, which
+together also stop the "passes-but-wrong" class that shipped these.
+
