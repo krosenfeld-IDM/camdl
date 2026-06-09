@@ -149,6 +149,13 @@ pub fn run_chain_binomial_with_observer(
     // tests/progress_tick_invariance.rs.
     mut tick: Option<&mut dyn FnMut(f64)>,
 ) -> Result<Trajectory, SimError> {
+    // gh#126: reject a non-finite/non-positive dt or a non-finite fire
+    // time at the entry point — a RELEASE-build check (the per-conversion
+    // guards in `time.rs` are debug_assert only). A bad dt would otherwise
+    // freeze the substep loop at the initial state (`dt <= 1e-15` break
+    // fires immediately) or feed NaN/±∞ straight into the kernel.
+    model.validate_schedule(cfg.dt, params)?;
+
     let (mut int_s, mut real_s) = model.initial_state(params)?;
     let n_transitions = model.model.transitions.len();
     let n_real = real_s.values.len();

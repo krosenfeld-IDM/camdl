@@ -2069,9 +2069,29 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
           Ir.Const 0.0
         | Ok _ ->
           (try Ir.Const (parse_date_to_float origin_str date_str ctx.time_unit)
-           with Failure msg ->
+           with
+           | Failure msg ->
              Diagnostics.error ctx.diags ~code:"E223" ~loc:Diagnostics.no_loc
                ~message:msg ();
+             Ir.Const 0.0
+           | Invalid_argument _ ->
+             (* `parse_date_to_float` raises `Invalid_argument` when
+                `time_unit` is not a calendar unit (`'count` / `'ratio`,
+                both parseable alongside `origin = date(...)`). The data
+                loader already catches this (`load_table_data`); the model
+                `date()` path must too, or the bare exception escapes the
+                expander as an uncaught-`E001` stack-trace (gh#134). A
+                dimensionless `time_unit` has no day mapping, so a `date()`
+                literal cannot be converted to internal time. *)
+             Diagnostics.error ctx.diags ~code:"E223" ~loc:Diagnostics.no_loc
+               ~message:(Printf.sprintf
+                 "date(\"%s\") cannot be converted: `time_unit = '%s` is a \
+                  dimensionless unit, so a calendar date has no day offset \
+                  from `origin`"
+                 date_str (unit_lit_to_string ctx.time_unit))
+               ~hint:"declare a calendar `time_unit` ('days, 'weeks) to use \
+                      date() literals, or write a bare numeric time instead"
+               ();
              Ir.Const 0.0))
      | None ->
        Diagnostics.error ctx.diags ~code:"E220" ~loc:Diagnostics.no_loc

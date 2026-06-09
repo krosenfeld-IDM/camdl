@@ -111,6 +111,10 @@ pub fn run_gillespie_with_observer(
     // the same call signature as the dt-parameterised backends without
     // changing observed semantics.
     let iv_resolution_dt = model.model.simulation.dt.unwrap_or(1.0);
+    // gh#126: reject a non-finite/non-positive intervention-resolution dt
+    // or a non-finite fire time at entry — a RELEASE-build check (the
+    // per-conversion guards in `time.rs` are debug_assert only).
+    model.validate_schedule(iv_resolution_dt, params)?;
     let fire_steps = model.resolve_fire_steps(iv_resolution_dt, params);
 
     // Merged timeline spine. Gillespie is event-driven: it PROPOSES an

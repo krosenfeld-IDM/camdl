@@ -27,6 +27,17 @@
  (modules test_caltime_golden)
  (libraries compiler ir alcotest))
 
+; Model-side `date()` literal range validation + symmetry with the
+; data-loader path (gh#134). Drives the real compile pipeline over a model
+; that uses `date(...)` in `simulate { from / to }` and asserts the literal
+; validates + converts the same way the data loader does — out-of-range /
+; malformed dates and non-time time_units are rejected with a located E223,
+; never a silent shift or an uncaught Invalid_argument (bare E001).
+(test
+ (name test_model_date_literal)
+ (modules test_model_date_literal)
+ (libraries compiler ir alcotest))
+
 (test
  (name test_dimcheck)
  (modules test_dimcheck)

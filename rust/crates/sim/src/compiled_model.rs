@@ -500,6 +500,27 @@ impl CompiledModel {
             .collect()
     }
 
+    /// Validate the runtime time-axis at simulation start (gh#126): the
+    /// integrator step `dt` must be finite and positive, and every
+    /// resolved fire time must be finite. Backends call this ONCE at
+    /// their entry point, before `resolve_fire_steps` and the substep
+    /// loop.
+    ///
+    /// This is the RELEASE-build guard: the per-conversion checks in
+    /// `crate::time` are `debug_assert!`-only and compiled out of
+    /// `--release`, so a bad (or parameter-proposed) `dt`/schedule would
+    /// otherwise hang the substep loop (`dt <= 0` never advances time) or
+    /// silently fire an intervention at a garbage step (`NaN as i64`).
+    /// Returns a named [`SimError::Validation`] instead. See
+    /// `docs/dev/notes/2026-06-08-static-typing-as-bug-prevention.md` §6.
+    pub fn validate_schedule(&self, dt: f64, params: &[f64]) -> Result<(), SimError> {
+        crate::time::validate_dt(dt)?;
+        for times in self.resolve_fire_times(params) {
+            crate::time::validate_fire_times(&times)?;
+        }
+        Ok(())
+    }
+
     /// Derive per-intervention sets of step indices for a given
     /// integrator step `dt` and parameter vector. The returned view is
     /// a runtime projection of `self.resolve_fire_times(params)`;

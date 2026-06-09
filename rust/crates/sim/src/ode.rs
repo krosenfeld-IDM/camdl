@@ -165,6 +165,12 @@ pub fn run_ode(
     cfg: &OdeConfig,
     mut tick: Option<&mut dyn FnMut(f64)>,
 ) -> Result<Trajectory, SimError> {
+    // gh#126: reject a non-finite/non-positive dt or a non-finite fire
+    // time at the entry point — a RELEASE-build check (the per-conversion
+    // guards in `time.rs` are debug_assert only). A non-positive dt would
+    // otherwise spin the RK4 substep loop forever (time never advances).
+    model.validate_schedule(cfg.dt, params)?;
+
     let (int_s0, real_s0) = model.initial_state(params)?;
     let mut int_vals: Vec<f64> = int_s0.counts.iter().map(|&c| c as f64).collect();
     let mut real_vals: Vec<f64> = real_s0.values.clone();
