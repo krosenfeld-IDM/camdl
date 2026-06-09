@@ -17,7 +17,7 @@ use ir::expr::{BinOp, Expr, UnOp};
 use ir::table::OobPolicy;
 
 use crate::error::SimError;
-use crate::propensity::{eval_time_func, EvalCtx};
+use crate::propensity::{eval_forcing, EvalCtx};
 
 // ── Resolved expression tree ─────────────────────────────────────────────────
 
@@ -507,7 +507,7 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
         }
 
         ResolvedExpr::TimeFunc(idx) => {
-            eval_time_func(&ctx.model.time_func_cache[*idx].kind, ctx.t)
+            eval_forcing(&ctx.model.time_func_cache[*idx].kind, ctx.t, ctx)
         }
 
         ResolvedExpr::TableLookup { table_idx, oob, table_len, index } => {

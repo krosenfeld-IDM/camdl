@@ -183,7 +183,7 @@ pub fn eval_expr(expr: &Expr, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
             let idx = ctx.model.time_func_index.get(w.time_func.name.as_str())
                 .copied()
                 .ok_or_else(|| SimError::UnknownTimeFunction(w.time_func.name.clone()))?;
-            Ok(eval_time_func(&ctx.model.time_func_cache[idx].kind, ctx.t))
+            Ok(eval_forcing(&ctx.model.time_func_cache[idx].kind, ctx.t, ctx))
         }
 
         Expr::TableLookup(w) => {
@@ -336,80 +336,147 @@ fn table_lookup(table: &ir::table::Table, cached: &[f64], idx: i64) -> Result<f6
     Ok(cached[i as usize])
 }
 
-/// Evaluate a compiled time function kind at time `t`.
-pub fn eval_time_func(kind: &CompiledTimeFuncKind, t: f64) -> f64 {
+// ── Pure per-kind forcing math ──────────────────────────────────────────────
+//
+// Each function takes already-evaluated scalar coefficients (+ structural
+// arrays) and `t`. Keeping the closed-form math pure lets the oracle tests
+// (interpolation.rs / periodic_forcing.rs / fourier_oracle.rs) exercise it
+// directly, and lets `eval_forcing` (below) be a thin coefficient-resolution
+// shim. See proposal `2026-06-09-const-parametric-forcing.md` §3.
+
+/// `baseline + amplitude · sin(2π(t − phase)/period)`.
+#[inline]
+pub fn sinusoidal_value(amplitude: f64, period: f64, phase: f64, baseline: f64, t: f64) -> f64 {
+    baseline + amplitude * (2.0 * std::f64::consts::PI * (t - phase) / period).sin()
+}
+
+/// Step function: `values[i]` applies for `t ∈ [breakpoints[i-1], breakpoints[i])`;
+/// `values[0]` before the first breakpoint, `values[last]` after the last.
+#[inline]
+pub fn piecewise_value(breakpoints: &[f64], values: &[f64], t: f64) -> f64 {
+    if values.is_empty() { return 0.0; }
+    let mut result = values[0];
+    for (i, &bp) in breakpoints.iter().enumerate() {
+        if t >= bp && i + 1 < values.len() {
+            result = values[i + 1];
+        }
+    }
+    result
+}
+
+/// Linear interpolation between knots; clamps to the endpoint values outside
+/// the knot range.
+#[inline]
+pub fn interpolated_value(times: &[f64], values: &[f64], t: f64) -> f64 {
+    if times.is_empty() || values.is_empty() { return 0.0; }
+    if t <= times[0] { return values[0]; }
+    if t >= *times.last().unwrap() { return *values.last().unwrap(); }
+    for i in 0..times.len() - 1 {
+        if t >= times[i] && t <= times[i + 1] {
+            let frac = (t - times[i]) / (times[i + 1] - times[i]);
+            return values[i] + frac * (values[i + 1] - values[i]);
+        }
+    }
+    *values.last().unwrap()
+}
+
+/// Piecewise-constant lookup: value at the largest grid point ≤ t. Matches
+/// pomp's `covariate_table(order = "constant")`.
+#[inline]
+pub fn constant_value(times: &[f64], values: &[f64], t: f64) -> f64 {
+    if times.is_empty() || values.is_empty() { return 0.0; }
+    if t <= times[0] { return values[0]; }
+    if t >= *times.last().unwrap() { return *values.last().unwrap(); }
+    match times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
+        Ok(i) => values[i],
+        Err(i) => values[i - 1], // insertion point; i-1 is the last point <= t
+    }
+}
+
+/// Which periodic bin `t` falls in (equal sub-intervals over `period`), or
+/// `None` if degenerate (`n == 0` or `period ≤ 0`).
+#[inline]
+pub fn periodic_bin(period: f64, n: usize, t: f64) -> Option<usize> {
+    if n == 0 || period <= 0.0 { return None; }
+    let phase = t.rem_euclid(period);
+    let step = period / n as f64;
+    let i = (phase / step).floor() as usize;
+    Some(i.min(n - 1))
+}
+
+/// Step value of a periodic forcing at `t`.
+#[inline]
+pub fn periodic_value(period: f64, values: &[f64], t: f64) -> f64 {
+    match periodic_bin(period, values.len(), t) {
+        Some(i) => values[i],
+        None => 0.0,
+    }
+}
+
+/// One Fourier term `a·cos(arg) + b·sin(arg)` with `arg = phase·(k+1)` (`k`
+/// 0-based; `phase = 2π·t/period`).
+#[inline]
+pub fn fourier_term(phase: f64, k: usize, a: f64, b: f64) -> f64 {
+    let arg = phase * (k as f64 + 1.0);
+    a * arg.cos() + b * arg.sin()
+}
+
+/// Finite Fourier series `Σ_k a_k cos(2π k t/period) + b_k sin(…)` (gh#59). No
+/// baseline — the model author writes `1 + fourier(t)`, matching the sinusoidal
+/// convention of leaving baseline composition to the rate.
+#[inline]
+pub fn fourier_value(period_inv: f64, harmonics: &[(f64, f64)], t: f64) -> f64 {
+    let phase = 2.0 * std::f64::consts::PI * t * period_inv;
+    harmonics.iter().enumerate()
+        .map(|(k, (a, b))| fourier_term(phase, k, *a, *b))
+        .sum()
+}
+
+/// Evaluate a compiled time function at time `t`, resolving its live scalar
+/// coefficients against `ctx.params`. Structural arrays (interpolation knots,
+/// spline bases, periodic-spline coefs, piecewise steps) are already `f64` and
+/// pass straight through to the pure math above.
+///
+/// Coefficient resolution is per-call today; the per-`(forcing, t)` memo
+/// (proposal §3) collapses the N-referencing-transitions repeat. `Periodic`
+/// evaluates only the selected bin's value and `Fourier` evaluates each
+/// harmonic coefficient inline, so neither allocates.
+pub fn eval_forcing(kind: &CompiledTimeFuncKind, t: f64, ctx: &EvalCtx<'_>) -> f64 {
     match kind {
-        CompiledTimeFuncKind::Sinusoidal { amplitude, period, phase, baseline } => {
-            baseline + amplitude * (2.0 * std::f64::consts::PI * (t - phase) / period).sin()
-        }
-        CompiledTimeFuncKind::Piecewise { breakpoints, values } => {
-            // Constant on each interval: values[i] applies for t in [breakpoints[i-1], breakpoints[i])
-            // values[0] applies before breakpoints[0]; values[last] applies after breakpoints[last-1]
-            if values.is_empty() { return 0.0; }
-            let mut result = values[0];
-            for (i, &bp) in breakpoints.iter().enumerate() {
-                if t >= bp && i + 1 < values.len() {
-                    result = values[i + 1];
-                }
-            }
-            result
-        }
-        CompiledTimeFuncKind::Interpolated { times, values } => {
-            if times.is_empty() || values.is_empty() { return 0.0; }
-            if t <= times[0] { return values[0]; }
-            if t >= *times.last().unwrap() { return *values.last().unwrap(); }
-            for i in 0..times.len() - 1 {
-                if t >= times[i] && t <= times[i + 1] {
-                    let frac = (t - times[i]) / (times[i + 1] - times[i]);
-                    return values[i] + frac * (values[i + 1] - values[i]);
-                }
-            }
-            *values.last().unwrap()
-        }
-        CompiledTimeFuncKind::Constant { times, values } => {
-            // Piecewise constant: return value at the largest grid point <= t.
-            // Matches pomp's covariate_table(order = "constant").
-            if times.is_empty() || values.is_empty() { return 0.0; }
-            if t <= times[0] { return values[0]; }
-            if t >= *times.last().unwrap() { return *values.last().unwrap(); }
-            // Binary search for the last grid point <= t
-            match times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
-                Ok(i) => values[i],
-                Err(i) => values[i - 1], // i is insertion point; i-1 is last point <= t
-            }
-        }
+        CompiledTimeFuncKind::Sinusoidal { amplitude, period, phase, baseline } =>
+            sinusoidal_value(
+                eval_resolved(amplitude, ctx),
+                eval_resolved(period, ctx),
+                eval_resolved(phase, ctx),
+                eval_resolved(baseline, ctx),
+                t),
+        CompiledTimeFuncKind::Piecewise { breakpoints, values } =>
+            piecewise_value(breakpoints, values, t),
+        CompiledTimeFuncKind::Interpolated { times, values } =>
+            interpolated_value(times, values, t),
+        CompiledTimeFuncKind::Constant { times, values } =>
+            constant_value(times, values, t),
         CompiledTimeFuncKind::CubicSpline(spline) => spline.eval(t),
         CompiledTimeFuncKind::Periodic { period, values } => {
-            if values.is_empty() || *period <= 0.0 { return 0.0; }
-            let phase = t.rem_euclid(*period);
-            let n = values.len();
-            let step = period / n as f64;
-            let i = (phase / step).floor() as usize;
-            values[i.min(n - 1)]
-        }
-        CompiledTimeFuncKind::Fourier { period_inv, harmonics } => {
-            // gh#59: sum_k (a_k cos(2π k t/period) + b_k sin(2π k t/period)).
-            // No baseline added here — caller is expected to write
-            // `1 + fourier(t)` in the rate expression, matching the
-            // sinusoidal kind's convention of leaving baseline composition
-            // to the model author.
-            let phase = 2.0 * std::f64::consts::PI * t * period_inv;
-            let mut sum = 0.0;
-            for (k, (a, b)) in harmonics.iter().enumerate() {
-                let arg = phase * (k as f64 + 1.0);
-                sum += a * arg.cos() + b * arg.sin();
+            let p = eval_resolved(period, ctx);
+            match periodic_bin(p, values.len(), t) {
+                Some(i) => eval_resolved(&values[i], ctx),
+                None => 0.0,
             }
-            sum
         }
-        CompiledTimeFuncKind::PeriodicSpline { period, n_basis, degree, coefs } => {
-            // gh#59 v2: de Boor recurrence + periodic wrap-fold + centering
-            // shift. See `crates/sim/src/periodic_bspline.rs` for the
-            // algorithm and its primary-source citations; cross-validated
-            // against scipy and pomp via the oracle fixtures in
-            // `tests/fixtures/periodic_bspline_*.tsv`.
-            crate::periodic_bspline::eval_periodic_bspline(
-                t, *period, *n_basis, *degree, coefs)
+        CompiledTimeFuncKind::Fourier { period, harmonics } => {
+            // `period` is live; `period_inv = 1/period` per evaluation. A
+            // non-positive runtime period yields 0 (the build check rejects a
+            // non-positive default).
+            let p = eval_resolved(period, ctx);
+            if p <= 0.0 { return 0.0; }
+            let phase = 2.0 * std::f64::consts::PI * t / p;
+            harmonics.iter().enumerate()
+                .map(|(k, (a, b))| fourier_term(phase, k, eval_resolved(a, ctx), eval_resolved(b, ctx)))
+                .sum()
         }
+        CompiledTimeFuncKind::PeriodicSpline { period, n_basis, degree, coefs } =>
+            crate::periodic_bspline::eval_periodic_bspline(t, *period, *n_basis, *degree, coefs),
     }
 }
 

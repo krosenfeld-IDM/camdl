@@ -6,20 +6,41 @@ use crate::error::SimError;
 use crate::resolved_expr::{ResolvedExpr, ResolveCtx, resolve_expr};
 use crate::state::{IntState, RealState};
 
-/// A time function with all Expr fields resolved to concrete f64 values.
+/// A compiled time function.
+///
+/// **Scalar coefficients are `ResolvedExpr`, evaluated live against the params
+/// slice** — exactly like rates and observation likelihoods. A coefficient that
+/// references a parameter (`amplitude = alpha`) is therefore not frozen at
+/// construction; there is no `f64` slot for it to freeze into. (Incident
+/// `2026-06-09-forcing-coefficient-param-frozen-at-construction.md`; proposal
+/// `2026-06-09-const-parametric-forcing.md` §3.) Only `Sinusoidal`, `Periodic`,
+/// and `Fourier` carry scalar coefficients.
+///
+/// **Structural data stays precomputed `f64`.** Interpolation knot arrays, the
+/// cubic-spline basis (a construction-time Thomas solve), the periodic-spline
+/// coefficients (consumed by the de Boor evaluator), and piecewise step
+/// arrays/breakpoints are *data*, not coefficients — a param-referencing entry
+/// in any of these is rejected at construction (see the build loop) rather than
+/// silently frozen.
 #[derive(Debug, Clone)]
 pub enum CompiledTimeFuncKind {
-    Sinusoidal { amplitude: f64, period: f64, phase: f64, baseline: f64 },
+    Sinusoidal {
+        amplitude: ResolvedExpr,
+        period: ResolvedExpr,
+        phase: ResolvedExpr,
+        baseline: ResolvedExpr,
+    },
     Piecewise   { breakpoints: Vec<f64>, values: Vec<f64> },
     Interpolated { times: Vec<f64>, values: Vec<f64> },
     /// Piecewise constant: value holds until the next grid point.
     /// Matches pomp's `covariate_table(order = "constant")`.
     Constant { times: Vec<f64>, values: Vec<f64> },
     CubicSpline(CubicSpline),
-    Periodic    { period: f64, values: Vec<f64> },
-    /// gh#59: finite Fourier series. `period_inv = 1.0 / period`
-    /// precomputed; harmonics is a flat `[(a_1, b_1), (a_2, b_2), …]`.
-    Fourier { period_inv: f64, harmonics: Vec<(f64, f64)> },
+    Periodic    { period: ResolvedExpr, values: Vec<ResolvedExpr> },
+    /// gh#59: finite Fourier series. `period` is a live coefficient
+    /// (`period_inv = 1/period` is computed per evaluation); harmonics is a flat
+    /// `[(a_1, b_1), (a_2, b_2), …]` of live coefficient pairs.
+    Fourier { period: ResolvedExpr, harmonics: Vec<(ResolvedExpr, ResolvedExpr)> },
     /// gh#59 v2 (2026-05-12): periodic B-spline forcing with uniform
     /// knots and standard de Boor recurrence. Evaluated by
     /// `periodic_bspline::eval_periodic_bspline` — see proposal at
@@ -329,6 +350,75 @@ fn eval_table_expr(
             "unsupported expression type in table values (only Const and Param are valid)".to_string()
         )),
     }
+}
+
+/// Resolve a forcing scalar coefficient `Expr` into a live `ResolvedExpr`,
+/// preserving the historical coefficient grammar whitelist that
+/// `eval_table_expr` enforces: only `Const`, `Param`, `BinOp`, `UnOp`, and
+/// `UncheckedDim` are valid. A coefficient that references compartment state,
+/// time, another forcing, a table, or a binding is rejected here with a clear
+/// error — `resolve_expr` would silently admit those, which the spec never
+/// defined for a coefficient.
+///
+/// Needs only `param_index`, so it runs before the full `ResolveCtx` is built
+/// (which depends on `table_meta`, derived after the table loop) — no
+/// constructor reorder. This is the "coefficient-only resolve context" of
+/// proposal §3, realized as a function.
+fn resolve_coeff(
+    expr: &Expr,
+    param_index: &HashMap<String, usize>,
+) -> Result<ResolvedExpr, SimError> {
+    match expr {
+        Expr::Const(c) => Ok(ResolvedExpr::Const(c.value)),
+        Expr::Param(p) => {
+            let idx = *param_index.get(p.param.as_str())
+                .ok_or_else(|| SimError::UnknownParameter(p.param.clone()))?;
+            Ok(ResolvedExpr::Param(idx))
+        }
+        Expr::BinOp(w) => Ok(ResolvedExpr::BinOp {
+            op: w.bin_op.op.clone(),
+            left: Box::new(resolve_coeff(&w.bin_op.left, param_index)?),
+            right: Box::new(resolve_coeff(&w.bin_op.right, param_index)?),
+        }),
+        Expr::UnOp(w) => Ok(ResolvedExpr::UnOp {
+            op: w.un_op.op.clone(),
+            arg: Box::new(resolve_coeff(&w.un_op.arg, param_index)?),
+        }),
+        Expr::UncheckedDim(w) => Ok(ResolvedExpr::UncheckedDim {
+            inner: Box::new(resolve_coeff(&w.unchecked_dim.inner, param_index)?),
+        }),
+        _ => Err(SimError::Validation(
+            "unsupported expression in forcing coefficient (only constants, \
+             parameters, and arithmetic over them are allowed — a coefficient \
+             cannot reference compartment state, time, another forcing, a table, \
+             or a binding)".to_string()
+        )),
+    }
+}
+
+/// Evaluate a *structural* forcing array element (interpolation knot, spline
+/// coefficient, periodic-spline coef, piecewise breakpoint/value) to `f64`.
+///
+/// Unlike scalar coefficients, these feed a structure derived at construction
+/// (a sorted knot table, a Thomas-solved spline basis, the de Boor evaluator),
+/// so they cannot vary live. A param-referencing entry is rejected with a clear
+/// error rather than silently baked to its default-param value (the freeze).
+fn eval_structural(
+    forcing: &str,
+    what: &str,
+    expr: &Expr,
+    param_index: &HashMap<String, usize>,
+    params: &[f64],
+) -> Result<f64, SimError> {
+    if expr_refs_param(expr) {
+        return Err(SimError::Validation(format!(
+            "forcing '{forcing}': {what} references a parameter, but it is \
+             structural data — {what}s are fixed at construction and cannot be \
+             estimated. Use a scalar-coefficient forcing (sinusoidal, periodic, \
+             fourier) for an estimated parameter, or make this value constant."
+        )));
+    }
+    eval_table_expr(expr, param_index, params)
 }
 
 pub struct CompiledModel {
@@ -750,32 +840,38 @@ impl CompiledModel {
             }
         }
 
-        // Evaluate time function Expr fields at load time using default params.
+        // Build each time function. Scalar coefficients (Sinusoidal / Periodic /
+        // Fourier) resolve to live `ResolvedExpr`, evaluated per-step against the
+        // params slice; structural arrays (interpolation knots, spline bases,
+        // periodic-spline coefs, piecewise steps) stay precomputed `f64` and
+        // reject param references. Build-time numeric checks that depend on a
+        // now-live coefficient evaluate it at `default_params` for the early
+        // diagnostic (the live path guards the runtime value).
         let mut time_func_cache: Vec<CompiledTimeFunc> = Vec::with_capacity(model.time_functions.len());
         for tf in &model.time_functions {
             use ir::time_func::TimeFuncKind;
             let kind = match &tf.kind {
                 TimeFuncKind::Sinusoidal(s) => CompiledTimeFuncKind::Sinusoidal {
-                    amplitude: eval_table_expr(&s.amplitude, &param_index, &default_params)?,
-                    period:    eval_table_expr(&s.period,    &param_index, &default_params)?,
-                    phase:     eval_table_expr(&s.phase,     &param_index, &default_params)?,
-                    baseline:  eval_table_expr(&s.baseline,  &param_index, &default_params)?,
+                    amplitude: resolve_coeff(&s.amplitude, &param_index)?,
+                    period:    resolve_coeff(&s.period,    &param_index)?,
+                    phase:     resolve_coeff(&s.phase,     &param_index)?,
+                    baseline:  resolve_coeff(&s.baseline,  &param_index)?,
                 },
                 TimeFuncKind::Piecewise(p) => {
                     let bps: Result<Vec<f64>, SimError> = p.breakpoints.iter()
-                        .map(|e| eval_table_expr(e, &param_index, &default_params))
+                        .map(|e| eval_structural(&tf.name, "piecewise breakpoint", e, &param_index, &default_params))
                         .collect();
                     let vals: Result<Vec<f64>, SimError> = p.values.iter()
-                        .map(|e| eval_table_expr(e, &param_index, &default_params))
+                        .map(|e| eval_structural(&tf.name, "piecewise value", e, &param_index, &default_params))
                         .collect();
                     CompiledTimeFuncKind::Piecewise { breakpoints: bps?, values: vals? }
                 }
                 TimeFuncKind::Interpolated(i) => {
                     let times: Result<Vec<f64>, SimError> = i.times.iter()
-                        .map(|e| eval_table_expr(e, &param_index, &default_params))
+                        .map(|e| eval_structural(&tf.name, "interpolation knot time", e, &param_index, &default_params))
                         .collect();
                     let vals: Result<Vec<f64>, SimError> = i.values.iter()
-                        .map(|e| eval_table_expr(e, &param_index, &default_params))
+                        .map(|e| eval_structural(&tf.name, "interpolation knot value", e, &param_index, &default_params))
                         .collect();
                     let ts = times?;
                     let vs = vals?;
@@ -789,31 +885,33 @@ impl CompiledModel {
                     }
                 }
                 TimeFuncKind::Periodic(p) => {
-                    let period = eval_table_expr(&p.period, &param_index, &default_params)?;
-                    let vals: Result<Vec<f64>, SimError> = p.values.iter()
-                        .map(|e| eval_table_expr(e, &param_index, &default_params))
+                    let period = resolve_coeff(&p.period, &param_index)?;
+                    let vals: Result<Vec<ResolvedExpr>, SimError> = p.values.iter()
+                        .map(|e| resolve_coeff(e, &param_index))
                         .collect();
                     CompiledTimeFuncKind::Periodic { period, values: vals? }
                 }
                 TimeFuncKind::Fourier(f) => {
-                    let period = eval_table_expr(&f.period, &param_index, &default_params)?;
-                    if period <= 0.0 {
+                    // `period <= 0` early check at default params (the live path
+                    // guards a non-positive runtime value by returning 0).
+                    let period_at_default = eval_table_expr(&f.period, &param_index, &default_params)?;
+                    if period_at_default <= 0.0 {
                         return Err(SimError::Validation(format!(
-                            "fourier forcing period must be positive, got {}", period)));
+                            "fourier forcing period must be positive, got {}", period_at_default)));
                     }
-                    let harmonics: Result<Vec<(f64, f64)>, SimError> = f.harmonics.iter()
+                    let harmonics: Result<Vec<(ResolvedExpr, ResolvedExpr)>, SimError> = f.harmonics.iter()
                         .map(|(a, b)| Ok((
-                            eval_table_expr(a, &param_index, &default_params)?,
-                            eval_table_expr(b, &param_index, &default_params)?,
+                            resolve_coeff(a, &param_index)?,
+                            resolve_coeff(b, &param_index)?,
                         )))
                         .collect();
                     CompiledTimeFuncKind::Fourier {
-                        period_inv: 1.0 / period,
+                        period: resolve_coeff(&f.period, &param_index)?,
                         harmonics: harmonics?,
                     }
                 }
                 TimeFuncKind::PeriodicSpline(ps) => {
-                    let period = eval_table_expr(&ps.period, &param_index, &default_params)?;
+                    let period = eval_structural(&tf.name, "periodic_spline period", &ps.period, &param_index, &default_params)?;
                     if period <= 0.0 {
                         return Err(SimError::Validation(format!(
                             "periodic_spline period must be positive, got {}", period)));
@@ -824,7 +922,7 @@ impl CompiledModel {
                             ps.n_basis, ps.degree)));
                     }
                     let coefs: Result<Vec<f64>, SimError> = ps.coefs.iter()
-                        .map(|e| eval_table_expr(e, &param_index, &default_params))
+                        .map(|e| eval_structural(&tf.name, "periodic_spline coefficient", e, &param_index, &default_params))
                         .collect();
                     let cs = coefs?;
                     if cs.len() != ps.n_basis as usize {
