@@ -6201,7 +6201,7 @@ let test_init_bare_stratified_single_diagnostic () =
 (* ── gh#98: ISO date out-of-range validation ─────────────────────────────────
    parse_iso_date did no month/day range check, so `date("2020-02-30")`
    silently shifted to a garbage day offset with no diagnostic. Out-of-range
-   dates must now produce a NAMED diagnostic (E219). *)
+   dates must now produce a NAMED diagnostic (E223). *)
 
 let date_model ~date = Printf.sprintf {|
 time_unit = 'days
