@@ -655,6 +655,12 @@ pub fn resolve_likelihood(
 /// Mirrors `eval_expr_deriv` but operates on `ResolvedExpr` and is infallible.
 /// Pop, PopSum, Time, TimeFunc, TableLookup, Projected have zero derivative
 /// (they don't depend on params given fixed state X).
+///
+/// gh#119: `TimeFunc`/`TableLookup` stay at 0 here on purpose — this is the
+/// secondary forward-mode path (obs-likelihood / overdispersion terms). The
+/// production dynamics gradient rides the compiler-emitted `rate_grad`, which
+/// now carries the analytic ∂forcing/∂coef, so a forcing-coefficient parameter
+/// gets its real gradient there, not through this function.
 #[inline]
 pub fn eval_resolved_deriv(expr: &ResolvedExpr, wrt: usize, ctx: &EvalCtx<'_>) -> f64 {
     match expr {

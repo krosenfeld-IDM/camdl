@@ -369,15 +369,17 @@ let differentiate_transitions (d : compile_detail)
   let transitions =
     Passtime.time "autodiff" (fun () ->
       List.map (fun (t : Ir.transition) ->
-        match (try Ok (Autodiff.differentiate_rate t.rate param_names)
-               with Failure msg -> Error msg) with
+        match Autodiff.differentiate_rate t.rate param_names
+                d.model.Ir.time_functions d.model.Ir.tables with
         | Ok rate_grad -> { t with Ir.rate_grad }
         | Error msg ->
           diags := Diagnostics.mk_error
                      ~code:"E600"
                      ~loc:(tr_loc t.name)
                      ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
-                     ~hint:"mod is not differentiable; replace with a conditional guard"
+                     ~hint:"this parameter's derivative is not representable; \
+                            reparameterize as the message describes (full \
+                            forcing/table derivatives tracked in gh#215)"
                      () :: !diags;
           { t with Ir.rate_grad = [] }
       ) d.model.Ir.transitions)

@@ -4,196 +4,293 @@
     a new [expr] representing ∂expr/∂param. The result is a plain expression
     tree that can be evaluated by the existing [eval_expr] in the Rust backend.
 
-    Key invariant: Pop, PopSum, Time, TimeFunc, TableLookup, Projected are all
-    treated as constants (derivative = 0). In the PGAS θ|X step, compartment
-    counts are fixed (conditioned on the trajectory X), time is fixed, and
-    covariates are data. Only Param nodes have nonzero derivatives. *)
+    Forcing/table coefficients are expressions over parameters, not data
+    (gh#119): a parameter that enters a transition rate only through a forcing
+    or a table entry still has a real derivative. [differentiate] looks the
+    forcing/table definition up (hence the [time_function]/[table] lists) and
+    emits the analytic ∂forcing/∂coef for the kinds it supports (Sinusoidal,
+    Fourier). For a kind it does not yet differentiate (Periodic/Piecewise
+    step values, splines, table values — gh#215) it returns [Unsupported]
+    rather than a silent [Const 0.0]; [differentiate_rate] turns that into a
+    compile-time error rather than a flat (silently un-estimable) gradient.
+
+    Compartment counts (Pop/PopSum), Time, Dt and Projected are constants in
+    the PGAS θ|X step (the trajectory X is fixed), so their derivative is 0. *)
 
 open Ir
 
-(** Symbolic differentiation: ∂expr/∂param → expr *)
-let rec differentiate (e : expr) (param : string) : expr =
+(** A differentiation result: a known derivative expression, or an explicit
+    "not differentiated" carrying a reason. Replaces the former silent
+    [Const 0.0] for forcing/table nodes — a dropped derivative is now a value
+    [differentiate_rate] is forced to handle (proposal
+    `2026-06-09-const-parametric-forcing.md` §4; note
+    `2026-06-08-static-typing-as-bug-prevention.md` §7). *)
+type deriv =
+  | Known of expr
+  | Unsupported of { node : string; reason : string }
+
+let map1 (d : deriv) (f : expr -> expr) : deriv =
+  match d with Known e -> Known (f e) | Unsupported _ as u -> u
+
+(* Combine two sub-derivatives under a calculus rule, propagating Unsupported. *)
+let map2 (da : deriv) (db : deriv) (f : expr -> expr -> expr) : deriv =
+  match da, db with
+  | Known a, Known b -> Known (f a b)
+  | (Unsupported _ as u), _ -> u
+  | _, (Unsupported _ as u) -> u
+
+(** Does [param] appear syntactically in [e]? Forcings/tables are opaque here
+    (their definitions are checked separately by the [differentiate] lookups);
+    this is the operand check for [Mod] and table indices. *)
+let rec mentions (param : string) (e : expr) : bool =
   match e with
-  (* Constants — derivative is zero *)
-  | Const _       -> Const 0.0
-  | Pop _         -> Const 0.0
-  | PopSum _      -> Const 0.0
-  | Time          -> Const 0.0
-  | Dt            -> Const 0.0
-  | TimeFunc _    -> Const 0.0
-  | TableLookup _ -> Const 0.0
-  | Projected     -> Const 0.0
+  | Param n -> n = param
+  | Const _ | Pop _ | Time | Dt | Projected -> false
+  | PopSum _ -> false
+  | BinOp b -> mentions param b.left || mentions param b.right
+  | UnOp u -> mentions param u.arg
+  | Cond c -> mentions param c.pred || mentions param c.then_ || mentions param c.else_
+  | TimeFunc _ -> false
+  | TableLookup (_, args) -> List.exists (mentions param) args
+  | UncheckedDim u -> mentions param u.inner
+  | Reduce terms -> List.exists (mentions param) terms
+  | BindingRef _ -> false   (* hoisted bindings are param-free (state-only) *)
 
-  (* Dimensional escape: wrapper is a type-level assertion only, no
-     runtime semantics. Differentiate the inner and drop the wrapper
-     — gradient expressions are consumed numerically by NUTS, not
-     re-checked for dimensional consistency. *)
-  | UncheckedDim u -> differentiate u.inner param
+(** Coefficient expressions of a forcing kind — used to decide whether an
+    unsupported kind actually depends on the differentiation parameter. *)
+let forcing_coeff_exprs (k : time_func_kind) : expr list =
+  match k with
+  | Sinusoidal s -> [ s.amplitude; s.period; s.phase; s.baseline ]
+  | Piecewise p -> p.breakpoints @ p.values
+  | Interpolated i -> i.times @ i.values
+  | Periodic p -> p.period :: p.values
+  | Fourier f -> f.period :: List.concat_map (fun (a, b) -> [ a; b ]) f.harmonics
+  | PeriodicSpline ps -> ps.period :: ps.coefs
 
-  (* Parameter reference — 1 if it's the target, 0 otherwise *)
-  | Param p -> if p = param then Const 1.0 else Const 0.0
+let kind_label (k : time_func_kind) : string =
+  match k with
+  | Sinusoidal _ -> "sinusoidal"
+  | Piecewise _ -> "piecewise"
+  | Interpolated _ -> "interpolated"
+  | Periodic _ -> "periodic"
+  | Fourier _ -> "fourier"
+  | PeriodicSpline _ -> "periodic_spline"
 
-  (* Binary operations — standard calculus rules *)
-  | BinOp b -> begin match b.op with
-    (* d(f ± g) = df ± dg *)
-    | Add -> BinOp { op = Add; left = differentiate b.left param;
-                                right = differentiate b.right param }
-    | Sub -> BinOp { op = Sub; left = differentiate b.left param;
-                                right = differentiate b.right param }
+let two_pi = 2.0 *. Float.pi
 
-    (* Product rule: d(fg) = f'g + fg' *)
-    | Mul -> BinOp { op = Add;
-               left  = BinOp { op = Mul; left = differentiate b.left param;
-                                          right = b.right };
-               right = BinOp { op = Mul; left = b.left;
-                                          right = differentiate b.right param } }
+(** Closed form of a sinusoidal forcing:
+    [baseline + amplitude · sin(2π(t − phase)/period)] — matching the Rust
+    evaluator (`sinusoidal_value`). Differentiating this w.r.t. a coefficient
+    parameter yields the analytic ∂forcing/∂coef via the ordinary rules (the
+    coefficient sub-expressions carry the parameter dependence). *)
+let sinusoidal_closed (s : sinusoidal) : expr =
+  let theta =
+    BinOp { op = Div;
+            left = BinOp { op = Mul; left = Const two_pi;
+                           right = BinOp { op = Sub; left = Time; right = s.phase } };
+            right = s.period }
+  in
+  BinOp { op = Add; left = s.baseline;
+          right = BinOp { op = Mul; left = s.amplitude;
+                          right = UnOp { op = Sin; arg = theta } } }
 
-    (* Quotient rule: d(f/g) = (f'g - fg') / g² *)
-    | Div -> BinOp { op = Div;
-               left = BinOp { op = Sub;
-                 left  = BinOp { op = Mul; left = differentiate b.left param;
-                                            right = b.right };
-                 right = BinOp { op = Mul; left = b.left;
-                                            right = differentiate b.right param } };
-               right = BinOp { op = Mul; left = b.right; right = b.right } }
+(** Closed form of a finite Fourier series:
+    [Σ_k a_k cos(2π(k+1)t/period) + b_k sin(2π(k+1)t/period)] (k 0-based,
+    harmonic k+1) — matching the Rust evaluator (`fourier_value`). No baseline;
+    the model author writes `1 + fourier(t)`. *)
+let fourier_closed (f : fourier) : expr =
+  let term k (a, b) =
+    let kf = float_of_int (k + 1) in
+    let arg =
+      BinOp { op = Div;
+              left = BinOp { op = Mul; left = Const (two_pi *. kf); right = Time };
+              right = f.period }
+    in
+    BinOp { op = Add;
+            left  = BinOp { op = Mul; left = a; right = UnOp { op = Cos; arg } };
+            right = BinOp { op = Mul; left = b; right = UnOp { op = Sin; arg } } }
+  in
+  match List.mapi term f.harmonics with
+  | [] -> Const 0.0
+  | terms -> Reduce terms
 
-    (* Power rule: d(f^g) = f^g * (g' * ln(f) + g * f'/f) *)
-    | Pow ->
-      let df = differentiate b.left param in
-      let dg = differentiate b.right param in
-      BinOp { op = Mul;
-        left = BinOp { op = Pow; left = b.left; right = b.right };
-        right = BinOp { op = Add;
-          left  = BinOp { op = Mul; left = dg;
-                                     right = UnOp { op = Log; arg = b.left } };
-          right = BinOp { op = Mul; left = b.right;
-                                     right = BinOp { op = Div; left = df;
-                                                                right = b.left } } } }
+(** Symbolic differentiation: ∂expr/∂param → [deriv].
 
-    (* Min/Max: subgradient — differentiate the active branch *)
-    | Min -> Cond { pred  = BinOp { op = Lt; left = b.left; right = b.right };
-                    then_ = differentiate b.left param;
-                    else_ = differentiate b.right param }
-    | Max -> Cond { pred  = BinOp { op = Gt; left = b.left; right = b.right };
-                    then_ = differentiate b.left param;
-                    else_ = differentiate b.right param }
+    [tfs]/[tbls] let the [TimeFunc]/[TableLookup] arms reach the forcing/table
+    definitions (the IR carries only their names at the use site). *)
+let differentiate (top : expr) (param : string)
+    (tfs : time_function list) (tbls : table list) : deriv =
+  let forcing_mentions fname =
+    match List.find_opt (fun (tf : time_function) -> tf.name = fname) tfs with
+    | Some tf -> List.exists (mentions param) (forcing_coeff_exprs tf.kind)
+    | None -> false
+  in
+  let table_value_mentions name =
+    match List.find_opt (fun (t : table) -> t.name = name) tbls with
+    | Some { source = Inline vals; _ } -> List.exists (mentions param) vals
+    | _ -> false
+  in
+  let rec d (e : expr) : deriv =
+    match e with
+    (* Constants in the θ|X step — derivative is zero. *)
+    | Const _ | Pop _ | PopSum _ | Time | Dt | Projected -> Known (Const 0.0)
 
-    (* Mod: `d(f mod g)/dθ` almost everywhere is `f' - g' * floor(f/g)`,
-       but the IR expr grammar has no `floor`, and `Mod` is rare in
-       rate expressions anyway. Compromise: if neither operand
-       mentions the diff param, the derivative is genuinely 0
-       (original behavior, correct). If either side depends on the
-       param, raise — returning 0 there is the "silent wrong answer"
-       pattern flagged as M4 in the 2026-04-19 compiler review, and
-       would make any parameter inside a Mod expression unidentifiable
-       to gradient-based inference (NUTS flat directions).
-       Callers differentiate rate-by-rate across every estimated
-       parameter; a user whose model depends on Mod over a param will
-       see a clear error at compile time rather than silently-wrong
-       posteriors at sample time. *)
-    | Mod ->
-      let rec mentions p = function
-        | Param n       -> n = p
-        | Const _ | Pop _ | Time | Dt | Projected -> false
-        | PopSum _      -> false
-        | BinOp bb      -> mentions p bb.left || mentions p bb.right
-        | UnOp uu       -> mentions p uu.arg
-        | Cond c        -> mentions p c.pred || mentions p c.then_ || mentions p c.else_
-        | TimeFunc _    -> false
-        | TableLookup (_, args) -> List.exists (mentions p) args
-        | UncheckedDim u -> mentions p u.inner
-        | Reduce terms -> List.exists (mentions p) terms
-        | BindingRef _ -> false   (* hoisted bindings are param-free (state-only) *)
+    (* Dimensional escape: differentiate the inner, drop the wrapper. *)
+    | UncheckedDim u -> d u.inner
+
+    (* Parameter reference — 1 if it's the target, 0 otherwise. *)
+    | Param p -> Known (if p = param then Const 1.0 else Const 0.0)
+
+    (* Forcing: differentiate through its closed form when we have one;
+       otherwise an explicit Unsupported when the parameter actually enters it
+       (gh#215), else a genuine zero. *)
+    | TimeFunc fname ->
+      (match List.find_opt (fun (tf : time_function) -> tf.name = fname) tfs with
+       | Some { kind = Sinusoidal s; _ } -> d (sinusoidal_closed s)
+       | Some { kind = Fourier f; _ } -> d (fourier_closed f)
+       | Some { kind; _ } ->
+         if forcing_mentions fname then
+           Unsupported
+             { node = Printf.sprintf "forcing `%s`" fname;
+               reason = Printf.sprintf
+                 "parameter '%s' enters a %s forcing coefficient, whose \
+                  derivative is not yet emitted (gh#215). It is estimable with \
+                  IF2 or the bootstrap particle filter but not NUTS; reference \
+                  it in a transition rate, or use a sinusoidal or fourier \
+                  forcing" param (kind_label kind) }
+         else Known (Const 0.0)
+       | None -> Known (Const 0.0))
+
+    (* Table lookup. A constant index selects one cell, so we differentiate the
+       selected value expression — this is how per-stratum parameter tables
+       (e.g. `sigma_stage[e1] = sigma_e1`) get a real gradient; the all-Const
+       fold leaves such param tables as lookups. A non-constant (state- or
+       param-dependent) index selects a cell we cannot identify symbolically →
+       Unsupported when the param is involved (gh#215), else a genuine zero. *)
+    | TableLookup (name, [ Const fi ]) ->
+      (match List.find_opt (fun (t : table) -> t.name = name) tbls with
+       | Some { source = Inline vals; _ } ->
+         let i = int_of_float (Float.floor fi) in
+         (match List.nth_opt vals i with
+          | Some v -> d v
+          | None -> Known (Const 0.0))  (* OOB — surfaced by validate/runtime *)
+       | _ -> Known (Const 0.0))  (* external table: values are runtime data *)
+    | TableLookup (name, args) ->
+      if List.exists (mentions param) args || table_value_mentions name then
+        Unsupported
+          { node = Printf.sprintf "table `%s`" name;
+            reason = Printf.sprintf
+              "parameter '%s' enters table `%s` through a non-constant lookup; \
+               the table-lookup derivative is not yet emitted (gh#215). It is \
+               estimable with IF2 or the bootstrap particle filter but not \
+               NUTS; reference it in a transition rate instead" param name }
+      else Known (Const 0.0)
+
+    (* Binary operations — standard calculus rules; Unsupported propagates. *)
+    | BinOp b -> begin match b.op with
+      | Add -> map2 (d b.left) (d b.right)
+                 (fun l r -> BinOp { op = Add; left = l; right = r })
+      | Sub -> map2 (d b.left) (d b.right)
+                 (fun l r -> BinOp { op = Sub; left = l; right = r })
+      (* Product rule: d(fg) = f'g + fg' *)
+      | Mul -> map2 (d b.left) (d b.right)
+                 (fun dl dr -> BinOp { op = Add;
+                    left  = BinOp { op = Mul; left = dl; right = b.right };
+                    right = BinOp { op = Mul; left = b.left; right = dr } })
+      (* Quotient rule: d(f/g) = (f'g - fg') / g² *)
+      | Div -> map2 (d b.left) (d b.right)
+                 (fun dl dr -> BinOp { op = Div;
+                    left = BinOp { op = Sub;
+                      left  = BinOp { op = Mul; left = dl; right = b.right };
+                      right = BinOp { op = Mul; left = b.left; right = dr } };
+                    right = BinOp { op = Mul; left = b.right; right = b.right } })
+      (* Power rule: d(f^g) = f^g * (g' ln f + g f'/f) *)
+      | Pow -> map2 (d b.left) (d b.right)
+                 (fun df dg -> BinOp { op = Mul;
+                    left = BinOp { op = Pow; left = b.left; right = b.right };
+                    right = BinOp { op = Add;
+                      left  = BinOp { op = Mul; left = dg;
+                                      right = UnOp { op = Log; arg = b.left } };
+                      right = BinOp { op = Mul; left = b.right;
+                                      right = BinOp { op = Div; left = df;
+                                                      right = b.left } } } })
+      (* Min/Max: subgradient — differentiate the active branch. *)
+      | Min -> map2 (d b.left) (d b.right)
+                 (fun dl dr -> Cond { pred = BinOp { op = Lt; left = b.left; right = b.right };
+                                      then_ = dl; else_ = dr })
+      | Max -> map2 (d b.left) (d b.right)
+                 (fun dl dr -> Cond { pred = BinOp { op = Gt; left = b.left; right = b.right };
+                                      then_ = dl; else_ = dr })
+      (* Mod: derivative needs floor, absent from the grammar. A genuine 0 when
+         neither operand depends on the param; otherwise Unsupported (was a
+         failwith — M4 in the 2026-04-19 compiler review). *)
+      | Mod ->
+        if mentions param b.left || mentions param b.right then
+          Unsupported
+            { node = "mod expression";
+              reason = Printf.sprintf
+                "derivative of `mod` w.r.t. parameter '%s' is not representable \
+                 in the IR grammar (floor is needed); replace mod with a \
+                 conditional guard" param }
+        else Known (Const 0.0)
+      (* Comparison ops: piecewise constant, derivative is 0. *)
+      | Eq | Neq | Lt | Gt | Le | Ge -> Known (Const 0.0)
+      end
+
+    (* Unary operations — chain rule. *)
+    | UnOp u -> begin match u.op with
+      | Exp -> map1 (d u.arg)
+                 (fun da -> BinOp { op = Mul; left = UnOp { op = Exp; arg = u.arg }; right = da })
+      | Log -> map1 (d u.arg)
+                 (fun da -> BinOp { op = Div; left = da; right = u.arg })
+      | Sqrt -> map1 (d u.arg)
+                  (fun da -> BinOp { op = Div; left = da;
+                     right = BinOp { op = Mul; left = Const 2.0;
+                                     right = UnOp { op = Sqrt; arg = u.arg } } })
+      | Neg -> map1 (d u.arg) (fun da -> UnOp { op = Neg; arg = da })
+      (* d|f| = f' · sign(f), sign(0) := 0 (n1 in the 2026-04-19 review). *)
+      | Abs ->
+        let sign =
+          Cond { pred = BinOp { op = Gt; left = u.arg; right = Const 0.0 };
+                 then_ = Const 1.0;
+                 else_ = Cond { pred = BinOp { op = Lt; left = u.arg; right = Const 0.0 };
+                                then_ = Const (-1.0); else_ = Const 0.0 } }
+        in
+        map1 (d u.arg) (fun da -> BinOp { op = Mul; left = da; right = sign })
+      | Floor | Ceil -> Known (Const 0.0)
+      | Sin -> map1 (d u.arg)
+                 (fun da -> BinOp { op = Mul; left = UnOp { op = Cos; arg = u.arg }; right = da })
+      | Cos -> map1 (d u.arg)
+                 (fun da -> BinOp { op = Mul;
+                    left = UnOp { op = Neg; arg = UnOp { op = Sin; arg = u.arg } }; right = da })
+      | Tanh ->
+        let t = UnOp { op = Tanh; arg = u.arg } in
+        map1 (d u.arg)
+          (fun da -> BinOp { op = Mul;
+             left = BinOp { op = Sub; left = Const 1.0;
+                            right = BinOp { op = Mul; left = t; right = t } };
+             right = da })
+      end
+
+    (* Conditional: differentiate both branches, leave the predicate alone. *)
+    | Cond c -> map2 (d c.then_) (d c.else_)
+                  (fun dt de -> Cond { pred = c.pred; then_ = dt; else_ = de })
+
+    (* Sum is linear: d/dp (Σ tᵢ) = Σ d/dp tᵢ; any Unsupported term propagates. *)
+    | Reduce terms ->
+      let rec collect acc = function
+        | [] -> Known (Reduce (List.rev acc))
+        | t :: rest ->
+          (match d t with
+           | Known e -> collect (e :: acc) rest
+           | Unsupported _ as u -> u)
       in
-      if mentions param b.left || mentions param b.right then
-        failwith (Printf.sprintf
-          "autodiff: derivative of `mod` w.r.t. parameter '%s' is not \
-           representable in the IR expression grammar (floor is needed). \
-           Mod is not supported inside rate expressions that participate in \
-           gradient-based inference." param)
-      else Const 0.0
+      collect [] terms
 
-    (* Comparison ops: piecewise constant, derivative is 0 *)
-    | Eq | Neq | Lt | Gt | Le | Ge -> Const 0.0
-    end
-
-  (* Unary operations — chain rule *)
-  | UnOp u -> begin match u.op with
-    (* d exp(f) = exp(f) * f' *)
-    | Exp -> BinOp { op = Mul;
-               left  = UnOp { op = Exp; arg = u.arg };
-               right = differentiate u.arg param }
-
-    (* d log(f) = f' / f *)
-    | Log -> BinOp { op = Div;
-               left  = differentiate u.arg param;
-               right = u.arg }
-
-    (* d sqrt(f) = f' / (2 * sqrt(f)) *)
-    | Sqrt -> BinOp { op = Div;
-                left  = differentiate u.arg param;
-                right = BinOp { op = Mul;
-                          left  = Const 2.0;
-                          right = UnOp { op = Sqrt; arg = u.arg } } }
-
-    (* d(-f) = -f' *)
-    | Neg -> UnOp { op = Neg; arg = differentiate u.arg param }
-
-    (* d|f| = f' * sign(f), with sign(0) := 0 so the derivative stays
-       finite at f=0 instead of producing 0/0 = NaN (n1 in the
-       2026-04-19 compiler review).
-
-         sign(f) = if f > 0 then 1 else (if f < 0 then -1 else 0)
-
-       Emitted as nested Cond so the derivative evaluates lazily in
-       the Rust runtime. *)
-    | Abs ->
-      let sign =
-        Cond { pred  = BinOp { op = Gt; left = u.arg; right = Const 0.0 };
-               then_ = Const 1.0;
-               else_ = Cond { pred  = BinOp { op = Lt; left = u.arg; right = Const 0.0 };
-                              then_ = Const (-1.0);
-                              else_ = Const 0.0 } }
-      in
-      BinOp { op = Mul; left = differentiate u.arg param; right = sign }
-
-    (* Floor/Ceil: piecewise constant, derivative = 0 *)
-    | Floor -> Const 0.0
-    | Ceil  -> Const 0.0
-
-    (* d sin(f) = cos(f) * f'  (gh#58) *)
-    | Sin -> BinOp { op = Mul;
-                left  = UnOp { op = Cos; arg = u.arg };
-                right = differentiate u.arg param }
-
-    (* d cos(f) = -sin(f) * f'  (gh#58) *)
-    | Cos -> BinOp { op = Mul;
-                left  = UnOp { op = Neg;
-                          arg = UnOp { op = Sin; arg = u.arg } };
-                right = differentiate u.arg param }
-
-    (* d tanh(f) = (1 - tanh(f)^2) * f'  (gh#58) *)
-    | Tanh ->
-      let t = UnOp { op = Tanh; arg = u.arg } in
-      BinOp { op = Mul;
-        left  = BinOp { op = Sub;
-                  left  = Const 1.0;
-                  right = BinOp { op = Mul; left = t; right = t } };
-        right = differentiate u.arg param }
-    end
-
-  (* Conditional: differentiate both branches, leave predicate alone *)
-  | Cond c -> Cond { pred  = c.pred;
-                     then_ = differentiate c.then_ param;
-                     else_ = differentiate c.else_ param }
-
-  (* Sum is linear: d/dp (Σ tᵢ) = Σ d/dp tᵢ. *)
-  | Reduce terms -> Reduce (List.map (fun t -> differentiate t param) terms)
-
-  (* Hoisted FOI bindings are param-free (state-only): d/dp BindingRef = 0.
-     A binding body that referenced an estimated param would not be hoisted
-     (Fix B-inc1b restriction); B2 would emit shared binding-gradients. *)
-  | BindingRef _ -> Const 0.0
+    (* Hoisted FOI bindings are param-free (state-only): d/dp BindingRef = 0. *)
+    | BindingRef _ -> Known (Const 0.0)
+  in
+  d top
 
 
 (** Algebraic simplification: constant folding and identity elimination.
@@ -274,14 +371,24 @@ let simplify_fixpoint (e : expr) : expr =
   go e
 
 (** Differentiate a rate expression w.r.t. each estimated parameter.
-    Returns an association list [(param_name, derivative_expr)].
-    Parameters absent from the rate (derivative simplifies to Const 0.0)
-    are omitted — the Rust backend treats missing entries as zero gradient. *)
-let differentiate_rate (rate : expr) (param_names : string list) :
-    (string * expr) list =
-  List.filter_map (fun p ->
-    let d = simplify_fixpoint (differentiate rate p) in
-    match d with
-    | Const 0.0 -> None
-    | _ -> Some (p, d)
-  ) param_names
+
+    Returns [Ok assoc] — an association list [(param_name, derivative_expr)] —
+    or [Error msg] if any parameter's derivative is [Unsupported] (the caller
+    turns that into a compile-time diagnostic). Parameters whose derivative is
+    a proven [Const 0.0] (absent from the rate) are omitted; the Rust backend
+    treats a missing entry as a zero gradient. The [Unsupported] path is the
+    only way a non-zero derivative is dropped, and it is never silent. *)
+let differentiate_rate (rate : expr) (param_names : string list)
+    (tfs : time_function list) (tbls : table list) :
+    ((string * expr) list, string) result =
+  let rec go acc = function
+    | [] -> Ok (List.rev acc)
+    | p :: rest ->
+      (match differentiate rate p tfs tbls with
+       | Unsupported u -> Error (Printf.sprintf "%s: %s" u.node u.reason)
+       | Known dexpr ->
+         (match simplify_fixpoint dexpr with
+          | Const 0.0 -> go acc rest
+          | d' -> go ((p, d') :: acc) rest))
+  in
+  go [] param_names

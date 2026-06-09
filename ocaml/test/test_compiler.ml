@@ -2244,7 +2244,9 @@ let test_trig_autodiff_matches_finite_diff () =
   let rate = Ir.BinOp { op = Ir.Mul;
                         left  = Ir.Param "b";
                         right = Ir.UnOp { op = Ir.Sin; arg = Ir.Const c } } in
-  let grads = Autodiff.differentiate_rate rate ["b"] in
+  let grads = match Autodiff.differentiate_rate rate ["b"] [] [] with
+    | Ok g -> g
+    | Error msg -> Alcotest.failf "differentiate_rate errored: %s" msg in
   match List.assoc_opt "b" grads with
   | None -> Alcotest.failf "no rate_grad for parameter 'b'"
   | Some d ->
@@ -2254,6 +2256,37 @@ let test_trig_autodiff_matches_finite_diff () =
       Alcotest.(check (float 1e-12))
         "∂(b*sin(c))/∂b = sin(c)" (sin c) v
     | _ -> Alcotest.failf "expected Const, got non-constant derivative"
+
+let test_fourier_autodiff_emitted () =
+  (* gh#119/gh#59: a parameter that is a Fourier harmonic coefficient must get
+     a real derivative through the forcing closed form (not a dropped/silent
+     zero, and not Unsupported). Rate = the forcing itself; ∂/∂a1 is the
+     cos term, so a nonzero entry must be emitted. *)
+  let f : Ir.fourier =
+    { period = Ir.Const 365.0; harmonics = [ (Ir.Param "a1", Ir.Const 0.0) ] } in
+  let tf : Ir.time_function = { name = "f"; kind = Ir.Fourier f; dim = (0, 0) } in
+  let rate = Ir.TimeFunc "f" in
+  match Autodiff.differentiate_rate rate [ "a1" ] [ tf ] [] with
+  | Error msg -> Alcotest.failf "Fourier differentiate errored: %s" msg
+  | Ok grads ->
+    (match List.assoc_opt "a1" grads with
+     | Some _ -> ()  (* emitted a (nonzero) cos derivative — Known, not dropped *)
+     | None -> Alcotest.failf "Fourier ∂/∂a1 was dropped (expected a cos term)")
+
+let test_unsupported_forcing_coeff_errors () =
+  (* gh#119/gh#215: a parameter inside an as-yet-undifferentiated forcing kind
+     (periodic step value) must produce a hard compile error, not a silent zero
+     gradient. *)
+  let p : Ir.periodic =
+    { period = Ir.Const 7.0; values = [ Ir.Param "v0"; Ir.Const 1.0 ] } in
+  let tf : Ir.time_function = { name = "g"; kind = Ir.Periodic p; dim = (0, 0) } in
+  let rate = Ir.TimeFunc "g" in
+  match Autodiff.differentiate_rate rate [ "v0" ] [ tf ] [] with
+  | Ok _ -> Alcotest.failf "expected Unsupported error for a param in a periodic value"
+  | Error msg ->
+    Alcotest.(check bool) "names the forcing + gh#215"
+      true (contains_substring ~needle:"periodic" msg
+            && contains_substring ~needle:"gh#215" msg)
 
 let test_trig_pi_reserved () =
   (* Declaring a parameter named `pi` is rejected. *)
@@ -6618,6 +6651,8 @@ let () =
       Alcotest.test_case "cos(dimensionless) compiles"              `Quick test_trig_cos_compiles_and_dimchecks;
       Alcotest.test_case "cos(t) rejected with E301"                `Quick test_trig_cos_rejects_dimensional_arg;
       Alcotest.test_case "autodiff emits rate_grad for sin(...)"    `Quick test_trig_autodiff_matches_finite_diff;
+      Alcotest.test_case "autodiff emits rate_grad for a Fourier coef" `Quick test_fourier_autodiff_emitted;
+      Alcotest.test_case "param in an unsupported forcing coeff errors (gh#215)" `Quick test_unsupported_forcing_coeff_errors;
       Alcotest.test_case "pi as parameter name is reserved (E100)"  `Quick test_trig_pi_reserved;
     ];
     "time_functions", [

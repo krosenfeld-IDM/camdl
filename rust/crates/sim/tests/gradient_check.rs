@@ -445,13 +445,17 @@ fn test_nuts_target_gradient_on_z_scale() {
 /// strong gate; it needs exact-PGAS to produce a short substep, so it lands with
 /// that increment, not here.
 ///
-/// `alpha`/`phi_season` (seasonal amplitude/phase) are NOT estimated: they enter
-/// only through the `TimeFunc`, which `autodiff.ml:23` differentiates to
-/// `Const 0.0` AND which `compiled_model.rs:685` bakes to a constant from the
-/// default params — a doubly-silent zero gradient, flagged out-of-band. `beta`
-/// threads through the same `seasonal(t)` multiplicatively, so its gradient is
-/// nonzero and time-dependent. `gamma`/`sigma` are time-independent regression
-/// checks that the refactor leaves the homogeneous path intact.
+/// `alpha`/`phi_season` (seasonal amplitude/phase) enter the rate ONLY through
+/// the seasonal `TimeFunc`. This was a doubly-silent zero gradient before
+/// gh#119: `autodiff.ml` differentiated `TimeFunc` to `Const 0.0` AND the Rust
+/// runtime baked the coefficient to a constant. Both are now fixed — the
+/// coefficient is a live `ResolvedExpr` (value half) and `autodiff` emits the
+/// analytic ∂forcing/∂coef through the sinusoidal closed form (gradient half),
+/// so `alpha`/`phi_season` carry real, time-dependent gradients. This test is
+/// the end-to-end validation: the analytic rate-density gradient (gradient
+/// half) against a finite difference of the loglik (which exercises the live
+/// value, value half). `beta` threads through `seasonal(t)` multiplicatively;
+/// `gamma`/`sigma` are time-independent regression checks.
 #[test]
 fn test_gradient_vs_finite_differences_seasonal() {
     let mut model = load_model("../../../ocaml/golden/seir_vaccine_seasonal.ir.json");
@@ -525,9 +529,11 @@ fn test_gradient_vs_finite_differences_seasonal() {
     assert!(grad[beta_idx].abs() > 1e-6,
         "∂L/∂beta must be materially nonzero (got {:.3e})", grad[beta_idx]);
 
-    // beta = time-dependent gate; gamma + sigma = time-independent regression.
+    // beta = time-dependent gate; alpha/phi_season = forcing-coefficient
+    // gradients (gh#119, both halves); gamma + sigma = time-independent
+    // regression.
     let mut max_rel_err = 0.0_f64;
-    for name in ["beta", "gamma", "sigma"] {
+    for name in ["beta", "gamma", "sigma", "alpha", "phi_season"] {
         let i = compiled.param_index[name];
         let p_val = params[i];
         let eps = (1e-5 * p_val.abs()).max(1e-8);

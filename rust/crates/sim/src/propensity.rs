@@ -243,6 +243,15 @@ pub fn eval_expr(expr: &Expr, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
 /// Walks the Expr tree applying standard differentiation rules.
 /// Pop, PopSum, Time, TimeFunc, TableLookup, Projected have zero derivative
 /// (they don't depend on params given fixed state X).
+///
+/// gh#119: `TimeFunc`/`TableLookup` are kept at 0 here on purpose. This is the
+/// *secondary* forward-mode path; the production PGAS+NUTS dynamics gradient
+/// rides the compiler-emitted `rate_grad` (resolved + evaluated via
+/// `eval_resolved`), which OCaml autodiff now fills with the analytic
+/// ∂forcing/∂coef (`autodiff.ml`). A forcing/table-coefficient parameter
+/// therefore gets its real gradient through `rate_grad`, not through this
+/// function — which is used only for obs-likelihood / overdispersion terms
+/// that never reference a forcing.
 pub fn eval_expr_deriv(expr: &Expr, wrt: usize, ctx: &EvalCtx<'_>) -> f64 {
     match expr {
         Expr::Param(p) => {
