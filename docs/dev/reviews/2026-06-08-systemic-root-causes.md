@@ -190,34 +190,34 @@ worktree blockers are fixed: a hardened isolation prompt, and the
 `ir_version_generated.ml` codegen step (so `camdlc` builds in worktrees →
 integration tests run there). A **rework wave** is in-flight, file-CLUSTERED to
 avoid the shared-file conflicts (4 patches touched `expander.ml`, 2 touched
-`validate.rs`) and with each reviewer's prior feedback folded in, producing
-git BRANCHES (not loose patches):
+`validate.rs`) and with each reviewer's prior feedback folded in, producing git
+BRANCHES (not loose patches):
 
 - `fix/ocaml-validation` ← #112 + #117 + #114(ocaml) + #98 (defers #98's C7
   `origin_rata_die` — needs a schema bump)
-- `fix/rust-validate` ← #123 + #114(rust)  ·  `fix/gh-97-profile-loglik` ← #97
-- `fix/gh-129-survey-posterior` ← #129  ·  `fix/gh-147-cache-key` ← #147
-  (minimal key fix + documents the deferred hit-path race; not the CasSink migration)
+- `fix/rust-validate` ← #123 + #114(rust) · `fix/gh-97-profile-loglik` ← #97
+- `fix/gh-129-survey-posterior` ← #129 · `fix/gh-147-cache-key` ← #147 (minimal
+  key fix + documents the deferred hit-path race; not the CasSink migration)
 
-| issue | RC  | what                                                      | wave | status   |
-| ----- | --- | --------------------------------------------------------- | ---- | -------- |
-| #97   | RC6 | profile-PMMH `final_loglik` = map_loglik (drop `.max`)    | 1    | rework: fix correct, but red test tautological → needs the mle.toml-vs-pfilter integration red test |
-| #112  | RC4 | table-lookup arity guard (E202)                           | 1    | ✅ approved (genuine red test) — re-verify on clean HEAD then land |
-| #117  | RC4 | duplicate/cross-namespace name pass + comp→param→let      | 1    | rework: correct for primary repros, leaves a residual collision hole + deviates from dossier |
-| #147  | RC5 | design-branch cache key includes t_end/cadence/origin/tu  | 1    | rework: closes the key half (genuine red tests) but leaves the hit-path race; decide CasSink-migrate vs document |
-| #129  | RC6 | survey_top_k ranks by log-posterior, not likelihood       | 1    | rework: ranks correctly but OMITS the `prior_hash` cross-check → opens a new silent hole |
-| #191+#192 | RC2 | one worker: grant chain_binomial BALANCE + non-blank name, AND wire the gate into fit-run per stage (merged — wiring an un-fixed gate would newly reject balance{}) | 2 | in-flight |
-| #114  | RC4 | stratified-init membership check vs expanded compartments | 2    | in-flight |
-| #123  | RC4 | ir::validate adds intervention/balance/init/table-arity ref checks (scoped, not the full fold framework — that's #111) | 2 | in-flight |
-| #98   | RC5 | parse_iso_date range-validate + caltime.tsv cross-lang golden (origin_rata_die schema decision deferred) | 2 | in-flight |
+| issue     | RC  | what                                                                                                                                                                | wave | status                                                                                                           |
+| --------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------- |
+| #97       | RC6 | profile-PMMH `final_loglik` = map_loglik (drop `.max`)                                                                                                              | 1    | rework: fix correct, but red test tautological → needs the mle.toml-vs-pfilter integration red test              |
+| #112      | RC4 | table-lookup arity guard (E202)                                                                                                                                     | 1    | ✅ approved (genuine red test) — re-verify on clean HEAD then land                                               |
+| #117      | RC4 | duplicate/cross-namespace name pass + comp→param→let                                                                                                                | 1    | rework: correct for primary repros, leaves a residual collision hole + deviates from dossier                     |
+| #147      | RC5 | design-branch cache key includes t_end/cadence/origin/tu                                                                                                            | 1    | rework: closes the key half (genuine red tests) but leaves the hit-path race; decide CasSink-migrate vs document |
+| #129      | RC6 | survey_top_k ranks by log-posterior, not likelihood                                                                                                                 | 1    | rework: ranks correctly but OMITS the `prior_hash` cross-check → opens a new silent hole                         |
+| #191+#192 | RC2 | one worker: grant chain_binomial BALANCE + non-blank name, AND wire the gate into fit-run per stage (merged — wiring an un-fixed gate would newly reject balance{}) | 2    | in-flight                                                                                                        |
+| #114      | RC4 | stratified-init membership check vs expanded compartments                                                                                                           | 2    | in-flight                                                                                                        |
+| #123      | RC4 | ir::validate adds intervention/balance/init/table-arity ref checks (scoped, not the full fold framework — that's #111)                                              | 2    | in-flight                                                                                                        |
+| #98       | RC5 | parse_iso_date range-validate + caltime.tsv cross-lang golden (origin_rata_die schema decision deferred)                                                            | 2    | in-flight                                                                                                        |
 
 **Held — proposal-grade or red (NOT in the green waves):**
 
 - RC1 (#1, #5, #20, #79, #119-B) and RC3 (#4, #6, #14, #124, set(real,<0)) — 🔴
   inference agent's files; nearly done upstream.
 - #111 (dimension-aware resolver) — L, RC4's structural umbrella; needs its own
-  proposal. The localized #112/#114/#117/#123 land without it; #111 then collapses
-  the remaining string-concat sites.
+  proposal. The localized #112/#114/#117/#123 land without it; #111 then
+  collapses the remaining string-concat sites.
 - RC2-full ExecMode consolidation — proposal v2 ready
   (`proposals/2026-06-08-capability-gate-consolidation.md`); the localized
   #191/#192 close the immediate issues; the full single-gate refactor (+ #15
@@ -225,45 +225,46 @@ git BRANCHES (not loose patches):
 - #12 (param-TOML dimensions) — L; separate proposal.
 
 **Process incident (worker isolation).** Wave-1/2 worktree workers, given the
-dossier as an absolute *main-tree* path, edited code via absolute main-tree paths
-too — leaving stray uncommitted edits in the main checkout (`expander.ml`,
-`test_compiler.ml`, `methods.rs`, `mod.rs`, `validate.rs`). Recoverable: the real
-deliverables are `/tmp/camdl-fixes/*.patch`; main is cleaned to pristine HEAD
-after the waves, and every patch is re-verified by applying to a clean HEAD +
-running its test in isolation (this is also the gate against cross-contaminated
-patches and the suspect in-worktree test runs). Also: `camdlc` won't build in a
-fresh worktree (`Unbound module Ir_version_generated` — a generated file absent
-from a checkout), so Rust *integration* tests needing camdlc can't run there;
-OCaml `dune runtest` and Rust unit tests are fine. The rework wave uses a fixed
-worker prompt: edit ONLY via worktree-relative paths; read the dossier
-read-only; never write a `/Users/vsb/...` path.
+dossier as an absolute _main-tree_ path, edited code via absolute main-tree
+paths too — leaving stray uncommitted edits in the main checkout (`expander.ml`,
+`test_compiler.ml`, `methods.rs`, `mod.rs`, `validate.rs`). Recoverable: the
+real deliverables are `/tmp/camdl-fixes/*.patch`; main is cleaned to pristine
+HEAD after the waves, and every patch is re-verified by applying to a clean
+HEAD + running its test in isolation (this is also the gate against
+cross-contaminated patches and the suspect in-worktree test runs). Also:
+`camdlc` won't build in a fresh worktree (`Unbound module Ir_version_generated`
+— a generated file absent from a checkout), so Rust _integration_ tests needing
+camdlc can't run there; OCaml `dune runtest` and Rust unit tests are fine. The
+rework wave uses a fixed worker prompt: edit ONLY via worktree-relative paths;
+read the dossier read-only; never write a `/Users/vsb/...` path.
 
 **Demonstration plan (after all green land):** a verification pass that, per
-retired issue, re-runs its red test against the merged tree to confirm green, and
-emits a closeable-issues list (issue → test → pass) so the GH closures are
-evidence-backed, not asserted. Candidate retirements once green lands:
-#97, #112, #114, #117, #123, #129, #147, #191, #192, #98 (+ #93 already closed).
+retired issue, re-runs its red test against the merged tree to confirm green,
+and emits a closeable-issues list (issue → test → pass) so the GH closures are
+evidence-backed, not asserted. Candidate retirements once green lands: #97,
+#112, #114, #117, #123, #129, #147, #191, #192, #98 (+ #93 already closed).
 
-**Demonstration results — branch `integrate/green-fixes` (commit 79695743), clean main base.**
-8 of 9 issue-groups demonstrate GREEN; #129 fails on a clean tree (the clean-base
-re-verify caught what the contaminated-worktree worker+reviewer missed):
+**Demonstration results — branch `integrate/green-fixes` (commit 79695743),
+clean main base.** 8 of 9 issue-groups demonstrate GREEN; #129 fails on a clean
+tree (the clean-base re-verify caught what the contaminated-worktree
+worker+reviewer missed):
 
-| issue | evidence (test → pass) | status |
-| --- | --- | --- |
-| #112 #114 #117 #98 | `cd ocaml && dune runtest` → 428 tests (E202 arity, E278 decl-names, E277 init, E223 dates, caltime 21) | ✅ green |
-| #123 (+#114-rust) | `cargo test -p ir` → 22 (balance/intervention/init target + table-arity rejects) | ✅ green |
-| #98 cross-lang | `cargo test -p ir --test caltime_golden` → 1 (OCaml↔Rust parsers agree) | ✅ green |
-| #191+#192 | `cargo test -p cli --bin camdl fit::methods` → 13 (accepts balance; rejects real-comp; non-blank name) | ✅ green |
-| #147 | `cargo test -p cli --bin camdl hashing` → 35 | ✅ green |
-| #97 | `cargo test -p cli --test profile_pmmh` → 3 incl `reported_loglik_matches_saved_mle_params` | ✅ green |
-| **#129** | `survey_top_k_pgas` + `pmmh_bad_init_skip` → FAIL: `parameter 'beta' has no value` | ❌ held — focused rework |
+| issue              | evidence (test → pass)                                                                                  | status                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------ |
+| #112 #114 #117 #98 | `cd ocaml && dune runtest` → 428 tests (E202 arity, E278 decl-names, E277 init, E223 dates, caltime 21) | ✅ green                 |
+| #123 (+#114-rust)  | `cargo test -p ir` → 22 (balance/intervention/init target + table-arity rejects)                        | ✅ green                 |
+| #98 cross-lang     | `cargo test -p ir --test caltime_golden` → 1 (OCaml↔Rust parsers agree)                                 | ✅ green                 |
+| #191+#192          | `cargo test -p cli --bin camdl fit::methods` → 13 (accepts balance; rejects real-comp; non-blank name)  | ✅ green                 |
+| #147               | `cargo test -p cli --bin camdl hashing` → 35                                                            | ✅ green                 |
+| #97                | `cargo test -p cli --test profile_pmmh` → 3 incl `reported_loglik_matches_saved_mle_params`             | ✅ green                 |
+| **#129**           | `survey_top_k_pgas` + `pmmh_bad_init_skip` → FAIL: `parameter 'beta' has no value`                      | ❌ held — focused rework |
 
 **Closeable once `integrate/green-fixes` lands (8):** #97, #112, #114, #117,
 #123, #147, #191, #192 (+ #98's two halves). **#129 held**: survey landscape.tsv
 columns / init parser inconsistent on a clean base + the fixture pins a stale
 `ir_version: "0.7"` — to be fixed + re-verified on clean main (worktree-green ≠
-clean-green proved decisive). Added `rust/crates/ir/tests/caltime_golden.rs` (the
-cross-language Rust reader C1a had omitted).
+clean-green proved decisive). Added `rust/crates/ir/tests/caltime_golden.rs`
+(the cross-language Rust reader C1a had omitted).
 
 **FINAL — branch `land/green-8` (commit 4cb25b9e), clean fast-forward over
 `origin/main`.** All 8 issue-groups GREEN on a clean tree; the clean-tree
@@ -271,13 +272,13 @@ re-verification found + fixed **two integration bugs the worker/reviewer
 worktrees had masked** (their bases carried inherited commits):
 
 1. **#191 gate regression** — `gate_run_stages_against_model` built a
-   `CompiledModel` from the raw IR *before* estimated params resolve, so every
+   `CompiledModel` from the raw IR _before_ estimated params resolve, so every
    `init = survey_top_k` / estimate-only fit died with "parameter 'beta' has no
-   value". Fixed: fill value-less params with a placeholder for the *structural*
+   value". Fixed: fill value-less params with a placeholder for the _structural_
    capability scan (`required_capabilities()` ignores param values).
 2. **#147 `model_hash` drift** — production `model_hash` correctly gained
    `origin`/`time_unit`/`output`/`simulation`; the survey tests'
-   `model_hash_for_test` *reimplementation* (RC5 forked-source-of-truth, live)
+   `model_hash_for_test` _reimplementation_ (RC5 forked-source-of-truth, live)
    was stale → synced all three to mirror production.
 
 Final demonstration (clean `origin/main` base): OCaml `dune runtest` 9 suites ·
@@ -285,8 +286,8 @@ Final demonstration (clean `origin/main` base): OCaml `dune runtest` 9 suites ·
 3 · `survey_top_k_pgas`/`_pmmh`/`pmmh_bad_init_skip` 1 each — **all green**.
 
 **#129 was INNOCENT** of the survey-init failures (the #191 gate was) — its
-posterior-ranking rework is now unblocked; re-test on this fixed base. **Ready to
-merge + close (8):** #97, #112, #114, #117, #123, #147, #191, #192 (+#98).
+posterior-ranking rework is now unblocked; re-test on this fixed base. **Ready
+to merge + close (8):** #97, #112, #114, #117, #123, #147, #191, #192 (+#98).
 
 ---
 
@@ -296,21 +297,27 @@ Goal: drop the count via dedup + already-fixed closures (fast, no code), then an
 S-class knockdown, leaving only the tricky tier.
 
 **Merged + closed (green-8 batch):** #97, #98, #112, #114, #117, #123, #147,
-#192 (#191 reopened — only the interim gate landed). On `origin/main` (e8a30ca8).
+#192 (#191 reopened — only the interim gate landed). On `origin/main`
+(e8a30ca8).
 
 **Dedup + already-fixed pass — closed 18 (92 → 74):**
-- Dup: **#175 → #146** (hierarchical PGAS+NUTS Gate-3b; #175 is the user-facing repro).
-- Already-fixed (verified the load-bearing artifact on main, then closed):
-  #71, #80, #81, #94, #110, #113, #136, #145, #148, #152, #176, #181, #188,
-  #193, #194, #196; **#100** closed as obsolete (the `[source.from_csv]` surface
-  was never merged into this lineage).
+
+- Dup: **#175 → #146** (hierarchical PGAS+NUTS Gate-3b; #175 is the user-facing
+  repro).
+- Already-fixed (verified the load-bearing artifact on main, then closed): #71,
+  #80, #81, #94, #110, #113, #136, #145, #148, #152, #176, #181, #188, #193,
+  #194, #196; **#100** closed as obsolete (the `[source.from_csv]` surface was
+  never merged into this lineage).
 - **Held #187** (claim that PGAS ignores scheduled interventions): triage says
   stale but verification was a soft CHECK — it's an inference-path correctness
   claim, so NOT closed without a real trace.
 
 **S-class reliably-landable (triage found only 5 — the bar is strict):**
-- In-flight batch 1: #66, #174, #108, #37 (`wmtgrg7bo`) → clean-verify then land+close.
-- Batch 2 (queued, launch after batch 1 frees its worktrees): #36, #124, #128, #183.
+
+- In-flight batch 1: #66, #174, #108, #37 (`wmtgrg7bo`) → clean-verify then
+  land+close.
+- Batch 2 (queued, launch after batch 1 frees its worktrees): #36, #124, #128,
+  #183.
 - After both → S-class drained; ~66 open.
 
 **Residue = the tricky tier (left for deliberate work):** M-class (~27: e.g.
@@ -319,26 +326,50 @@ S-class knockdown, leaving only the tricky tier.
 consolidation, #111 resolver, #95 sampler, #119/#186 frozen-params, #197/#200
 grad-drift [inference agent], #129 re-test, ABC #203, reactive #204, etc.).
 
+**Update — S-class drained + Tier-A landed (`origin/main` `9febafc3`, open
+67):**
+
+- **Batch 1** (`a4b8df58`): #66 #174 #108 #37 — landed + closed.
+- **Batch 2** (`0ca720d5`): #36 #124 #128 #183 — landed + closed.
+- **Tier-A typing batch** (`46af35b1`): #189 #190 closed (fit-digest
+  under-keying — obs_alignment + holdout content folded into the run id); **#127
+  closed** (OOB-table-panic half: validate-time
+  `TableLookupConstantIndexOutOfRange` + runtime `SimError::TableLookup`), its
+  Gillespie negative-rate-clamp half **split to #208** (open).
+- **Held for a scope decision (3 — still open, workers' branches NOT landed):**
+  - **#126** — worker did the titled release-time schedule/dt validation
+    (debug-assert → real error) cleanly; reviewer surfaced an _adjacent_
+    ode-dt-boundary concern not in #126's title. → land the validation as #126;
+    split the ode-dt finding to a focused issue if real.
+  - **#134** — worker fixed a _different_ real bug (uncaught `Invalid_argument`
+    → located `E223`) than #134's ask (model-side `date()` ↔ data-loader W326
+    symmetry + lint). → re-file the crash-fix as its own issue; keep #134 open
+    for its ergonomics ask.
+  - **#101** — partial: guarded `realize` monotonicity + added `DemeId`;
+    `summarize` / `migration_event_count` still unguarded;
+    `CompartmentId`/`TransitionId` left `usize` (serde-wire-coupled). → finish
+    the 2 guards + land; keep the wire-newtype half open (M–L).
+
 ---
 
 ## Deep root-cause map: fix-once-resolve-many (2026-06-08, vs the 70-open backlog)
 
 **The deepest smell (the common root under RC1/RC5/the capability fork/the
-OCaml↔Rust mirrors):** *one mathematical semantic is implemented as N
+OCaml↔Rust mirrors):** _one mathematical semantic is implemented as N
 independently hand-maintained copies the type system doesn't force to agree, and
-the suite exercises only one copy at a time.*
+the suite exercises only one copy at a time._
 
 **Shared clusters, ranked (each fix closes several at once):**
 
-| fix-once | retires (open) | effort | note |
-| --- | --- | --- | --- |
-| Split forcing/table fields Constant‖Parametric + autodiff-through (never `Const 0.0`) | #119, #186, #128, #180 | L | params inside forcings are frozen-value AND zero-gradient |
-| One ref-integrity + range validation pass (both IR sides; release-time) | #127, #126, #134, #13 | M | OOB panic, debug-only dt asserts, date-range, calendar literals |
-| One whole-IR digest for all run/cache identity (delete `model_hash` allowlist) | #189, #190, #129 | M | RC5; folds obs_alignment/holdout-content/priors into the fit hash |
-| One `(value, grad)` PGAS density traversal + value-of-grad==value oracle | #197, #200, #79 | M | RC1; **inference agent's lane** |
-| `collect_real_comp_deps` + recompute after rk4 (real-coupled rates) | #120, #95 | L | #95 also needs a separate inhomogeneous-Poisson sampler RFC |
-| `resolve_indexed_ref` dimension-aware resolver (delete string-concat lowering) | #111 (+#112 done) | L | proposal-grade; RC4 umbrella |
-| (backend × ExecMode) derived capabilities, one gate | #191 | M | RC2 proposal v2 |
+| fix-once                                                                              | retires (open)                          | effort | note                                                              |
+| ------------------------------------------------------------------------------------- | --------------------------------------- | ------ | ----------------------------------------------------------------- |
+| Split forcing/table fields Constant‖Parametric + autodiff-through (never `Const 0.0`) | #119, #186, #128, #180                  | L      | params inside forcings are frozen-value AND zero-gradient         |
+| One ref-integrity + range validation pass (both IR sides; release-time)               | #127✅(OOB→#208 split), #126, #134, #13 | M      | OOB panic, debug-only dt asserts, date-range, calendar literals   |
+| One whole-IR digest for all run/cache identity (delete `model_hash` allowlist)        | #189✅, #190✅, #129                    | M      | RC5; folds obs_alignment/holdout-content/priors into the fit hash |
+| One `(value, grad)` PGAS density traversal + value-of-grad==value oracle              | #197, #200, #79                         | M      | RC1; **inference agent's lane**                                   |
+| `collect_real_comp_deps` + recompute after rk4 (real-coupled rates)                   | #120, #95                               | L      | #95 also needs a separate inhomogeneous-Poisson sampler RFC       |
+| `resolve_indexed_ref` dimension-aware resolver (delete string-concat lowering)        | #111 (+#112 done)                       | L      | proposal-grade; RC4 umbrella                                      |
+| (backend × ExecMode) derived capabilities, one gate                                   | #191                                    | M      | RC2 proposal v2                                                   |
 
 **Isolated (~49):** no shared root — independent ergonomics / features / docs
 (#12, #50, #55/#56, #60, #70, #72, #82, #83, #84, #99, #101, #102/#103, #107,
@@ -347,22 +378,22 @@ the suite exercises only one copy at a time.*
 #203, #204, …). These are one-at-a-time; no smell collapses them.
 
 **Why bugs pass tests (forensic) — and the meta-test that closes each class:**
-1. *Value/grad asymmetric oracle* — FD-checks grad vs a SEPARATE value-fn → a
+
+1. _Value/grad asymmetric oracle_ — FD-checks grad vs a SEPARATE value-fn → a
    term dropped from the grad-fn's OWN value is invisible. → assert
    `complete_data_loglik_grad(θ).0 == complete_data_loglik(θ)` per fixture.
-2. *Unit test on a hand-patched input the production caller never produces* —
+2. _Unit test on a hand-patched input the production caller never produces_ —
    #191's test pre-filled value-less params + called the gate directly. → one
    dispatch-level e2e per gate (drive `camdl fit run` on a real fixture).
-3. *Forked source-of-truth* — test reimplements the semantic (model_hash ×3) →
+3. _Forked source-of-truth_ — test reimplements the semantic (model_hash ×3) →
    tests nothing. → route every consumer through ONE fn; delete the reimpls;
    cross-language/arena equivalence golden.
-4. *Self-referential / tautological assertion* — balance conservation holds by
+4. _Self-referential / tautological assertion_ — balance conservation holds by
    construction. → assert against an INDEPENDENT recomputation.
-5. *Missing known-correct oracle* — #201 PF marginal promised, never built. →
+5. _Missing known-correct oracle_ — #201 PF marginal promised, never built. →
    analytic finite-state forward-filter oracle + recovery-asserts.
 
 **Takeaway:** count won't drop much further via automation (~49 are isolated);
 the remaining LEVERAGE is the ~6 shared clusters (deliberate structural strikes,
 several proposal-grade / one inference-owned) + the meta-test suite, which
 together also stop the "passes-but-wrong" class that shipped these.
-
