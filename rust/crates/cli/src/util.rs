@@ -356,6 +356,26 @@ pub(crate) fn run_camdlc(camdl_path: &str) -> Result<String, String> {
         .map_err(|e| format!("camdlc output not UTF-8: {}", e))
 }
 
+/// Compile `camdl_path` and write its read-closure depfile to `deps_out` (for
+/// `camdl mre`). One compile; the IR on stdout is discarded — mre v1 only needs
+/// the dependency list. Surfaces camdlc's stderr on failure.
+pub(crate) fn camdlc_emit_deps(
+    camdl_path: &str,
+    deps_out: &std::path::Path,
+) -> Result<(), String> {
+    let camdlc = find_camdlc()?;
+    let output = std::process::Command::new(&camdlc)
+        .arg(camdl_path)
+        .arg("--emit-deps")
+        .arg(deps_out)
+        .output()
+        .map_err(|e| format!("cannot run {}: {}", camdlc.display(), e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(())
+}
+
 // ─── IR path resolver ────────────────────────────────────────────────────────
 
 /// Resolve a path that appears inside a config file (fit.toml, batch.toml,

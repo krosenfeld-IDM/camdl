@@ -35,6 +35,7 @@ mod survey_cas;     // gh#147 (M3.3): survey CAS identity (model/config/box/seed
 mod sim_ensemble_cas; // gh#147: multi-cell simulate ensemble CAS identity (model/config/params/grid)
 mod landscape_html;
 mod lineage;        // three-layer lineage: --event-log record + realize + tree
+mod mre;            // `camdl mre` — minimal-reproducible-example bundles (gh#212)
 pub mod version;
 
 /// Terminal formatting helpers. Pure ANSI SGR codes, no dependencies.
@@ -256,6 +257,30 @@ Examples:
 
     /// Show embedded usage guides (offline, version-matched to this binary)
     Docs(args::DocsArgs),
+
+    /// Package a minimal reproducible example (model + data + config) to share
+    #[command(subcommand)]
+    Mre(MreCmd),
+}
+
+/// `camdl mre <fit|simulate>` — bundle a reproduction. See
+/// `docs/dev/proposals/2026-06-09-mre-bundle.md`.
+#[derive(Subcommand)]
+#[command(arg_required_else_help = true,
+          after_help = colored_help!("\
+Examples:
+  # Bundle a fit (model + read() tables + data + fixed params) into a tarball
+  camdl mre fit fit.toml
+
+  # Structure-only (no observed data values) when the data is sensitive
+  camdl mre fit fit.toml --no-data -b fit-bug.mre.tar.gz
+
+See `camdl mre <subcommand> --help` for full options."))]
+pub(crate) enum MreCmd {
+    /// Bundle a fit.toml's full input closure
+    Fit(args::MreFitArgs),
+    /// Bundle a forward-simulation reproduction
+    Simulate(args::MreSimulateArgs),
 }
 
 #[derive(Subcommand)]
@@ -532,6 +557,8 @@ fn main() {
             });
         }
         Command::Docs(a)                => docs::cmd_docs(&a),
+        Command::Mre(MreCmd::Fit(a))      => mre::cmd_mre_fit(&a),
+        Command::Mre(MreCmd::Simulate(a)) => mre::cmd_mre_simulate(&a),
     }
 }
 

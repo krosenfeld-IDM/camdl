@@ -2246,6 +2246,47 @@ pub struct CompareArgs {
     pub allow_mismatched_horizon: bool,
 }
 
+// ─── mre (minimal-reproducible-example bundles) ──────────────────────────────
+
+/// `camdl mre fit <fit.toml>` — package a fit's full input closure (model, the
+/// model's compile-time `read()` files, data, fixed params) into a `.tar.gz`
+/// so a bug can be reproduced from one file. See
+/// `docs/dev/proposals/2026-06-09-mre-bundle.md`.
+#[derive(Args)]
+pub struct MreFitArgs {
+    /// Fit configuration file (fit.toml) to bundle.
+    pub config: PathBuf,
+
+    /// Output bundle path. Defaults to `<config-stem>.mre.tar.gz`.
+    /// Short flag is `-b` (NOT `-o`: `simulate` already owns `-o`).
+    #[arg(short = 'b', long = "bundle", value_name = "FILE")]
+    pub bundle: Option<PathBuf>,
+
+    /// Exclude observed data values — emit a structure-only bundle (column
+    /// schema, row counts, time range; no values) for when the data is
+    /// sensitive. Default includes the data with a prominent banner.
+    #[arg(long)]
+    pub no_data: bool,
+}
+
+/// `camdl mre simulate <model.camdl> [sim flags…]` — bundle a forward-sim
+/// reproduction. Flattens the real `SimulateArgs` so every simulate flag
+/// parses identically; the bundle output is `-b` (simulate's own `-o` keeps
+/// its trajectory-output meaning).
+#[derive(Args)]
+pub struct MreSimulateArgs {
+    #[command(flatten)]
+    pub sim: SimulateArgs,
+
+    /// Output bundle path. Defaults to `<model-stem>.mre.tar.gz`.
+    #[arg(short = 'b', long = "bundle", value_name = "FILE")]
+    pub bundle: Option<PathBuf>,
+
+    /// Exclude observed data values (structure-only bundle).
+    #[arg(long)]
+    pub no_data: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

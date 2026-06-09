@@ -16,6 +16,10 @@ clap = { version = "4", features = ["derive", "env"] }
 comfy-table = "7"
 csv = "1"
 env_logger = "0.11"
+# MRE bundle tarball (`camdl mre`): the de-facto Rust tar + gzip crates
+# (small, pure-Rust-capable trees). `.tar.gz` is the universal interchange
+# format for a bundle a colleague emails / attaches to an issue.
+flate2 = "1"
 hex = "0.4"
 indexmap = { version = "2", features = ["serde"] }
 indicatif = "0.17"
@@ -34,8 +38,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sim = { path = "../sim", default-features = false }
+tar = "0.4"
+tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
-toml = { version = "0.8", features = ["parse"] }
+toml = { version = "0.8", features = ["parse", "display"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 
 [features]
