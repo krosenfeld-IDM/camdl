@@ -459,6 +459,12 @@ pub fn eval_propensities(
     let unresolved = eval_unresolved();
     out.clear();
     for (i, tr) in model.model.transitions.iter().enumerate() {
+        // gh#127 (#12): clear the table-OOB record before EACH rate so that, if
+        // this rate evaluates to NaN below, any record present is attributable
+        // to THIS rate only — an OOB recorded on a Cond branch that was then not
+        // selected (so the rate is finite) cannot be mis-attributed to a later
+        // rate's NaN from an unrelated cause.
+        crate::resolved_expr::clear_table_oob();
         let p = if unresolved {
             // String-keyed evaluator. Errors (NumericalCollapse) propagate
             // directly; in the non-degenerate case it returns the same
@@ -475,6 +481,23 @@ pub fn eval_propensities(
         // decide whether to kill the particle (recoverable) or
         // propagate (forward-sim CLI).
         if p.is_nan() {
+            // gh#127 (#12): a NaN here may be the sentinel an out-of-range table
+            // lookup left behind (the infallible fast evaluator records the
+            // offending lookup on a thread-local and returns NaN rather than
+            // panicking). If so, surface the NAMED, actionable error (table +
+            // index + valid range) instead of the generic NumericalCollapse —
+            // a controlled per-particle error in inference, a clear diagnostic
+            // in forward sim. Take() clears the record either way.
+            if let Some((table_idx, index, len)) = crate::resolved_expr::take_table_oob() {
+                let table_name = model.model.tables[table_idx].name.clone();
+                return Err(SimError::TableLookup(format!(
+                    "table '{table_name}': index {index} out of bounds [0, {len}) \
+                     while evaluating rate of transition '{}' at t={t} \
+                     (the index is computed from model state/parameters; widen the \
+                     table or fix the index expression)",
+                    tr.name
+                )));
+            }
             return Err(SimError::NumericalCollapse {
                 kind: crate::error::CollapseKind::DivByZero, // generic; eval_stats counter has the specific kind
                 t,

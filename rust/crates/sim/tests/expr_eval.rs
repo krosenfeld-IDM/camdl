@@ -63,6 +63,73 @@ fn param(name: &str, value: f64) -> Parameter {
     Parameter { name: name.into(), value: Some(value), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None }
 }
 
+// ── gh#127 (#12): runtime out-of-range table lookup returns Err, never panics ──
+//
+// A NON-CONSTANT table index (state/param-dependent) is not statically
+// range-checkable, so it reaches the runtime evaluator. Previously the fast
+// path (eval_resolved) `panic!`d on an out-of-range index under
+// OobPolicy::Error, tearing down the whole process — one bad particle could
+// crash an entire inference run. The fix routes it through the existing typed-
+// error boundary (eval_propensities): it must return a SimError, not panic.
+#[test]
+fn test_runtime_oob_table_lookup_returns_err_not_panic() {
+    use ir::{
+        expr::{TableLookupExpr, TableLookupWrap},
+        table::{OobPolicy, Table, TableSource},
+        transition::{StoichiometryEntry, Transition},
+    };
+    use sim::propensity::eval_propensities;
+
+    // Model: one compartment `S`, one transition whose rate is `kernel[S]`.
+    // The table `kernel` has 2 cells (valid indices {0, 1}); S starts at 5, so
+    // the lookup index is out of range — but the index references state, so
+    // validate() cannot reject it statically (verified separately in the ir
+    // crate's table_lookup_nonconstant_index_is_not_range_checked).
+    let mut m = minimal_model(vec![int_comp("S")], vec![]);
+    m.tables.push(Table {
+        name: "kernel".into(),
+        source: TableSource::Inline {
+            values: vec![Expr::Const(ConstExpr { value: 1.0 }),
+                         Expr::Const(ConstExpr { value: 2.0 })],
+        },
+        out_of_bounds: OobPolicy::Error,
+        cell_kind: None,
+    });
+    m.transitions.push(Transition {
+        name: "leave_S".into(),
+        stoichiometry: vec![StoichiometryEntry("S".into(), -1)],
+        rate: Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::Pop(PopExpr { pop: "S".into() })],
+            },
+        }),
+        metadata: None,
+        draw_method: Default::default(),
+        rate_grad: HashMap::new(),
+        lineage: None,
+    });
+
+    let model = CompiledModel::new(m).expect("model with state-dependent table index must compile");
+    let int_s = IntState::from_vec(vec![5]); // S = 5 → index 5, out of range for a 2-cell table
+    let real_s = RealState::new(0);
+    let mut out = Vec::new();
+    // Must be Err (a typed SimError), NOT a panic. Against the buggy code this
+    // call panics inside eval_resolved (red); the fix makes it return Err.
+    let res = eval_propensities(&model, &int_s, &real_s, &[], 0.0, 1.0, &mut out);
+    assert!(
+        res.is_err(),
+        "out-of-range table lookup must return Err, not panic or a value; got {:?}",
+        res
+    );
+    // The error must name the table — error quality is a feature (CLAUDE.md).
+    let msg = format!("{}", res.unwrap_err());
+    assert!(
+        msg.contains("kernel"),
+        "table-lookup OOB error should name the offending table 'kernel'; got: {msg}"
+    );
+}
+
 #[test]
 fn test_const() {
     let model = CompiledModel::new(minimal_model(vec![int_comp("S")], vec![])).unwrap();

@@ -65,6 +65,12 @@ pub enum ValidationError {
              single linear index, so a lookup must carry exactly 1 index)")]
     TableLookupArity { table: String, got: usize },
 
+    #[error("table lookup of '{table}' uses a constant index {index} that is out of range: \
+             the table has {len} cell(s), so the valid index range is [0, {len}) \
+             (the runtime floors a fractional index before this check). Fix the index \
+             expression or widen the table to {at_least} cell(s)", at_least = *index + 1)]
+    TableLookupConstantIndexOutOfRange { table: String, index: i64, len: usize },
+
     #[error("initial value for compartment '{compartment}' is not finite (got {value}); \
              initial conditions must be finite numbers")]
     InitialValueNotFinite { compartment: String, value: f64 },
@@ -89,6 +95,11 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
     let mut int_comps:   HashSet<&str> = HashSet::new();
     let mut param_names: HashSet<&str> = HashSet::new();
     let mut table_names: HashSet<&str> = HashSet::new();
+    // gh#127 (#12): per-table linear length, known statically only for Inline
+    // tables (External tables get their values at runtime). Used to range-check
+    // a compile-time-constant lookup index. External tables are absent from the
+    // map → no static range check (the runtime handles them).
+    let mut table_lens:  std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut tf_names:    HashSet<&str> = HashSet::new();
     let mut tr_names:    HashSet<&str> = HashSet::new();
 
@@ -112,6 +123,11 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
     }
     for t in &model.tables {
         table_names.insert(t.name.as_str());
+        // Inline tables carry their cell exprs; the linear length is known now.
+        // External tables are filled at runtime, so their length is not static.
+        if let Some(values) = t.source.values() {
+            table_lens.insert(t.name.as_str(), values.len());
+        }
     }
     for tf in &model.time_functions {
         tf_names.insert(tf.name.as_str());
@@ -164,7 +180,7 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
 
     // ── Expression reference checks ───────────────────────────────────────────
 
-    let ctx = RefCtx { comp_names: &comp_names, param_names: &param_names, table_names: &table_names, tf_names: &tf_names };
+    let ctx = RefCtx { comp_names: &comp_names, param_names: &param_names, table_names: &table_names, table_lens: &table_lens, tf_names: &tf_names };
 
     for tr in &model.transitions {
         check_expr(&tr.rate, &ctx, false, &mut errors);
@@ -349,6 +365,9 @@ struct RefCtx<'a> {
     comp_names:  &'a HashSet<&'a str>,
     param_names: &'a HashSet<&'a str>,
     table_names: &'a HashSet<&'a str>,
+    /// gh#127 (#12): Inline-table name → linear length, for constant-index
+    /// range checks. External tables are absent (length not static).
+    table_lens:  &'a std::collections::HashMap<&'a str, usize>,
     tf_names:    &'a HashSet<&'a str>,
 }
 
@@ -415,6 +434,32 @@ fn check_expr(expr: &Expr, ctx: &RefCtx<'_>, allow_projected: bool, errors: &mut
                     table: w.table_lookup.table.clone(),
                     got: w.table_lookup.indices.len(),
                 });
+            }
+            // gh#127 (#12): for a COMPILE-TIME-CONSTANT index against an Inline
+            // table, the out-of-range condition is knowable now — reject it
+            // here (a named diagnostic) instead of deferring to a runtime
+            // panic/SimError. The runtime floors a fractional index before
+            // bounds-checking (`raw.floor() as i64`, resolved_expr.rs /
+            // propensity.rs), so mirror that flooring exactly to report the
+            // same index the runtime would. A non-constant (state/param-
+            // dependent) index is not statically range-checkable, so it is left
+            // to the runtime (which now returns a SimError, never panics).
+            if let (Some(&len), [Expr::Const(c)]) =
+                (ctx.table_lens.get(w.table_lookup.table.as_str()), w.table_lookup.indices.as_slice())
+            {
+                // `floor() as i64` matches the runtime; finite by construction
+                // here (a literal Const). Skip non-finite literals — they are a
+                // separate domain concern, not a linear-index range error.
+                if c.value.is_finite() {
+                    let idx = c.value.floor() as i64;
+                    if idx < 0 || idx >= len as i64 {
+                        errors.push(ValidationError::TableLookupConstantIndexOutOfRange {
+                            table: w.table_lookup.table.clone(),
+                            index: idx,
+                            len,
+                        });
+                    }
+                }
             }
             for idx in &w.table_lookup.indices {
                 check_expr(idx, ctx, allow_projected, errors);
@@ -687,6 +732,147 @@ mod tests {
             },
         });
         validate(&m).expect("single-index lookup against rank-1 table must validate");
+    }
+
+    // ── gh#127 (#12): constant out-of-range table index rejected at validate ──
+    //
+    // The runtime fast evaluator (resolved_expr.rs) panicked on an out-of-range
+    // table index under OobPolicy::Error. For a COMPILE-TIME-CONSTANT index the
+    // out-of-range condition is knowable at validate time, so reject it here —
+    // a named diagnostic (table + bad index + size) rather than a deferred
+    // runtime crash. The non-constant (state/param-dependent) case is handled
+    // at eval time (returns a SimError, never a panic).
+
+    /// A constant index past the end of an Inline table must be rejected by
+    /// validate(), naming the table, the index, and the table size.
+    #[test]
+    fn table_lookup_constant_index_above_range_is_rejected() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                // length 2 → valid indices are {0, 1}.
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        // index 5 is out of range for a 2-cell table.
+        m.transitions[0].rate = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::const_(5.0)],
+            },
+        });
+        let errs = validate(&m).expect_err("must reject constant index 5 against 2-cell table");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::TableLookupConstantIndexOutOfRange { table, index, len }
+                    if table == "kernel" && *index == 5 && *len == 2)),
+            "expected TableLookupConstantIndexOutOfRange for 'kernel' index=5 len=2, got: {:?}", errs);
+    }
+
+    /// A negative constant index must be rejected — the runtime floors to a
+    /// negative i64, which is out of range for any table.
+    #[test]
+    fn table_lookup_constant_index_negative_is_rejected() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        m.transitions[0].rate = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::const_(-1.0)],
+            },
+        });
+        let errs = validate(&m).expect_err("must reject constant index -1");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::TableLookupConstantIndexOutOfRange { table, index, len }
+                    if table == "kernel" && *index == -1 && *len == 2)),
+            "expected TableLookupConstantIndexOutOfRange for 'kernel' index=-1 len=2, got: {:?}", errs);
+    }
+
+    /// The runtime floors a fractional index before bounds-checking (`raw.floor()
+    /// as i64`). A constant `2.9` against a 2-cell table floors to 2 → out of
+    /// range, and must be rejected with the FLOORED index (matching runtime).
+    #[test]
+    fn table_lookup_constant_fractional_index_uses_floor() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        m.transitions[0].rate = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::const_(2.9)],
+            },
+        });
+        let errs = validate(&m).expect_err("must reject constant index 2.9 (floors to 2)");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::TableLookupConstantIndexOutOfRange { table, index, len }
+                    if table == "kernel" && *index == 2 && *len == 2)),
+            "expected TableLookupConstantIndexOutOfRange for 'kernel' index=2 (floor of 2.9) len=2, got: {:?}", errs);
+    }
+
+    /// Negative control: a constant index that IS in range must validate (the
+    /// last valid index, len-1, is accepted). Guards against an off-by-one that
+    /// would reject the boundary.
+    #[test]
+    fn table_lookup_constant_index_in_range_is_accepted() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        m.transitions[0].rate = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::const_(1.0)], // last valid index for a 2-cell table
+            },
+        });
+        validate(&m).expect("constant index 1 (in range for a 2-cell table) must validate");
+    }
+
+    /// Negative control: a NON-constant index (references compartment state)
+    /// must NOT be rejected at validate time even if it could be out of range
+    /// at runtime — the in-range property is not statically knowable. The
+    /// runtime handles it (SimError, not panic).
+    #[test]
+    fn table_lookup_nonconstant_index_is_not_range_checked() {
+        let mut m = load_sir();
+        m.tables.push(Table {
+            name: "kernel".into(),
+            source: TableSource::Inline {
+                values: vec![Expr::const_(1.0), Expr::const_(2.0)],
+            },
+            out_of_bounds: OobPolicy::Error,
+            cell_kind: None,
+        });
+        // pop("I") is state-dependent — its value is unknown at validate time.
+        m.transitions[0].rate = Expr::TableLookup(TableLookupWrap {
+            table_lookup: TableLookupExpr {
+                table: "kernel".into(),
+                indices: vec![Expr::pop("I")],
+            },
+        });
+        validate(&m).expect("a state-dependent table index must not be statically range-checked");
     }
 
     /// Negative control: the unmodified sir_basic model (with valid init keys,

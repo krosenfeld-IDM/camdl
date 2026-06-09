@@ -84,6 +84,61 @@ fn artifact_ref_kind_is_provenance_digest_is_semantic() {
 }
 
 #[test]
+fn fit_digest_holdout_content_is_keyed() {
+    // gh#190: editing a holdout file's *content* (same path) changes
+    // `holdout_data` and must change the FitDigest — a stale fit (and its
+    // held-out predictive score) must not be reused under an unchanged run_id.
+    let model = ModelDigest {
+        ir: ContentHash::from_bytes([5; 32]),
+        ir_version: "0.9".into(),
+        engine: EngineVersion("0.3.0".into()),
+    };
+    let base = FitDigest {
+        model: model.clone(),
+        data: vec![DataDigest(ContentHash::from_bytes([1; 32]))],
+        holdout_data: vec![DataDigest(ContentHash::from_bytes([2; 32]))],
+        fit_toml: ContentHash::from_bytes([3; 32]),
+        engine: EngineVersion("0.3.0".into()),
+    };
+    // Only the holdout stream's content digest differs (same training data,
+    // same fit.toml blob → same holdout *path*).
+    let mut edited = base.clone();
+    edited.holdout_data = vec![DataDigest(ContentHash::from_bytes([9; 32]))];
+    assert_ne!(
+        base.content_hash(),
+        edited.content_hash(),
+        "a holdout file's content must be folded into the fit identity (gh#190) — \
+         editing it (same path) must change the run_id"
+    );
+
+    // No spurious sensitivity: identical holdout content → identical hash.
+    assert_eq!(base.content_hash(), base.clone().content_hash());
+}
+
+#[test]
+fn stage_config_obs_alignment_is_keyed() {
+    // gh#189: the resolved obs alignment (snap vs exact) drives the posterior,
+    // so two otherwise-identical stage configs differing only in it must get
+    // distinct stage hashes — exact and snap cannot collide in the CAS store.
+    let base = StageConfig {
+        config: ContentHash::from_bytes([7; 32]),
+        obs_block: String::new(),
+        flow_indices: vec![],
+        target_length: 50,
+        obs_alignment: ResolvedObsAlignment::Snap,
+    };
+    let mut flipped = base.clone();
+    flipped.obs_alignment = ResolvedObsAlignment::Exact;
+    assert_ne!(
+        base.content_hash(),
+        flipped.content_hash(),
+        "the resolved obs_alignment must be folded into the stage identity (gh#189) — \
+         a snap fit and an exact fit at the same config must not collide"
+    );
+    assert_eq!(base.content_hash(), base.clone().content_hash());
+}
+
+#[test]
 fn trajectory_input_display_is_provenance() {
     let model = ModelDigest {
         ir: ContentHash::from_bytes([5; 32]),

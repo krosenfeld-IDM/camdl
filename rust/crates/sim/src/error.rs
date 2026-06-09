@@ -245,10 +245,21 @@ impl SimError {
     ///
     /// Recoverable: NumericalCollapse (DivByZero, PowNanInf, UnOpNan,
     /// SqrtNegative, ModByZero), NegativeCount with cause
-    /// BinomialOvershoot, and NonFiniteParameter (gh#81 Phase 2 — a
-    /// NUTS/PMMH proposal produced a NaN/Inf parameter) — these all
-    /// arise from particles or proposals exploring extreme parameter
-    /// regions and should reject-and-continue rather than die.
+    /// BinomialOvershoot, NonFiniteParameter (gh#81 Phase 2 — a
+    /// NUTS/PMMH proposal produced a NaN/Inf parameter), and TableLookup
+    /// (gh#127 #12 — a state/parameter-dependent table index that went
+    /// out of range at runtime) — these all arise from particles or
+    /// proposals exploring extreme parameter regions and should
+    /// reject-and-continue rather than die.
+    ///
+    /// On `TableLookup`: a runtime out-of-range lookup is reached only by a
+    /// NON-constant (state/parameter-dependent) index — a constant OOB index is
+    /// rejected statically by `validate` (gh#127). An inference proposal can
+    /// sweep such an index out of range for one particle; per the issue, that
+    /// "one bad particle should not panic the entire process," so it is a
+    /// controlled per-particle failure, not a whole-run bail. The structural
+    /// `TableLookup` (wrong arity) surfaces at `CompiledModel::new`, before any
+    /// particle runs, so it never reaches this discriminator.
     ///
     /// Not recoverable: structural errors (UnknownCompartment,
     /// UnknownParameter, ConfigMismatch, …), AbsorbingState (model-
@@ -260,6 +271,7 @@ impl SimError {
             SimError::NumericalCollapse { .. }
             | SimError::NegativeCount { cause: NegativeCountCause::BinomialOvershoot, .. }
             | SimError::NonFiniteParameter { .. }
+            | SimError::TableLookup(..)
         )
     }
 }
@@ -331,6 +343,12 @@ mod tests {
             t: 1.0,
             cause: NegativeCountCause::InterventionNegative,
         }.is_per_particle_recoverable());
+        // gh#127 (#12): a runtime out-of-range table lookup (non-constant
+        // index swept OOB by an inference proposal) is recoverable — kill the
+        // offending particle, don't tear down the run.
+        assert!(SimError::TableLookup(
+            "table 'k': index 5 out of bounds [0, 2)".into()
+        ).is_per_particle_recoverable());
         assert!(!SimError::AbsorbingState(0.0).is_per_particle_recoverable());
         assert!(!SimError::PFDegenerate {
             kind: PFDegenerateKind::AllParticlesDead,

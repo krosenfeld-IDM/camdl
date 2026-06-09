@@ -5,13 +5,14 @@
 //! block doesn't re-key the scout; cross-stage invalidation rides the
 //! deps-DAG):
 //!
-//! - **fit level** = [`FitDigest`] = whole-IR model digest + per-stream data
-//!   digests + the canonicalized fit-wide config (with `stages` / `fit_seeds`
+//! - **fit level** = [`FitDigest`] = whole-IR model digest + per-stream
+//!   training data digests + per-stream `[data.holdout]` content digests
+//!   (gh#190) + the canonicalized fit-wide config (with `stages` / `fit_seeds`
 //!   / `output_dir` normalized out) + engine version.
 //! - **stage level** = [`StageLevel`] = [`StageConfig`] (the stage's
-//!   `identity_payload` + `n_trajectories` + obs/flow + `target_length`)
-//!   folded with its `deps` (so `02-posterior`'s hash folds in `01-scout`'s
-//!   identity).
+//!   `identity_payload` + `n_trajectories` + obs/flow + `target_length` + the
+//!   resolved `obs_alignment`, gh#189) folded with its `deps` (so
+//!   `02-posterior`'s hash folds in `01-scout`'s identity).
 //! - **seed level** = [`Seed`] = the resolved fit RNG seed.
 //!
 //! `n_trajectories` (the count of posterior trajectories PGAS writes to
@@ -27,7 +28,8 @@ use indexmap::IndexMap;
 use std::path::Path;
 
 use runid::inputs::{
-    ArtifactRef, DataDigest, Deps, EngineVersion, FitDigest, Seed, StageConfig, StageLevel,
+    ArtifactRef, DataDigest, Deps, EngineVersion, FitDigest, ResolvedObsAlignment, Seed,
+    StageConfig, StageLevel,
 };
 use runid::{
     run_id, ArtifactKind, ContentAddressed, ContentHash, LevelId, Provenance, RunRecord, RunStatus,
@@ -253,6 +255,20 @@ pub(crate) fn build_data_digests(paths: &IndexMap<String, String>) -> Result<Vec
     Ok(out)
 }
 
+/// Content digests of the explicit `[data.holdout]` streams (gh#190), sorted
+/// by stream name. The fit.toml blob carries only the holdout *paths*, so
+/// without this an edit to a holdout file's bytes (same path) leaves the fit
+/// `run_id` unchanged and silently reuses a stale held-out score. Empty when
+/// no explicit holdout is configured (temporal `holdout_after` is a numeric
+/// threshold already in the blob, not a file). Reuses [`build_data_digests`],
+/// the same content-addressing the training streams use.
+fn build_holdout_digests(config: &FitConfigV2) -> Result<Vec<DataDigest>, String> {
+    match config.data.as_ref().and_then(|d| d.holdout.as_ref()) {
+        Some(holdout) => build_data_digests(holdout),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// The fit-wide config blob hash: the whole resolved config (include-by-
 /// default — so `ic_free`/`holdout`/`[config]`/priors can't be silently
 /// dropped) with the slices owned by a lower level or by provenance
@@ -308,6 +324,7 @@ pub fn fit_level_digest(
     Ok(FitDigest {
         model: crate::resolve::model_digest(model, ir_version, engine_version),
         data: build_data_digests(data_paths)?,
+        holdout_data: build_holdout_digests(config)?,
         fit_toml: fit_config_blob_hash(config)?,
         engine: EngineVersion(engine_version.to_string()),
     })
@@ -338,6 +355,38 @@ pub fn fit_segment_dir(root: &Path, stem: &str, fit_hash: &ContentHash) -> std::
         .join(format!("{}-{}", runid::path_label(stem), fit_hash.short8()))
 }
 
+/// The resolved observation-time alignment a stage will actually run under,
+/// for the stage CAS identity (gh#189). Resolution is the single
+/// `crate::fit::methods::resolve_obs_alignment` gate, fed the stage algorithm,
+/// whether it is correlated PMMH, and the fit-wide requested
+/// `[config] obs_alignment`. The resolved `Ok` value is independent of whether
+/// observations sit on the `dt` grid (that flag only governs whether a combo
+/// is rejected — never which alignment is returned), so a fixed `true` yields
+/// the alignment without needing the observed-data times here; the runner
+/// still validates on-grid-ness and errors loudly for an unsupported combo.
+/// A non-inference stage (or an unsupported combo, which aborts the run before
+/// any output is stored) is keyed as `Snap` — the historical uniform-grid
+/// default — so it never silently aliases an `Exact` run.
+fn resolved_obs_alignment(stage: &Stage, config: &FitConfigV2) -> ResolvedObsAlignment {
+    use crate::run_meta::MethodKind;
+    if !matches!(
+        stage.method_kind(),
+        MethodKind::If2 | MethodKind::Pgas | MethodKind::Pmmh | MethodKind::Pfilter
+    ) {
+        return ResolvedObsAlignment::Snap;
+    }
+    let correlated = matches!(stage, Stage::PMMH { rho: Some(_), .. });
+    match crate::fit::methods::resolve_obs_alignment(
+        stage.method_name(),
+        correlated,
+        config.config.obs_alignment,
+        /* obs_on_grid = */ true,
+    ) {
+        Ok(crate::fit::methods::ObsAlignment::Exact) => ResolvedObsAlignment::Exact,
+        Ok(crate::fit::methods::ObsAlignment::Snap) | Err(_) => ResolvedObsAlignment::Snap,
+    }
+}
+
 /// Resolve a fit-stage leaf's identity: the three factored levels (fit /
 /// `NN-stage` / seed) and the `run_id` derived from their hashes.
 pub fn resolve_fit_stage(ctx: &FitStageCtx) -> Result<ResolvedFitStage, String> {
@@ -356,6 +405,8 @@ pub fn resolve_fit_stage(ctx: &FitStageCtx) -> Result<ResolvedFitStage, String> 
         obs_block: String::new(),
         flow_indices: Vec::new(),
         target_length: ctx.stage.cas_target_length(),
+        // gh#189: the resolved (not requested) obs alignment, keyed per stage.
+        obs_alignment: resolved_obs_alignment(ctx.stage, ctx.config),
     };
     let stage_level = StageLevel { config: stage_config, deps: Deps(ctx.deps.clone()) };
 
@@ -571,6 +622,85 @@ mod tests {
             &minimal_config("[config]\nallow_degenerate_rates = false\n")).unwrap();
         assert_eq!(off, explicit_false,
             "explicit allow_degenerate_rates=false must match the default (no re-key)");
+    }
+
+    /// gh#190: holdout files are digested by CONTENT, not path. Two configs
+    /// with the SAME holdout path but DIFFERENT bytes on disk must produce
+    /// different holdout digests — so editing a holdout file (same path)
+    /// re-keys the fit and a stale held-out score cannot be silently reused.
+    #[test]
+    fn holdout_content_changes_the_fit_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let holdout_path = dir.path().join("holdout.tsv");
+        let holdout_str = holdout_path.to_string_lossy().to_string();
+        // `minimal_config`'s base already declares `[data.observations]`;
+        // `[data.holdout]` is a new sub-table of the same `[data]`.
+        let cfg = minimal_config(&format!(
+            "[data.holdout]\nweekly_cases = \"{}\"\n",
+            holdout_str
+        ));
+        // Sanity: the holdout block parsed and points at our temp path.
+        assert_eq!(
+            cfg.data.as_ref().unwrap().holdout.as_ref().unwrap()["weekly_cases"],
+            holdout_str
+        );
+
+        std::fs::write(&holdout_path, b"time\tweekly_cases\n50\t10\n").unwrap();
+        let d1 = build_holdout_digests(&cfg).unwrap();
+        std::fs::write(&holdout_path, b"time\tweekly_cases\n50\t999\n").unwrap();
+        let d2 = build_holdout_digests(&cfg).unwrap();
+
+        assert_eq!(d1.len(), 1, "one holdout stream digested");
+        assert_ne!(
+            d1, d2,
+            "editing a holdout file's content (same path) must change the holdout \
+             digest (gh#190) — content-addressed, not path-addressed"
+        );
+
+        // No explicit holdout → empty (temporal holdout_after is a numeric
+        // threshold already in the fit.toml blob, not a file).
+        let no_holdout = minimal_config("");
+        assert!(build_holdout_digests(&no_holdout).unwrap().is_empty());
+    }
+
+    /// gh#189: the *resolved* obs alignment is folded into the stage identity,
+    /// and resolution is per-algorithm. A PGAS stage resolves to `Snap`; an
+    /// IF2 stage resolves to `Exact`. The two must therefore produce distinct
+    /// `StageConfig`s (so a snap and an exact fit never collide in the store).
+    #[test]
+    fn resolved_obs_alignment_is_keyed_per_stage() {
+        let if2 = if2_stage(4000);
+        let pgas = pgas_stage(200);
+        let cfg = minimal_config(""); // obs_alignment unset → per-algorithm default
+        assert_eq!(
+            resolved_obs_alignment(&if2, &cfg),
+            ResolvedObsAlignment::Exact,
+            "if2 resolves to exact (steps exactly to obs times)"
+        );
+        assert_eq!(
+            resolved_obs_alignment(&pgas, &cfg),
+            ResolvedObsAlignment::Snap,
+            "pgas resolves to snap (uniform grid)"
+        );
+
+        // The resolved value is folded into the stage-level identity. Holding
+        // every other StageConfig field fixed, flipping ONLY the resolved
+        // alignment must change the stage hash (snap and exact can't collide).
+        let mk = |align: ResolvedObsAlignment| -> ContentHash {
+            StageConfig {
+                config: ContentHash::from_bytes([0; 32]),
+                obs_block: String::new(),
+                flow_indices: Vec::new(),
+                target_length: 0,
+                obs_alignment: align,
+            }
+            .content_hash()
+        };
+        assert_ne!(
+            mk(ResolvedObsAlignment::Snap),
+            mk(ResolvedObsAlignment::Exact),
+            "the resolved obs_alignment must distinguish the stage identities (gh#189)"
+        );
     }
 
     /// A survey consumed by `init = "survey_top_k"` is folded into the fit

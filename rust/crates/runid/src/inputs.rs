@@ -49,6 +49,23 @@ pub enum CalendarMode {
     Calendar,
 }
 
+/// Resolved observation-time alignment: how observation times relate to the
+/// integrator `dt` grid for an inference stage (`crate` mirror of the CLI's
+/// `fit::methods::ObsAlignment`). The *resolved* value — not the requested
+/// `[config] obs_alignment` — drives the posterior: exact stepping and grid
+/// snapping produce different chains at the same config, and the default a
+/// given algorithm resolves to can flip across engine versions (gh#189). So
+/// the resolved value is folded into the stage identity by content, not left
+/// to ride only on the optional, skip-when-unset request field in the
+/// fit.toml blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RunInput)]
+pub enum ResolvedObsAlignment {
+    /// Step exactly to each observation time (shortened final substep).
+    Exact,
+    /// Round observation times onto the `dt` grid (uniform stepping).
+    Snap,
+}
+
 /// A resolved output schedule: concrete cadence/times over [`FiniteF64`].
 #[derive(Debug, Clone, PartialEq, RunInput)]
 pub enum ResolvedOutputSchedule {
@@ -244,8 +261,15 @@ pub struct SyntheticObsInput {
 #[derive(Debug, Clone, PartialEq, Eq, RunInput)]
 pub struct FitDigest {
     pub model: ModelDigest,
-    /// Content digest of each resolved observation stream.
+    /// Content digest of each resolved *training* observation stream.
     pub data: Vec<DataDigest>,
+    /// Content digest of each `[data.holdout]` stream's *bytes* (gh#190). The
+    /// fit.toml blob only carries the holdout file *paths*; editing a holdout
+    /// file's content while keeping its path would otherwise reuse a stale fit
+    /// (and so a stale held-out predictive score) under an unchanged `run_id`.
+    /// Empty when no explicit holdout is configured. Sorted by stream name in
+    /// the builder for a stable order.
+    pub holdout_data: Vec<DataDigest>,
     /// Content digest of the whole canonicalized fit.toml document.
     pub fit_toml: ContentHash,
     pub engine: EngineVersion,
@@ -267,6 +291,13 @@ pub struct StageConfig {
     pub flow_indices: Vec<u32>,
     /// Resume target length — a resumed run is a distinct artifact.
     pub target_length: u64,
+    /// The *resolved* observation-time alignment for this stage (gh#189).
+    /// Resolution is per-stage — a function of the stage algorithm and the
+    /// fit-wide requested `[config] obs_alignment` — and it changes the
+    /// posterior, so it is keyed at the stage level (where the algorithm
+    /// lives), not buried in the optional fit.toml request field that is
+    /// skipped from the blob when unset.
+    pub obs_alignment: ResolvedObsAlignment,
 }
 
 /// `fit` stage leaf (M3). The stage DAG recursion lives in `deps`:

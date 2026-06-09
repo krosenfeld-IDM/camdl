@@ -284,6 +284,43 @@ thread_local! {
 }
 
 thread_local! {
+    /// gh#127 (#12): the most recent out-of-range table lookup hit by the
+    /// infallible fast evaluator on this thread, as `(table_idx, index, len)`.
+    /// `eval_resolved` cannot return `Result` (it is called from ~30 hot,
+    /// non-`Result` sites incl. the inference inner loop), so on an OOB it
+    /// records the offending lookup here and returns `f64::NAN`. The NaN
+    /// propagates to the `Result`-returning boundary (`eval_propensities`),
+    /// which clears this at entry and, when a rate evaluates to NaN, consults
+    /// it to surface a NAMED `SimError::TableLookup` (table + index + len)
+    /// instead of a generic `NumericalCollapse` — and a controlled per-particle
+    /// error instead of a process-wide panic. Per-thread, matching the
+    /// particle-parallel PF/PGAS model (each worker owns its cell).
+    static LAST_TABLE_OOB: std::cell::Cell<Option<(usize, i64, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// gh#127 (#12): clear this thread's pending table-OOB record. Called at the
+/// start of `eval_propensities` so a stale OOB from an earlier evaluation can
+/// never be attributed to a later, innocent one.
+#[inline]
+pub fn clear_table_oob() {
+    LAST_TABLE_OOB.with(|c| c.set(None));
+}
+
+/// gh#127 (#12): take (read and clear) this thread's pending table-OOB record.
+/// `eval_propensities` calls this when a rate evaluates to NaN to build a named
+/// `SimError::TableLookup`. Returns `(table_idx, floored_index, table_len)`.
+#[inline]
+pub fn take_table_oob() -> Option<(usize, i64, usize)> {
+    LAST_TABLE_OOB.with(|c| c.take())
+}
+
+#[inline]
+fn record_table_oob(table_idx: usize, index: i64, len: usize) {
+    LAST_TABLE_OOB.with(|c| c.set(Some((table_idx, index, len))));
+}
+
+thread_local! {
     /// Per-thread test/bench override of the cache state. `None` → fall through
     /// to the `CAMDL_NO_BINDING_CACHE` env default.
     static CACHE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
@@ -478,24 +515,37 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
             let raw = eval_resolved(index, ctx);
             let table_idx_val = raw.floor() as i64;
             let n = *table_len as i64;
-            let i = match oob {
+            match oob {
                 // Out-of-range table lookups fail loud: the index is a model
                 // assertion ("never out of range"); a hot-path violation is a
                 // model bug, not something to silently clamp or wrap (RM3,
-                // 2026-04-19 engine review). The slow-path (eval_expr) and
-                // construction-time (eval_table_expr) evaluators fail the same.
+                // 2026-04-19 engine review).
+                //
+                // gh#127 (#12): this evaluator is infallible (`-> f64`) and is
+                // called from ~30 hot, non-`Result` sites (incl. the inference
+                // inner loop), so it cannot `panic!` — one bad particle must not
+                // crash the whole process — and it cannot return `Result`
+                // without rippling into those callers. Instead it records the
+                // offending lookup on a thread-local and returns NaN. The NaN
+                // propagates to the `Result`-returning boundary
+                // (`eval_propensities`), which turns it into a named
+                // `SimError::TableLookup` (table + index + len) — a controlled
+                // per-particle error. For a COMPILE-TIME-CONSTANT index the
+                // out-of-range case is already rejected earlier, by `validate`
+                // (ir/validate.rs::TableLookupConstantIndexOutOfRange); this arm
+                // only fires for a non-constant (state/param-dependent) index.
+                // The slow-path evaluator (`eval_expr`, propensity.rs) is already
+                // `Result`-returning and surfaces `SimError::TableLookup` for the
+                // same out-of-range condition directly (via `table_lookup()`).
                 OobPolicy::Error => {
                     if table_idx_val < 0 || table_idx_val >= n {
-                        panic!(
-                            "table lookup out of bounds: index {} not in [0, {}). \
-                             Widen the table bounds or fix the index expression.",
-                            table_idx_val, n
-                        );
+                        crate::eval_stats::inc_table_oob();
+                        record_table_oob(*table_idx, table_idx_val, *table_len);
+                        return f64::NAN;
                     }
-                    table_idx_val
+                    cached[table_idx_val as usize]
                 }
-            };
-            cached[i as usize]
+            }
         }
 
         ResolvedExpr::Projected => {
