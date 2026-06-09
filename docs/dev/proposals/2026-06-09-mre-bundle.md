@@ -5,7 +5,7 @@ area: cli / compiler (camdlc) / bundle format
 related:
   - 2026-06-02-cas-run-identity (runid crate; ContentHash identity)
   - gh#211 (spun off: warn on absolute read() paths — portability lint)
-issues: (new — file an MRE tracking issue)
+issues: gh#212 (tracking)
 ---
 
 # `camdl mre`: one-command minimal-reproducible-example bundles
@@ -251,16 +251,16 @@ passthrough) is **deceptively** simpler. Packaging requires _resolving_ the job
 paths — which is the front half of the real dispatch. A generic wrapper still
 needs per-command input-collection logic, because the three commands collect
 inputs from structurally different places: `fit run` is **config-driven** (paths
-in fit.toml), while `simulate`/`pfilter` are **flag-driven** (`--data`,
-`--table`). A uniform front door hides that difference; it does not remove it.
+in fit.toml), while `simulate`/`pfilter` are **flag-driven** (tables/params/data
+on the CLI). A uniform front door hides that difference; it does not remove it.
 
 So v1 is a dedicated command with explicit per-source subcommands that **reuse
 the existing typed arg structs and resolvers** — clap validation and config
 validation come for free, not reimplemented:
 
 ```
-camdl mre fit      <fit.toml>           [-o BUNDLE] [--no-data] [--verify]
-camdl mre simulate <model.camdl> [sim flags...] [-o BUNDLE] [--no-data]
+camdl mre fit      <fit.toml>           [-b BUNDLE] [--no-data] [--verify]
+camdl mre simulate <model.camdl> [sim flags...] [-b BUNDLE] [--no-data]
 # camdl mre profile ...   — later
 ```
 
@@ -269,7 +269,23 @@ camdl mre simulate <model.camdl> [sim flags...] [-o BUNDLE] [--no-data]
   collects inputs from the resolved config + the model depfile.
 - `mre simulate` `#[command(flatten)]`s the real `SimulateArgs`, so every
   simulate flag parses and validates **identically** to `camdl simulate`; inputs
-  come from `--data`/`--table`/`--params` + the model depfile.
+  come from the model depfile + `--table` + `--params`/`--param-vec` + `--draws`
+  (when a path, not the literal `uniform`/`prior`) + `--fit`. (Forward sim has
+  no observed data: `--data` lives on pfilter/profile, not simulate.)
+
+**clap-composition footgun (must heed).** `SimulateArgs.output` is
+`#[arg(short, long)]` (`args/mod.rs:507`) — it already owns **`-o`/`--output`**.
+So `mre`'s bundle-output flag **must not be `-o`**; use `-b`/`--bundle` (above).
+A second `-o` in the flattened command graph is a clap _parser-construction
+panic_ (`debug_assert`, "short option names must be unique") that crashes the
+binary on _any_ invocation — it passes `cargo build` and unrelated tests, then
+detonates at startup. `FitRunArgs` owns no short flag, so `mre fit` is clean
+either way, but the asymmetry is a trap. v1 adds a
+`Cli::command().debug_assert()` smoke test so a future flag clash fails loudly
+in CI, not in a user's terminal. (Note the residual UX wrinkle: under
+`mre simulate`, the flattened `-o` still means simulate's trajectory-mirror
+path; the bundle is `-b`. The README the bundle ships documents the exact
+reproduce command, so this never reaches the maintainer.)
 
 This gives the "feels like the real subcommand" ergonomics (the arg struct _is_
 the real one) without argv-double-parsing, and the front door is honest:
@@ -285,26 +301,50 @@ the real diagnostic, not when the maintainer opens the bundle.
 
 ### The collector seam
 
-One small per-command function over the already-resolved job:
+One per-command function over the already-resolved job:
 
 ```rust
 /// What the bundle copies. Roles drive the on-disk layout and the consent banner.
-enum InputRole { Model, ReadClosure, Data, Holdout, FixedParams, TrueParams, Table }
+enum InputRole { Model, ReadClosure, Data, Holdout, FixedParams, TrueParams,
+                 Table, ParamVec, InitSource }
 
 struct InputRef { role: InputRole, src: PathBuf, /* bundle-relative dest */ dest: String }
 
-// fit:      resolve FitConfigV2 → model + [data]/[holdout]/[fixed]/[synthetic]/survey
-//           + depfile(model) → ReadClosure entries
-// simulate: SimulateArgs → model + --data + --table + --params + depfile(model)
-fn collect_inputs_fit(cfg: &FitConfigV2, deps: &DepFile) -> Vec<InputRef>;
+fn collect_inputs_fit(cfg: &FitConfigV2, args: &FitRunArgs, deps: &DepFile) -> Vec<InputRef>;
 fn collect_inputs_sim(args: &SimulateArgs, deps: &DepFile) -> Vec<InputRef>;
 ```
 
-The `survey_path` case (a whole upstream CAS dir, when `init = "survey_top_k"`)
-is bundled as a directory entry; v1 may instead **warn and skip** it with a
-clear message ("this fit seeds from a survey landscape; re-run `survey` or drop
-`init = survey_top_k` to make a self-contained MRE") rather than recursively
-bundling a CAS tree. Open question below.
+The enumeration must be **exhaustive** — a missed file is a silently
+non-reproducing bundle, the one failure the tool exists to prevent. The full set
+per command (each verified against the arg/config structs):
+
+- **`fit`** — `[model].camdl` + its depfile `ReadClosure`; `[data].file` **and**
+  every value of the `[data.observations]` / `[data.holdout]` per-stream maps
+  (both are `IndexMap<String,String>`, `config_v2.rs:209,220` — not a single
+  file); `[fixed].from_file`; `[synthetic].true_params`; **every stage's init
+  source**, which is per-stage and file-bearing in four shapes (`fit/init.rs`):
+  `FromParams{path}`, `FromMle{File|FitDir}`, `FromPosterior{DrawsTsv|FitDir}`,
+  and `StartsFrom::Directory`; plus the `FitRunArgs` companion flags that
+  override them (`--params`, `--mle`, `--posterior`, `--survey-path`).
+  `*FitDir`/`Directory`/`survey_path` point at upstream CAS dirs (recursion
+  question below).
+- **`simulate`** — `[model].camdl` + depfile; `--table`; `--params`
+  (`Vec<PathBuf>`) and `--param-vec` (`PREFIX=FILE`, `args/mod.rs:453`);
+  `--draws` _when it is a path_ (the literals `uniform`/`prior` are keywords,
+  not files — `main.rs:887`); and `--fit` (the fit.toml consumed under
+  `--draws prior`, `main.rs:620`). **No `--data`** — that flag is on
+  pfilter/profile (`Vec<DataSpec>`), not simulate.
+
+`survey_path` and the `*FitDir`/`Directory` init sources are per-stage upstream
+CAS dirs. v1 **warns and skips** them rather than recursively bundling a CAS
+tree — but the warning must be honest about a real asymmetry: for **Bayesian
+stages (PGAS/PMMH)** the chain start does not change the stationary posterior
+(`config_v2.rs:893`), so a skipped survey/posterior seed is harmless; for **MLE
+stages (IF2/NLopt)** the start selects the basin θ̂ lands in, so dropping
+`init = survey_top_k` (→ `lhs`) can move θ̂ and the _numerical_ symptom may not
+reproduce. So: skip-with-loud-warning for Bayesian stages, and for MLE stages
+either bundle the landscape (`landscape.tsv` + `run.json`) or warn that the MLE
+may shift. Open question below.
 
 ## Part 3 — Bundle format
 
@@ -388,8 +428,10 @@ the exact `(compiler_hash, engine_version)` that produced the bug.
 ## Part 4 — Data consent (explicit and loud)
 
 The reporter is sharing real observed data; that must be impossible to do
-silently. Default `camdl mre fit fit.toml` **includes** data (a no-data bundle
-usually cannot reproduce an inference bug) and:
+silently. As proposed (default subject to Open question 5),
+`camdl mre fit
+fit.toml` **includes** data (a no-data bundle usually cannot
+reproduce an inference bug) and:
 
 - prints a prominent banner — _"⚠ This bundle contains observed data: cases.tsv
   (142 rows), holdout.tsv (20 rows). Share only with the maintainer."_
@@ -400,6 +442,23 @@ usually cannot reproduce an inference bug) and:
 (column names, row count, time range, dtypes) but no values — for structural
 bugs where the data is sensitive. Many engine-class issues (gh#198, gh#199,
 gh#208, gh#202, gh#207) reproduce from structure alone.
+
+**Decision to confirm — opt-out vs opt-in (default matters for real PHI-adjacent
+data).** The default above is _opt-out_: a bare `camdl mre fit` includes the
+data and warns. The counter-case is strong and worth weighing: the banner fires
+_after_ the bytes are staged and hashed; an agent or CI loop driving `camdl mre`
+suppresses exactly the warning channel consent rides on (the same reason this
+proposal prefers hard errors elsewhere); and a `.mre.tar.gz` is built to be
+emailed and issue-attached, so the failure mode of opt-out is a one-drag PHI
+leak while the failure mode of opt-in is one re-run with a flag — asymmetric
+harm favouring the safe default. The opt-in alternative: a bare `camdl mre`
+emits the **structure-only** bundle and prints "add `--include-data` to include
+observed values"; `--include-data` _is_ the deliberate consent token (honored
+without a prompt off-TTY, since the flag is the act), with an optional one-shot
+TTY confirm. The banner + inventory stay either way — as confirmation of a
+chosen inclusion rather than as the consent mechanism. This contradicts the
+original "include by default + flag" framing, so it is **flagged for the
+maintainer to decide** (Open question 5), not silently flipped.
 
 ## Part 5 — Verification (`--verify`), phased
 
@@ -415,6 +474,19 @@ error text for a crash). The payoff is large — it eliminates "works on my
 machine" bundles by proving self-containment _and_ symptom-reproduction before
 the bundle is sent — but it is the most scope (a pack-time run + the
 untar-and-run harness). Open question below on whether it lands in v1 or v1.1.
+
+**Output-root isolation (a real hole).** Untarring to a temp dir is not enough
+on its own. A fit's CAS output root resolves CLI > `[output_dir]` >
+`CAMDL_OUTPUT_DIR`
+
+> `./results` (`run_paths.rs`), so a bundled `fit.toml` carrying an **absolute**
+> `output_dir` would write results _outside_ the sandbox — escaping the
+> isolation and polluting the runner's store. The pack step must therefore
+> neutralize `[output_dir]` in the bundled `fit.toml` (drop it, or make it
+> bundle-relative), and the verify/`run` harness sets
+> `CAMDL_OUTPUT_DIR=<tempdir>/results` so output is contained regardless. This
+> is the same class as path-rewriting (Part 3): an absolute path in the config
+> defeats relocation.
 
 The maintainer-side counterpart is `camdl mre run <bundle.tar.gz>`: untar to a
 temp dir, run the recorded `entry`, surface the observable. It _is_ the back
@@ -444,8 +516,8 @@ cut.
    command, per-source subcommands reusing `FitRunArgs`/`SimulateArgs` +
    existing config validation.
 3. Bundle `.tar.gz` (`tar` + `flate2`) + `MreManifest` + auto-generated README.
-4. Data consent: default-include with loud banner + inventory; `--no-data`
-   structure-only.
+4. Data consent: loud banner + inventory + `--no-data` structure-only. Default
+   (opt-out include vs opt-in `--include-data`) is Open question 5.
 
 **Deferred:** `--verify` + `camdl mre run` (if not v1); `mre profile`;
 passthrough sugar (`camdl mre <subcommand> …`); recursive `survey_path`
@@ -466,13 +538,17 @@ days** for `--verify` + `mre run`. By component:
   `compile` byte-identical, so the ~60 test callers and the IR output are
   untouched — only `camdlc.ml:187` switches over. No `.mli` churn (none exist in
   `ocaml/lib/compiler/`). No new machinery.
-- **`camdl mre` command + collectors — medium (~1 day).** New `Mre` subcommand
-  enum; `mre simulate` `#[command(flatten)]`s `SimulateArgs`, `mre fit` takes
-  the `FitRunArgs.config` path; `collect_inputs_fit`/`_sim` reuse the existing
-  config load + path resolvers (`util.rs:361` `resolve_config_path`). The fit
-  collector enumerating every optional path field
-  (`[data]`/`[holdout]`/`[fixed]`/ `[synthetic]`/`survey_path`) is the fiddliest
-  part.
+- **`camdl mre` command + collectors — medium (~1–1.5 days).** New `Mre`
+  subcommand enum; `mre simulate` `#[command(flatten)]`s `SimulateArgs` (bundle
+  flag is `-b`, not `-o` — see the clap footgun above), `mre fit` takes the
+  `FitRunArgs.config` path; `collect_inputs_fit`/`_sim` reuse the existing
+  config load + path resolvers (`util.rs:361` `resolve_config_path`). The fiddly
+  part is the **exhaustive** enumeration (Part 2): the fit side spans `[data]`'s
+  per-stream maps, `[fixed]`/`[synthetic]`, and **every stage's** init source
+  (`FromParams`/`FromMle`/`FromPosterior`/`Directory`) plus the `FitRunArgs`
+  companion flags; the simulate side spans `--table`/`--params`/`--param-vec`/
+  `--draws`(path)/`--fit`. A missed field is a non-reproducing bundle, so the
+  round-trip test (Testing plan) gates it.
 - **Bundle writer + manifest — medium (~1 day).** Copy the closure into the
   staging dir preserving the model-relative layout, rewrite only the
   absolute/`../`-escaping fit.toml paths (the one genuinely careful bit), write
@@ -500,13 +576,23 @@ file is missed). The OCaml compile-return-shape question is resolved (Part 1).
    `inputs.rs:218`) and repackages. Convenient, but fragile (input files must
    still exist at their original paths). Lean: config-first for v1, run-dir form
    later.
-3. **`survey_path` seeds.** Warn-and-skip (require a self-contained fit) for v1,
-   or bundle the upstream survey CAS dir? Lean: warn-and-skip.
+3. **Upstream CAS-dir seeds (`survey_path`, `*FitDir`, `Directory`).**
+   Warn-and-skip (require a self-contained fit) for v1, or bundle the upstream
+   CAS dir? Lean: warn-and-skip — but with the MLE/Bayesian asymmetry stated
+   (Part 2): harmless for PGAS/PMMH, can move θ̂ for IF2/NLopt.
 4. **Depfile and the IR cache.** When the model compile is cache-hit (`util.rs`
    ir_cache), there is no fresh compile to attach `--emit-deps` to. v1 can force
    a compile under `mre` (correctness over speed; MRE packing is not hot), or
    cache the depfile next to the cached IR. Lean: force-compile in v1; cache
    later if it bites.
+5. **Consent default — opt-out or opt-in?** Keep the original default-include
+   (`--no-data` to exclude), or flip to default structure-only with
+   `--include-data` as the explicit consent token (Part 4)? The opt-in case is
+   safety-driven (a `.mre.tar.gz` is one drag from a public tracker; the banner
+   can't un-write the bytes; agents suppress warnings). The opt-out case is
+   ergonomic (most inference bugs need the data; one fewer flag). Maintainer's
+   call — this is the one decision that touches how a user's real surveillance
+   data leaves their machine.
 
 ## Testing plan
 
@@ -520,10 +606,16 @@ file is missed). The OCaml compile-return-shape question is resolved (Part 1).
   role) is exactly the closure; assert `--no-data` drops the Data/Holdout roles
   and emits the schema instead.
 - **round-trip**: pack a known-good fit → `camdl mre run` (or manual unpack) →
-  assert it produces the _same_ `run_id` as the original (the bundle is
-  identity-faithful when data is included). This is the load-bearing test: it
-  proves the closure is complete (a missing table would change the IR digest and
-  the `run_id` would diverge).
+  assert it produces the _same_ `run_id` as the original. This is the
+  load-bearing test: it proves the **data-included** closure is
+  identity-faithful (a missing table changes the IR digest → the `run_id`
+  diverges). It does **not** exercise the `--no-data` path — cover that
+  separately by asserting the structure-only bundle carries the schema and no
+  values.
+- **clap surface**: a `Cli::command().debug_assert()` smoke test, so a future
+  `mre`-level flag that clashes with a flattened struct's short/long name (the
+  `-o` class of bug) fails in CI at parser construction, not in a user's
+  terminal.
 - **consent**: assert the banner fires and the manifest records the inventory
   whenever data is included; assert `DataConsent::Excluded` carries no byte
   contents.
