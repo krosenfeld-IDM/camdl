@@ -6,8 +6,8 @@ snapshots scoped to a subsystem, for handing to an external code reviewer
 packaging has been deliberately consolidated here.
 
 Paste-ready reviewer prompt + staging order lives in
-[`review-request.md`](review-request.md) — copy from there when handing a zip to
-an agent.
+[`docs/dev/review-request.md`](../docs/dev/review-request.md) — copy from there
+when handing a zip to an agent.
 
 ## Usage
 
