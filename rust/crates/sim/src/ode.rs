@@ -262,7 +262,13 @@ pub fn run_ode(
         {
             let (is, rs) = to_states(&int_vals, &real_vals);
             let mut propensities = Vec::with_capacity(n_transitions);
-            eval_propensities(model, &is, &rs, params, t, cfg.dt, &mut propensities)?;
+            // gh#126 §#11: evaluate at the REALIZED substep `dt` (dt_actual),
+            // NOT the nominal grid `cfg.dt` — a rate referencing `Expr::Dt`
+            // (gh#54) must see the clipped length on truncated boundary
+            // substeps, matching the RK4 derivs (`:271`) and the StepClock rule
+            // (`EvalCtx.dt = dt_actual`, scheduling-spine-v2 §A). Overloading it
+            // with cfg.dt mis-scaled reported flows → incidence → likelihood.
+            eval_propensities(model, &is, &rs, params, t, dt, &mut propensities)?;
             for (i, &p) in propensities.iter().enumerate() {
                 flow_acc[i] += p * dt;
             }
