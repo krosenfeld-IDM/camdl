@@ -184,8 +184,20 @@ exhaustively rather than bolting on a second bool.
 4. `make test-unit` — fix type errors (the compiler enumerates the consumer
    sites for free; this is the point).
 5. `make update-golden && make update-expected` — **17 golden files** reference
-   `value`/`param_kind` (`rg -l '"param_kind"|"value"' ir/golden/` → 17).
+   `value`/`param_kind` (`rg -l '"param_kind"|"value"' ir/golden/` → 17). Note
+   `ocaml/golden/` regenerates too.
 6. One atomic commit: schema + both languages + golden.
+
+> **Golden hygiene** (per `CLAUDE.md` "Goldens are an explicit, reviewed,
+> human-loop change" + incident
+> `docs/dev/incidents/2026-06-09-golden-format-reverted-by-autoformat.md`): the
+> regen here is a legitimate _content_ change (the `value` field's JSON shape
+> becomes a tagged `{mode: …}` object). It must stay in `bf5d13b`'s **compact**
+> format — one element per line; `sir_basic.ir.json` is tens of lines, not
+> hundreds. Do **not** run a broad `dprint fmt` / editor reformat over the tree,
+> and do **not** `git add -A` / `commit -a` — that is exactly how 48 goldens got
+> silently pretty-printed for 34 days. Stage the golden files explicitly and
+> eyeball two to confirm compact shape + the new tagged `value`.
 
 ## Risks / open questions (resolve before implementing)
 
