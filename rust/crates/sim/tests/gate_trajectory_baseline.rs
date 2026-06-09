@@ -203,6 +203,27 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("sir_spatial_sum", "ode", 0x4a4e770716cd1bad),
     ("sir_two_patch", "ode", 0xdf3aace63920506c),
     ("sirv_anchored_calendar", "ode", 0xc72bec34c422826d),
+    // Six feature-coverage goldens added in c760b230 (forcing-from-data,
+    // unchecked phenom mixing, population balance, seasonal importation,
+    // guarded FOI, surveillance likelihoods). Captured deterministically;
+    // the existing 105 entries re-verified unchanged in the same run.
+    // seir_pop_balance is chain_binomial-only (capability-skip on gillespie/ode).
+    ("flu_data_forcing", "gillespie", 0xbefc2c0366093bcf),
+    ("flu_data_forcing", "chain_binomial", 0x7b037870200ca140),
+    ("flu_data_forcing", "ode", 0xfd20048316f7a482),
+    ("phenom_mixing_unchecked", "gillespie", 0x5113d45f49fcb942),
+    ("phenom_mixing_unchecked", "chain_binomial", 0x25b6e10456e53ef9),
+    ("phenom_mixing_unchecked", "ode", 0x42467ed8ccd09406),
+    ("seir_pop_balance", "chain_binomial", 0xc3eb97c9311a8dca),
+    ("seir_seasonal_importation", "gillespie", 0xba237ff576896498),
+    ("seir_seasonal_importation", "chain_binomial", 0xba237ff576896498),
+    ("seir_seasonal_importation", "ode", 0xba237ff576896498),
+    ("sir_guarded_foi", "gillespie", 0x5eca6018289b72bd),
+    ("sir_guarded_foi", "chain_binomial", 0x80ef48856ef6bf15),
+    ("sir_guarded_foi", "ode", 0x0e9a715d22f77ee8),
+    ("surveillance_likelihoods", "gillespie", 0xd289093f707a3cea),
+    ("surveillance_likelihoods", "chain_binomial", 0xcfa2b111d613f1e7),
+    ("surveillance_likelihoods", "ode", 0xad279a4387e666c2),
 ];
 
 #[test]
