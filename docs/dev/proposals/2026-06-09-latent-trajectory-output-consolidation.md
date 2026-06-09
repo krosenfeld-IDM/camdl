@@ -103,6 +103,40 @@ at substep granularity, but most of its richness (`counts_before`, `gammas`,
 output-shaped path types that should be one, plus one density-computation type
 whose _output projection_ is just (A) again.
 
+### Serde status (uneven — and it shapes the IO design)
+
+Only PGAS's types derive serde, and for the wrong audience:
+
+| type                                                     | derives                         | (de)serializable? | used for                                             |
+| -------------------------------------------------------- | ------------------------------- | ----------------- | ---------------------------------------------------- |
+| `Trajectory`/`Snapshot`/`IntState`/`RealState`/`FlowVec` | `Debug, Clone, PartialEq`       | **no**            | bespoke TSV writer (`simulate`)                      |
+| `PGASTrajectory`/`SubstepRecord`                         | `Clone, Serialize, Deserialize` | **yes**           | binary `resume_state.bin`, **not** researcher output |
+| `AncestorTrace`/`SampledPath`/`ParticleState`            | `Debug, Clone`                  | **no**            | bespoke TSV writer (`pfilter --save-paths`)          |
+
+So the researcher-facing path output is **TSV via per-call bespoke writers**,
+not serde. The one serde-capable path type (`PGASTrajectory`) is serialized only
+into the opaque resume blob.
+
+### 1b. The on-disk path formats today (three, mutually inconsistent)
+
+There are already **three** TSV layouts for "a path," and they disagree on
+columns, shape, and discoverability:
+
+| writer                                                       | shape                       | columns                                                       | id of which draw                              | header      |
+| ------------------------------------------------------------ | --------------------------- | ------------------------------------------------------------- | --------------------------------------------- | ----------- |
+| `simulate` (`cli/main.rs`)                                   | **wide**                    | `[replicate][scenario][draw] t [date] <int> <real> flow_<tr>` | leading `draw` col                            | `# version` |
+| `pfilter --save-paths` (`write_paths_tsv`, `pfilter.rs:836`) | **long/tidy**               | `path time <int-compartments> [<stream>]`                     | `path` col                                    | none        |
+| `fit` PGAS (`cli/fit/pgas.rs:559`)                           | **wide, one file per draw** | `t <compartments> flow_<tr>`                                  | **in the filename** (`trajectory_NNNNNN.tsv`) | none        |
+
+Differences that bite a researcher: `pfilter` drops real compartments and flows
+but adds stream/incidence columns (gh#48 projections); `simulate` has reals +
+flows + dates + a version header but no streams; PGAS's fit output buries the
+draw id in the filename (forcing a `glob`+`concat`+`melt`) and has neither
+streams, dates, nor a version line. **The PF smoothing-path output is fully
+built in `camdl pfilter --save-paths` and simply absent from `camdl fit`/PMMH.**
+So the consolidation must also unify the `pfilter` and `fit` path outputs, not
+just add PMMH/PF to the fit pipeline.
+
 ## 2. The design: separate the computation rep from the output type
 
 The mistake to avoid is unifying (B)'s `SubstepRecord` with (A)/(C). Those
@@ -207,6 +241,82 @@ paths equal quality. State this in the output and the docs:
   adapter must re-split using the model's compartment layout (and round/guard
   the int part) — a small but real correctness step, not a bit-cast.
 
+## 4b. De/serialization & researcher access (the point of the whole thing)
+
+The output only matters if a health-ministry epidemiologist can load it and
+compute a posterior band in two lines. That argues for a specific shape.
+
+**One tidy/long TSV per stage — `stage/trajectories.tsv`.** Standardize on the
+`write_paths_tsv` long layout (the `groupby`-friendly one), made a superset of
+all three current formats:
+
+```
+# camdl-trajectories v1   model=<hash>  method=pgas  granularity=substep
+chain  draw   time   [date]   S   E   I   R   <real cols>   flow_infection ...   inc_<stream> ...
+0      2100   0.0    ...      99990 0 10 0  ...             0                    ...
+0      2100   1.0    ...      99981 9 18 2  ...             9                    ...
+...
+1      2100   0.0    ...      ...
+```
+
+- **Leading id columns `chain  draw`** (mirroring `simulate`'s
+  `replicate/scenario/draw` convention) so **all chains × all draws stack into
+  one file** — disambiguated by the id columns, no per-draw files, no filename
+  parsing.
+- **`time` + optional `date`** — reuse `simulate`'s calendar formatting when an
+  `origin` is set (researchers want real dates).
+- **int _and_ real compartments** (today `write_paths_tsv` drops reals — fix in
+  the shared writer).
+- **`flow_<transition>`** columns (PGAS has them natively; PF emits the
+  incidence it already carries via gh#48 projections — `inc_<stream>`).
+- **`inc_<stream>`** model-predicted-observation columns (the gh#48 projections,
+  so a user gets posterior-predictive incidence without finite-differencing
+  counts — which is unsafe under events/balance).
+- A **`# camdl-trajectories vN`** version header (as `simulate` has) carrying
+  `method` + `granularity` so a downstream union of mixed outputs can't silently
+  blend substep PGAS paths with obs-resolution PMMH paths.
+
+**One writer replaces three.** A shared
+`write_trajectories_tsv(&[PosteriorDraw], &model, origin)` in the `io` crate;
+`simulate` (posterior-predictive draws), `pfilter --save-paths`, and `fit`
+(PGAS/PMMH/PF) all call it. This is where the consolidation pays off — three
+bespoke writers collapse to one contract.
+
+**Serde decision: the TSV _is_ the contract; serde stays optional.** Researchers
+consume columnar text (TSV/CSV → pandas/`readr`/`data.table`, or parquet at
+scale), not JSON trees of nested `Vec`s. So **do not** add `Serialize` to the
+output path types for the researcher format — keep the single TSV writer, which
+matches existing practice and needs no derive. Add only a small per-stage
+**`trajectories.json` manifest** (method, granularity, n_chains, n_draws, the
+column list, the degeneracy-caveat flag, the source
+`--save-paths`/`n_trajectories` value) so tooling discovers and interprets a run
+without scraping the header. (`PGASTrajectory`'s existing serde is for
+`resume_state.bin` and stays internal; the long TSV maps cleanly to parquet
+later if national-scale volume demands it — noted as future, not v1.)
+
+**Load it in two lines** (the acceptance test for "easy"):
+
+```python
+# Python / pandas — posterior band
+df = pd.read_csv("stage/trajectories.tsv", sep="\t", comment="#")
+band = df.groupby("time")[["S", "E", "I", "R"]].quantile([0.05, 0.5, 0.95])
+```
+
+```r
+# R / tidyverse — posterior band
+readr::read_tsv("stage/trajectories.tsv", comment = "#") |>
+  dplyr::group_by(time) |>
+  dplyr::summarise(dplyr::across(c(S, E, I, R),
+    list(lo = ~ quantile(., .05), med = median, hi = ~ quantile(., .95))))
+```
+
+The long format makes the band a one-liner; the current per-draw-wide files
+force a `glob`→`concat`→`melt` first. **Optional
+`stage/trajectories_summary.tsv`**
+(`time × compartment × {mean, q05, q50, q95}`, computed once over the draws,
+behind a flag) ships the thing most users actually plot — method-agnostic
+because all methods now share the type.
+
 ## 5. Scope & lift
 
 - **PF/PMMH output (the headline gap): small.** The smoother (`sample_paths`,
@@ -216,14 +326,19 @@ paths equal quality. State this in the output and the docs:
 - **PGAS migration: small.** Swap the ad-hoc inline TSV for the shared writer
   via the `SubstepRecord → Snapshot` adapter; preserve the current columns. ~0.5
   day.
-- **Shared writer + `--save-paths` flag + format unification with `simulate`:**
-  ~1 day (and retire PGAS's undiscoverable `n_trajectories`-only, no-CLI-flag
-  surface).
+- **Shared `write_trajectories_tsv` (io crate) + the long format + manifest:**
+  ~1 day. Collapses the three current writers (`simulate`,
+  `pfilter
+  --save-paths`, PGAS fit) to one; includes real compartments (today
+  `write_paths_tsv` drops them) and a `# camdl-trajectories` version header;
+  retires PGAS's undiscoverable `n_trajectories`-only, no-CLI-flag surface in
+  favour of one `--save-paths N` across `fit` and `pfilter`.
+- **Optional `trajectories_summary.tsv` (band):** ~0.5 day, method-agnostic.
 - **IF2-at-MLE final-smooth pass:** optional, ~0.5 day.
 - **No IR/schema change, no golden re-bless** — this is runtime output only.
 
-Total ≈ **3–4 eng-days** for full PGAS+PMMH+PF consolidation; the IF2 pass is a
-small add-on.
+Total ≈ **3–4 eng-days** for full PGAS+PMMH+PF consolidation; the IF2 pass and
+the summary band are small add-ons.
 
 ## 6. Open questions for the maintainer
 
@@ -243,3 +358,11 @@ small add-on.
 5. **Posterior summaries:** ship raw per-draw paths only (as PGAS does today),
    or also a summarized band (mean + quantiles over draws) — the thing users
    actually plot? The summary is method-agnostic once paths share one type.
+6. **Writer unification reach:** should `pfilter --save-paths` and `fit` share
+   the one `write_trajectories_tsv` (yes — recommend), and should `simulate`'s
+   posterior-predictive draws also route through it, or stay a separate wide
+   multi-cell format? Recommend unifying the posterior-path writers and leaving
+   `simulate`'s sweep/replicate matrix as-is for now.
+7. **Manifest vs serde:** confirm TSV-as-contract + a small `trajectories.json`
+   manifest (recommended), rather than adding `Serialize` to the output path
+   types. Parquet as a future scale option.
