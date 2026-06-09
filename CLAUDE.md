@@ -165,6 +165,11 @@ Now that camdl is alpha:
   cross-cutting) → a `docs/dev/proposals/` doc first, then implement against it.
 - Commit/PR conventions: `docs/dev/commit-style.md`. Contributor onboarding:
   `CONTRIBUTING.md`.
+- **Format Markdown with `mdfmt` (`dprint fmt`) before committing any `.md`.**
+  Run it as the last step on any Markdown you touch, so formatting never rides
+  in on the next substantive commit (or forces an amend after a push — `main` is
+  a protected branch, so a post-push reformat can't be force-pushed; it has to
+  be a fresh follow-up commit).
 
 ## Project Overview
 
@@ -329,8 +334,8 @@ cli → io → observe → sim → ir
 ```
 
 - `ir`: pure types + serde, no simulation logic
-- `sim`: simulation backends (Gillespie, ODE, chain-binomial) +
-  propensity evaluator; defines the `Model` trait
+- `sim`: simulation backends (Gillespie, ODE, chain-binomial) + propensity
+  evaluator; defines the `Model` trait
 - `observe`: projection + likelihood sampling/scoring; depends on `sim` for
   `Trajectory`
 - `io`: TSV read/write glue
@@ -403,8 +408,8 @@ Model features constrain which backends can run them. The `Capabilities`
 bitflags in `rust/crates/sim/src/lib.rs` enforce this at dispatch time:
 
 - `OVERDISPERSION`: transitions using `overdispersed(rate, σ²)` require
-  chain-binomial (NegBinomial draws). Gillespie and ODE reject these models
-  with a hard error.
+  chain-binomial (NegBinomial draws). Gillespie and ODE reject these models with
+  a hard error.
 - `REAL_COMPARTMENTS`: real-valued compartments with ODE equations.
 
 The `CompiledModel::required_capabilities()` scans the IR; each backend's
@@ -415,10 +420,10 @@ simulation starts.
 
 Interventions are deterministic state modifications (not stochastic events).
 Each backend handles them differently and the interaction is non-trivial — see
-§2.3.1 of `compartmental-ir-spec.md` for the
-Gillespie/ODE/discrete-time specifics. The key constraint: after a
-Gillespie intervention, propensities must be fully recomputed from the modified
-state; do not resume with remaining exponential time.
+§2.3.1 of `compartmental-ir-spec.md` for the Gillespie/ODE/discrete-time
+specifics. The key constraint: after a Gillespie intervention, propensities must
+be fully recomputed from the modified state; do not resume with remaining
+exponential time.
 
 ### Changing the IR schema
 
@@ -494,7 +499,7 @@ files is preferred over a compatibility shim.
 
 ### Breaking language changes must signpost the migration
 
-Backwards compatibility is a non-goal, but a *silent* break is a bug. When you
+Backwards compatibility is a non-goal, but a _silent_ break is a bug. When you
 change the DSL surface in a breaking way — rename or remove a keyword, require
 new syntax, tighten a semantic rule — the compiler must reject the old form with
 a diagnostic that **names the replacement (old → new)**, not a bare `E001`
@@ -502,12 +507,12 @@ syntax error. A model written against last month's grammar should fail with a
 migration, not a mystery. This is the error-quality bar from "Error messages are
 a feature" applied to language evolution: the diagnostic is the migration tool.
 
-And every breaking language change gets an entry — newest first, with the
-old → new migration — in `docs/language-changes.md`, which is embedded into
+And every breaking language change gets an entry — newest first, with the old →
+new migration — in `docs/language-changes.md`, which is embedded into
 `camdl docs language-changes` so an agent on any binary can see what changed.
-The diagnostic should point there (`… see \`camdl docs language-changes\``) until
-the targeted hint exists. Backfilling old changes into that log is welcome; not
-adding new ones is a regression.
+The diagnostic should point there (`… see \`camdl docs language-changes\``)
+until the targeted hint exists. Backfilling old changes into that log is
+welcome; not adding new ones is a regression.
 
 ### Delete dead code on sight
 
