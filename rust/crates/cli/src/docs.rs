@@ -27,8 +27,8 @@ const TOPICS: &[Topic] = &[
     Topic {
         slug: "agents",
         aliases: &["agent", "ai"],
-        summary: "Orientation for agents: canonical workflow, idioms, when to ask the human",
-        body: include_str!("../../../../AGENTS.md"),
+        summary: "Orientation for agents using camdl: canonical workflow, idioms, when to ask the human",
+        body: include_str!("../../../../docs/agents.md"),
     },
     Topic {
         slug: "getting-started",

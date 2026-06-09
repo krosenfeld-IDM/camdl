@@ -264,6 +264,29 @@ When adding a new model: write DSL in `tests/fixtures/`, run `update-golden`,
 review the JSON, run `update-expected`, review the TSV, commit all three
 together.
 
+### Goldens are an explicit, reviewed, human-loop change — never collateral
+
+A golden or `ir/VERSION` change is a deliberate act, not a side effect. The
+serialized format and content of `ir/golden/`, `ocaml/golden/`, and
+`ir/expected/` are load-bearing (the `ir.json` format is `bf5d13b`'s compact
+serialization — one element per line — chosen for a 4.6×/5× compile+size win on
+national-scale models; see `docs/dev/proposals/archive/post-alpha/2026-05-30-compact-ir-serialization.md`).
+
+- **Stage goldens explicitly.** Never `git add -A` / `git commit -a` when golden
+  or doc files are dirty — a formatter/editor that reformats `*.ir.json` or
+  reflows markdown must not ride along in an unrelated commit. Review
+  `git status` / `git diff --stat` before every commit; if goldens changed,
+  that is the commit's subject, not a footnote.
+- **A golden diff is reviewed by a human.** If `make update-golden` changes a
+  golden, say what changed and why in the commit, and surface it — do not bundle
+  it silently into a feature/docs/proposal commit. (Incident:
+  `docs/dev/incidents/2026-06-09-golden-format-reverted-by-autoformat.md` — a
+  docs-proposal commit silently re-pretty-printed 48 goldens; the CI gate that
+  would have caught it was masked for 4 days.)
+- **An `ir/VERSION` bump or an edit to `ocaml/lib/ir/` or `rust/crates/ir/src/`**
+  breaks every golden and requires the atomic OCaml+Rust+golden update in
+  "Changing the IR schema" below — flag it and confirm before proceeding.
+
 ## Quick Simulation
 
 ```bash
