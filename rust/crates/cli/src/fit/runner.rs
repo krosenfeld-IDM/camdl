@@ -337,6 +337,22 @@ impl FitRunConfig {
         // Canonical observations (from first stream)
         let observations = streams[0].data.clone();
 
+        // gh#134 (request 3, W329): warn once on the canonical stream when the
+        // first inter-observation interval is far larger than the modal cadence
+        // — `simulate.from` sitting well behind the first data point, so the
+        // model free-runs unconditioned over a giant first window. Pure soft
+        // warning (never rejects); the harder principled fix is a conditioning
+        // boundary (see the cited proposal in the message).
+        {
+            let obs_times: Vec<f64> = observations.iter().map(|o| o.time).collect();
+            if let Some(msg) = crate::util::check_first_interval_window(
+                compiled.model.simulation.t_start,
+                &obs_times,
+            ) {
+                eprintln!("{msg}");
+            }
+        }
+
         // (algorithm × obs-alignment) support gate — the fit-dispatch seam.
         // Converts today's SILENT fallbacks into clean errors: `exact` + PGAS
         // would silently snap to a uniform grid; `exact` + off-grid correlated

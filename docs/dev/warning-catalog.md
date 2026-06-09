@@ -106,6 +106,15 @@ must update this table in the same commit — the catalog-consistency meta-test 
 `ocaml/test/test_diagnostics.ml` fails the build if an emit-site code is missing
 here.)
 
+**Rust-side (runtime/fit) warnings are documented in prose, not as table rows.**
+The catalog-consistency meta-test scans only the OCaml compiler sources
+(`ocaml/lib`) for emit sites and requires every _single-code table row_ to have
+a matching OCaml emit. A `[warn Wxxx]` `eprintln!` in the Rust CLI (e.g.
+**W326**, **W329**) has no OCaml emit site, so it gets a prose `### Wxxx`
+section below instead of a first-cell table row — otherwise the meta-test flags
+it as a stale catalog row. Do not "fix" the apparent table omission by adding a
+row.
+
 ### W324 / W325 — bare numeric in an absolute-time position under a date origin
 
 **Fires when:** the model declares `origin = date(...)` (anchored) and a _bare
@@ -132,11 +141,53 @@ and hint text live in `ocaml/lib/compiler/expander.ml` (`warn_bare_numeric`) and
 `ocaml/lib/compiler/time_typing.ml` (`hint_bare_numeric_simulate` /
 `hint_bare_numeric_at_schedule`).
 
-**Not (yet) covered — gh#134 request 2 (deferred):** a separate _first-interval
-sanity_ warning — flag when the first inter-observation interval
+**Related — gh#134 first-interval sanity (now shipped as W329):** a separate
+_first-interval sanity_ warning — flag when the first inter-observation interval
 (`simulate.from` → first bound data time) is `≫` the modal observation spacing —
-lives on the Rust fit/data-loading side, not here. See the gh#134 follow-up
-note.
+lives on the Rust fit side, not here. See **W329** below.
+
+### W329 — oversized first observation interval (`simulate.from` far behind the data)
+
+**Fires when:** a `fit run` binds observation data and the first
+inter-observation interval `[t_start, first_obs_time]` exceeds `K = 5 ×` the
+**modal** spacing of the bound observation times (with at least 3 observations,
+so the mode is meaningful). `t_start` is the model origin (`simulate.from` in
+internal time). Pure soft warning — it never rejects a model (a previously-valid
+fit stays valid), so it is not a breaking change. Emitted once on the canonical
+stream in `rust/crates/cli/src/fit/runner.rs` `prepare()`, routed through
+`crate::util::check_first_interval_window` (mirrors the
+`check_incidence_origin_window` sibling). `eprintln!("[warn W329] …")`, matching
+the W326 fit-side style.
+
+**Why:** `simulate { from = 0 }` (or any origin well before the data window)
+against data that begins much later makes the first window enormous relative to
+the cadence — e.g. a ~1000-day first window against a 7-day weekly cadence
+(~143×). Two silent consequences wreck the fit start: (1) the model **free-runs
+unconditioned** over that whole span — no observation pulls the particle filter
+back toward the data, so the cloud drifts wherever the uncalibrated
+initial-guess dynamics take it before the first likelihood term fires; (2) for
+incidence projections the **first incidence window accumulates a giant flow**
+(cumulative over ~1000 days instead of ~7), so the opening one-step-ahead
+prediction is off-scale and the first prequential / log-likelihood terms are
+dominated by that one window. Nothing else in the pipeline points at the cause;
+the fit just starts badly.
+
+**Modal vs median, and `K`:** the warning uses the **mode** of the consecutive
+inter-obs gaps, not the median, because the median is itself distorted by the
+very anomaly being detected — with few observations a single oversized first gap
+drags the median up and masks the signal. The mode is the cadence the data
+actually settles into (the recurring "every 7 days") and is robust to one or
+several outlier gaps as long as the regular cadence is the plurality; gaps are
+binned to a ~1% relative tolerance first so 28/30/31-day months and dt rounding
+don't shatter the mode. `K = 5` (the conservative end of the design note's 5–10
+range): a legitimately missed observation or two gives a 2–4× first window,
+which is normal and must not warn; `K = 5` clears that band with margin while
+still firing decisively on the pathological case.
+
+**Fix / silence:** move `simulate.from` (the model origin) closer to the first
+observation so the first window matches the cadence. If the long pre-data
+burn-in is genuinely intentional, the principled fix is an explicit conditioning
+boundary — see `docs/dev/proposals/2026-05-30-conditioning-boundary-tcond.md`.
 
 ## Info
 

@@ -920,6 +920,236 @@ pub fn check_incidence_origin_window(
     ))
 }
 
+/// gh#134 (request 3) — `W329`: warn when the FIRST inter-observation
+/// interval is far larger than the typical observation cadence.
+///
+/// The footgun this catches: `simulate { from = 0 }` (or any `simulate.from`
+/// well before the first data point) against a data window that begins much
+/// later makes the first window `[t_start, first_obs_time]` enormous relative
+/// to the modal spacing of the data — e.g. a ~1000-day first window against a
+/// 7-day weekly cadence. Two silent consequences, both wrecking the fit start:
+///
+///   1. The model **free-runs unconditioned** over that whole span: there is no
+///      observation to pull the filter back toward the data, so the particle
+///      cloud drifts wherever the (uncalibrated, initial-guess) dynamics take
+///      it before the first likelihood term ever fires.
+///   2. For incidence projections the **first incidence window accumulates a
+///      giant flow** (cumulative over ~1000 days instead of ~7), so the first
+///      one-step-ahead prediction is wildly off-scale and the opening
+///      prequential / log-likelihood terms are dominated by that one window.
+///
+/// Nothing in the existing pipeline points at the cause — the fit just starts
+/// badly. This is a pure soft warning: it never rejects a model (a previously
+/// valid fit stays valid), it only names the numbers and the fix.
+///
+/// **Modal vs median spacing.** We use the *mode* of the consecutive-diffs
+/// (the most common gap), not the median, deliberately. The median is itself
+/// distorted by the very thing we are trying to detect: with few observations
+/// a single oversized first gap drags the median up, masking the anomaly we
+/// want to flag. The mode is the gap the data actually settles into (the
+/// "every 7 days" cadence), and it is robust to one (or even several) outlier
+/// gaps as long as the regular cadence is the plurality. Real series are
+/// overwhelmingly regular-cadence with occasional gaps, so the mode is the
+/// right notion of "typical cadence" here. Diffs are binned to a relative
+/// tolerance before counting so floating-point/calendar jitter (28 vs 31 day
+/// months, dt rounding) does not shatter the mode.
+///
+/// **Threshold `K = 5`.** We warn when `(first_obs - t_start) > K * modal_gap`
+/// with `K = 5`. A legitimately-missed observation or two at the start of a
+/// series gives a first window of 2-4x the cadence; that is normal and must not
+/// warn. `K = 5` clears that band with margin while still firing decisively on
+/// the pathological case (1000/7 ≈ 143x). It sits at the conservative end of
+/// the design note's 5-10 range: a warning that is too eager trains users to
+/// ignore it.
+///
+/// Returns `None` when there is nothing to say (fewer than 3 observations — too
+/// few for a meaningful mode; a non-positive or degenerate modal gap; or a
+/// first window within `K *` the cadence). Returns `Some(message)` carrying the
+/// `[warn W329]` line otherwise. The caller emits it (mirrors how
+/// `check_incidence_origin_window` returns a `String` for the caller to route).
+pub fn check_first_interval_window(
+    t_start: f64,
+    obs_times: &[f64],
+) -> Option<String> {
+    // Need at least 3 observations → at least 2 inter-obs gaps → a meaningful
+    // notion of a "most common" gap. With 2 obs there is a single gap and no
+    // cadence to compare the first window against.
+    if obs_times.len() < 3 {
+        return None;
+    }
+    let Some(&first_time) = obs_times.first() else {
+        return None;
+    };
+    let first_window = first_time - t_start;
+    // A first window at or before the origin is the incidence-origin case
+    // (handled separately and harder) or simply not an oversized gap. Nothing
+    // to warn about here.
+    if first_window <= 0.0 {
+        return None;
+    }
+
+    // Consecutive gaps between sorted observation times. (Obs times reach this
+    // point already sorted ascending by the loaders; a stray non-positive gap
+    // from a duplicate/unsorted row is skipped rather than counted.)
+    let gaps: Vec<f64> = obs_times
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|&g| g > 0.0)
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+
+    // Modal gap by binning to a relative tolerance, so 28/30/31-day months or
+    // dt-rounding jitter collapse into one "monthly"/"weekly" bin instead of
+    // splintering the mode. Each gap is bucketed by rounding log-space to ~1%
+    // resolution; the winning bucket's representative is the gap that has the
+    // most companions within tolerance of it.
+    let modal_gap = modal_value(&gaps);
+    if modal_gap <= 0.0 {
+        return None;
+    }
+
+    const K: f64 = 5.0;
+    if first_window <= K * modal_gap {
+        return None;
+    }
+
+    let ratio = first_window / modal_gap;
+    Some(format!(
+        "[warn W329] first observation interval is {first_window:.4} but the \
+         typical (modal) observation cadence is {modal_gap:.4} — the first \
+         window is {ratio:.1}x the usual spacing. This usually means \
+         `simulate.from` sits far behind the first data point: the model \
+         free-runs unconditioned across that whole span (no observation pulls \
+         the filter toward the data), and for incidence observations the first \
+         window accumulates a giant flow, so the fit starts badly. Fix: move \
+         `simulate.from` (the model origin) closer to the first observation so \
+         the first window matches the cadence — or, if the long pre-data \
+         burn-in is intentional, the principled fix is an explicit conditioning \
+         boundary (see docs/dev/proposals/2026-05-30-conditioning-boundary-tcond.md)."
+    ))
+}
+
+/// Most-common value in `xs` under a relative tolerance (~1%). Used for the
+/// modal observation gap. Ties break toward the smaller value (the more
+/// frequent fine cadence) so a series that is half weekly / half fortnightly
+/// reports the weekly cadence, which is the stricter comparison.
+fn modal_value(xs: &[f64]) -> f64 {
+    // For each candidate value, count how many entries fall within rel-tol of
+    // it; pick the candidate with the highest count (smallest value on a tie).
+    // O(n^2) but n is the number of observations in a fit — tiny.
+    const REL_TOL: f64 = 0.01;
+    let mut best = f64::NAN;
+    let mut best_count = 0usize;
+    for &c in xs {
+        if c <= 0.0 {
+            continue;
+        }
+        let count = xs
+            .iter()
+            .filter(|&&x| x > 0.0 && (x - c).abs() <= REL_TOL * c.max(x))
+            .count();
+        if count > best_count || (count == best_count && c < best) {
+            best = c;
+            best_count = count;
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod first_interval_tests {
+    use super::check_first_interval_window;
+
+    #[test]
+    fn far_first_window_warns_and_names_numbers() {
+        // 1000-day first window against a weekly cadence: the gh#134 footgun.
+        let obs = [1000.0, 1007.0, 1014.0, 1021.0, 1028.0];
+        let msg = check_first_interval_window(0.0, &obs)
+            .expect("an oversized first window must warn");
+        assert!(msg.contains("[warn W329]"), "must carry the W329 code: {msg}");
+        // Names the first interval, the modal cadence, and the ratio.
+        assert!(msg.contains("1000"), "must name the first interval: {msg}");
+        assert!(msg.contains("7.0000"), "must name the modal cadence: {msg}");
+        assert!(msg.contains("142") || msg.contains("143"), "must name the ratio: {msg}");
+        // Says WHY (free-run + incidence window) and HOW to fix.
+        assert!(msg.contains("free-run"), "must explain the free-run footgun: {msg}");
+        assert!(msg.contains("simulate.from"), "must give the fix hint: {msg}");
+        assert!(msg.contains("tcond.md"), "must cite the conditioning-boundary proposal: {msg}");
+    }
+
+    #[test]
+    fn first_obs_at_t_start_does_not_warn() {
+        // First obs sits on the origin: first window is 0, never warns.
+        let obs = [0.0, 7.0, 14.0, 21.0];
+        assert!(check_first_interval_window(0.0, &obs).is_none());
+    }
+
+    #[test]
+    fn first_window_at_cadence_does_not_warn() {
+        // First window equals the cadence (one normal step before first obs).
+        let obs = [7.0, 14.0, 21.0, 28.0];
+        assert!(check_first_interval_window(0.0, &obs).is_none());
+    }
+
+    #[test]
+    fn one_or_two_missed_obs_at_start_does_not_warn() {
+        // First window = 4x cadence (a couple of missed early reports): under
+        // K=5, this is tolerated as normal.
+        let obs = [28.0, 35.0, 42.0, 49.0];
+        assert!(
+            check_first_interval_window(0.0, &obs).is_none(),
+            "4x cadence is under K=5 and must not warn"
+        );
+    }
+
+    #[test]
+    fn fewer_than_three_obs_does_not_warn() {
+        // Two obs → a single gap → no meaningful mode to compare against.
+        assert!(check_first_interval_window(0.0, &[1000.0, 1007.0]).is_none());
+        assert!(check_first_interval_window(0.0, &[1000.0]).is_none());
+        assert!(check_first_interval_window(0.0, &[]).is_none());
+    }
+
+    #[test]
+    fn modal_gap_is_robust_to_calendar_jitter() {
+        // ~Monthly cadence with 28/30/31-day jitter must collapse to one mode,
+        // and a years-behind origin must still warn against it. Origin at day 0,
+        // first obs ~3 years later.
+        let obs = [1095.0, 1125.0, 1156.0, 1184.0, 1215.0, 1245.0];
+        let msg = check_first_interval_window(0.0, &obs)
+            .expect("3-year first window vs monthly cadence must warn");
+        assert!(msg.contains("[warn W329]"), "{msg}");
+    }
+
+    #[test]
+    fn mode_not_median_catches_the_anomaly() {
+        // Only 3 obs: gaps are [990, 7]. The MEDIAN diff over all intervals
+        // including the first window would be inflated by the giant gap; the
+        // mode of the *inter-obs* gaps (excluding the first window) is the 7
+        // that recurs. With t_start=0 and first obs at 990, modal gap = 7 and
+        // 990 / 7 ≈ 141x → warns. (Demonstrates we key off the recurring
+        // cadence, not a window-inclusive central tendency.)
+        let obs = [990.0, 997.0, 1004.0];
+        let msg = check_first_interval_window(0.0, &obs).expect("must warn");
+        assert!(msg.contains("7.0000"), "modal gap should be the recurring 7: {msg}");
+    }
+
+    #[test]
+    fn honors_nonzero_t_start() {
+        // Origin shifted to day 980: first obs at 1000 → 20-day first window
+        // against a 7-day cadence ≈ 2.9x < K=5 → no warning.
+        let obs = [1000.0, 1007.0, 1014.0, 1021.0];
+        assert!(
+            check_first_interval_window(980.0, &obs).is_none(),
+            "a 2.9x first window must not warn"
+        );
+        // Same data, origin back at 0 → 1000/7 ≈ 143x → warns.
+        assert!(check_first_interval_window(0.0, &obs).is_some());
+    }
+}
+
 #[cfg(test)]
 mod incidence_origin_tests {
     use super::check_incidence_origin_window;
