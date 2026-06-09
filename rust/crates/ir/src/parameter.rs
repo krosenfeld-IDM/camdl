@@ -148,25 +148,134 @@ impl std::fmt::Display for ParamKind {
     }
 }
 
+// ── Prior specification ───────────────────────────────────────────────────────
+
+/// The prior on an *estimated* parameter. Collapses the former
+/// `prior: Option<PriorDist>` + `hierarchical: Option<HierarchicalPrior>`
+/// (which a comment declared "mutually exclusive") into a single slot, so
+/// both-set (a leaf with two prior specs) is unrepresentable and the
+/// previously-ambiguous both-`None` becomes the explicit `Flat`.
+///
+/// JSON: `Flat` → `"flat"`; `Dist` → `{"dist": <prior_dist>}`;
+/// `Hierarchical` → `{"hierarchical": <hierarchical_prior>}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriorSpec {
+    /// No informative prior (flat / improper over the bounds).
+    Flat,
+    /// A single-level prior distribution.
+    Dist(PriorDist),
+    /// A hierarchical (pooled) prior leaf — its `args` reference
+    /// hyperparameters resolved at inference time.
+    Hierarchical(HierarchicalPrior),
+}
+
+// ── Parameter value ─────────────────────────────────────────────────────────
+
+/// The three real meanings the former `value: Option<f64>` conflated
+/// (gh#191). Inference configuration (`init`/`bounds`/`prior`/`transform`)
+/// exists *only* on `Estimated`, so attaching a prior or bounds to a fixed
+/// constant — or shipping a value-less parameter that no one will supply — is
+/// unrepresentable.
+///
+/// JSON: internally tagged on `mode` —
+/// `{"mode":"fixed","value":0.3}`,
+/// `{"mode":"estimated","bounds":[0.01,2.0],"prior":"flat","transform":"log"}`,
+/// `{"mode":"required"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ParamValue {
+    /// Known at model-build time: a hand-crafted IR constant, a typed-const
+    /// `let`, or an applied `--set`/`[fixed]` override. Carries no inference
+    /// config.
+    Fixed { value: f64 },
+    /// Inference draws this. The optimiser's starting point (`init`), search
+    /// box (`bounds`), `prior`, and `transform` live here and nowhere else.
+    Estimated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        init: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bounds: Option<(f64, f64)>,
+        prior: PriorSpec,
+        transform: Transform,
+    },
+    /// Must be supplied at runtime (`--params`/`--set`); no default in the IR.
+    /// This is the *only* state for which "parameter has no value" is correct.
+    Required,
+}
+
+impl ParamValue {
+    /// The number this parameter currently resolves to — the faithful drop-in
+    /// for the former `value: Option<f64>`. `Fixed` → its constant;
+    /// `Estimated` → its `init` (the optimiser start, filled by the fit layer
+    /// or a placeholder gate — `None` until then); `Required` → `None`. A
+    /// `None` here is exactly the former "parameter has no value yet".
+    pub fn resolved_value(&self) -> Option<f64> {
+        match self {
+            ParamValue::Fixed { value } => Some(*value),
+            ParamValue::Estimated { init, .. } => *init,
+            ParamValue::Required => None,
+        }
+    }
+    /// This value with a concrete number set, the drop-in for the former
+    /// `p.value = Some(v)`. Used by every consumer that supplies/overrides a
+    /// value: `--params`/`--set`/`[fixed]`/scenario overrides, the fit start
+    /// fall-back, and the gh#191 capability gate.
+    ///
+    /// An `Estimated` parameter KEEPS its bounds/prior/transform (the number
+    /// lands in `init`), so a supplied value is still bounds-checked against
+    /// the author's declared range — collapsing it to a bare `Fixed` would
+    /// drop the bounds and silently accept an out-of-range value. `Fixed` is
+    /// replaced; `Required` becomes `Fixed` (it has no bounds to preserve).
+    pub fn with_value(&self, v: f64) -> ParamValue {
+        match self {
+            ParamValue::Estimated { bounds, prior, transform, .. } => ParamValue::Estimated {
+                init: Some(v),
+                bounds: *bounds,
+                prior: prior.clone(),
+                transform: transform.clone(),
+            },
+            ParamValue::Fixed { .. } | ParamValue::Required => ParamValue::Fixed { value: v },
+        }
+    }
+    /// The inference search box, if this is an `Estimated` parameter.
+    pub fn bounds(&self) -> Option<(f64, f64)> {
+        match self {
+            ParamValue::Estimated { bounds, .. } => *bounds,
+            _ => None,
+        }
+    }
+    /// The optimiser's starting point (former `initial_value`), if `Estimated`.
+    pub fn init(&self) -> Option<f64> {
+        match self {
+            ParamValue::Estimated { init, .. } => *init,
+            _ => None,
+        }
+    }
+    /// The transform, if `Estimated`.
+    pub fn transform(&self) -> Option<Transform> {
+        match self {
+            ParamValue::Estimated { transform, .. } => Some(transform.clone()),
+            _ => None,
+        }
+    }
+    /// The prior spec, if `Estimated`.
+    pub fn prior(&self) -> Option<&PriorSpec> {
+        match self {
+            ParamValue::Estimated { prior, .. } => Some(prior),
+            _ => None,
+        }
+    }
+}
+
 // ── Parameter declaration ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Parameter {
     pub name:          String,
-    /// `None` = must be supplied at runtime via --params / --set.
-    /// `Some(v)` = value present (either from hand-crafted IR or applied override).
-    pub value:         Option<f64>,
-    /// Optional `[lo, hi]` constraint. Used by inference; simulation ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bounds:        Option<(f64, f64)>,
-    pub prior:         Option<PriorDist>,
-    /// Hierarchical prior for leaves in pooled groups; mutually exclusive
-    /// with `prior`. Populated by the compiler when a prior's args
-    /// reference other parameters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hierarchical:  Option<HierarchicalPrior>,
-    pub transform:     Option<Transform>,
-    pub initial_value: Option<f64>,
+    /// What kind of value this parameter has — see [`ParamValue`]. Inference
+    /// config (bounds/prior/transform/init) lives inside `Estimated`.
+    pub value:         ParamValue,
     /// DSL parameter-type keyword (typed enum; see [`ParamKind`]).
     /// Used by inference to choose the default transform. `None` = no
     /// annotation (dimension inferred by the compiler).
@@ -178,5 +287,36 @@ pub struct Parameter {
     /// `None` = no annotation (dimension inferred by compiler).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param_dim:     Option<(i32, i32)>,
+}
+
+impl Parameter {
+    /// The inference search box (former `bounds` field), if `Estimated`.
+    pub fn bounds(&self) -> Option<(f64, f64)> {
+        self.value.bounds()
+    }
+    /// The single-level prior (former `prior` field): `Some` only for an
+    /// `Estimated` parameter whose `PriorSpec` is `Dist`.
+    pub fn prior_dist(&self) -> Option<&PriorDist> {
+        match &self.value {
+            ParamValue::Estimated { prior: PriorSpec::Dist(d), .. } => Some(d),
+            _ => None,
+        }
+    }
+    /// The hierarchical prior (former `hierarchical` field): `Some` only for
+    /// an `Estimated` parameter whose `PriorSpec` is `Hierarchical`.
+    pub fn hierarchical(&self) -> Option<&HierarchicalPrior> {
+        match &self.value {
+            ParamValue::Estimated { prior: PriorSpec::Hierarchical(h), .. } => Some(h),
+            _ => None,
+        }
+    }
+    /// The optimiser's starting point (former `initial_value` field).
+    pub fn initial_value(&self) -> Option<f64> {
+        self.value.init()
+    }
+    /// The transform (former `transform` field), if `Estimated`.
+    pub fn transform(&self) -> Option<Transform> {
+        self.value.transform()
+    }
 }
 

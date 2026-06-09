@@ -781,22 +781,60 @@
       "additionalProperties": false
     },
 
+    "prior_spec": {
+      "comment": "Prior on an estimated parameter (gh#191). Exactly one of: flat, a single-level dist, or a hierarchical prior.",
+      "oneOf": [
+        { "type": "string", "enum": ["flat"] },
+        {
+          "type": "object",
+          "required": ["dist"],
+          "properties": { "dist": { "$ref": "#/definitions/prior_dist" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["hierarchical"],
+          "properties": { "hierarchical": { "$ref": "#/definitions/hierarchical_prior" } },
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "param_value": {
+      "comment": "Tagged union (gh#191): a parameter is a Fixed constant, an Estimated parameter (inference config lives here), or Required (supplied at runtime).",
+      "type": "object",
+      "required": ["mode"],
+      "oneOf": [
+        {
+          "required": ["mode", "value"],
+          "properties": { "mode": { "const": "fixed" }, "value": { "type": "number" } },
+          "additionalProperties": false
+        },
+        {
+          "required": ["mode", "prior", "transform"],
+          "properties": {
+            "mode": { "const": "estimated" },
+            "init": { "type": "number" },
+            "bounds": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "prior": { "$ref": "#/definitions/prior_spec" },
+            "transform": { "type": "string", "enum": ["log", "logit", "identity"] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "required": ["mode"],
+          "properties": { "mode": { "const": "required" } },
+          "additionalProperties": false
+        }
+      ]
+    },
+
     "parameter": {
       "type": "object",
-      "required": ["name"],
+      "required": ["name", "value"],
       "properties": {
         "name": { "type": "string" },
-        "value": { "type": ["number", "null"] },
-        "bounds": {
-          "oneOf": [
-            { "type": "null" },
-            { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
-          ]
-        },
-        "prior": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/prior_dist" }] },
-        "hierarchical": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/hierarchical_prior" }] },
-        "transform": { "oneOf": [{ "type": "null" }, { "type": "string", "enum": ["log", "logit", "identity"] }] },
-        "initial_value": { "type": ["number", "null"] },
+        "value": { "$ref": "#/definitions/param_value" },
         "param_kind": {
           "oneOf": [
             { "type": "null" },

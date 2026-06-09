@@ -54,11 +54,11 @@ fn build_obs_model(
 
 fn set_param_defaults(model: &mut ir::Model, defaults: &[(&str, f64)]) {
     for p in &mut model.parameters {
-        if p.value.is_none() {
+        if p.value.resolved_value().is_none() {
             if let Some(&(_, v)) = defaults.iter().find(|(n, _)| *n == p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             } else {
-                p.value = Some(0.5);
+                p.value = p.value.with_value(0.5);
             }
         }
     }
@@ -68,7 +68,7 @@ fn build_params_and_names(compiled: &CompiledModel) -> (Vec<f64>, Vec<String>) {
     let n = compiled.param_index.len();
     let mut params = vec![0.0; n];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -523,17 +523,7 @@ fn build_discretized_normal_seir() -> ir::Model {
     let mut model = load_model("../../../ocaml/golden/seir_observations.ir.json");
     model.observations.retain(|o| o.name == "weekly_cases");
 
-    model.parameters.push(Parameter {
-        name: "sigma_obs".to_string(),
-        value: Some(8.0),
-        bounds: Some((0.1, 1000.0)),
-        prior: None,
-        hierarchical: None,
-        transform: None,
-        initial_value: None,
-        param_kind: Some(ir::parameter::ParamKind::Positive),
-        param_dim: None,
-    });
+    model.parameters.push(Parameter { name: "sigma_obs".to_string(), value: ir::parameter::ParamValue::Estimated { init: Some(8.0), bounds: Some((0.1, 1000.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: Some(ir::parameter::ParamKind::Positive), param_dim: None });
 
     for om in &mut model.observations {
         use ir::observation::{Likelihood, NormalLikelihood};
@@ -672,17 +662,7 @@ fn build_beta_binomial_seir() -> ir::Model {
     model.observations.retain(|o| o.name == "weekly_cases");
 
     for (name, val) in [("a_obs", 2.0), ("b_obs", 8.0)] {
-        model.parameters.push(Parameter {
-            name: name.to_string(),
-            value: Some(val),
-            bounds: Some((0.01, 1000.0)),
-            prior: None,
-            hierarchical: None,
-            transform: None,
-            initial_value: None,
-            param_kind: Some(ir::parameter::ParamKind::Positive),
-            param_dim: None,
-        });
+        model.parameters.push(Parameter { name: name.to_string(), value: ir::parameter::ParamValue::Estimated { init: Some(val), bounds: Some((0.01, 1000.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: Some(ir::parameter::ParamKind::Positive), param_dim: None });
     }
 
     for om in &mut model.observations {

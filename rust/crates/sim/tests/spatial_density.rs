@@ -25,8 +25,8 @@ fn test_density_matches_step_one_sir() {
     let model = load_model("../../../ocaml/golden/sir_basic.ir.json");
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.4, "gamma" => 0.1, "mu" => 0.01, _ => 0.5,
             });
         }
@@ -34,7 +34,7 @@ fn test_density_matches_step_one_sir() {
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -72,8 +72,8 @@ fn test_density_matches_step_one_sir_demography() {
     let model = load_model("../../../ocaml/golden/sir_demography.ir.json");
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.4, "gamma" => 0.1, "mu" => 0.02, _ => 0.5,
             });
         }
@@ -81,7 +81,7 @@ fn test_density_matches_step_one_sir_demography() {
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -117,11 +117,11 @@ fn test_density_matches_step_one_two_patch() {
         Err(_) => { eprintln!("  skip: not found"); return; }
     };
     let mut model = model;
-    for p in &mut model.parameters { if p.value.is_none() { p.value = Some(0.1); } }
+    for p in &mut model.parameters { if p.value.resolved_value().is_none() { p.value = p.value.with_value(0.1); } }
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value { params[compiled.param_index[p.name.as_str()]] = v; }
+        if let Some(v) = p.value.resolved_value() { params[compiled.param_index[p.name.as_str()]] = v; }
     }
     let mut rng = StatefulRng::new(42);
     let dt = compiled.model.simulation.dt.unwrap_or(1.0);
@@ -157,14 +157,14 @@ fn test_density_matches_step_one_polio_spatial_5() {
 
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(0.1); // default for any missing param
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(0.1); // default for any missing param
         }
     }
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -211,8 +211,8 @@ fn test_density_seir_spatial_5_vignette_regression() {
 
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "R0" => 20.0, "sigma" => 0.125, "gamma" => 0.2,
                 "amplitude" => 0.3, "kappa" => 0.05, "iota" => 1e-6,
                 "rho" => 0.4, "sigma_se" => 0.05, "k" => 10.0,
@@ -226,7 +226,7 @@ fn test_density_seir_spatial_5_vignette_regression() {
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -306,8 +306,8 @@ fn test_density_downstream_multi_seed() {
     let model = load_model(path);
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "R0" => 20.0, "sigma" => 0.125, "gamma" => 0.2,
                 "amplitude" => 0.3, "kappa" => 0.05, "iota" => 1e-6,
                 "rho" => 0.4, "sigma_se" => 0.05, "k" => 10.0,
@@ -321,7 +321,7 @@ fn test_density_downstream_multi_seed() {
     let compiled = CompiledModel::new(model).unwrap();
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value { params[compiled.param_index[p.name.as_str()]] = v; }
+        if let Some(v) = p.value.resolved_value() { params[compiled.param_index[p.name.as_str()]] = v; }
     }
 
     let dt = compiled.model.simulation.dt.unwrap_or(1.0);
@@ -389,8 +389,8 @@ fn test_step_one_zero_infection_flow() {
     };
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "R0" => 38.0, "sigma" => 0.055, "gamma" => 0.2,
                 "amplitude" => 0.467, "s0" => 0.053, "kappa" => 0.038,
                 "rho" => 0.4, "sigma_se" => 0.05, "k" => 10.0,
@@ -404,7 +404,7 @@ fn test_step_one_zero_infection_flow() {
     let compiled = CompiledModel::new(model).unwrap();
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value { params[compiled.param_index[p.name.as_str()]] = v; }
+        if let Some(v) = p.value.resolved_value() { params[compiled.param_index[p.name.as_str()]] = v; }
     }
 
     // Find infection_p5 and I_p5 indices

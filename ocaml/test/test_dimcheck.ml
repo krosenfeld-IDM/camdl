@@ -77,8 +77,8 @@ let empty_model
 let mk_compartment name : compartment = { name; kind = Integer }
 
 let mk_param ?(kind = None) ?(dim = None) ?(value = None) name : parameter =
-  { name; value; bounds = None; prior = None; hierarchical = None; transform = None;
-    initial_value = None; param_kind = kind; param_dim = dim }
+  let value = match value with Some v -> Fixed v | None -> Required in
+  { name; value; param_kind = kind; param_dim = dim }
 
 let mk_transition ?(stoich = []) name rate : transition =
   { name; stoichiometry = stoich; rate;

@@ -693,8 +693,8 @@ mod tests {
         let mut model: ir::Model = serde_json::from_value(env["model"].clone())
             .expect("deserialize sir_reservoir_mixed model");
         for p in &mut model.parameters {
-            if p.value.is_none() {
-                p.value = Some(0.5);
+            if p.value.resolved_value().is_none() {
+                p.value = p.value.with_value(0.5);
             }
         }
         let compiled = sim::CompiledModel::new(model).expect("compile sir_reservoir_mixed");
@@ -729,8 +729,8 @@ mod tests {
         let mut model: ir::Model = serde_json::from_value(envv["model"].clone())
             .expect("deserialize sir_basic model");
         for p in &mut model.parameters {
-            if p.value.is_none() {
-                p.value = Some(0.5);
+            if p.value.resolved_value().is_none() {
+                p.value = p.value.with_value(0.5);
             }
         }
         // `R = N0` — target R is an integer compartment, N0 a declared param;

@@ -36,7 +36,10 @@ use ir::observation::{
     Likelihood, ObservationModel, ObservationSchedule, Projection, RegularSchedule,
 };
 use ir::ode_equation::OdeEquation;
-use ir::parameter::{HierarchicalKind, HierarchicalPrior, ParamKind, Parameter, PriorDist, Transform};
+use ir::parameter::{
+    HierarchicalKind, HierarchicalPrior, ParamKind, ParamValue, Parameter, PriorDist, PriorSpec,
+    Transform,
+};
 use ir::table::{OobPolicy, Table, TableSource};
 use ir::time_func::{TimeFuncKind, TimeFunction};
 use ir::transition::{
@@ -350,24 +353,58 @@ impl ContentAddressed for ParamKind {
     }
 }
 
+impl ContentAddressed for PriorSpec {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::parameter::PriorSpec");
+        // Permanent variant indices (run-id stability).
+        match self {
+            PriorSpec::Flat => h.write_u32(0),
+            PriorSpec::Dist(d) => {
+                h.write_u32(1);
+                d.hash_into(h);
+            }
+            PriorSpec::Hierarchical(hp) => {
+                h.write_u32(2);
+                hp.hash_into(h);
+            }
+        }
+    }
+}
+
+impl ContentAddressed for ParamValue {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::parameter::ParamValue");
+        // Permanent variant indices (run-id stability).
+        match self {
+            ParamValue::Fixed { value } => {
+                h.write_u32(0);
+                h.write_f64_bits(*value);
+            }
+            ParamValue::Estimated { init, bounds, prior, transform } => {
+                h.write_u32(1);
+                hash_opt_f64(h, init);
+                // bounds: Option<(f64, f64)> — structural floats, inlined.
+                match bounds {
+                    None => h.write_u8(0),
+                    Some((lo, hi)) => {
+                        h.write_u8(1);
+                        h.write_f64_bits(*lo);
+                        h.write_f64_bits(*hi);
+                    }
+                }
+                prior.hash_into(h);
+                transform.hash_into(h);
+            }
+            ParamValue::Required => h.write_u32(2),
+        }
+    }
+}
+
 impl ContentAddressed for Parameter {
     fn hash_into(&self, h: &mut CanonicalHasher) {
         header(h, "ir::parameter::Parameter");
         h.write_str(&self.name);
-        hash_opt_f64(h, &self.value);
-        // bounds: Option<(f64, f64)> — structural floats, inlined.
-        match &self.bounds {
-            None => h.write_u8(0),
-            Some((lo, hi)) => {
-                h.write_u8(1);
-                h.write_f64_bits(*lo);
-                h.write_f64_bits(*hi);
-            }
-        }
-        self.prior.hash_into(h);
-        self.hierarchical.hash_into(h);
-        self.transform.hash_into(h);
-        hash_opt_f64(h, &self.initial_value);
+        self.value.hash_into(h);
         self.param_kind.hash_into(h);
         self.param_dim.hash_into(h);
     }

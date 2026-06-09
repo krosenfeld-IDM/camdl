@@ -1272,12 +1272,12 @@ fn build_simulate_cas_sink(
     }
     for (k, v) in &run.overrides {
         if let Some(p) = params_model.parameters.iter_mut().find(|p| &p.name == k) {
-            p.value = Some(*v);
+            p.value = p.value.with_value(*v);
         }
     }
     util::validate_parameter_values(&params_model)?;
     let base_params: HashMap<String, f64> = params_model.parameters.iter()
-        .filter_map(|p| p.value.map(|v| (p.name.clone(), v)))
+        .filter_map(|p| p.value.resolved_value().map(|v| (p.name.clone(), v)))
         .collect();
 
     // Resolve each simulate scenario into the hash-relevant delta. A name
@@ -1940,9 +1940,9 @@ fn generate_uniform_draws(
     for _ in 0..n {
         let mut row = HashMap::new();
         for p in &model.parameters {
-            let val = if let Some((lo, hi)) = p.bounds {
+            let val = if let Some((lo, hi)) = p.bounds() {
                 lo + (hi - lo) * rng.uniform()
-            } else if let Some(v) = p.value {
+            } else if let Some(v) = p.value.resolved_value() {
                 // No bounds — use the default value (constant)
                 v
             } else {
@@ -2090,7 +2090,7 @@ fn generate_prior_draws(
                     let ir_param = model.parameters.iter()
                         .find(|p| &p.name == name)
                         .expect("unusable check guarantees presence");
-                    ir_param.prior.as_ref().expect(
+                    ir_param.prior_dist().expect(
                         "unusable check guarantees a prior in either source")
                 }
             };
@@ -2166,7 +2166,7 @@ fn generate_prior_draws_from_ir(
             })?;
         for (k, v) in &preset.params {
             if let Some(p) = model.parameters.iter_mut().find(|p| p.name == *k) {
-                p.value = Some(*v);
+                p.value = p.value.with_value(*v);
             }
         }
     }
@@ -2180,7 +2180,7 @@ fn generate_prior_draws_from_ir(
 
     // Check all params have either a prior or a (scenario-resolved) value.
     let missing: Vec<&str> = model.parameters.iter()
-        .filter(|p| p.prior.is_none() && p.value.is_none())
+        .filter(|p| p.prior_dist().is_none() && p.value.resolved_value().is_none())
         .map(|p| p.name.as_str())
         .collect();
     if !missing.is_empty() {
@@ -2209,10 +2209,10 @@ fn generate_prior_draws_from_ir(
     for i in 0..n {
         let mut row = HashMap::new();
         for p in &model.parameters {
-            let value = match &p.prior {
+            let value = match p.prior_dist() {
                 Some(pd) => {
                     if i == 0 { n_sampled += 1; }
-                    let (v, rejected) = sample_with_bounds(pd, p.bounds, &mut rng, &p.name)?;
+                    let (v, rejected) = sample_with_bounds(pd, p.bounds(), &mut rng, &p.name)?;
                     if rejected > 0 {
                         *reject_counts.entry(p.name.as_str()).or_insert(0) += rejected;
                     }
@@ -2220,7 +2220,7 @@ fn generate_prior_draws_from_ir(
                 }
                 None => {
                     if i == 0 { n_fixed += 1; }
-                    p.value.expect("missing check above guarantees value exists")
+                    p.value.resolved_value().expect("missing check above guarantees value exists")
                 }
             };
             row.insert(p.name.clone(), value);
@@ -2526,7 +2526,7 @@ fn print_dry_run(
 
                 // Model defaults
                 for p in &model.parameters {
-                    if let Some(v) = p.value {
+                    if let Some(v) = p.value.resolved_value() {
                         provs.insert(p.name.clone(), ParamProv {
                             value: v, source: "model default".to_string(), overrides: vec![],
                         });
@@ -2794,7 +2794,7 @@ mod tests {
     /// in IR envelope so it parses through the new ir::from_str path.
     fn ir_with_prior(name: &str, bounds: &str, prior_json: &str, extras: &str) -> String {
         format!(r#"{{
-          "ir_version": "0.10",
+          "ir_version": "0.11",
           "validated_by": "test-fixture",
           "model": {{
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2803,8 +2803,9 @@ mod tests {
             "transitions": [], "ode_equations": [], "time_functions": [],
             "tables": [], "interventions": [], "observations": [],
             "parameters": [
-              {{ "name": "{name}", "value": null, "bounds": {bounds},
-                 "prior": {prior_json}, "transform": null, "initial_value": null,
+              {{ "name": "{name}",
+                 "value": {{ "mode": "estimated", "bounds": {bounds},
+                             "prior": {{ "dist": {prior_json} }}, "transform": "identity" }},
                  "param_kind": "rate", "param_dim": null }}
               {extras}
             ],
@@ -2872,7 +2873,7 @@ mod tests {
         // should succeed (sampled beta + fixed N0).
         // gh#audit-C8: wrap in IR envelope.
         let json = r#"{
-          "ir_version": "0.10",
+          "ir_version": "0.11",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -2881,12 +2882,14 @@ mod tests {
             "transitions": [], "ode_equations": [], "time_functions": [],
             "tables": [], "interventions": [], "observations": [],
             "parameters": [
-              { "name": "beta", "value": null, "bounds": [0.01, 2.0],
-                "prior": { "log_normal": { "mu": -1.0, "sigma": 0.3 } },
-                "transform": null, "initial_value": null,
+              { "name": "beta",
+                "value": { "mode": "estimated", "bounds": [0.01, 2.0],
+                           "prior": { "dist": { "log_normal": { "mu": -1.0, "sigma": 0.3 } } },
+                           "transform": "identity" },
                 "param_kind": "rate", "param_dim": null },
-              { "name": "N0", "value": null, "bounds": [100.0, 10000.0],
-                "prior": null, "transform": null, "initial_value": null,
+              { "name": "N0",
+                "value": { "mode": "estimated", "bounds": [100.0, 10000.0],
+                           "prior": "flat", "transform": "identity" },
                 "param_kind": "count", "param_dim": null }
             ],
             "initial_conditions": { "explicit": { "S": 1.0 } },
@@ -3175,7 +3178,7 @@ I0    = { bounds = [1, 1000] }
     fn prior_draws_errors_only_when_neither_fit_toml_nor_ir_has_a_prior() {
         // Hand-rolled IR: `beta` has a log_normal prior, `gamma` has none.
         let ir_json = r#"{
-          "ir_version": "0.10",
+          "ir_version": "0.11",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -3184,12 +3187,14 @@ I0    = { bounds = [1, 1000] }
             "transitions": [], "ode_equations": [], "time_functions": [],
             "tables": [], "interventions": [], "observations": [],
             "parameters": [
-              { "name": "beta", "value": null, "bounds": [0.01, 2.0],
-                "prior": { "log_normal": { "mu": -1.0, "sigma": 0.3 } },
-                "transform": null, "initial_value": null,
+              { "name": "beta",
+                "value": { "mode": "estimated", "bounds": [0.01, 2.0],
+                           "prior": { "dist": { "log_normal": { "mu": -1.0, "sigma": 0.3 } } },
+                           "transform": "identity" },
                 "param_kind": "rate", "param_dim": null },
-              { "name": "gamma", "value": null, "bounds": [0.05, 1.0],
-                "prior": null, "transform": null, "initial_value": null,
+              { "name": "gamma",
+                "value": { "mode": "estimated", "bounds": [0.05, 1.0],
+                           "prior": "flat", "transform": "identity" },
                 "param_kind": "rate", "param_dim": null }
             ],
             "initial_conditions": { "explicit": { "S": 1.0 } },
@@ -3229,7 +3234,7 @@ gamma = { bounds = [0.05, 1.0] }
     fn prior_draws_fit_toml_prior_wins_over_ir_prior() {
         // beta declared with normal(0, 1) — very narrow around 0.
         let ir_json = r#"{
-          "ir_version": "0.10",
+          "ir_version": "0.11",
           "validated_by": "test-fixture",
           "model": {
             "name": "t", "version": "0.3", "time_unit": "days",
@@ -3238,9 +3243,10 @@ gamma = { bounds = [0.05, 1.0] }
             "transitions": [], "ode_equations": [], "time_functions": [],
             "tables": [], "interventions": [], "observations": [],
             "parameters": [
-              { "name": "beta", "value": null, "bounds": [-1000.0, 1000.0],
-                "prior": { "normal": { "mean": 0.0, "sd": 1.0 } },
-                "transform": null, "initial_value": null,
+              { "name": "beta",
+                "value": { "mode": "estimated", "bounds": [-1000.0, 1000.0],
+                           "prior": { "dist": { "normal": { "mean": 0.0, "sd": 1.0 } } },
+                           "transform": "identity" },
                 "param_kind": "rate", "param_dim": null }
             ],
             "initial_conditions": { "explicit": { "S": 1.0 } },

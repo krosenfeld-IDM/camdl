@@ -113,65 +113,65 @@ let golden_cases =
     "seir_age";
   ]
 
-(* ── Deserializer invariant: prior ⊕ hierarchical ────────────────────────── *)
+(* ── Deserializer invariant: PriorSpec is a single slot ──────────────────── *)
 
-(* Take a known-good IR, splice a hand-crafted parameter object that has both
-   `prior` and `hierarchical` set, and assert the deserializer rejects it. The
-   compiler enforces this invariant during expansion, but a hand-edited or
-   externally-generated IR bypasses the compiler and must still be caught. *)
-let prior_xor_hierarchical_test () =
-  let json_in = read_golden "sir_basic" in
-  let j = Yojson.Safe.from_string json_in in
-  let bad_param = `Assoc [
-    ("name",          `String "fabricated");
-    ("value",         `Float 1.0);
-    ("bounds",        `Null);
-    ("prior",         `Assoc [("normal", `Assoc [
-      ("mean", `Float 0.0); ("sd", `Float 1.0)])]);
-    ("hierarchical",  `Assoc [
-      ("kind", `String "normal");
-      ("args", `Assoc []);
-      ("pool_over", `String "")]);
-    ("transform",     `Null);
-    ("initial_value", `Null);
-    ("param_kind",    `Null);
-    ("param_dim",     `Null);
-  ] in
-  (* gh#audit-C8: golden files now wrap the model in an IR envelope:
-     { "ir_version": "...", "validated_by": "...", "model": { ... } }.
-     Splice into envelope.model.parameters, not the top level. *)
-  let splice_into_params kvs =
-    `Assoc (List.map (fun (k, v) ->
+(* The former "prior and hierarchical mutually exclusive" rejection is now
+   STRUCTURAL: an estimated parameter's `value.prior` is one `prior_spec`
+   slot (Flat | Dist | Hierarchical), so both-set is unrepresentable (gh#191
+   ParamValue ADT). This test verifies each variant round-trips through the
+   deserializer — i.e. the single slot faithfully carries either a single-level
+   prior or a hierarchical one, never both. *)
+let prior_spec_single_slot_test () =
+  let mk_param prior_json =
+    `Assoc [
+      ("name",  `String "fabricated");
+      ("value", `Assoc [
+        ("mode",      `String "estimated");
+        ("bounds",    `List [`Float 0.0; `Float 1.0]);
+        ("prior",     prior_json);
+        ("transform", `String "identity")]);
+      ("param_kind", `Null);
+      ("param_dim",  `Null);
+    ]
+  in
+  (* Splice a fabricated parameter into sir_basic's envelope.model.parameters. *)
+  let deser_with param =
+    let j = Yojson.Safe.from_string (read_golden "sir_basic") in
+    let splice_params kvs = `Assoc (List.map (fun (k, v) ->
       if String.equal k "parameters" then
-        (k, match v with `List xs -> `List (xs @ [bad_param]) | _ -> v)
-      else (k, v)) kvs)
+        (k, match v with `List xs -> `List (xs @ [param]) | _ -> v)
+      else (k, v)) kvs) in
+    let j' = match j with
+      | `Assoc kvs -> `Assoc (List.map (fun (k, v) ->
+          if String.equal k "model" then
+            (k, match v with `Assoc inner -> splice_params inner | _ -> v)
+          else (k, v)) kvs)
+      | _ -> failwith "sir_basic.ir.json is not a top-level object" in
+    Serde.model_of_string (Yojson.Safe.to_string j')
   in
-  let j' = match j with
-    | `Assoc kvs ->
-      `Assoc (List.map (fun (k, v) ->
-        if String.equal k "model" then
-          (k, match v with `Assoc inner -> splice_into_params inner | _ -> v)
-        else (k, v)) kvs)
-    | _ -> failwith "sir_basic.ir.json is not a top-level object"
-  in
-  let s = Yojson.Safe.to_string j' in
-  match Serde.model_of_string s with
-  | Ok _ ->
-    Alcotest.failf "deserializer accepted a parameter with both prior and \
-                    hierarchical set; expected rejection"
-  | Error msg ->
-    let lc = String.lowercase_ascii msg in
-    let mentions sub =
-      let nlc = String.length lc and nsub = String.length sub in
-      let rec scan i =
-        if i + nsub > nlc then false
-        else if String.sub lc i nsub = sub then true
-        else scan (i + 1)
-      in scan 0
-    in
-    if not (mentions "prior" && mentions "hierarchical" && mentions "mutually exclusive") then
-      Alcotest.failf "expected error to mention 'prior', 'hierarchical', and \
-                      'mutually exclusive'; got: %s" msg
+  let find_param m = List.find (fun (p : Ir.parameter) -> p.name = "fabricated") m.Ir.parameters in
+  (* Dist round-trips into a single-level prior, with no hierarchical. *)
+  let dist = mk_param (`Assoc [("dist", `Assoc [("normal",
+    `Assoc [("mean", `Float 0.0); ("sd", `Float 1.0)])])]) in
+  (match deser_with dist with
+   | Error msg -> Alcotest.failf "rejected a Dist prior_spec: %s" msg
+   | Ok m ->
+     let p = find_param m in
+     Alcotest.(check bool) "Dist → single-level prior present"
+       true (Ir.param_prior_dist p <> None);
+     Alcotest.(check bool) "Dist → no hierarchical"
+       true (Ir.param_hierarchical p = None));
+  (* Hierarchical round-trips into a hierarchical prior, with no single-level. *)
+  let hier = mk_param (`Assoc [("hierarchical", `Assoc [
+    ("kind", `String "normal"); ("args", `Assoc []); ("pool_over", `String "")])]) in
+  (match deser_with hier with
+   | Error msg -> Alcotest.failf "rejected a Hierarchical prior_spec: %s" msg
+   | Ok m ->
+     let p = find_param m in
+     Alcotest.(check bool) "Hierarchical → hierarchical present"
+       true (Ir.param_hierarchical p <> None);
+     Alcotest.(check bool) "Hierarchical → no single-level prior"
+       true (Ir.param_prior_dist p = None))
 
 let () =
   let tests =
@@ -185,7 +185,7 @@ let () =
     ) golden_cases
   in
   let invariant_tests = [
-    Alcotest.test_case "prior ⊕ hierarchical" `Quick prior_xor_hierarchical_test;
+    Alcotest.test_case "prior_spec single slot" `Quick prior_spec_single_slot_test;
   ] in
   Alcotest.run "IR round-trip" [
     ("golden", tests);

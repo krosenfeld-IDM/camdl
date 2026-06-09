@@ -139,8 +139,8 @@ fn pathological_sir_model() -> (CompiledModel, Vec<f64>) {
         observations: vec![],
         bindings: vec![],
         parameters: vec![
-            Parameter { name: "beta".into(), value: Some(beta), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "gamma".into(), value: Some(gamma), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
+            Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Fixed { value: beta }, param_kind: None, param_dim: None },
+            Parameter { name: "gamma".into(), value: ir::parameter::ParamValue::Fixed { value: gamma }, param_kind: None, param_dim: None },
         ],
         initial_conditions: InitialConditions::Explicit(ic),
         output: OutputConfig {
@@ -374,8 +374,8 @@ fn healthy_sir_model() -> (CompiledModel, Vec<f64>) {
         observations: vec![],
         bindings: vec![],
         parameters: vec![
-            Parameter { name: "beta".into(), value: Some(beta), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "gamma".into(), value: Some(gamma), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
+            Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Fixed { value: beta }, param_kind: None, param_dim: None },
+            Parameter { name: "gamma".into(), value: ir::parameter::ParamValue::Fixed { value: gamma }, param_kind: None, param_dim: None },
         ],
         initial_conditions: InitialConditions::Explicit(ic),
         output: OutputConfig {

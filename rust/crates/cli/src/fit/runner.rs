@@ -161,8 +161,8 @@ impl FitRunConfig {
         // uniform draw within bounds.
         for (name, spec) in &fit.estimate {
             if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == *name) {
-                if p.value.is_none() {
-                    let resolved_bounds = spec.bounds.or(p.bounds);
+                if p.value.resolved_value().is_none() {
+                    let resolved_bounds = spec.bounds.or(p.bounds());
                     let value = spec.start.or_else(|| resolved_bounds.map(|(lo, hi)| {
                         let transform = derive_transform_with_bounds(
                             p,
@@ -173,7 +173,11 @@ impl FitRunConfig {
                         super::init::draw_start_in_bounds(lo, hi, log_scale, seed, name)
                     }));
                     if let Some(v) = value {
-                        p.value = Some(v);
+                        // Fill the optimiser start without collapsing to a Fixed
+                        // constant — keeps the parameter estimated (bounds/prior
+                        // intact) so the resolver passes (gh#34) and `default_params`
+                        // gets the start.
+                        p.value = p.value.with_value(v);
                     }
                 }
             }
@@ -929,7 +933,7 @@ pub fn derive_transform(
     ir_param: &ir::parameter::Parameter,
     transform_override: Option<&str>,
 ) -> Transform {
-    let bounds = ir_param.bounds.unwrap_or((0.0, f64::INFINITY));
+    let bounds = ir_param.bounds().unwrap_or((0.0, f64::INFINITY));
     derive_transform_with_bounds(ir_param, transform_override, bounds)
 }
 
@@ -1046,7 +1050,7 @@ pub fn build_if2_params_from_specs(
         // Without this propagation, fit.toml's bounds are advisory only —
         // IF2 happily walks particles out to model bounds even when the
         // user tightened.
-        let (lo, hi) = match (spec.bounds, ir_param.bounds) {
+        let (lo, hi) = match (spec.bounds, ir_param.bounds()) {
             (Some((flo, fhi)), Some((mlo, mhi))) => {
                 if flo < mlo || fhi > mhi {
                     return Err(format!(
@@ -2215,13 +2219,13 @@ pub fn resolve_prior(
     }
     // 2. model IR
     if let Some(ir_param) = model.parameters.iter().find(|p| p.name == name) {
-        if let Some(ref pd) = ir_param.prior {
+        if let Some(pd) = ir_param.prior_dist() {
             return (Prior::from_ir(pd), "model");
         }
         // Hierarchical priors carry expression-valued args; wrap them
         // verbatim — evaluation at each MCMC step resolves references
         // against current hyperparameter values. Wave 2 / #3 Gate 3a.
-        if let Some(ref hp) = ir_param.hierarchical {
+        if let Some(hp) = ir_param.hierarchical() {
             return (Prior::Hierarchical(hp.clone()), "model (hierarchical)");
         }
     }
@@ -2444,9 +2448,9 @@ mod tests {
             interventions: vec![], observations: vec![],
             bindings: vec![],
             parameters: vec![
-                Parameter { name: "beta".into(), value: Some(0.3), bounds: Some((0.01, 2.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-                Parameter { name: "gamma".into(), value: Some(0.1), bounds: Some((0.01, 1.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-                Parameter { name: "N0".into(), value: Some(1000.0), bounds: Some((100.0, 100000.0)), prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
+                Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Estimated { init: Some(0.3), bounds: Some((0.01, 2.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None },
+                Parameter { name: "gamma".into(), value: ir::parameter::ParamValue::Estimated { init: Some(0.1), bounds: Some((0.01, 1.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None },
+                Parameter { name: "N0".into(), value: ir::parameter::ParamValue::Estimated { init: Some(1000.0), bounds: Some((100.0, 100000.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None },
             ],
             initial_conditions: InitialConditions::Explicit({
                 let mut m = HashMap::new();
@@ -2615,11 +2619,7 @@ mod tests {
             time_functions: vec![], tables: vec![], interventions: vec![],
             observations: vec![],
             bindings: vec![],
-            parameters: vec![Parameter {
-                name: "beta".into(), value: Some(0.0), bounds: Some((0.0, 10.0)),
-                prior: None, transform: None, initial_value: None,
-                param_kind: None, param_dim: None, hierarchical: None,
-            }],
+            parameters: vec![Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Estimated { init: Some(0.0), bounds: Some((0.0, 10.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None }],
             initial_conditions: InitialConditions::Explicit({
                 let mut m = HashMap::new(); m.insert("S".into(), 100.0); m
             }),
@@ -2721,11 +2721,7 @@ mod tests {
             time_functions: vec![], tables: vec![], interventions: vec![],
             observations: vec![],
             bindings: vec![],
-            parameters: vec![Parameter {
-                name: "R0".into(), value: Some(0.0), bounds: Some((1.0, 200.0)),
-                prior: None, transform: None, initial_value: None,
-                param_kind: None, param_dim: None, hierarchical: None,
-            }],
+            parameters: vec![Parameter { name: "R0".into(), value: ir::parameter::ParamValue::Estimated { init: Some(0.0), bounds: Some((1.0, 200.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None }],
             initial_conditions: InitialConditions::Explicit({
                 let mut m = HashMap::new(); m.insert("S".into(), 100.0); m
             }),
@@ -2856,15 +2852,8 @@ mod tests {
         use crate::fit::config_v2::EstimateSpecV2;
         use indexmap::IndexMap;
 
-        let beta_with_ir_prior = Parameter {
-            name: "beta".into(), value: None, bounds: Some((0.01, 2.0)),
-            prior: Some(PriorDist::LogNormal(LogNormalPrior { mu: -1.0, sigma: 0.5 })),
-            transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None,
-        };
-        let gamma_no_prior = Parameter {
-            name: "gamma".into(), value: None, bounds: Some((0.05, 1.0)),
-            prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None,
-        };
+        let beta_with_ir_prior = Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Estimated { init: None, bounds: Some((0.01, 2.0)), prior: ir::parameter::PriorSpec::Dist(PriorDist::LogNormal(LogNormalPrior { mu: -1.0, sigma: 0.5 })), transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None };
+        let gamma_no_prior = Parameter { name: "gamma".into(), value: ir::parameter::ParamValue::Estimated { init: None, bounds: Some((0.05, 1.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: None, param_dim: None };
         let model = ir::Model {
             name: "t".into(), version: "0.3".into(), time_unit: "days".into(),
             description: None, origin: None, origin_rata_die: None,
@@ -3418,12 +3407,7 @@ dt = 1.0
             time_functions: vec![], tables: vec![], interventions: vec![],
             observations: vec![],
             bindings: vec![],
-            parameters: vec![Parameter {
-                name: name.into(), value: Some((lo + hi) * 0.5),
-                bounds: Some((lo, hi)), prior: None, transform: None,
-                initial_value: None, param_kind: kind,
-                param_dim: None, hierarchical: None,
-            }],
+            parameters: vec![Parameter { name: name.into(), value: ir::parameter::ParamValue::Estimated { init: Some((lo + hi) * 0.5), bounds: Some((lo, hi)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: kind, param_dim: None }],
             initial_conditions: InitialConditions::Explicit({
                 let mut m = HashMap::new(); m.insert("S".into(), 1.0); m
             }),
@@ -3627,11 +3611,7 @@ dt = 1.0
         // unconstrained real remains Transform::None (no regression for
         // genuinely-unbounded params).
         use ir::parameter::Parameter;
-        let real_param = Parameter {
-            name: "tau".into(), value: Some(0.0), bounds: None, prior: None,
-            transform: None, initial_value: None,
-            param_kind: Some(ir::parameter::ParamKind::Real), param_dim: None, hierarchical: None,
-        };
+        let real_param = Parameter { name: "tau".into(), value: ir::parameter::ParamValue::Fixed { value: 0.0 }, param_kind: Some(ir::parameter::ParamKind::Real), param_dim: None };
         let instant_param = Parameter {
             param_kind: Some(ir::parameter::ParamKind::Instant), ..real_param.clone()
         };

@@ -72,8 +72,8 @@ fn camdl_conditional_distribution() -> BTreeMap<(u32, u32), f64> {
     let mut m: ir::Model = ir::from_str(&contents).unwrap();
     for p in &mut m.parameters {
         match p.name.as_str() {
-            "beta" => p.value = Some(0.6),
-            "gamma" => p.value = Some(0.2),
+            "beta" => p.value = p.value.with_value(0.6),
+            "gamma" => p.value = p.value.with_value(0.2),
             _ => {}
         }
     }

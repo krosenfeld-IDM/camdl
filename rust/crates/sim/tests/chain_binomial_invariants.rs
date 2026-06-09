@@ -22,7 +22,7 @@ fn apply_baseline(model: &mut ir::Model) {
     if let Some(preset) = model.presets.first() {
         for p in &mut model.parameters {
             if let Some(&v) = preset.params.get(&p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             }
         }
     }
@@ -131,8 +131,8 @@ fn test_large_compartment_no_blowup() {
     apply_baseline(&mut model);
     // Set large population to stress-test the per-capita conversion
     for p in &mut model.parameters {
-        if p.name == "N0" { p.value = Some(1_000_000.0); }
-        if p.name == "I0" { p.value = Some(100.0); }
+        if p.name == "N0" { p.value = p.value.with_value(1_000_000.0); }
+        if p.name == "I0" { p.value = p.value.with_value(100.0); }
     }
     let compiled = CompiledModel::new(model.clone()).unwrap();
     let params = compiled.default_params.clone();

@@ -35,7 +35,7 @@ pub fn load_fixture(name: &str) -> ir::Model {
 pub fn set_params(m: &mut ir::Model, vals: &[(&str, f64)]) {
     for p in &mut m.parameters {
         if let Some((_, v)) = vals.iter().find(|(n, _)| *n == p.name) {
-            p.value = Some(*v);
+            p.value = p.value.with_value(*v);
         }
     }
 }

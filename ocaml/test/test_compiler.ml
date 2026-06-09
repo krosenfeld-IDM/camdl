@@ -2524,9 +2524,9 @@ let test_indexed_param_scalar_expansion () =
     ) ["R0_a"; "R0_b"; "gamma"];
     (* Values are None — must be supplied externally *)
     let r0_a = List.find (fun (p : Ir.parameter) -> p.Ir.name = "R0_a") m.Ir.parameters in
-    Alcotest.(check bool) "R0_a value is None" true (r0_a.Ir.value = None);
+    Alcotest.(check bool) "R0_a value is None" true ((Ir.param_concrete_value r0_a) = None);
     let gamma_p = List.find (fun (p : Ir.parameter) -> p.Ir.name = "gamma") m.Ir.parameters in
-    Alcotest.(check bool) "gamma value is None" true (gamma_p.Ir.value = None)
+    Alcotest.(check bool) "gamma value is None" true ((Ir.param_concrete_value gamma_p) = None)
 
 let test_indexed_param_variable_index () =
   let src = {|
@@ -2612,8 +2612,8 @@ let test_indexed_param_no_default () =
       | None -> Alcotest.failf "param %s not found" pname
       | Some p -> p
     in
-    Alcotest.(check bool) "z_x value is None" true ((find_param "z_x").Ir.value = None);
-    Alcotest.(check bool) "z_y value is None" true ((find_param "z_y").Ir.value = None)
+    Alcotest.(check bool) "z_x value is None" true ((Ir.param_concrete_value (find_param "z_x")) = None);
+    Alcotest.(check bool) "z_y value is None" true ((Ir.param_concrete_value (find_param "z_y")) = None)
 
 let test_indexed_param_bad_index () =
   let src = {|
@@ -2692,14 +2692,14 @@ let test_scalar_bounds () =
   | Error e -> Alcotest.failf "compile failed: %s" e
   | Ok m ->
     let r0 = List.find (fun (p : Ir.parameter) -> p.Ir.name = "R0") m.Ir.parameters in
-    Alcotest.(check bool) "R0 bounds present" true (r0.Ir.bounds <> None);
-    (match r0.Ir.bounds with
+    Alcotest.(check bool) "R0 bounds present" true ((Ir.param_bounds r0) <> None);
+    (match (Ir.param_bounds r0) with
      | Some (lo, hi) ->
        Alcotest.(check (float 1e-12)) "R0 lo = 1.0"  1.0  lo;
        Alcotest.(check (float 1e-12)) "R0 hi = 20.0" 20.0 hi
      | None -> Alcotest.fail "expected bounds");
     let gamma_p = List.find (fun (p : Ir.parameter) -> p.Ir.name = "gamma") m.Ir.parameters in
-    Alcotest.(check bool) "gamma bounds is None" true (gamma_p.Ir.bounds = None)
+    Alcotest.(check bool) "gamma bounds is None" true ((Ir.param_bounds gamma_p) = None)
 
 let test_indexed_bounds () =
   let src = {|
@@ -2720,8 +2720,8 @@ let test_indexed_bounds () =
   | Ok m ->
     List.iter (fun pname ->
       let p = List.find (fun (p : Ir.parameter) -> p.Ir.name = pname) m.Ir.parameters in
-      Alcotest.(check bool) (pname ^ " bounds present") true (p.Ir.bounds <> None);
-      match p.Ir.bounds with
+      Alcotest.(check bool) (pname ^ " bounds present") true ((Ir.param_bounds p) <> None);
+      match (Ir.param_bounds p) with
       | Some (lo, hi) ->
         Alcotest.(check (float 1e-12)) (pname ^ " lo = 1.0")  1.0  lo;
         Alcotest.(check (float 1e-12)) (pname ^ " hi = 10.0") 10.0 hi
@@ -3105,7 +3105,7 @@ let test_negative_lower_bound () =
   | Error e -> Alcotest.failf "compile failed: %s" e
   | Ok m ->
     let tau = List.find (fun (p : Ir.parameter) -> p.name = "tau") m.Ir.parameters in
-    (match tau.Ir.bounds with
+    (match (Ir.param_bounds tau) with
      | Some (lo, hi) ->
        Alcotest.(check (float 1e-9)) "lower bound preserved (not floored to 0)" (-40.0) lo;
        Alcotest.(check (float 1e-9)) "upper bound preserved" 120.0 hi
@@ -3135,7 +3135,7 @@ let test_prior_log_normal () =
   |} in
   let m = compile_expect_ok src in
   let beta = find_param m "beta" in
-  match beta.prior with
+  match (Ir.param_prior_dist beta) with
   | Some (Ir.LogNormal { mu; sigma }) ->
     Alcotest.(check (float 1e-10)) "mu" (-1.0) mu;
     Alcotest.(check (float 1e-10)) "sigma" 0.5 sigma
@@ -3154,7 +3154,7 @@ let test_prior_beta () =
   |} in
   let m = compile_expect_ok src in
   let rho = find_param m "rho" in
-  match rho.prior with
+  match (Ir.param_prior_dist rho) with
   | Some (Ir.Beta { alpha; beta }) ->
     Alcotest.(check (float 1e-10)) "alpha" 2.0 alpha;
     Alcotest.(check (float 1e-10)) "beta" 5.0 beta
@@ -3173,7 +3173,7 @@ let test_prior_gamma_with_rate_kwarg () =
   |} in
   let m = compile_expect_ok src in
   let x = find_param m "x" in
-  match x.prior with
+  match (Ir.param_prior_dist x) with
   | Some (Ir.Gamma { shape; rate }) ->
     Alcotest.(check (float 1e-10)) "shape" 2.0 shape;
     Alcotest.(check (float 1e-10)) "rate" 0.1 rate
@@ -3191,7 +3191,7 @@ let test_prior_half_normal () =
   |} in
   let m = compile_expect_ok src in
   let p = find_param m "sigma_noise" in
-  match p.prior with
+  match (Ir.param_prior_dist p) with
   | Some (Ir.HalfNormal { sigma }) ->
     Alcotest.(check (float 1e-10)) "sigma" 0.5 sigma
   | _ -> Alcotest.fail "expected HalfNormal prior"
@@ -3208,7 +3208,7 @@ let test_no_prior_is_none () =
   |} in
   let m = compile_expect_ok src in
   let n0 = find_param m "N0" in
-  Alcotest.(check bool) "no prior means None" true (n0.prior = None)
+  Alcotest.(check bool) "no prior means None" true ((Ir.param_prior_dist n0) = None)
 
 let test_indexed_param_shares_prior () =
   (* Indexed parameters: the prior applies to all expanded instances *)
@@ -3229,7 +3229,7 @@ let test_indexed_param_shares_prior () =
   let expected = Ir.LogNormal { mu = 1.0; sigma = 0.3 } in
   List.iter (fun name ->
     let p = find_param m name in
-    match p.prior with
+    match (Ir.param_prior_dist p) with
     | Some pd when pd = expected -> ()
     | _ -> Alcotest.failf "%s should have LogNormal prior" name
   ) ["R0_north"; "R0_south"; "R0_east"]
@@ -3344,7 +3344,7 @@ let test_prior_uniform () =
     simulate { from = 0 'days  to = 1 'days }
   |} in
   let m = compile_expect_ok src in
-  match (find_param m "beta").prior with
+  match (Ir.param_prior_dist (find_param m "beta")) with
   | Some (Ir.Uniform { lower; upper }) ->
     Alcotest.(check (float 1e-10)) "lower" 0.1 lower;
     Alcotest.(check (float 1e-10)) "upper" 2.0 upper
@@ -3361,7 +3361,7 @@ let test_prior_normal () =
     simulate { from = 0 'days  to = 1 'days }
   |} in
   let m = compile_expect_ok src in
-  match (find_param m "beta").prior with
+  match (Ir.param_prior_dist (find_param m "beta")) with
   | Some (Ir.Normal_p { mean; sd }) ->
     Alcotest.(check (float 1e-10)) "mean" 0.3 mean;
     Alcotest.(check (float 1e-10)) "sd" 0.1 sd
@@ -3378,7 +3378,7 @@ let test_prior_exponential () =
     simulate { from = 0 'days  to = 1 'days }
   |} in
   let m = compile_expect_ok src in
-  match (find_param m "lambda").prior with
+  match (Ir.param_prior_dist (find_param m "lambda")) with
   | Some (Ir.Exponential { rate }) ->
     Alcotest.(check (float 1e-10)) "rate" 2.5 rate
   | _ -> Alcotest.fail "expected Exponential prior"
@@ -3400,7 +3400,7 @@ let test_prior_arg_arithmetic () =
     simulate { from = 0 'days  to = 1 'days }
   |} in
   let m = compile_expect_ok src in
-  match (find_param m "beta").prior with
+  match (Ir.param_prior_dist (find_param m "beta")) with
   | Some (Ir.LogNormal { mu; sigma }) ->
     Alcotest.(check (float 1e-12)) "mu = -1.5" (-1.5) mu;
     Alcotest.(check (float 1e-12)) "sigma = 0.25" 0.25 sigma
@@ -3419,7 +3419,7 @@ let test_prior_arg_log_function () =
     simulate { from = 0 'days  to = 1 'days }
   |} in
   let m = compile_expect_ok src in
-  match (find_param m "beta").prior with
+  match (Ir.param_prior_dist (find_param m "beta")) with
   | Some (Ir.LogNormal { mu; sigma }) ->
     Alcotest.(check (float 1e-12)) "mu = log(0.3)" (log 0.3) mu;
     Alcotest.(check (float 1e-12)) "sigma" 0.5 sigma
@@ -3438,7 +3438,7 @@ let test_prior_arg_exp_and_sqrt () =
     simulate { from = 0 'days  to = 1 'days }
   |} in
   let m = compile_expect_ok src in
-  match (find_param m "beta").prior with
+  match (Ir.param_prior_dist (find_param m "beta")) with
   | Some (Ir.Gamma { shape; rate }) ->
     Alcotest.(check (float 1e-12)) "shape = sqrt(9)" 3.0 shape;
     Alcotest.(check (float 1e-12)) "rate = exp(0)" 1.0 rate
@@ -4352,9 +4352,9 @@ let test_hierarchical_prior_parses () =
     hyperparent structure is flat (no pooling across dimensions).
 
     Shape of the IR after expansion:
-    - mu_beta, sigma_beta: `parameter.prior = Some (Normal_p / HalfNormal ...)`,
-      `parameter.hierarchical = None`
-    - beta: `parameter.prior = None`, `parameter.hierarchical = Some {...}`
+    - mu_beta, sigma_beta: `(Ir.param_prior_dist parameter) = Some (Normal_p / HalfNormal ...)`,
+      `(Ir.param_hierarchical parameter) = None`
+    - beta: `(Ir.param_prior_dist parameter) = None`, `(Ir.param_hierarchical parameter) = Some {...}`
     The `hierarchical` field stores the kwarg expressions so inference can
     resolve them against current hyperparam values at evaluation time. *)
 let test_hierarchical_scalar_leaf_ir_shape () =
@@ -4383,13 +4383,13 @@ let test_hierarchical_scalar_leaf_ir_shape () =
   let beta_p = Option.get (find_param "beta") in
   (* Hyperparents carry plain priors. *)
   Alcotest.(check bool) "mu_beta has plain prior"
-    true (mu_p.Ir.prior <> None && mu_p.Ir.hierarchical = None);
+    true ((Ir.param_prior_dist mu_p) <> None && (Ir.param_hierarchical mu_p) = None);
   Alcotest.(check bool) "sigma_beta has plain prior"
-    true (sig_p.Ir.prior <> None && sig_p.Ir.hierarchical = None);
+    true ((Ir.param_prior_dist sig_p) <> None && (Ir.param_hierarchical sig_p) = None);
   (* beta is a leaf: hierarchical, no float prior. *)
   Alcotest.(check bool) "beta has hierarchical prior"
-    true (beta_p.Ir.prior = None && beta_p.Ir.hierarchical <> None);
-  match beta_p.Ir.hierarchical with
+    true ((Ir.param_prior_dist beta_p) = None && (Ir.param_hierarchical beta_p) <> None);
+  match (Ir.param_hierarchical beta_p) with
   | Some h ->
     Alcotest.(check string) "leaf dist kind" "log_normal" (Ir.hierarchical_kind_name h.Ir.hkind);
     (* `mu` arg references parameter mu_beta *)
@@ -4434,7 +4434,7 @@ let test_hierarchical_indexed_ir_shape () =
   (* Both should have hierarchical priors pointing at mu_alpha / sigma_alpha. *)
   List.iter (fun n ->
     let p = List.find (fun (p : Ir.parameter) -> p.Ir.name = n) m.Ir.parameters in
-    match p.Ir.hierarchical with
+    match (Ir.param_hierarchical p) with
     | Some h ->
       Alcotest.(check string) (n ^ " dist kind") "log_normal" (Ir.hierarchical_kind_name h.Ir.hkind);
       Alcotest.(check string) (n ^ " pool_over") "age" h.Ir.hpool_over;
@@ -6674,7 +6674,7 @@ let () =
     ];
     "hierarchical_priors", [
       Alcotest.test_case "parses `alpha[age] ~ log_normal(mu=mu_h, sigma=s_h) | age`" `Quick test_hierarchical_prior_parses;
-      Alcotest.test_case "scalar leaf populates Ir.parameter.hierarchical"          `Quick test_hierarchical_scalar_leaf_ir_shape;
+      Alcotest.test_case "scalar leaf populates Ir.(Ir.param_hierarchical parameter)"          `Quick test_hierarchical_scalar_leaf_ir_shape;
       Alcotest.test_case "indexed leaf expands per dim with shared hyperparents"     `Quick test_hierarchical_indexed_ir_shape;
       Alcotest.test_case "C1: self-reference rejected (E236)"                        `Quick test_hierarchical_self_reference_rejected;
       Alcotest.test_case "C2: cycle rejected (E236)"                                 `Quick test_hierarchical_cycle_rejected;

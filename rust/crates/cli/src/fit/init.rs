@@ -411,7 +411,7 @@ pub fn build_resolved_view_for_init(
                 model.parameters.iter().position(|q| q.name == p.name)
                     .and_then(|idx| base_params.get(idx).copied())
             })
-            .or(p.value)
+            .or(p.value.resolved_value())
             .unwrap_or(f64::NAN);
         let role = if estimate_set.contains(&p.name) {
             ParameterRole::Estimated

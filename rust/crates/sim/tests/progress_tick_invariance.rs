@@ -53,7 +53,7 @@ fn load_sir() -> (CompiledModel, Vec<f64>) {
             "I0" => 10.0,
             _ => continue,
         };
-        p.value = Some(v);
+        p.value = p.value.with_value(v);
     }
     let compiled = CompiledModel::new(model).unwrap();
     let params = compiled.default_params.clone();

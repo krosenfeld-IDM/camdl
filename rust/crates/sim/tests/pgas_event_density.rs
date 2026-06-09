@@ -55,12 +55,7 @@ fn int_comp(name: &str) -> Compartment {
 }
 
 fn param(name: &str, value: f64) -> Parameter {
-    Parameter {
-        name: name.into(), value: Some(value),
-        bounds: None, prior: None, hierarchical: None,
-        transform: None, initial_value: None,
-        param_kind: Some(ir::parameter::ParamKind::Rate), param_dim: None,
-    }
+    Parameter { name: name.into(), value: ir::parameter::ParamValue::Fixed { value: value }, param_kind: Some(ir::parameter::ParamKind::Rate), param_dim: None }
 }
 
 fn mk_transition(name: &str, src: &str, dst: &str, rate: Expr) -> Transition {
@@ -332,7 +327,7 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
     let n_params = compiled.param_index.len();
     let mut params = vec![0.0; n_params];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }

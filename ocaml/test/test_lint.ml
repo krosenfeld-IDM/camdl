@@ -99,8 +99,7 @@ let empty_model
 let mk_compartment name : compartment = { name; kind = Integer }
 
 let mk_param ?(kind = None) name : parameter =
-  { name; value = None; bounds = None; prior = None; hierarchical = None;
-    transform = None; initial_value = None; param_kind = kind; param_dim = None }
+  { name; value = Required; param_kind = kind; param_dim = None }
 
 let mk_transition ?(stoich = []) ?(metadata = None) name rate : transition =
   { name; stoichiometry = stoich; rate; metadata;

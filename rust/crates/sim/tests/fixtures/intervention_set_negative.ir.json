@@ -1,5 +1,5 @@
 {
-  "ir_version": "0.10",
+  "ir_version": "0.11",
   "validated_by": "hand-curated-guard-fixture",
   "model": {
     "name": "intervention_set_negative",
@@ -48,8 +48,8 @@
     ],
     "observations": [],
     "parameters": [
-      { "name": "beta", "value": 0.1, "prior": null, "transform": null, "initial_value": null },
-      { "name": "neg", "value": -5.0, "prior": null, "transform": null, "initial_value": null }
+      {"name": "beta", "value": {"mode": "fixed", "value": 0.1}, "param_kind": null, "param_dim": null},
+      {"name": "neg", "value": {"mode": "fixed", "value": -5.0}, "param_kind": null, "param_dim": null}
     ],
     "initial_conditions": {
       "explicit": { "S": 1000, "I": 0, "V": 10 }

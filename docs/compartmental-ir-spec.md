@@ -51,8 +51,8 @@ A declarative description of:
 - Not a programming language (no control flow, no user-defined functions)
 - Not an agent-based model (no individual state, no contact networks — see §12
   on relationship to Flexmod)
-- Not tied to a specific simulation algorithm (Gillespie, ODE,
-  discrete-time chain binomial are all valid backends)
+- Not tied to a specific simulation algorithm (Gillespie, ODE, discrete-time
+  chain binomial are all valid backends)
 - Not tied to a specific inference algorithm (PMCMC, IF2, SMC², SBI all consume
   the same interface in v0.2+)
 
@@ -138,7 +138,7 @@ intervention: {
   base_name: string | null,          -- pre-expansion name (e.g. "vaccination" for "vaccination_child")
   schedule: intervention_schedule,
   actions: [action],
-  always_active: bool                -- if true, fires regardless of scenario enable/disable
+  kind: "scenario" | "event"     -- "event" fires every substep; "scenario" is enable/disable-gated
 }
 
 intervention_schedule :=
@@ -947,35 +947,39 @@ objects, `bin_op` expression nodes, parameterized initial conditions,
   "parameters": [
     {
       "name": "beta",
-      "value": null,
-      "bounds": [0.001, 2.0],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [0.001, 2.0],
+        "prior": "flat",
+        "transform": "identity"
+      }
     },
     {
       "name": "gamma",
-      "value": null,
-      "bounds": [0.001, 1.0],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [0.001, 1.0],
+        "prior": "flat",
+        "transform": "identity"
+      }
     },
     {
       "name": "N0",
-      "value": null,
-      "bounds": [100.0, 100000.0],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [100.0, 100000.0],
+        "prior": "flat",
+        "transform": "identity"
+      }
     },
     {
       "name": "I0",
-      "value": null,
-      "bounds": [1.0, 1000.0],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [1.0, 1000.0],
+        "prior": "flat",
+        "transform": "identity"
+      }
     }
   ],
 
@@ -1143,27 +1147,30 @@ one transition shown for brevity — the full file has eight.
   "parameters": [
     {
       "name": "beta",
-      "value": null,
-      "bounds": [0.001, 0.5],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [0.001, 0.5],
+        "prior": "flat",
+        "transform": "identity"
+      }
     },
     {
       "name": "sigma",
-      "value": null,
-      "bounds": [0.01, 1.0],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [0.01, 1.0],
+        "prior": "flat",
+        "transform": "identity"
+      }
     },
     {
       "name": "gamma",
-      "value": null,
-      "bounds": [0.01, 1.0],
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": {
+        "mode": "estimated",
+        "bounds": [0.01, 1.0],
+        "prior": "flat",
+        "transform": "identity"
+      }
     }
   ],
 
@@ -1352,52 +1359,31 @@ projection output (§4.2).
   "parameters": [
     {
       "name": "beta_I",
-      "value": 0.5,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 0.5 }
     },
     {
       "name": "beta_W",
-      "value": 0.3,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 0.3 }
     },
     {
       "name": "kappa",
-      "value": 0.0001,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 0.0001 }
     },
     {
       "name": "gamma",
-      "value": 0.25,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 0.25 }
     },
     {
       "name": "xi",
-      "value": 1.0,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 1.0 }
     },
     {
       "name": "omega_W",
-      "value": 0.5,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 0.5 }
     },
     {
       "name": "rho",
-      "value": 5.0,
-      "prior": null,
-      "transform": null,
-      "initial_value": null
+      "value": { "mode": "fixed", "value": 5.0 }
     }
   ],
 
@@ -1584,8 +1570,8 @@ state[i] ≥ 0  for all compartments i, after every state update
 
 Checked after every Gillespie event, every chain-binomial step, every
 intervention application. For Gillespie, a violation means the propensity of the
-selected transition was positive when its source compartment was zero — this is a
-propensity evaluation bug (since rate = per_capita * Pop(src), Pop(src) = 0
+selected transition was positive when its source compartment was zero — this is
+a propensity evaluation bug (since rate = per_capita * Pop(src), Pop(src) = 0
 should give propensity 0). For chain-binomial, the multinomial competing-risks
 draw bounds total outflow by the source population by construction, so a
 violation indicates a stoichiometry or fusion bug.
@@ -2119,20 +2105,20 @@ error). Validated via distributional comparison.
 
 #### Test model inventory
 
-| Model name              | Purpose                                  | Backends tested      |
-| ----------------------- | ---------------------------------------- | -------------------- |
-| `sir_basic`             | Simplest model (3 comp, 2 trans)         | All                  |
+| Model name              | Purpose                                  | Backends tested           |
+| ----------------------- | ---------------------------------------- | ------------------------- |
+| `sir_basic`             | Simplest model (3 comp, 2 trans)         | All                       |
 | `sir_closed`            | Population conservation                  | Gillespie, chain-binomial |
-| `sir_birth_death`       | Open model, mass balance                 | All                  |
-| `sir_tiny`              | N=10, extinction dynamics                | Gillespie            |
-| `sir_large`             | N=10⁸, overflow/perf                     | Gillespie, ODE       |
-| `sir_vaccination`       | Scheduled intervention                   | All                  |
-| `seir_age`              | Age stratification, contact matrix       | All                  |
-| `seir_seasonal`         | Time-varying rates                       | All                  |
-| `pure_death`            | Analytic solution available              | Gillespie            |
-| `birth_death`           | Steady-state analytic                    | Gillespie            |
-| `two_state`             | Reversible process, analytic equilibrium | Gillespie            |
-| `sir_discrete`          | Chain binomial variant                   | ChainBinomial        |
-| `sir_competing_hazards` | Multiple outflows from same compartment  | ChainBinomial, G, TL |
-| `sir_absorbing`         | Starts in absorbing state                | All                  |
-| `sir_scenario_pair`     | Baseline + intervention (paired-seed)    | Gillespie            |
+| `sir_birth_death`       | Open model, mass balance                 | All                       |
+| `sir_tiny`              | N=10, extinction dynamics                | Gillespie                 |
+| `sir_large`             | N=10⁸, overflow/perf                     | Gillespie, ODE            |
+| `sir_vaccination`       | Scheduled intervention                   | All                       |
+| `seir_age`              | Age stratification, contact matrix       | All                       |
+| `seir_seasonal`         | Time-varying rates                       | All                       |
+| `pure_death`            | Analytic solution available              | Gillespie                 |
+| `birth_death`           | Steady-state analytic                    | Gillespie                 |
+| `two_state`             | Reversible process, analytic equilibrium | Gillespie                 |
+| `sir_discrete`          | Chain binomial variant                   | ChainBinomial             |
+| `sir_competing_hazards` | Multiple outflows from same compartment  | ChainBinomial, G, TL      |
+| `sir_absorbing`         | Starts in absorbing state                | All                       |
+| `sir_scenario_pair`     | Baseline + intervention (paired-seed)    | Gillespie                 |

@@ -588,9 +588,9 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         // survey even though `fit run` accepts the same toml.
         for (name, spec) in &config.estimate {
             if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == *name) {
-                if p.value.is_none() {
+                if p.value.resolved_value().is_none() {
                     if let Some(start) = spec.start {
-                        p.value = Some(start);
+                        p.value = p.value.with_value(start);
                     }
                 }
             }
@@ -650,8 +650,8 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         // a bounds-based draw.
         for (name, spec) in &config.estimate {
             if let Some(p) = model.parameters.iter_mut().find(|p| p.name == *name) {
-                if p.value.is_none() {
-                    let resolved_bounds = spec.bounds.or(p.bounds);
+                if p.value.resolved_value().is_none() {
+                    let resolved_bounds = spec.bounds.or(p.bounds());
                     let v = spec.start.or_else(|| resolved_bounds.map(|(lo, hi)| {
                         let transform = crate::fit::runner::derive_transform_with_bounds(
                             p,
@@ -664,7 +664,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
                         crate::fit::init::draw_start_in_bounds(lo, hi, log_scale, a.seed, name)
                     }));
                     if let Some(value) = v {
-                        p.value = Some(value);
+                        p.value = p.value.with_value(value);
                     }
                 }
             }
@@ -798,8 +798,8 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
         // value that downstream LHS overwrites per-point.
         for est in &a.estimate {
             if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == est.name) {
-                if p.value.is_none() {
-                    p.value = Some(0.5 * (est.lo + est.hi));
+                if p.value.resolved_value().is_none() {
+                    p.value = p.value.with_value(0.5 * (est.lo + est.hi));
                 }
             }
         }

@@ -55,7 +55,7 @@ fn load_and_apply_baseline(name: &str) -> ir::Model {
     if let Some(preset) = model.presets.first().cloned() {
         for p in &mut model.parameters {
             if let Some(&v) = preset.params.get(&p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             }
         }
     }

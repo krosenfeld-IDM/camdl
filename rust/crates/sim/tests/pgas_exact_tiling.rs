@@ -52,8 +52,8 @@ fn seir_seasonal() -> (Arc<CompiledModel>, Vec<f64>) {
         "seasonal model must carry rate_grad (run make update-golden)"
     );
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.3, "sigma" => 0.2, "gamma" => 0.1,
                 "omega" => 0.003, "reversion_rate" => 1e-6,
                 "alpha" => 0.15, "phi_season" => 90.0,
@@ -65,7 +65,7 @@ fn seir_seasonal() -> (Arc<CompiledModel>, Vec<f64>) {
     let compiled = Arc::new(CompiledModel::new(model).expect("compile seasonal"));
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        params[compiled.param_index[p.name.as_str()]] = p.value.unwrap();
+        params[compiled.param_index[p.name.as_str()]] = p.value.resolved_value().unwrap();
     }
     (compiled, params)
 }

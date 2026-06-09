@@ -31,8 +31,8 @@ fn test_gradient_vs_finite_differences_sir() {
     // Set parameter values (the golden file may not have defaults)
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.4,
                 "gamma" => 0.1,
                 "mu" => 0.01,
@@ -51,7 +51,7 @@ fn test_gradient_vs_finite_differences_sir() {
 
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -152,8 +152,8 @@ fn test_gradient_vs_finite_differences_spatial_bindings() {
 
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.3,
                 "sigma" => 0.2,
                 "gamma" => 0.1,
@@ -173,7 +173,7 @@ fn test_gradient_vs_finite_differences_spatial_bindings() {
 
     let mut params = vec![0.0; compiled.param_index.len()];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -268,8 +268,8 @@ fn test_nuts_target_gradient_on_z_scale() {
 
     let mut model = model;
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.4, "gamma" => 0.1, "mu" => 0.01, _ => 0.5,
             });
         }
@@ -291,9 +291,9 @@ fn test_nuts_target_gradient_on_z_scale() {
         .map(|(i, p)| EstimatedParam {
             index: i,
             name: p.name.clone(),
-            initial: p.value.unwrap_or(0.5),
-            lower: p.bounds.map_or(0.001, |b| b.0),
-            upper: p.bounds.map_or(100.0, |b| b.1),
+            initial: p.value.resolved_value().unwrap_or(0.5),
+            lower: p.bounds().map_or(0.001, |b| b.0),
+            upper: p.bounds().map_or(100.0, |b| b.1),
             rw_sd: 0.02,
             transform: Transform::Log { lo: 0.001, hi: 100.0 },
             rw_sd_auto: false,
@@ -470,8 +470,8 @@ fn test_gradient_vs_finite_differences_seasonal() {
 
     // Defaults from seir_vaccine_seasonal.params.toml.
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = Some(match p.name.as_str() {
+        if p.value.resolved_value().is_none() {
+            p.value = p.value.with_value(match p.name.as_str() {
                 "beta" => 0.3, "sigma" => 0.2, "gamma" => 0.1,
                 "omega" => 0.003, "reversion_rate" => 1e-6,
                 "alpha" => 0.15, "phi_season" => 90.0,
@@ -493,7 +493,7 @@ fn test_gradient_vs_finite_differences_seasonal() {
 
     let mut params = vec![0.0; n_params];
     for p in &compiled.model.parameters {
-        params[compiled.param_index[p.name.as_str()]] = p.value.unwrap();
+        params[compiled.param_index[p.name.as_str()]] = p.value.resolved_value().unwrap();
     }
 
     let mut rng = StatefulRng::new(42);

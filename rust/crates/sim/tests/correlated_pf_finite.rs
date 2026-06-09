@@ -92,9 +92,9 @@ fn seir_model() -> (CompiledModel, Vec<f64>) {
         observations: vec![],
         bindings: vec![],
         parameters: vec![
-            Parameter { name: "beta".into(), value: Some(0.3), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "sigma".into(), value: Some(0.2), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "gamma".into(), value: Some(0.1), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
+            Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Fixed { value: 0.3 }, param_kind: None, param_dim: None },
+            Parameter { name: "sigma".into(), value: ir::parameter::ParamValue::Fixed { value: 0.2 }, param_kind: None, param_dim: None },
+            Parameter { name: "gamma".into(), value: ir::parameter::ParamValue::Fixed { value: 0.1 }, param_kind: None, param_dim: None },
         ],
         initial_conditions: InitialConditions::Explicit({
             let mut m = HashMap::new();
@@ -187,7 +187,7 @@ fn golden_seir() -> (CompiledModel, Vec<f64>) {
     let preset = model.presets.first().expect("baseline preset").clone();
     for p in &mut model.parameters {
         if let Some(&v) = preset.params.get(&p.name) {
-            p.value = Some(v);
+            p.value = p.value.with_value(v);
         }
     }
     // Force weekly output boundaries so each snapshot's flow is that week's

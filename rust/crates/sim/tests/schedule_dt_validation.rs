@@ -44,9 +44,9 @@ fn load_model(name: &str) -> ir::Model {
     let defaults: &[(&str, f64)] =
         &[("beta", 0.5), ("gamma", 0.2), ("N0", 1000.0), ("I0", 10.0)];
     for p in &mut model.parameters {
-        if p.value.is_none() {
+        if p.value.resolved_value().is_none() {
             if let Some(&(_, v)) = defaults.iter().find(|(n, _)| *n == p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             }
         }
     }

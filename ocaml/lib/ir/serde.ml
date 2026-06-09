@@ -791,51 +791,67 @@ let hierarchical_prior_of_json j : hierarchical_prior =
     hpool_over = as_string (member "pool_over" j);
   }
 
+let prior_spec_to_json (p : prior_spec) : Yojson.Safe.t =
+  match p with
+  | Flat           -> str "flat"
+  | Dist d         -> obj [("dist",         prior_dist_to_json d)]
+  | Hierarchical h -> obj [("hierarchical", hierarchical_prior_to_json h)]
+
+let prior_spec_of_json j : prior_spec =
+  match j with
+  | `String "flat"                -> Flat
+  | `Assoc [("dist", v)]          -> Dist (prior_dist_of_json v)
+  | `Assoc [("hierarchical", v)]  -> Hierarchical (hierarchical_prior_of_json v)
+  | _ -> fail "prior_spec must be \"flat\" or a single-key {dist|hierarchical} object"
+
+let param_value_to_json (v : param_value) : Yojson.Safe.t =
+  match v with
+  | Fixed f -> obj [("mode", str "fixed"); ("value", flt f)]
+  | Required -> obj [("mode", str "required")]
+  | Estimated e ->
+    obj (
+      [("mode", str "estimated")]
+      @ (match e.est_init   with None -> [] | Some v -> [("init", flt v)])
+      @ (match e.est_bounds with None -> [] | Some (lo, hi) -> [("bounds", arr [flt lo; flt hi])])
+      @ [ ("prior",     prior_spec_to_json e.est_prior);
+          ("transform", transform_to_json  e.est_transform); ]
+    )
+
+let param_value_of_json j : param_value =
+  match member "mode" j with
+  | `String "fixed"    -> Fixed (as_float (member "value" j))
+  | `String "required" -> Required
+  | `String "estimated" ->
+    Estimated {
+      est_init      = (match member_opt "init"   j with Some `Null | None -> None | Some v -> Some (as_float v));
+      est_bounds    = (match member_opt "bounds" j with
+        | Some `Null | None -> None
+        | Some (`List [lo; hi]) -> Some (as_float lo, as_float hi)
+        | _ -> fail "bounds must be a two-element array [lo, hi]");
+      est_prior     = prior_spec_of_json (member "prior" j);
+      est_transform = transform_of_json  (member "transform" j);
+    }
+  | _ -> fail "parameter value: \"mode\" must be \"fixed\", \"estimated\", or \"required\""
+
 let parameter_to_json (p : parameter) : Yojson.Safe.t =
   obj [
-    ("name",          str p.name);
-    ("value",         match p.value         with None -> null | Some v  -> flt v);
-    ("bounds",        match p.bounds        with None -> null | Some (lo, hi) -> arr [flt lo; flt hi]);
-    ("prior",         match p.prior         with None -> null | Some pr -> prior_dist_to_json pr);
-    ("hierarchical",  match p.hierarchical  with None -> null | Some h  -> hierarchical_prior_to_json h);
-    ("transform",     match p.transform     with None -> null | Some tr -> transform_to_json tr);
-    ("initial_value", match p.initial_value with None -> null | Some v  -> flt v);
-    ("param_kind",    match p.param_kind    with None -> null | Some k  -> str (param_kind_name k));
-    ("param_dim",     match p.param_dim     with None -> null | Some (p_exp, t_exp) -> arr [int p_exp; int t_exp]);
+    ("name",       str p.name);
+    ("value",      param_value_to_json p.value);
+    ("param_kind", match p.param_kind with None -> null | Some k -> str (param_kind_name k));
+    ("param_dim",  match p.param_dim  with None -> null | Some (p_exp, t_exp) -> arr [int p_exp; int t_exp]);
   ]
 
 let parameter_of_json j =
-  let name = as_string (member "name" j) in
-  let prior = (match member_opt "prior" j with
-    | Some `Null | None -> None
-    | Some p -> Some (prior_dist_of_json p)) in
-  let hierarchical = (match member_opt "hierarchical" j with
-    | Some `Null | None -> None
-    | Some h -> Some (hierarchical_prior_of_json h)) in
-  (match prior, hierarchical with
-   | Some _, Some _ ->
-     fail "parameter '%s': prior and hierarchical are mutually exclusive — \
-           a parameter is either fitted under a single-level prior or pooled \
-           under a hierarchical prior, not both" name
-   | _ -> ());
-  { name;
-    value         = (match member_opt "value" j with Some `Null | None -> None | Some v -> Some (as_float v));
-    bounds        = (match member_opt "bounds" j with
-      | Some `Null | None -> None
-      | Some (`List [lo; hi]) -> Some (as_float lo, as_float hi)
-      | _ -> fail "bounds must be a two-element array [lo, hi]");
-    prior;
-    hierarchical;
-    transform     = (match member_opt "transform"     j with Some `Null | None -> None | Some t -> Some (transform_of_json  t));
-    initial_value = (match member_opt "initial_value" j with Some `Null | None -> None | Some v -> Some (as_float v));
-    param_kind    = (match member_opt "param_kind"    j with
+  { name       = as_string (member "name" j);
+    value      = param_value_of_json (member "value" j);
+    param_kind = (match member_opt "param_kind" j with
       | Some `Null | None -> None
       | Some k -> (match param_kind_of_name (as_string k) with
                    | Some pk -> Some pk
                    | None    -> fail "unknown param_kind '%s' (expected one of \
                                       rate|probability|count|positive|real|instant|duration)"
                                   (as_string k)));
-    param_dim     = (match member_opt "param_dim"     j with
+    param_dim  = (match member_opt "param_dim" j with
       | Some (`List [p; t]) -> Some (as_int p, as_int t)
       | _ -> None);
   }

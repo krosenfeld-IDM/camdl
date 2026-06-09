@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.10",
-  "validated_by": "ocaml-compiler-v0.10",
+  "ir_version": "0.11",
+  "validated_by": "ocaml-compiler-v0.11",
   "model": {
     "name": "sir_spatial_sum",
     "version": "0.3",
@@ -1555,39 +1555,9 @@
     "interventions": [],
     "observations": [],
     "parameters": [
-      {
-        "name": "beta",
-        "value": null,
-        "bounds": [0.0, 2.0],
-        "prior": null,
-        "hierarchical": null,
-        "transform": null,
-        "initial_value": null,
-        "param_kind": "rate",
-        "param_dim": null
-      },
-      {
-        "name": "gamma",
-        "value": null,
-        "bounds": [0.0, 1.0],
-        "prior": null,
-        "hierarchical": null,
-        "transform": null,
-        "initial_value": null,
-        "param_kind": "rate",
-        "param_dim": null
-      },
-      {
-        "name": "rho",
-        "value": null,
-        "bounds": [0.0, 1.0],
-        "prior": null,
-        "hierarchical": null,
-        "transform": null,
-        "initial_value": null,
-        "param_kind": "probability",
-        "param_dim": null
-      }
+      {"name": "beta", "value": {"mode": "estimated", "bounds": [0.0, 2.0], "prior": "flat", "transform": "identity"}, "param_kind": "rate", "param_dim": null},
+      {"name": "gamma", "value": {"mode": "estimated", "bounds": [0.0, 1.0], "prior": "flat", "transform": "identity"}, "param_kind": "rate", "param_dim": null},
+      {"name": "rho", "value": {"mode": "estimated", "bounds": [0.0, 1.0], "prior": "flat", "transform": "identity"}, "param_kind": "probability", "param_dim": null}
     ],
     "initial_conditions": {
       "explicit": {

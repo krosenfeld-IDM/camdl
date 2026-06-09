@@ -1,4 +1,4 @@
-{"ir_version":"0.10","validated_by":"ocaml-compiler-v0.10","model":{"name":"event_drain_fusion","version":"0.3","time_unit":"days","description":null,"compartments":[
+{"ir_version":"0.11","validated_by":"ocaml-compiler-v0.11","model":{"name":"event_drain_fusion","version":"0.3","time_unit":"days","description":null,"compartments":[
 {"name":"A","kind":"integer"},
 {"name":"B","kind":"integer"},
 {"name":"C","kind":"integer"}
@@ -7,6 +7,6 @@
 ],"ode_equations":[],"time_functions":[],"tables":[],"interventions":[
 {"name":"leak","schedule":{"recurring":{"start":1.0,"period":1.0,"end":20.0}},"actions":[{"fraction_transfer":{"src":"A","dst":"C","fraction":{"param":"f"}}}],"kind":"event"}
 ],"observations":[],"parameters":[
-{"name":"k","value":0.3,"bounds":[0.0,1.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"rate","param_dim":null},
-{"name":"f","value":0.2,"bounds":[0.0,1.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"probability","param_dim":null}
+{"name":"k","value":{"mode":"fixed","value":0.3},"param_kind":"rate","param_dim":null},
+{"name":"f","value":{"mode":"fixed","value":0.2},"param_kind":"probability","param_dim":null}
 ],"initial_conditions":{"explicit":{"A":500.0,"B":0.0,"C":0.0}},"output":{"times":{"regular":{"start":0.0,"step":1.0,"end":20.0}},"format":"tsv","trajectory":true,"observations":true},"simulation":{"t_start":0.0,"t_end":20.0,"time_semantics":"continuous","dt":null,"rng_seed":null},"scenarios":[],"model_structure":{"dimensions":[],"compartment_dims":{"A":[],"B":[],"C":[]},"base_compartments":["A","B","C"],"transmission_transitions":[],"infectious_compartments":[]}}}

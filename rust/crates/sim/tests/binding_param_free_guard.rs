@@ -36,11 +36,12 @@ fn load_with_params(name: &str) -> ir::Model {
     // missing value — the guard under test is about bindings, not params.
     let preset = model.presets.first().cloned();
     for p in &mut model.parameters {
-        if p.value.is_none() {
-            p.value = preset
+        if p.value.resolved_value().is_none() {
+            let v = preset
                 .as_ref()
                 .and_then(|pr| pr.params.get(&p.name).copied())
-                .or(Some(1.0));
+                .unwrap_or(1.0);
+            p.value = p.value.with_value(v);
         }
     }
     model

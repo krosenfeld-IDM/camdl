@@ -30,11 +30,11 @@ fn load_model(path: &str) -> ir::Model {
 
 fn set_param_defaults(model: &mut ir::Model, defaults: &[(&str, f64)]) {
     for p in &mut model.parameters {
-        if p.value.is_none() {
+        if p.value.resolved_value().is_none() {
             if let Some(&(_, v)) = defaults.iter().find(|(n, _)| *n == p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             } else {
-                p.value = Some(0.5);
+                p.value = p.value.with_value(0.5);
             }
         }
     }
@@ -44,7 +44,7 @@ fn build_params_and_names(compiled: &CompiledModel) -> (Vec<f64>, Vec<String>) {
     let n = compiled.param_index.len();
     let mut params = vec![0.0; n];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }

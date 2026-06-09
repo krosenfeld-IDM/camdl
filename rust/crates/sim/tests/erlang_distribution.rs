@@ -69,9 +69,9 @@ fn setup_pure_erlang_decay(n0: i64) -> ir::Model {
     // γ = 0 (no one leaves I ever; we only care about E-side dynamics).
     for p in &mut model.parameters {
         match p.name.as_str() {
-            "beta"  => p.value = Some(0.0),
-            "sigma" => p.value = Some(0.2),
-            "gamma" => p.value = Some(0.0),
+            "beta"  => p.value = p.value.with_value(0.0),
+            "sigma" => p.value = p.value.with_value(0.2),
+            "gamma" => p.value = p.value.with_value(0.0),
             _ => {}
         }
     }

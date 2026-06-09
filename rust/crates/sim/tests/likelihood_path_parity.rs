@@ -92,9 +92,9 @@ fn model() -> Arc<CompiledModel> {
         ],
         bindings: vec![],
         parameters: vec![
-            Parameter { name: "gamma".into(), value: Some(0.1), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "rho".into(),   value: Some(0.3), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "k".into(),     value: Some(5.0), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
+            Parameter { name: "gamma".into(), value: ir::parameter::ParamValue::Fixed { value: 0.1 }, param_kind: None, param_dim: None },
+            Parameter { name: "rho".into(), value: ir::parameter::ParamValue::Fixed { value: 0.3 }, param_kind: None, param_dim: None },
+            Parameter { name: "k".into(), value: ir::parameter::ParamValue::Fixed { value: 5.0 }, param_kind: None, param_dim: None },
         ],
         initial_conditions: InitialConditions::Explicit({
             let mut h = HashMap::new();

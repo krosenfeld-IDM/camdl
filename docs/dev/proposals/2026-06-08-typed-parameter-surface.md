@@ -1,7 +1,29 @@
 # Proposal: Type the IR parameter & intervention surface
 
-- **Status:** Draft (for maintainer review — see Open questions before
-  implementing)
+- **Status:** Implemented (IR 0.10 → 0.11). As-built deviations, all verified
+  against code:
+  - **`ParamKind` has 7 variants, not 5** — `instant`/`duration` are live
+    (`parser.mly`, `Dimcheck.param_dim_of_kind`, calendar-date rendering), so a
+    5-variant enum would fail to deserialise real models.
+  - **`param_kind` stays `Option<_>`** — 21 committed goldens carry
+    `param_kind: null`; an un-annotated parameter gets a fresh dimension var.
+  - **Field names `param_kind`/`param_dim` kept** (not renamed to `kind`/`dim`):
+    cosmetic-only, and the enum serialises to the same `"rate"` strings, so
+    keeping them means zero golden-value churn.
+  - **Mapping (the resolved open question):** the `parameters {}` productions
+    never carry `= value`; a fixed value comes only from a typed-const `let`. So
+    typed-const `let` → `Fixed`; a `parameters {}` declaration with bounds/prior
+    → `Estimated`; a bare declaration → `Required`.
+  - **`ParamValue::resolved_value()`** (Fixed→value, Estimated→`init`,
+    Required→None) is the faithful drop-in for the former `value: Option<f64>`;
+    **`with_value()`** sets a supplied value while KEEPING an `Estimated`
+    parameter's bounds (so a supplied value is still bounds-checked — a bare
+    `Fixed` would silently accept out-of-range input).
+  - **gh#191 gate:** the capability-scan placeholder loop is retained (rewritten
+    over the ADT) — deleting it would require giving `Estimated` a concrete
+    value in `CompiledModel::new`, changing forward-sim error behaviour; the
+    ADT's win here is making the illegal states (prior-on-fixed,
+    prior+hierarchical) unrepresentable, which it does.
 - **Issues:** gh#191 (parameter value conflation), gh#107 (`always_active`
   bool), adjacent gh#12 (param-TOML dimensions)
 - **Discrepancy class:** code-vs-code (an IR/schema change) → per `CLAUDE.md`

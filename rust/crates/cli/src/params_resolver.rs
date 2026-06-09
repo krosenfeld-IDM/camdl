@@ -436,7 +436,7 @@ pub fn resolve_parameters<'a>(
     let mut current_source: HashMap<String, Option<ValueSource>> =
         model.parameters.iter()
             .map(|p| (p.name.clone(),
-                if p.value.is_some() { Some(ValueSource::ModelDefault) } else { None }))
+                if p.value.resolved_value().is_some() { Some(ValueSource::ModelDefault) } else { None }))
             .collect();
 
     let model_param_set: HashSet<String> = model.parameters.iter()
@@ -532,7 +532,7 @@ pub fn resolve_parameters<'a>(
         }
         for p in &mut model.parameters {
             if p.name == *name {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
                 current_source.insert(name.clone(), Some(ValueSource::FitTomlFixed));
             }
         }
@@ -557,7 +557,7 @@ pub fn resolve_parameters<'a>(
         }
         for p in &mut model.parameters {
             if let Some(&v) = overrides.get(&p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
                 current_source.insert(p.name.clone(),
                     Some(ValueSource::FixedFile { path: path.clone() }));
             }
@@ -582,7 +582,7 @@ pub fn resolve_parameters<'a>(
         for (k, v) in &scenario_params {
             for p in &mut model.parameters {
                 if p.name == *k {
-                    p.value = Some(*v);
+                    p.value = p.value.with_value(*v);
                     current_source.insert(k.clone(),
                         Some(ValueSource::Scenario(name.to_string())));
                     scenario_assigned.insert(k.clone(),
@@ -593,9 +593,9 @@ pub fn resolve_parameters<'a>(
         for (k, factor) in &scenario_scale {
             for p in &mut model.parameters {
                 if p.name == *k {
-                    if let Some(v) = p.value {
+                    if let Some(v) = p.value.resolved_value() {
                         let scaled = v * factor;
-                        p.value = Some(scaled);
+                        p.value = p.value.with_value(scaled);
                         current_source.insert(k.clone(),
                             Some(ValueSource::Scenario(name.to_string())));
                         scenario_assigned.insert(k.clone(),
@@ -617,7 +617,7 @@ pub fn resolve_parameters<'a>(
         }
         for p in &mut model.parameters {
             if p.name == *name {
-                p.value = Some(*v);
+                p.value = p.value.with_value(*v);
                 current_source.insert(name.clone(), Some(ValueSource::FixedCli));
             }
         }
@@ -707,7 +707,7 @@ pub fn resolve_parameters<'a>(
     let mut params: Vec<ResolvedParameter> = Vec::with_capacity(model.parameters.len());
     let mut violations: Vec<ResolveError> = Vec::new();
     for p in &model.parameters {
-        let Some(value) = p.value else {
+        let Some(value) = p.value.resolved_value() else {
             return Err(ResolveError::UnsetRequired { name: p.name.clone() });
         };
         if !value.is_finite() {
@@ -721,7 +721,7 @@ pub fn resolve_parameters<'a>(
             });
             continue;
         }
-        if let Some((lo, hi)) = p.bounds {
+        if let Some((lo, hi)) = p.bounds() {
             if value < lo || value > hi {
                 violations.push(ResolveError::BoundsViolation {
                     name: p.name.clone(),
@@ -909,28 +909,26 @@ mod tests {
     fn mk_param(name: &str, value: Option<f64>) -> Parameter {
         Parameter {
             name: name.into(),
-            value,
-            bounds: None,
-            prior: None,
-            transform: None,
-            initial_value: None,
+            value: match value {
+                Some(v) => ir::parameter::ParamValue::Fixed { value: v },
+                None => ir::parameter::ParamValue::Required,
+            },
             param_kind: None,
             param_dim: None,
-            hierarchical: None,
         }
     }
 
     fn mk_param_bounded(name: &str, value: Option<f64>, bounds: (f64, f64)) -> Parameter {
         Parameter {
             name: name.into(),
-            value,
-            bounds: Some(bounds),
-            prior: None,
-            transform: None,
-            initial_value: None,
+            value: ir::parameter::ParamValue::Estimated {
+                init: value,
+                bounds: Some(bounds),
+                prior: ir::parameter::PriorSpec::Flat,
+                transform: ir::parameter::Transform::Identity,
+            },
             param_kind: None,
             param_dim: None,
-            hierarchical: None,
         }
     }
 
@@ -1362,7 +1360,7 @@ mod tests {
             .expect("ok");
         let beta_in_model = resolved.model.parameters.iter()
             .find(|p| p.name == "beta").unwrap();
-        assert_eq!(beta_in_model.value, Some(0.9));
+        assert_eq!(beta_in_model.value.resolved_value(), Some(0.9));
     }
 
     #[test]

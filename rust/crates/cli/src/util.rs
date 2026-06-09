@@ -1574,7 +1574,7 @@ pub fn apply_params_file(model: &mut ir::Model, path: &str) -> Result<(), String
     let vals = load_params_toml(path)?;
     for p in &mut model.parameters {
         if let Some(&v) = vals.get(&p.name) {
-            p.value = Some(v);
+            p.value = p.value.with_value(v);
         }
     }
     validate_parameter_values(model)?;
@@ -1607,7 +1607,7 @@ pub fn apply_params_file(model: &mut ir::Model, path: &str) -> Result<(), String
 pub fn validate_parameter_values(model: &ir::Model) -> Result<(), String> {
     let mut errs: Vec<String> = Vec::new();
     for p in &model.parameters {
-        let Some(v) = p.value else { continue; };
+        let Some(v) = p.value.resolved_value() else { continue; };
         if !v.is_finite() {
             errs.push(format!(
                 "parameter '{}' = {} is not finite (NaN or ±∞).\n  \
@@ -1615,7 +1615,7 @@ pub fn validate_parameter_values(model: &ir::Model) -> Result<(), String> {
                 p.name, v));
             continue;
         }
-        if let Some((lo, hi)) = p.bounds {
+        if let Some((lo, hi)) = p.bounds() {
             if v < lo || v > hi {
                 errs.push(format!(
                     "parameter '{}' = {} is outside declared bounds [{}, {}].\n  \
@@ -2877,14 +2877,18 @@ mod tests {
             bindings: vec![],
             parameters: vec![ir::parameter::Parameter {
                 name: "x".into(),
-                value,
-                bounds,
-                prior: None,
-                hierarchical: None,
-                transform: None,
-                initial_value: None,
-                param_kind: None,
-                param_dim: None,
+                value: match (value, bounds) {
+                    // Bounds present ⇒ estimated (carries init + box); the
+                    // validator reads resolved_value() and bounds().
+                    (v, Some(b)) => ir::parameter::ParamValue::Estimated {
+                        init: v, bounds: Some(b),
+                        prior: ir::parameter::PriorSpec::Flat,
+                        transform: ir::parameter::Transform::Identity,
+                    },
+                    (Some(v), None) => ir::parameter::ParamValue::Fixed { value: v },
+                    (None, None) => ir::parameter::ParamValue::Required,
+                },
+                param_kind: None, param_dim: None,
             }],
             initial_conditions: ir::model::InitialConditions::Explicit(HashMap::new()),
             output: ir::model::OutputConfig {
@@ -3001,17 +3005,7 @@ mod tests {
         // Two violations: report both. Saves the user from a
         // fix-rerun-fix loop.
         let mut m = model_with_one_param(Some(5.0), Some((0.0, 1.0)));
-        m.parameters.push(ir::parameter::Parameter {
-            name: "y".into(),
-            value: Some(f64::NAN),
-            bounds: None,
-            prior: None,
-            hierarchical: None,
-            transform: None,
-            initial_value: None,
-            param_kind: None,
-            param_dim: None,
-        });
+        m.parameters.push(ir::parameter::Parameter { name: "y".into(), value: ir::parameter::ParamValue::Fixed { value: f64::NAN }, param_kind: None, param_dim: None });
         let err = validate_parameter_values(&m).unwrap_err();
         assert!(err.contains("'x'"), "x violation missing: {err}");
         assert!(err.contains("'y'"), "y violation missing: {err}");

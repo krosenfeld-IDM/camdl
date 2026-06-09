@@ -195,7 +195,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
     // gh#75: prior-presence check honoring the IR fallback. Has to run
     // after partition/dag validation but with the model IR in scope.
     let ir_prior_params: std::collections::BTreeSet<&str> = model.parameters.iter()
-        .filter(|p| p.prior.is_some() || p.hierarchical.is_some())
+        .filter(|p| p.prior_dist().is_some() || p.hierarchical().is_some())
         .map(|p| p.name.as_str())
         .collect();
     config.validate_priors_present(&ir_prior_params).unwrap_or_else(|e| {
@@ -313,12 +313,11 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         // (gh#191: the gate must not demand resolved params it doesn't use).
         let mut cap_model = model.clone();
         for p in &mut cap_model.parameters {
-            if p.value.is_none() {
-                p.value = Some(
-                    p.initial_value
-                        .or_else(|| p.bounds.map(|(lo, hi)| 0.5 * (lo + hi)))
-                        .unwrap_or(1.0),
-                );
+            if p.value.resolved_value().is_none() {
+                let placeholder = p.initial_value()
+                    .or_else(|| p.bounds().map(|(lo, hi)| 0.5 * (lo + hi)))
+                    .unwrap_or(1.0);
+                p.value = p.value.with_value(placeholder);
             }
         }
         let compiled = sim::CompiledModel::new(cap_model).unwrap_or_else(|e| {
@@ -2241,8 +2240,8 @@ mod tests {
         let mut model: ir::Model = serde_json::from_value(envv["model"].clone())
             .unwrap_or_else(|e| panic!("deserialize {path}: {e}"));
         for p in &mut model.parameters {
-            if p.value.is_none() {
-                p.value = Some(0.5);
+            if p.value.resolved_value().is_none() {
+                p.value = p.value.with_value(0.5);
             }
         }
         sim::CompiledModel::new(model).unwrap_or_else(|e| panic!("compile {path}: {e:?}"))
@@ -2293,8 +2292,8 @@ mod tests {
         let mut model: ir::Model = serde_json::from_value(envv["model"].clone())
             .expect("deserialize sir_basic model");
         for p in &mut model.parameters {
-            if p.value.is_none() {
-                p.value = Some(0.5);
+            if p.value.resolved_value().is_none() {
+                p.value = p.value.with_value(0.5);
             }
         }
         model.balance = Some(ir::model::BalanceSpec {

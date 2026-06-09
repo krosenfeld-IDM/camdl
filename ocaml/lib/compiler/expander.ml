@@ -3201,6 +3201,24 @@ let classify_and_resolve_prior_spec ?(loc = Diagnostics.no_loc) ctx ~pname
     }
   end
 
+(* Map a `parameters {}` declaration (which never carries a `= value`, so
+   the IR value is never Fixed here) to the typed [Ir.param_value]:
+   - any inference config (bounds and/or a prior) → [Estimated] carrying it;
+   - a bare `name : kind` with neither → [Required] (supplied at runtime).
+   The compiler emits transform [Identity] and no init; the fit layer derives
+   the real transform/start per-fit. (Typed-const `let`s are [Fixed], below.) *)
+let mk_estimated_or_required ~bounds ~prior ~hierarchical : Ir.param_value =
+  match bounds, prior, hierarchical with
+  | None, None, None -> Ir.Required
+  | _ ->
+    let est_prior = match prior, hierarchical with
+      | Some p, _      -> Ir.Dist p
+      | _, Some h      -> Ir.Hierarchical h
+      | None, None     -> Ir.Flat
+    in
+    Ir.Estimated { est_init = None; est_bounds = bounds; est_prior;
+                   est_transform = Ir.Identity }
+
 let expand_parameters ctx =
   let from_params = List.concat_map (fun pd ->
     match pd with
@@ -3214,15 +3232,10 @@ let expand_parameters ctx =
                       | `Plain p        -> (Some p, None)
                       | `Hierarchical h -> (None, Some h))
       in
-      [{ Ir.name          = pname;
-         Ir.value         = None;
-         Ir.bounds        = bounds;
-         Ir.prior         = prior;
-         Ir.hierarchical  = hierarchical;
-         Ir.transform     = None;
-         Ir.initial_value = None;
-         Ir.param_kind    = pk;
-         Ir.param_dim     = pdim;
+      [{ Ir.name       = pname;
+         Ir.value      = mk_estimated_or_required ~bounds ~prior ~hierarchical;
+         Ir.param_kind = pk;
+         Ir.param_dim  = pdim;
        }]
     | PIndexed { pname; pdims = [dim]; pbounds; pkind; pdim; pprior; ploc } ->
       let vals = dim_values ctx dim in
@@ -3236,15 +3249,10 @@ let expand_parameters ctx =
                       | `Hierarchical h -> (None, Some h))
       in
       List.map (fun v ->
-        { Ir.name          = pname ^ "_" ^ v;
-          Ir.value         = None;
-          Ir.bounds        = bounds;
-          Ir.prior         = prior;
-          Ir.hierarchical  = hierarchical;
-          Ir.transform     = None;
-          Ir.initial_value = None;
-          Ir.param_kind    = pk;
-          Ir.param_dim     = pdim;
+        { Ir.name       = pname ^ "_" ^ v;
+          Ir.value      = mk_estimated_or_required ~bounds ~prior ~hierarchical;
+          Ir.param_kind = pk;
+          Ir.param_dim  = pdim;
         }
       ) vals
     | PIndexed { pname; pdims; _ } ->
@@ -3274,15 +3282,10 @@ let expand_parameters ctx =
     match lb.lkind with
     | Some pk when is_const_expr lb.lbody ->
       let v = eval_const_expr ctx lb.lbody in
-      Some { Ir.name          = lb.lname;
-             Ir.value         = Some v;
-             Ir.bounds        = None;
-             Ir.prior         = None;
-             Ir.hierarchical  = None;
-             Ir.transform     = None;
-             Ir.initial_value = None;
-             Ir.param_kind    = Some (ir_param_kind_of_ast pk);
-             Ir.param_dim     = None;
+      Some { Ir.name       = lb.lname;
+             Ir.value      = Ir.Fixed v;
+             Ir.param_kind = Some (ir_param_kind_of_ast pk);
+             Ir.param_dim  = None;
            }
     | _ -> None
   ) ctx.let_bindings in

@@ -1,4 +1,4 @@
-{"ir_version":"0.10","validated_by":"ocaml-compiler-v0.10","model":{"name":"seasonal_drift","version":"0.3","time_unit":"days","description":null,"compartments":[
+{"ir_version":"0.11","validated_by":"ocaml-compiler-v0.11","model":{"name":"seasonal_drift","version":"0.3","time_unit":"days","description":null,"compartments":[
 {"name":"S","kind":"integer"},
 {"name":"I","kind":"integer"}
 ],"transitions":[
@@ -7,9 +7,9 @@
 ],"ode_equations":[],"time_functions":[
 {"name":"seasonal","kind":{"sinusoidal":{"amplitude":{"param":"alpha"},"period":{"const":365.25},"phase":{"const":0.0},"baseline":{"const":1.0}}},"dim":[0,0]}
 ],"tables":[],"interventions":[],"observations":[],"parameters":[
-{"name":"beta","value":0.6,"bounds":[0.05,5.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"rate","param_dim":null},
-{"name":"gamma","value":0.4,"bounds":[0.01,5.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"rate","param_dim":null},
-{"name":"alpha","value":0.4,"bounds":[0.0,1.0],"prior":null,"hierarchical":null,"transform":null,"initial_value":null,"param_kind":"probability","param_dim":null}
+{"name":"beta","value":{"mode":"fixed","value":0.6},"param_kind":"rate","param_dim":null},
+{"name":"gamma","value":{"mode":"fixed","value":0.4},"param_kind":"rate","param_dim":null},
+{"name":"alpha","value":{"mode":"fixed","value":0.4},"param_kind":"probability","param_dim":null}
 ],"initial_conditions":{"explicit":{"S":900.0,"I":100.0}},"output":{"times":{"regular":{"start":0.0,"step":1.0,"end":1095.0}},"format":"tsv","trajectory":true,"observations":true},"simulation":{"t_start":0.0,"t_end":1095.0,"time_semantics":"continuous","dt":null,"rng_seed":null},"scenarios":[],"model_structure":{"dimensions":[],"compartment_dims":{"S":[],"I":[]},"base_compartments":["S","I"],"transmission_transitions":["infection"],"infectious_compartments":["I"]},"bindings":[
 {"name":"N","expr":{"pop_sum":["S","I"]}}
 ]}}

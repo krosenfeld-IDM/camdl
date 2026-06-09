@@ -42,11 +42,11 @@ fn load_model(path: &str) -> ir::Model {
 
 fn set_param_defaults(model: &mut ir::Model, defaults: &[(&str, f64)]) {
     for p in &mut model.parameters {
-        if p.value.is_none() {
+        if p.value.resolved_value().is_none() {
             if let Some(&(_, v)) = defaults.iter().find(|(n, _)| *n == p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             } else {
-                p.value = Some(0.5);
+                p.value = p.value.with_value(0.5);
             }
         }
     }
@@ -118,7 +118,7 @@ fn params_from_compiled(compiled: &CompiledModel) -> Vec<f64> {
     let n_params = compiled.param_index.len();
     let mut params = vec![0.0; n_params];
     for p in &compiled.model.parameters {
-        if let Some(v) = p.value {
+        if let Some(v) = p.value.resolved_value() {
             params[compiled.param_index[p.name.as_str()]] = v;
         }
     }
@@ -131,17 +131,7 @@ fn gh76_pgas_runs_betabinomial_routed_param_with_nuts() {
     // C1 gate no longer fences a BetaBinomial-routed parameter. This fit must
     // now RUN (return Ok) — the inversion of the original gate assertion.
     let mut model = host_model();
-    model.parameters.push(ir::parameter::Parameter {
-        name: "alpha_obs".into(),
-        value: Some(2.0),
-        bounds: Some((0.01, 100.0)),
-        prior: None,
-        hierarchical: None,
-        transform: None,
-        initial_value: None,
-        param_kind: Some(ir::parameter::ParamKind::Positive),
-        param_dim: None,
-    });
+    model.parameters.push(ir::parameter::Parameter { name: "alpha_obs".into(), value: ir::parameter::ParamValue::Estimated { init: Some(2.0), bounds: Some((0.01, 100.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: Some(ir::parameter::ParamKind::Positive), param_dim: None });
     model.observations = vec![build_betabinomial_obs_block("alpha_obs")];
 
     let compiled = Arc::new(CompiledModel::new(model).unwrap());
@@ -233,17 +223,7 @@ fn gh76_pgas_refuses_parametric_derived_projection_param() {
     // omitted, so estimating the projection's `scale` param via NUTS would
     // be a silent-zero gradient. The C1 gate must STILL fire here.
     let mut model = host_model();
-    model.parameters.push(ir::parameter::Parameter {
-        name: "scale_obs".into(),
-        value: Some(1.0),
-        bounds: Some((0.1, 10.0)),
-        prior: None,
-        hierarchical: None,
-        transform: None,
-        initial_value: None,
-        param_kind: Some(ir::parameter::ParamKind::Positive),
-        param_dim: None,
-    });
+    model.parameters.push(ir::parameter::Parameter { name: "scale_obs".into(), value: ir::parameter::ParamValue::Estimated { init: Some(1.0), bounds: Some((0.1, 10.0)), prior: ir::parameter::PriorSpec::Flat, transform: ir::parameter::Transform::Identity }, param_kind: Some(ir::parameter::ParamKind::Positive), param_dim: None });
     model.observations = vec![build_parametric_derived_proj_block("scale_obs")];
 
     let compiled = Arc::new(CompiledModel::new(model).unwrap());

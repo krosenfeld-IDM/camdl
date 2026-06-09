@@ -132,17 +132,7 @@ fn representative_model() -> Model {
                 ),
             }),
         }],
-        parameters: vec![Parameter {
-            name: "beta".into(),
-            value: Some(0.5),
-            bounds: Some((0.0, 2.0)),
-            prior: Some(PriorDist::Uniform(UniformPrior { lower: 0.0, upper: 2.0 })),
-            hierarchical: None,
-            transform: Some(Transform::Log),
-            initial_value: Some(0.4),
-            param_kind: Some(ir::parameter::ParamKind::Rate),
-            param_dim: Some((0, -1)),
-        }],
+        parameters: vec![Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Estimated { init: Some(0.5), bounds: Some((0.0, 2.0)), prior: ir::parameter::PriorSpec::Dist(PriorDist::Uniform(UniformPrior { lower: 0.0, upper: 2.0 })), transform: Transform::Log }, param_kind: Some(ir::parameter::ParamKind::Rate), param_dim: Some((0, -1)) }],
         bindings: vec![Binding {
             name: "N".into(),
             expr: Expr::pop_sum(vec!["S".into(), "I".into(), "R".into()]),
@@ -195,13 +185,13 @@ fn representative_model() -> Model {
 /// this value; an unintended change to any hand impl trips it.
 #[test]
 fn model_golden_hash() {
-    // Updated for the gh#191/gh#107 typed-surface encoding change (IR 0.10):
-    // `Parameter.param_kind` String -> `ParamKind` enum and `Intervention`
-    // `always_active: bool` -> `kind: InterventionKind` now hash via typed
-    // variant indices, not a string/bool. This intentionally moves every
-    // run_id; the version handshake (ir/VERSION 0.9 -> 0.10) signposts it.
-    // (Prior value moved when table out_of_bounds went Clamp/Wrap -> Error.)
-    const GOLDEN: &str = "d51517eec14d8c26bc92ecb779daf328c7df722ed6c53e49cb46fbff51f86253";
+    // Updated for the gh#191 ParamValue ADT (IR 0.11): `Parameter.value` is
+    // now Fixed|Estimated|Required with `PriorSpec`, replacing the flat
+    // value/bounds/prior/hierarchical/transform/initial_value fields. All hash
+    // via typed variant indices, so every run_id moves; the version handshake
+    // (ir/VERSION -> 0.11) signposts it. (Earlier moves: param_kind/kind
+    // enum-ification at 0.10; table OOB Clamp/Wrap -> Error before that.)
+    const GOLDEN: &str = "7ddadb88875ca30334f60180b5dfa4694a3dfe5aa56b25c5ed94b3eef826ec5f";
     let got = representative_model().content_hash().to_hex();
     assert_eq!(got, GOLDEN, "ir Model golden hash changed (got {got})");
 }

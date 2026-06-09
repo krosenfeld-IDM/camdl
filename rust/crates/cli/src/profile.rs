@@ -315,9 +315,9 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     // non-focal params are usually pinned via `--fixed`).
     for (name, spec) in &fit_estimate {
         if let Some(p) = model_pre.parameters.iter_mut().find(|p| p.name == *name) {
-            if p.value.is_none() {
+            if p.value.resolved_value().is_none() {
                 if let Some(start) = spec.start {
-                    p.value = Some(start);
+                    p.value = p.value.with_value(start);
                 }
             }
         }
@@ -822,7 +822,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     let base_params_hash = {
         let mut lines: Vec<String> = model.parameters.iter()
             .map(|p| format!("{}={}", p.name,
-                p.value.unwrap_or(base_params[compiled.param_index[p.name.as_str()]])))
+                p.value.resolved_value().unwrap_or(base_params[compiled.param_index[p.name.as_str()]])))
             .collect();
         lines.sort();
         ContentHash::from_bytes(lines.join("\n").as_bytes()).full().to_string()
@@ -1704,7 +1704,7 @@ fn seed_params_from_init_method(
     };
     for p in params.iter_mut() {
         if let Some(&v) = file_values.get(&p.name) {
-            p.value = Some(v);
+            p.value = p.value.with_value(v);
         }
     }
     Ok(())
@@ -1943,9 +1943,13 @@ mod tests {
         // object; serde_json fills the rest from
         // `#[serde(default)]` on the Parameter struct.
         specs.iter().map(|(name, value)| {
+            // `value` is the typed ParamValue ADT (gh#191): a concrete number
+            // is Fixed, absent is Required.
             let body = match value {
-                Some(v) => format!(r#"{{"name":"{}","value":{}}}"#, name, v),
-                None    => format!(r#"{{"name":"{}","value":null}}"#, name),
+                Some(v) => format!(
+                    r#"{{"name":"{}","value":{{"mode":"fixed","value":{}}}}}"#, name, v),
+                None => format!(
+                    r#"{{"name":"{}","value":{{"mode":"required"}}}}"#, name),
             };
             serde_json::from_str::<ir::parameter::Parameter>(&body)
                 .expect("Parameter fixture must parse")
@@ -1974,9 +1978,9 @@ mod tests {
         let init = crate::fit::init::InitMethod::FromParams { path: toml_path };
         seed_params_from_init_method(&mut params, &init).unwrap();
         let beta_val  = params.iter()
-            .find(|p| p.name == "beta").unwrap().value;
+            .find(|p| p.name == "beta").unwrap().value.resolved_value();
         let gamma_val = params.iter()
-            .find(|p| p.name == "gamma").unwrap().value;
+            .find(|p| p.name == "gamma").unwrap().value.resolved_value();
         assert_eq!(beta_val,  Some(0.5));
         assert_eq!(gamma_val, Some(0.1));
     }
@@ -1995,7 +1999,7 @@ mod tests {
         let init = crate::fit::init::InitMethod::FromParams { path: toml_path };
         seed_params_from_init_method(&mut params, &init).unwrap();
         let beta_val = params.iter()
-            .find(|p| p.name == "beta").unwrap().value;
+            .find(|p| p.name == "beta").unwrap().value.resolved_value();
         assert_eq!(beta_val, Some(0.5),
             "file value must win over DSL default — user named the file");
     }
@@ -2017,7 +2021,7 @@ mod tests {
         let init = crate::fit::init::InitMethod::FromMle { source };
         seed_params_from_init_method(&mut params, &init).unwrap();
         let beta_val = params.iter()
-            .find(|p| p.name == "beta").unwrap().value;
+            .find(|p| p.name == "beta").unwrap().value.resolved_value();
         assert_eq!(beta_val, Some(0.5));
     }
 
@@ -2031,17 +2035,17 @@ mod tests {
             ("beta", Some(0.3)),
         ]);
         let original_beta = params.iter()
-            .find(|p| p.name == "beta").unwrap().value;
+            .find(|p| p.name == "beta").unwrap().value.resolved_value();
         let init_prior = crate::fit::init::InitMethod::FromPrior;
         seed_params_from_init_method(&mut params, &init_prior).unwrap();
         assert_eq!(params.iter()
-            .find(|p| p.name == "beta").unwrap().value, original_beta,
+            .find(|p| p.name == "beta").unwrap().value.resolved_value(), original_beta,
             "from_prior must NOT seed model_pre — values are per-chain");
 
         let init_lhs = crate::fit::init::InitMethod::Lhs;
         seed_params_from_init_method(&mut params, &init_lhs).unwrap();
         assert_eq!(params.iter()
-            .find(|p| p.name == "beta").unwrap().value, original_beta,
+            .find(|p| p.name == "beta").unwrap().value.resolved_value(), original_beta,
             "Lhs must NOT seed model_pre");
     }
 

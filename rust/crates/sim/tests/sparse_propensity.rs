@@ -25,7 +25,7 @@ fn apply_baseline(model: &mut ir::Model) {
     if let Some(preset) = model.presets.first().cloned() {
         for p in &mut model.parameters {
             if let Some(&v) = preset.params.get(&p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             }
         }
     }
@@ -156,8 +156,8 @@ fn test_population_conservation_with_sparse_updates() {
 
     // Use a large population to generate many events (well past 10K threshold)
     for p in &mut model.parameters {
-        if p.name == "N0" { p.value = Some(100_000.0); }
-        if p.name == "I0" { p.value = Some(1_000.0); }
+        if p.name == "N0" { p.value = p.value.with_value(100_000.0); }
+        if p.name == "I0" { p.value = p.value.with_value(1_000.0); }
     }
 
     let compiled = CompiledModel::new(model.clone()).unwrap();
@@ -187,8 +187,8 @@ fn test_sparse_updates_deterministic() {
     let mut model = load_model(&golden_path("sir_basic"));
     apply_baseline(&mut model);
     for p in &mut model.parameters {
-        if p.name == "N0" { p.value = Some(50_000.0); }
-        if p.name == "I0" { p.value = Some(500.0); }
+        if p.name == "N0" { p.value = p.value.with_value(50_000.0); }
+        if p.name == "I0" { p.value = p.value.with_value(500.0); }
     }
 
     let compiled = CompiledModel::new(model.clone()).unwrap();

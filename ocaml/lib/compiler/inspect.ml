@@ -588,19 +588,19 @@ let run_parameters ppf (model : Ir.model) (ctx : Expander.context) =
       List.iter (fun (p : Ir.parameter) ->
         Fmt.pf ppf "  ";
         Term_style.param Fmt.string ppf p.name;
-        (match p.bounds with
+        (match Ir.param_bounds p with
          | Some (lo, hi) -> Fmt.pf ppf "   in [%g, %g]" lo hi
          | None -> ());
-        (match p.value with
-         | Some v when p.bounds = None ->
+        (match Ir.param_concrete_value p with
+         | Some v when Ir.param_bounds p = None ->
            Term_style.dim_style Fmt.string ppf "  = ";
            Fmt.pf ppf "%g" v
          | _ -> ());
-        (match p.prior with
+        (match Ir.param_prior_dist p with
          | Some _ ->
            Term_style.dim_style Fmt.string ppf "  ~ prior"
          | None -> ());
-        (match p.hierarchical with
+        (match Ir.param_hierarchical p with
          | Some h ->
            Term_style.dim_style Fmt.string ppf (Printf.sprintf "  ~ %s | " (Ir.hierarchical_kind_name h.hkind));
            (* Show referenced hyperparameter names *)

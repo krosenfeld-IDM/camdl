@@ -218,8 +218,8 @@ fn test_overdispersion_variance_chain_binomial() {
         observations: vec![],
         bindings: vec![],
         parameters: vec![
-            Parameter { name: "beta".into(), value: Some(0.01), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
-            Parameter { name: "sigma_sq".into(), value: Some(0.5), bounds: None, prior: None, transform: None, initial_value: None, param_kind: None, param_dim: None, hierarchical: None },
+            Parameter { name: "beta".into(), value: ir::parameter::ParamValue::Fixed { value: 0.01 }, param_kind: None, param_dim: None },
+            Parameter { name: "sigma_sq".into(), value: ir::parameter::ParamValue::Fixed { value: 0.5 }, param_kind: None, param_dim: None },
         ],
         // Start with S=10000, I=0. After one dt=1 step, about 100 events.
         initial_conditions: InitialConditions::Explicit({

@@ -1,5 +1,5 @@
 {
-  "ir_version": "0.10",
+  "ir_version": "0.11",
   "validated_by": "hand-curated-ir-golden",
   "model": {
     "name": "sir_vaccination",
@@ -150,34 +150,10 @@
       }
     ],
     "parameters": [
-      {
-        "name": "beta",
-        "value": 0.3,
-        "prior": null,
-        "transform": null,
-        "initial_value": null
-      },
-      {
-        "name": "gamma",
-        "value": 0.1,
-        "prior": null,
-        "transform": null,
-        "initial_value": null
-      },
-      {
-        "name": "vaccine_coverage",
-        "value": 0.5,
-        "prior": null,
-        "transform": null,
-        "initial_value": null
-      },
-      {
-        "name": "rho",
-        "value": 10.0,
-        "prior": null,
-        "transform": null,
-        "initial_value": null
-      }
+      {"name": "beta", "value": {"mode": "fixed", "value": 0.3}, "param_kind": null, "param_dim": null},
+      {"name": "gamma", "value": {"mode": "fixed", "value": 0.1}, "param_kind": null, "param_dim": null},
+      {"name": "vaccine_coverage", "value": {"mode": "fixed", "value": 0.5}, "param_kind": null, "param_dim": null},
+      {"name": "rho", "value": {"mode": "fixed", "value": 10.0}, "param_kind": null, "param_dim": null}
     ],
     "initial_conditions": {
       "explicit": {

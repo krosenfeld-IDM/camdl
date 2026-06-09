@@ -632,11 +632,7 @@ mod tests {
             }],
             observations: vec![],
             bindings: vec![],
-            parameters: vec![Parameter {
-                name: "p".into(), value: Some(1.0), bounds: None, prior: None,
-                transform: None, initial_value: None, param_kind: None,
-                param_dim: None, hierarchical: None,
-            }],
+            parameters: vec![Parameter { name: "p".into(), value: ir::parameter::ParamValue::Fixed { value: 1.0 }, param_kind: None, param_dim: None }],
             initial_conditions: InitialConditions::Explicit({
                 let mut h = HashMap::new();
                 h.insert("S".into(), 100.0);
@@ -906,11 +902,7 @@ mod tests {
             }],
             observations: vec![],
             bindings: vec![],
-            parameters: vec![Parameter {
-                name: "p".into(), value: Some(1.0), bounds: None, prior: None,
-                transform: None, initial_value: None, param_kind: None,
-                param_dim: None, hierarchical: None,
-            }],
+            parameters: vec![Parameter { name: "p".into(), value: ir::parameter::ParamValue::Fixed { value: 1.0 }, param_kind: None, param_dim: None }],
             initial_conditions: InitialConditions::Explicit({
                 let mut h = HashMap::new();
                 h.insert("S".into(), 100.0);
@@ -1037,11 +1029,7 @@ mod tests {
             interventions: vec![mk("evt", true), mk("camp", false)],
             observations: vec![],
             bindings: vec![],
-            parameters: vec![Parameter {
-                name: "p".into(), value: Some(1.0), bounds: None, prior: None,
-                transform: None, initial_value: None, param_kind: None,
-                param_dim: None, hierarchical: None,
-            }],
+            parameters: vec![Parameter { name: "p".into(), value: ir::parameter::ParamValue::Fixed { value: 1.0 }, param_kind: None, param_dim: None }],
             initial_conditions: InitialConditions::Explicit({
                 let mut h = HashMap::new();
                 h.insert("S".into(), 100.0);

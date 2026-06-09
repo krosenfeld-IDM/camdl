@@ -288,14 +288,17 @@ mod tests {
     fn mk_param(name: &str, prior: Option<PriorDist>) -> Parameter {
         Parameter {
             name: name.into(),
-            value: None,
-            bounds: Some((0.01, 2.0)),
-            prior,
-            transform: None,
-            initial_value: None,
+            value: ir::parameter::ParamValue::Estimated {
+                init: None,
+                bounds: Some((0.01, 2.0)),
+                prior: match prior {
+                    Some(pd) => ir::parameter::PriorSpec::Dist(pd),
+                    None => ir::parameter::PriorSpec::Flat,
+                },
+                transform: ir::parameter::Transform::Identity,
+            },
             param_kind: None,
             param_dim: None,
-            hierarchical: None,
         }
     }
 

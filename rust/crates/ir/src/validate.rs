@@ -46,11 +46,6 @@ pub enum ValidationError {
     #[error("observation '{obs}' cumulative_flow references unknown transition '{transition}'")]
     UnknownTransitionInObservation { obs: String, transition: String },
 
-    #[error("parameter '{0}': prior and hierarchical are mutually exclusive — \
-             a parameter is either fitted under a single-level prior or pooled \
-             under a hierarchical prior, not both")]
-    PriorAndHierarchicalBothSet(String),
-
     #[error("intervention '{intervention}' action references unknown compartment '{compartment}'")]
     UnknownCompartmentInIntervention { intervention: String, compartment: String },
 
@@ -117,9 +112,9 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
         if !param_names.insert(p.name.as_str()) {
             errors.push(ValidationError::DuplicateParameter(p.name.clone()));
         }
-        if p.prior.is_some() && p.hierarchical.is_some() {
-            errors.push(ValidationError::PriorAndHierarchicalBothSet(p.name.clone()));
-        }
+        // (Prior-and-hierarchical-both-set is now unrepresentable: PriorSpec
+        // is a single slot. The former runtime check + error variant were
+        // deleted with the gh#191 ParamValue ADT.)
     }
     for t in &model.tables {
         table_names.insert(t.name.as_str());
@@ -515,36 +510,23 @@ fn check_likelihood_exprs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parameter::{Parameter, PriorDist, NormalPrior, HierarchicalKind, HierarchicalPrior};
+    use crate::parameter::{
+        ParamValue, Parameter, PriorDist, NormalPrior, PriorSpec, Transform,
+        HierarchicalKind, HierarchicalPrior,
+    };
 
-    fn param_both_set() -> Parameter {
+    /// An estimated parameter with the given prior spec. (Prior-and-
+    /// hierarchical-both-set is unrepresentable now — `PriorSpec` is one slot
+    /// — so the former `param_both_set` helper and its rejection test are gone.)
+    fn param_estimated(name: &str, prior: PriorSpec) -> Parameter {
         Parameter {
-            name:          "beta".into(),
-            value:         Some(1.0),
-            bounds:        None,
-            prior:         Some(PriorDist::Normal(NormalPrior { mean: 0.0, sd: 1.0 })),
-            hierarchical:  Some(HierarchicalPrior {
-                kind: HierarchicalKind::Normal,
-                args: Default::default(),
-                pool_over: "".into(),
-            }),
-            transform:     None,
-            initial_value: None,
-            param_kind:    None,
-            param_dim:     None,
+            name: name.into(),
+            value: ParamValue::Estimated {
+                init: None, bounds: None, prior, transform: Transform::Identity,
+            },
+            param_kind: None,
+            param_dim:  None,
         }
-    }
-
-    fn param_only_prior() -> Parameter {
-        let mut p = param_both_set();
-        p.hierarchical = None;
-        p
-    }
-
-    fn param_only_hierarchical() -> Parameter {
-        let mut p = param_both_set();
-        p.prior = None;
-        p
     }
 
     fn load_sir() -> Model {
@@ -556,32 +538,23 @@ mod tests {
     }
 
     #[test]
-    fn prior_and_hierarchical_both_set_is_rejected() {
-        let mut m = load_sir();
-        m.parameters.push(param_both_set());
-        let errs = validate(&m).expect_err("must reject parameter with both fields set");
-        assert!(errs.iter().any(|e| matches!(e,
-            ValidationError::PriorAndHierarchicalBothSet(name) if name == "beta")),
-            "expected PriorAndHierarchicalBothSet for 'beta', got: {:?}", errs);
-    }
-
-    #[test]
     fn only_prior_is_accepted() {
         let mut m = load_sir();
-        // Use a fresh name to avoid the duplicate-parameter check tripping.
-        let mut p = param_only_prior();
-        p.name = "beta_extra".into();
-        m.parameters.push(p);
-        validate(&m).expect("only prior set must validate");
+        m.parameters.push(param_estimated("beta_extra",
+            PriorSpec::Dist(PriorDist::Normal(NormalPrior { mean: 0.0, sd: 1.0 }))));
+        validate(&m).expect("a single-level prior must validate");
     }
 
     #[test]
     fn only_hierarchical_is_accepted() {
         let mut m = load_sir();
-        let mut p = param_only_hierarchical();
-        p.name = "beta_extra".into();
-        m.parameters.push(p);
-        validate(&m).expect("only hierarchical set must validate");
+        m.parameters.push(param_estimated("beta_extra",
+            PriorSpec::Hierarchical(HierarchicalPrior {
+                kind: HierarchicalKind::Normal,
+                args: Default::default(),
+                pool_over: "".into(),
+            })));
+        validate(&m).expect("a hierarchical prior must validate");
     }
 
     // ── gh#123: reference checks for intervention/event targets, balance,

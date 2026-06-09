@@ -1,6 +1,6 @@
 {
-  "ir_version": "0.10",
-  "validated_by": "ocaml-compiler-v0.10",
+  "ir_version": "0.11",
+  "validated_by": "ocaml-compiler-v0.11",
   "model": {
     "name": "sparse_P8",
     "version": "0.3",
@@ -1273,7 +1273,8 @@
     ],
     "interventions": [],
     "observations": [],
-    "parameters": [],
+    "parameters": [
+    ],
     "initial_conditions": {
       "explicit": {
         "S_p0_a0": 900.0,

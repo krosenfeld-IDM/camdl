@@ -1,5 +1,5 @@
 {
-  "ir_version": "0.10",
+  "ir_version": "0.11",
   "validated_by": "hand-curated-ir-golden",
   "model": {
     "name": "birth_death",
@@ -91,20 +91,8 @@
       }
     ],
     "parameters": [
-      {
-        "name": "lambda",
-        "value": 0.1,
-        "prior": null,
-        "transform": null,
-        "initial_value": null
-      },
-      {
-        "name": "mu",
-        "value": 0.15,
-        "prior": null,
-        "transform": null,
-        "initial_value": null
-      }
+      {"name": "lambda", "value": {"mode": "fixed", "value": 0.1}, "param_kind": null, "param_dim": null},
+      {"name": "mu", "value": {"mode": "fixed", "value": 0.15}, "param_kind": null, "param_dim": null}
     ],
     "initial_conditions": {
       "explicit": {

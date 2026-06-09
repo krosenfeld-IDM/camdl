@@ -82,7 +82,7 @@ fn main() {
     if let Some(preset) = model.presets.first().cloned() {
         for p in &mut model.parameters {
             if let Some(&v) = preset.params.get(&p.name) {
-                p.value = Some(v);
+                p.value = p.value.with_value(v);
             }
         }
     }

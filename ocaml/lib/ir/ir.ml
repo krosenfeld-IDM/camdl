@@ -367,17 +367,61 @@ type hierarchical_prior = {
   hpool_over:  string;
 }
 
+(** The prior on an *estimated* parameter (gh#191). Collapses the former
+    [prior: prior_dist option] + [hierarchical: hierarchical_prior option]
+    (declared "mutually exclusive" by comment) into one slot: both-set is
+    unrepresentable and the ambiguous both-[None] becomes the explicit [Flat].
+    JSON: [Flat] → ["flat"]; [Dist d] → [{"dist": <prior_dist>}];
+    [Hierarchical h] → [{"hierarchical": <hierarchical_prior>}]. *)
+type prior_spec =
+  | Flat
+  | Dist         of prior_dist
+  | Hierarchical of hierarchical_prior
+
+(** The three real meanings the former [value: float option] conflated
+    (gh#191). Inference config ([est_init]/[est_bounds]/[est_prior]/
+    [est_transform]) exists *only* on [Estimated]. JSON: internally tagged on
+    ["mode"] — [{"mode":"fixed","value":_}],
+    [{"mode":"estimated","bounds":_,"prior":_,"transform":_}],
+    [{"mode":"required"}]. *)
+type param_value =
+  | Fixed     of float
+  | Estimated of {
+      est_init:      float option;
+      est_bounds:    (float * float) option;
+      est_prior:     prior_spec;
+      est_transform: transform;
+    }
+  | Required
+
 type parameter = {
   name:          string;
-  value:         float option;  (* None = must be supplied at runtime via --params / --set *)
-  bounds:        (float * float) option;  (* optional [lo, hi] constraint for inference/validation *)
-  prior:         prior_dist option;
-  hierarchical:  hierarchical_prior option;  (* Some iff a leaf in a hierarchical pool; mutually exclusive with prior. *)
-  transform:     transform option;
-  initial_value: float option;
+  value:         param_value;
   param_kind:    param_kind option;  (* DSL type keyword; see [param_kind] above *)
   param_dim:     (int * int) option;  (* explicit dimension annotation: (P exponent, T exponent) *)
 }
+
+(* Accessors recovering the former flat [parameter] fields from [value].
+   Inference config exists only on [Estimated]; these return [None] for
+   [Fixed]/[Required]. [param_concrete_value] is the former [value] (the
+   number present iff [Fixed]). *)
+let param_concrete_value (p : parameter) : float option =
+  match p.value with Fixed v -> Some v | Estimated _ | Required -> None
+
+let param_bounds (p : parameter) : (float * float) option =
+  match p.value with Estimated e -> e.est_bounds | _ -> None
+
+let param_initial_value (p : parameter) : float option =
+  match p.value with Estimated e -> e.est_init | _ -> None
+
+let param_transform (p : parameter) : transform option =
+  match p.value with Estimated e -> Some e.est_transform | _ -> None
+
+let param_prior_dist (p : parameter) : prior_dist option =
+  match p.value with Estimated { est_prior = Dist d; _ } -> Some d | _ -> None
+
+let param_hierarchical (p : parameter) : hierarchical_prior option =
+  match p.value with Estimated { est_prior = Hierarchical h; _ } -> Some h | _ -> None
 
 (* ── Initial conditions ──────────────────────────────────────────────────────── *)
 

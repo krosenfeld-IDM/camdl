@@ -387,7 +387,7 @@ fn draw_from_prior(
     let priors_by_name: HashMap<String, Prior> = resolved.model.parameters.iter()
         .filter_map(|p| {
             if !resolved.estimate_set.contains(&p.name) { return None; }
-            match &p.prior {
+            match p.prior_dist() {
                 Some(pd) => Some((p.name.clone(), Prior::from_ir(pd))),
                 None => {
                     no_prior_names.push(p.name.clone());
@@ -804,7 +804,7 @@ pub fn load_mle_toml(path: &Path) -> Result<HashMap<String, f64>, InitError> {
 fn bounds_map_for_estimate(resolved: &ResolvedParameters) -> HashMap<String, (f64, f64)> {
     resolved.model.parameters.iter()
         .filter(|p| resolved.estimate_set.contains(&p.name))
-        .filter_map(|p| p.bounds.map(|b| (p.name.clone(), b)))
+        .filter_map(|p| p.bounds().map(|b| (p.name.clone(), b)))
         .collect()
 }
 
@@ -853,16 +853,27 @@ mod tests {
 
     fn mk_param(name: &str, value: f64, prior: Option<ir::parameter::PriorDist>,
                 bounds: Option<(f64, f64)>) -> ir::parameter::Parameter {
+        // A concrete `value` plus optional inference config: carry the value as
+        // the estimated `init` when bounds/prior are present (can't be both a
+        // Fixed constant and carry bounds), else a plain Fixed.
+        let pv = if bounds.is_some() || prior.is_some() {
+            ir::parameter::ParamValue::Estimated {
+                init: Some(value),
+                bounds,
+                prior: match prior {
+                    Some(pd) => ir::parameter::PriorSpec::Dist(pd),
+                    None => ir::parameter::PriorSpec::Flat,
+                },
+                transform: ir::parameter::Transform::Identity,
+            }
+        } else {
+            ir::parameter::ParamValue::Fixed { value }
+        };
         ir::parameter::Parameter {
             name: name.into(),
-            value: Some(value),
-            bounds,
-            prior,
-            transform: None,
-            initial_value: None,
+            value: pv,
             param_kind: None,
             param_dim: None,
-            hierarchical: None,
         }
     }
 
@@ -873,7 +884,7 @@ mod tests {
         let params: Vec<ResolvedParameter> = parameters.iter().map(|p| {
             ResolvedParameter {
                 name: p.name.clone(),
-                value: p.value.unwrap(),
+                value: p.value.resolved_value().unwrap(),
                 source: ValueSource::ModelDefault,
                 role: if estimate_set.contains(&p.name) {
                     ParameterRole::Estimated

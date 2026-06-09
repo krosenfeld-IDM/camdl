@@ -24,7 +24,7 @@ fn load_model(name: &str) -> ir::Model {
 fn set_params(model: &mut ir::Model, vals: &[(&str, f64)]) {
     for p in &mut model.parameters {
         for &(name, v) in vals {
-            if p.name == name { p.value = Some(v); }
+            if p.name == name { p.value = p.value.with_value(v); }
         }
     }
 }
