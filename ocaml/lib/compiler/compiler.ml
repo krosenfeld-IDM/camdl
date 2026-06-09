@@ -396,51 +396,91 @@ let maybe_constant_fold (m : Ir.model) : Ir.model =
   if fold_on then Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
   else m
 
-let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model, string) result =
-  match compile_detail_result ~name ~filename src with
-  | Ok d ->
-    (* Post-expansion passes are pure (return diagnostic lists); emit them
-       into [d.ctx.diags] — the accumulator [has_errors]/[render] read — and
-       on any Error-severity diagnostic return [Error (render …)] rather than
-       raising. [compile] never throws (gh#181): a late-phase error (validate
-       E5xx, dimcheck, autodiff E600) now arrives as [Error], the same shape
-       the front-end path already returns, so the CLI exits cleanly (1)
-       instead of on an uncaught [Compile_error] (a Fatal-error trace, exit 2).
-       [render] still writes the diagnostics to stderr exactly as before; only
-       the control flow changes from raise to return.
-       Validate first (M1 / C5 in the 2026-04-19 compiler review). *)
-    let emit_all = List.iter (Diagnostics.emit d.ctx.diags) in
-    let fail () : (Ir.model, string) result =
-      Error (Diagnostics.render d.ctx.diags d.source) in
-    let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
-    emit_all vdiags;
-    (* Validate short-circuits before dimcheck (dimcheck ICEs on unknown
-       params), matching the original short-circuit ordering. *)
-    if vdiags <> [] then fail ()
+(* The post-expansion pipeline (validate → dimcheck → lint → autodiff →
+   constant-fold), factored out of [compile] so [compile_with_reads] can reuse
+   it without duplicating the high-risk pipeline. [compile] stays
+   byte-identical — it is now [compile_detail_result] + [finish_compile]. *)
+let finish_compile (d : compile_detail) : (Ir.model, string) result =
+  (* Post-expansion passes are pure (return diagnostic lists); emit them
+     into [d.ctx.diags] — the accumulator [has_errors]/[render] read — and
+     on any Error-severity diagnostic return [Error (render …)] rather than
+     raising. [compile] never throws (gh#181): a late-phase error (validate
+     E5xx, dimcheck, autodiff E600) now arrives as [Error], the same shape
+     the front-end path already returns, so the CLI exits cleanly (1)
+     instead of on an uncaught [Compile_error] (a Fatal-error trace, exit 2).
+     [render] still writes the diagnostics to stderr exactly as before; only
+     the control flow changes from raise to return.
+     Validate first (M1 / C5 in the 2026-04-19 compiler review). *)
+  let emit_all = List.iter (Diagnostics.emit d.ctx.diags) in
+  let fail () : (Ir.model, string) result =
+    Error (Diagnostics.render d.ctx.diags d.source) in
+  let vdiags = Passtime.time "validate" (fun () -> run_validate d) in
+  emit_all vdiags;
+  (* Validate short-circuits before dimcheck (dimcheck ICEs on unknown
+     params), matching the original short-circuit ordering. *)
+  if vdiags <> [] then fail ()
+  else begin
+    emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
+    emit_all (Passtime.time "lint" (fun () -> run_lint d));
+    if Diagnostics.has_errors d.ctx.diags then fail ()
     else begin
-      emit_all (Passtime.time "dimcheck" (fun () -> run_dimcheck d));
-      emit_all (Passtime.time "lint" (fun () -> run_lint d));
+      let (transitions, gdiags) = differentiate_transitions d in
+      emit_all gdiags;
       if Diagnostics.has_errors d.ctx.diags then fail ()
       else begin
-        let (transitions, gdiags) = differentiate_transitions d in
-        emit_all gdiags;
-        if Diagnostics.has_errors d.ctx.diags then fail ()
-        else begin
-          (* Single render of any collected non-blocking diagnostics
-             (expansion warnings + dimcheck infos + L4xx lints). The ONLY
-             non-blocking emission, on the definitely-succeeding path after
-             the final [has_errors] check — it can never co-fire with a
-             [fail ()] render above, so warnings never double-print. Routing
-             through [Diagnostics.render] gives JSON under [--json-errors] and
-             the ANSI box otherwise, matching the error path's shape. *)
-          if Diagnostics.has_any d.ctx.diags then
-            ignore (Diagnostics.render d.ctx.diags d.source);
-          let m = { d.model with Ir.transitions = transitions } in
-          Ok (maybe_constant_fold m)
-        end
+        (* Single render of any collected non-blocking diagnostics
+           (expansion warnings + dimcheck infos + L4xx lints). The ONLY
+           non-blocking emission, on the definitely-succeeding path after
+           the final [has_errors] check — it can never co-fire with a
+           [fail ()] render above, so warnings never double-print. Routing
+           through [Diagnostics.render] gives JSON under [--json-errors] and
+           the ANSI box otherwise, matching the error path's shape. *)
+        if Diagnostics.has_any d.ctx.diags then
+          ignore (Diagnostics.render d.ctx.diags d.source);
+        let m = { d.model with Ir.transitions = transitions } in
+        Ok (maybe_constant_fold m)
       end
     end
+  end
+
+let compile ?(name = "model") ?(filename = "<input>") (src : string) : (Ir.model, string) result =
+  match compile_detail_result ~name ~filename src with
+  | Ok d -> finish_compile d
   | Error e -> Error e
+
+(* As [compile], but also returns the read-closure: the distinct external data
+   files the compile opened, as (as-written, resolved) pairs, for
+   `camdlc --emit-deps`. Reuses [finish_compile], so the compiled model is
+   byte-identical to [compile]'s. The reads are populated during expansion
+   (before [finish_compile]), so they are read off [d.ctx] on the success
+   path. *)
+let compile_with_reads ?(name = "model") ?(filename = "<input>") (src : string)
+    : (Ir.model * (string * string) list, string) result =
+  match compile_detail_result ~name ~filename src with
+  | Ok d ->
+    (match finish_compile d with
+     | Ok m -> Ok (m, Expander.reads d.ctx)
+     | Error e -> Error e)
+  | Error e -> Error e
+
+(* Write the read-closure depfile for `camdlc --emit-deps`: a JSON sidecar
+   listing the distinct external data files the compile opened. Atomic
+   (temp + rename) so a failed/killed write never leaves a partial or stale
+   depfile. Compile-time provenance only — never part of the IR. *)
+let write_depfile ~(path : string) ~(model : string)
+    (reads : (string * string) list) : unit =
+  let j = `Assoc [
+    "schema", `Int 1;
+    "model",  `String model;
+    "reads",  `List (List.map (fun (w, r) ->
+      `Assoc [ "as_written", `String w; "resolved", `String r ]) reads);
+  ] in
+  let tmp = path ^ ".tmp" in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+    output_string oc (Yojson.Safe.pretty_to_string j);
+    output_char oc '\n');
+  Sys.rename tmp path
 
 (* ── Severity-agnostic diagnostic collection ─────────────────────────────────
 

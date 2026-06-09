@@ -25,6 +25,11 @@ type context = {
   mutable balance_decl    : balance_decl option;
   mutable event_decls     : intervention_decl list;
   mutable diags           : Diagnostics.t;  (* collected errors/warnings *)
+  mutable reads           : (string * string) list;
+  (* (as-written, resolved) external data files opened during expansion, in
+     reverse (most-recent-first) order. Accumulated at the single read
+     chokepoint [read_csv_rows]; surfaced by [reads] and powers
+     `camdlc --emit-deps`. Never affects the IR. *)
   mutable source_dir      : string;         (* directory of the source file *)
   mutable filename        : string;         (* source filename for diagnostic locs *)
   mutable expanded_comp_cache : string list;
@@ -78,6 +83,7 @@ let empty_context ?(source_dir = "") ?(filename = "<input>") () = {
   balance_decl         = None;
   event_decls          = [];
   diags                = Diagnostics.create ();
+  reads                = [];
   source_dir;
   filename;
   expanded_comp_cache  = [];
@@ -313,6 +319,10 @@ let read_csv_rows ctx path ~on_header ~on_row ~on_done =
       ();
     None
   end else begin
+    (* Record the (as-written, resolved) pair for the read-closure depfile
+       (`camdlc --emit-deps`). Only files that actually exist and get opened
+       are recorded; a missing file fired E200 above. *)
+    ctx.reads <- (path, abs_path) :: ctx.reads;
     let ext = String.lowercase_ascii (Filename.extension path) in
     let sep = match ext with
       | ".csv" -> ','
@@ -635,6 +645,18 @@ let obs_loc ctx name =
   find_decl_loc ctx ~decls:ctx.obs_decls
     ~name_of:(fun (o : obs_decl) -> o.oname)
     ~loc_of:(fun o -> o.oloc) name
+
+(* Distinct external data files opened during expansion, as (as-written,
+   resolved) pairs in first-seen order. Deduped by resolved path: the same
+   file may be read once per stratum level (file-backed indexed forcings,
+   DRead dimensions), but the depfile wants the distinct file set. Powers
+   `camdlc --emit-deps`. *)
+let reads ctx =
+  let seen = Hashtbl.create 16 in
+  List.filter (fun (_, resolved) ->
+    if Hashtbl.mem seen resolved then false
+    else (Hashtbl.add seen resolved (); true))
+    (List.rev ctx.reads)
 
 let reserved_time_names = ["t"; "t_start"; "t_end"; "dt"]
 let reserved_math_names = ["pi"; "e"]                       (* gh#58 *)

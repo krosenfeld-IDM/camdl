@@ -151,6 +151,7 @@ let () =
     let output_path = ref "" in       (* "" → write to stdout *)
     let set_output p = output_path := p in
     let pretty_output = ref false in  (* false → canonical compact IR JSON *)
+    let emit_deps_path = ref "" in    (* "" → don't emit a read-closure depfile *)
     let spec = [
       ("--set", Arg.String (fun s ->
         match String.split_on_char '=' s with
@@ -169,6 +170,8 @@ let () =
        "FILE  write IR JSON to FILE instead of stdout (long form of -o)");
       ("--pretty", Arg.Set pretty_output,
        " emit indented (human-readable) IR JSON instead of the default compact form");
+      ("--emit-deps", Arg.String (fun p -> emit_deps_path := p),
+       "FILE  also write the compile's external-data read-closure to FILE (JSON)");
     ] in
     Arg.parse_argv (Array.of_list ("camdlc" :: args))
       spec (fun f -> files := f :: !files) usage;
@@ -184,7 +187,7 @@ let () =
          close_in ic;
          Bytes.to_string s
        in
-       match Compiler.compile ~name ~filename:path src with
+       match Compiler.compile_with_reads ~name ~filename:path src with
        | Error e when e = "compilation failed"
                    || (String.length e > 0 && e.[0] = '[') ->
          (* Diagnostics already rendered to stderr (text or JSON) by
@@ -194,7 +197,12 @@ let () =
             (m5 in the 2026-04-19 compiler review). *)
          exit 1
        | Error e -> Printf.eprintf "Error: %s\n" e; exit 1
-       | Ok m ->
+       | Ok (m, reads) ->
+         (* Read-closure depfile (`--emit-deps`): the external data files this
+            compile opened. Written before the IR so a downstream `camdl mre`
+            sees it even if IR streaming is later interrupted. *)
+         if !emit_deps_path <> "" then
+           Compiler.write_depfile ~path:!emit_deps_path ~model:path reads;
          let overrides = List.rev !set_kvs in
          let m = if overrides = [] then m else
            { m with Ir.parameters =

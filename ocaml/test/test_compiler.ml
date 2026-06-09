@@ -873,6 +873,60 @@ let test_table_read_path_scales_unit () =
   assert_inline_const ~epsilon:1e-6 tbl 1 (60.0 *. 365.2425);
   Sys.remove tmp
 
+(* ── `camdlc --emit-deps`: the compile read-closure ──────────────────────────
+   [compile_with_reads] returns the distinct external data files the compile
+   opened (as-written, resolved), powering the MRE-bundle depfile. *)
+
+let test_emit_deps_records_read_closure () =
+  let tmp = Filename.temp_file "camdl_emit_deps" ".tsv" in
+  let oc = open_out tmp in
+  output_string oc "group\tx\n";
+  output_string oc "a\t5\n";
+  output_string oc "b\t60\n";
+  close_out oc;
+  let src = Printf.sprintf {|
+    time_unit = 'days
+    dimensions { group = [a, b] }
+    compartments { S, I }
+    stratify(by = group)
+    parameters { beta : rate }
+    tables { age_dur : group 'years = read("%s") }
+    let N = S_a + I_a + S_b + I_b
+    transitions {
+      recovery[g in group] : I[g] --> S[g]  @ (1.0 / age_dur[g]) * I[g]
+    }
+    init { S_a = 500 I_a = 10 S_b = 500 I_b = 10 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} tmp in
+  (match Compiler.compile_with_reads ~name:"test" src with
+   | Ok (_m, reads) ->
+     Alcotest.(check int) "one distinct read file" 1 (List.length reads);
+     let (_as_written, resolved) = List.hd reads in
+     (* An absolute temp path passes through [resolve_data_path] unchanged. *)
+     Alcotest.(check string) "resolved path is the read file" tmp resolved
+   | Error e -> Alcotest.failf "compile_with_reads failed: %s" e);
+  Sys.remove tmp
+
+(* Negative control: a model with no read() has an empty read-closure — so the
+   "one read" assertion above is testing the recording, not a constant. *)
+let test_emit_deps_empty_when_no_reads () =
+  let src = {|
+    time_unit = 'days
+    compartments { S, I, R }
+    let N = S + I + R
+    parameters { beta : rate  gamma : rate }
+    transitions {
+      infection : S --> I  @ beta * S * (I / N)
+      recovery  : I --> R  @ gamma * I
+    }
+    init { S = 990 I = 10 }
+    simulate { from = 0 'days  to = 10 'days }
+  |} in
+  match Compiler.compile_with_reads ~name:"test" src with
+  | Ok (_m, reads) ->
+    Alcotest.(check int) "no read() → empty closure" 0 (List.length reads)
+  | Error e -> Alcotest.failf "compile_with_reads failed: %s" e
+
 (* ── gh#144 — read() data-file header robustness ─────────────────────────────
    read_csv_rows read the FIRST physical line as the header unconditionally,
    even when that line was a `#` provenance comment. A 1-column tab-free
@@ -6462,6 +6516,12 @@ let () =
         `Quick test_table_read_path_scales_unit;
       Alcotest.test_case "no unit annotation leaves values untouched"
         `Quick test_table_no_unit_annotation_leaves_values_alone;
+    ];
+    "emit_deps_read_closure", [
+      Alcotest.test_case "compile_with_reads records the distinct read() files"
+        `Quick test_emit_deps_records_read_closure;
+      Alcotest.test_case "no read() → empty closure (negative control)"
+        `Quick test_emit_deps_empty_when_no_reads;
     ];
     "table_read_header_gh144", [
       Alcotest.test_case "leading # comment block is skipped before header"
