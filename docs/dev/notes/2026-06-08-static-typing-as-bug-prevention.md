@@ -493,8 +493,9 @@ the tree — the type-level fix is built but not yet routed through here.
 **Technique:** newtype (one f64 field per semantic role) — distinct types for
 distinct quantities so a transposition fails to typecheck\
 **Solves:** Review finding #11 (StepClock dual-dt invariant rides on adjacent
-bare f64). No matching open gh# issue found in-tree; this is the audit/teaching
-example. Same hazard class as time_to_step(t, dt) transposition. · **L-class**
+bare f64) — **now confirmed shipped as gh#126 §#11, fixed 2026-06-08** (see
+"Confirmed" below). Same hazard class as time_to_step(t, dt) transposition. ·
+**L-class**
 
 **The bug.** step_one takes the realized substep length and the nominal model
 grid as two adjacent bare f64 params (dt, grid_dt) with distinct meanings — dt
@@ -503,6 +504,22 @@ intervention/event firing. Transposing them at a call site compiles, passes
 every on-grid golden (where dt == grid_dt), and silently corrupts only the
 off-grid inference path (PGAS/correlated-PF clipping to an off-grid observation)
 — i.e. exactly the runs that feed a posterior.
+
+**Confirmed — this shipped (gh#126 §#11, fixed 2026-06-08).** The hazard was not
+hypothetical. ODE flow accumulation (`ode.rs:265`) fed the nominal `cfg.dt` into
+`eval_propensities` while multiplying by the realized substep `dt`, so a rate
+referencing `Expr::Dt` (gh#54) reported the wrong flow on truncated boundary
+substeps (incidence → likelihood). It is the _wrong-source_ variant of this
+class — a single `dt` parameter handed the wrong in-scope `f64`, not a two-arg
+transposition — and, tellingly, it **slipped the very unification that decided
+the rule**: the StepClock work (`scheduling-spine-v2 §A`) established
+`EvalCtx.dt = dt_actual` and got 6 of the 7 realized-substep eval sites right,
+but `ode.rs:265` kept `cfg.dt` and the suite tested the others one at a time.
+TDD (`tests/ode_dt_rate_flow.rs`): RED reported `59` (rate at grid `3.0`) where
+the realized-dt oracle was `20` (rate at `1.0`); GREEN after the one-line fix.
+The newtype below would have made `eval_propensities(.., cfg.dt, ..)` a compile
+error rather than a one-line fix found by audit. (See the "Future sites" section
+for the structural cure — `EvalCtx` exposing only `dt_actual`.)
 
 **Before (real code):**
 
@@ -995,6 +1012,63 @@ doubles as the next batch of backlog knockdown.
 ≈ **14 M-class + ~6 L-class** issues are type-addressable. The rest of the
 backlog (~49) is genuinely isolated features / ergonomics / docs that no type
 collapses.
+
+## Future sites: the signature of a type-shaped bug, and where to type next
+
+The eight cases above are the _filed_ ones. The more useful skill is spotting
+the _next_ one before it ships — and gh#126 §#11 (the ODE `dt` bug in §5) is a
+fresh, instructive specimen, because it slipped a deliberate unification effort
+only days old.
+
+**The signature — what to look for.** Every type-shaped bug in this codebase has
+the same four-part shape:
+
+1. **One semantic distinction carried as a bare primitive** (`f64`, `usize`,
+   `String`). Here: "realized substep `dt_actual`" vs "nominal grid `dt`" — both
+   `f64`.
+2. **Enforced only by naming + comments**, not the compiler. The tell is _a
+   careful comment explaining which value to pass_: `effects.rs` literally
+   documents "the FIRING KEY is on `grid_dt`, not the realized `dt_actual`."
+   When a human has to write that comment, a newtype is waiting to be born.
+3. **The common case hides the wrong choice.** On-grid runs have
+   `dt_actual == grid_dt`; every single-`dt` golden agrees whether or not you
+   picked right. The divergence surfaces only off-grid — the inference path with
+   the least golden coverage.
+4. **N call sites, each enforced by hand.** `Expr::Dt` is read at seven substep
+   eval sites; six passed the realized `dt`, one (`ode.rs:265`) passed the grid.
+   The type system never forced them to agree and the suite exercised them one
+   at a time, so the lone slip survived.
+
+If a change has all four, it is not "be careful" territory; it is "make the
+distinction a type" territory.
+
+**Where to apply types next (prioritized — feeds-inference first):**
+
+- **`EvalCtx` should expose only the realized substep `dt`.** The §5 newtype
+  (`Dt` vs `GridDt`) stops the _transposition_; the deeper cure for the #11
+  _wrong-source_ variant is structural — the context that `Expr::Dt` reads
+  should carry **only** `dt_actual`, and the grid step should reach the few
+  sites that legitimately key on it (effect firing) via a distinct `GridDt` that
+  is simply _not in scope_ at a rate-eval call. Then
+  `eval_propensities(.., cfg.dt, ..)` cannot be written. This is the modest
+  follow-up the #11 one-liner defers.
+- **`Expr::Dt` under Gillespie is a missing typed state.** Gillespie has no
+  substep, so it feeds the _nominal_ `model.simulation.dt` to every eval — a
+  `dt`-referencing rate is silently **not backend-portable** (ODE/chain-binomial
+  use the realized step). The honest move is to make "this backend has no
+  substep `dt`" representable — reject (or warn on) `Expr::Dt` at capability
+  check for an event-driven backend, rather than hand it a stand-in. (Its own
+  issue.)
+- **The newtype program from §5** (`Count`/`Rate`/`Prob`/`LogDensity`/
+  `ParticleIdx`/`CompartmentIdx`) retires a whole family at once and is where
+  the per-newtype cost amortizes best.
+
+**Why this is worth a standing habit, not a one-off.** The #11 slip is the
+strongest argument in this doc precisely _because_ a careful, documented,
+test-backed unification still missed one of seven sites. Convention scales with
+vigilance; types scale with the compiler. The places that most need the
+compiler's help are exactly the ones a weekend of careful manual work just
+touched — that is where the bare-scalar conventions are densest and freshest.
 
 ## Where types do NOT help (so skeptics trust the rest)
 
