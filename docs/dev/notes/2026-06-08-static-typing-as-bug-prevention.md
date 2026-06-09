@@ -842,24 +842,157 @@ correct" stays a test obligation.
 
 ---
 
+## 8. `Const ‖ Expr` forcing/table fields: a parameter inside a forcing must stay live, not freeze to `f64`
+
+**Technique:** tagged-union runtime representation (ADT) — at build, split each
+forcing/table field into "constant-foldable" vs "references parameters," so the
+parameter-dependent ones stay live expressions instead of being flattened to a
+number. This is the **value** half of the same `#119` bug whose **gradient**
+half is example 7; the two types together close it.\
+**Solves:** #119 (the freeze), #186 (parametric `time_function` params
+un-estimable) · **M/L**
+
+**The bug.** A forcing/table field — a seasonal `amplitude`, a reporting ramp's
+`phase`, a contact-matrix cell — may be a literal (`0.3`) or an expression over
+model parameters (`amplitude`, `a*cos(2π·t/365)`). At `CompiledModel::new` every
+such field is evaluated **once**, against `default_params`, and flattened to a
+cached `f64`. So an **estimated** parameter living inside a forcing is **frozen
+at its default** for the whole fit: the sampler proposes new values, but the
+likelihood never moves. Combined with example 7's zero-gradient, that parameter
+is _invisible to inference_ — a flat likelihood and a confident posterior on a
+knob that did nothing, with healthy-looking R̂/ESS and no error.
+
+**Before (real code):**
+
+```rust
+// rust/crates/sim/src/compiled_model.rs:382-387 — the cache is a flat f64, with
+// no record of whether a value was a literal or the once-evaluated result of an
+// expression over parameters:
+pub table_values_cache: Vec<Vec<f64>>,
+pub time_func_cache:    Vec<CompiledTimeFunc>,
+
+// :667-674 — every inline table cell is evaluated ONCE, at construction,
+// against default_params, then flattened to f64:
+let mut table_values_cache: Vec<Vec<f64>> = Vec::with_capacity(model.tables.len());
+for table in &model.tables {
+    if let ir::table::TableSource::Inline { values } = &table.source {
+        let vals: Result<Vec<f64>, SimError> = values.iter()
+            .map(|expr| eval_table_expr(expr, &param_index, &default_params)) // &default_params!
+            .collect();
+        table_values_cache.push(vals?);
+    }
+}
+
+// rust/crates/sim/src/propensity.rs:186,194 — the read site uses ctx.t for a
+// time-function but NEVER ctx.params; it reads the frozen cache:
+Expr::TimeFunc(w)    => Ok(eval_time_func(&ctx.model.time_func_cache[idx].kind, ctx.t)),
+Expr::TableLookup(w) => { let cached = &ctx.model.table_values_cache[idx]; /* ctx.params never consulted */ }
+```
+
+**Why the compiler stayed silent.** The cache type is `Vec<Vec<f64>>` — a flat
+number. It carries no evidence of whether that number was a genuine literal
+(`0.3`, constant for all time) or the once-evaluated value of an expression that
+depends on a parameter. After the build, a field that _depends on a parameter_
+and a field that's a _constant_ have the **same type**, so the read site has no
+way to know it should have consulted `ctx.params`. The IR still holds the
+expression; the runtime threw that information away at the type level — and a
+`f64` read is, to the compiler, just a `f64` read.
+
+**After (the typed design):**
+
+```rust
+// A forcing/table field is one of two states, decided at build by whether its
+// expression references any parameter (the `expr_refs_param` predicate already
+// exists at compiled_model.rs:236):
+enum Field {
+    Const(f64),          // literal / constant-foldable — cache it, fast path
+    Expr(ResolvedExpr),  // references parameters — keep the expr, evaluate LIVE
+}
+
+// read: the match FORCES the live-eval branch to exist; you cannot silently read
+// a stale f64 for a parameter-dependent field.
+match field {
+    Field::Const(v) => *v,
+    Field::Expr(e)  => eval(e, ctx.params, ctx.t),   // responds to the proposal
+}
+```
+
+A `Const` field is constructible only as a number; an `Expr` field is
+constructible only as a live expression — so you **cannot accidentally freeze a
+parameter-dependent field**. The fast path survives (`Const` is still a cached
+read), and the read is _forced_ to handle the `Expr` case. Paired with example
+7: the `Deriv` type tells the autodiff to differentiate _through_ an `Expr`
+field and emit a genuine `0` only for `Const`. The two types together close both
+halves of #119 — the frozen value and the zero gradient.
+
+Note what distinction this type encodes: **literal vs expression** — a
+syntactic, fit-agnostic fact the compiler already knows. It deliberately does
+_not_ encode "estimated vs fixed." See the layering rule below for why that's
+exactly right.
+
+**What this still doesn't catch (honest).** Live-evaluating an `Expr` field
+every substep costs more than a cached read; only `Expr` fields pay it, and a
+per-eval memo (keyed on the parameter vector, which is constant within one
+likelihood evaluation) recovers most of it — the type buys correctness, the memo
+is an optimization layered on top. And, as in example 7, the type can't check
+that the forcing _formula_ is right — only that a parameter-dependent field
+isn't silently frozen.
+
+---
+
+## The layering rule: the model knows _structure_, the fit knows _config_
+
+Examples 1 (`ParamValue`) and 8 (`Const‖Expr`) both turn on one principle worth
+stating on its own, because it decides _where_ a distinction belongs:
+
+| distinction                                        | who decides        | when             | belongs in        |
+| -------------------------------------------------- | ------------------ | ---------------- | ----------------- |
+| **literal vs expression** (`0.3` vs `a`)           | the **compiler**   | compile/build    | the **IR / type** |
+| **estimated vs fixed** (`[estimate]` vs `[fixed]`) | the **fit config** | per-fit, runtime | **fit.toml only** |
+
+- **Encode the structural fact as a type.** "Does this forcing field depend on a
+  parameter?" / "which parameters does this rate reference?" are syntactic, the
+  compiler knows them, and they're the _same across every fit_. Make them types
+  (`Const‖Expr`, `ParamValue`, a resolved `CompartmentId`). Then the bug — a
+  parameter-dependent field frozen to a constant — is unrepresentable.
+- **Keep the fit-config fact out of the model.** Whether `amplitude` is
+  _estimated_ or _fixed_ is decided in `fit.toml`, and the **same model
+  parameter is fixed in one fit and estimated in another** (forward sim; fit A
+  estimates it; fit B fixes it). Baking estimated-vs-fixed into the IR couples
+  the model to one fit and breaks "one model, many fits."
+
+The elegant consequence: **the structural type makes the fit-config question
+moot.** You live-evaluate _every_ `Expr` field unconditionally — if its
+parameters happen to be fixed in this fit, live-eval computes the same number a
+cache would; if estimated, it responds to the proposal. You never need to ask
+"is this estimated?" at the model level. The bugs in examples 1 and 8 came from
+the inverse mistake: a runtime heuristic (placeholder-fill / an
+`expr_refs_param` scan) trying to _recover_ a structural fact the type should
+have carried, or conflating a fit-time notion (`Estimated`) with a model-time
+one (`None`/missing). The rule: **let the type carry what the model knows; let
+fit-time variation flow through it.**
+
+---
+
 ## Dual-purpose work-list: which open issues each technique retires
 
 These aren't hypothetical — each technique above maps to concrete open (or
 just-closed-as-worked-example) issues. The M-class column is the part that
 doubles as the next batch of backlog knockdown.
 
-| technique                                      | M-class                       | L-class         |
-| ---------------------------------------------- | ----------------------------- | --------------- |
-| ADT `ParamValue` (estimated ≠ missing)         | #191 (gate half)              | —               |
-| One `(value, grad)` traversal / AD type        | —                             | #197, #200, #79 |
-| resolve-don't-stringly-type (`CompartmentId`)  | #112 (arity, done)            | #111 (resolver) |
-| derive-the-hash-from-the-type                  | #189, #190                    | — (#147 done)   |
-| newtypes (`Time`/`Dt`/`GridDt`, `Count`, idx)  | #101, #107, #177              | review #11      |
-| parse-don't-validate (`Count` at the boundary) | #124 (done), #126, #127, #134 | —               |
-| make-the-dropped-derivative-explicit (`Deriv`) | #128 (done)                   | #119, #180      |
-| checked casts / typed effect amounts           | #198, #199, #122, #125        | —               |
+| technique                                                             | M-class                       | L-class         |
+| --------------------------------------------------------------------- | ----------------------------- | --------------- |
+| ADT `ParamValue` (estimated ≠ missing)                                | #191 (gate half)              | —               |
+| One `(value, grad)` traversal / AD type                               | —                             | #197, #200, #79 |
+| resolve-don't-stringly-type (`CompartmentId`)                         | #112 (arity, done)            | #111 (resolver) |
+| derive-the-hash-from-the-type                                         | #189, #190                    | — (#147 done)   |
+| newtypes (`Time`/`Dt`/`GridDt`, `Count`, idx)                         | #101, #107, #177              | review #11      |
+| parse-don't-validate (`Count` at the boundary)                        | #124 (done), #126, #127, #134 | —               |
+| make-the-dropped-derivative-explicit (`Deriv`) — #119 _gradient_ half | #128 (done)                   | #180            |
+| `Const ‖ Expr` forcing/table cache — #119 _value_ half                | #186                          | #119            |
+| checked casts / typed effect amounts                                  | #198, #199, #122, #125        | —               |
 
-≈ **13 M-class + ~6 L-class** issues are type-addressable. The rest of the
+≈ **14 M-class + ~6 L-class** issues are type-addressable. The rest of the
 backlog (~49) is genuinely isolated features / ergonomics / docs that no type
 collapses.
 
