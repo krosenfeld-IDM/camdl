@@ -1,0 +1,24 @@
+# Self-contained MRE-bundle fixture. Run:
+#   camdl mre fit tests/fixtures/mre/fit.toml
+# The model read()s model/pop.tsv at compile time — the bundle captures it.
+[model]
+camdl = "model/sir_patches.camdl"
+
+[data]
+file = "cases.tsv"
+
+[estimate.beta]
+[estimate.gamma]
+
+[fixed]
+rho = 0.5
+k   = 10
+I0  = 5
+
+[stages.scout]
+algorithm  = "if2"
+backend    = "chain_binomial"
+chains     = 2
+particles  = 200
+iterations = 10
+cooling    = 0.7
