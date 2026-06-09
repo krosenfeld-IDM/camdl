@@ -2,7 +2,7 @@ use crate::{
     compiled_model::{CompiledModel, CompiledTimeFuncKind},
     error::{SimError, CollapseKind},
     eval_stats::{allow_degenerate_rates, eval_unresolved},
-    resolved_expr::eval_resolved,
+    resolved_expr::{eval_resolved, ResolvedExpr},
     state::{IntState, RealState},
 };
 use ir::expr::{BinOp, Expr, UnOp};
@@ -201,7 +201,7 @@ pub fn eval_expr(expr: &Expr, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
             }
             let raw = eval_expr(&w.table_lookup.indices[0], ctx)?;
             let table_idx = raw.floor() as i64;
-            table_lookup(table, cached, table_idx)
+            table_lookup(table, cached, table_idx, ctx)
         }
 
         Expr::Projected(_) => {
@@ -317,8 +317,14 @@ pub fn eval_expr_deriv(expr: &Expr, wrt: usize, ctx: &EvalCtx<'_>) -> f64 {
     }
 }
 
-/// Perform a table lookup using the table's OobPolicy and pre-evaluated cached values.
-fn table_lookup(table: &ir::table::Table, cached: &[f64], idx: i64) -> Result<f64, SimError> {
+/// Perform a table lookup using the table's OobPolicy, evaluating the selected
+/// value expression (a live `ResolvedExpr`) against `ctx`.
+fn table_lookup(
+    table: &ir::table::Table,
+    cached: &[ResolvedExpr],
+    idx: i64,
+    ctx: &EvalCtx<'_>,
+) -> Result<f64, SimError> {
     use ir::table::OobPolicy;
     let n = cached.len() as i64;
     let i = match table.out_of_bounds {
@@ -333,7 +339,7 @@ fn table_lookup(table: &ir::table::Table, cached: &[f64], idx: i64) -> Result<f6
             idx
         }
     };
-    Ok(cached[i as usize])
+    Ok(eval_resolved(&cached[i as usize], ctx))
 }
 
 // ── Pure per-kind forcing math ──────────────────────────────────────────────

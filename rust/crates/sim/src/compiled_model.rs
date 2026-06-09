@@ -468,9 +468,12 @@ pub struct CompiledModel {
     /// For each ODE equation, the local real-compartment index.
     pub ode_real_indices: Vec<usize>,
 
-    /// Per-table evaluated values (params resolved at load time).
-    /// Indexed in the same order as model.tables / table_index.
-    pub table_values_cache: Vec<Vec<f64>>,
+    /// Per-table value expressions, resolved to live `ResolvedExpr` (not baked
+    /// to `f64`) so a param-referencing inline-table value tracks the params
+    /// slice — the sibling of the forcing-coefficient fix. Indexed in the same
+    /// order as model.tables / table_index; each inner vec is the table's
+    /// values, looked up by integer index and evaluated at lookup time.
+    pub table_values_cache: Vec<Vec<ResolvedExpr>>,
 
     /// Per-time-function resolved values (Expr fields evaluated at load time).
     /// Indexed in the same order as model.time_functions / time_func_index.
@@ -811,15 +814,16 @@ impl CompiledModel {
             ode_real_indices.push(local);
         }
 
-        // Evaluate table value expressions at load time using default params.
+        // Resolve table value expressions to live `ResolvedExpr` (evaluated at
+        // lookup time against the params slice, not baked at load).
         // External tables (TableSource::External) are left empty here; the CLI
         // fills them in before calling CompiledModel::new() via --table flags.
-        let mut table_values_cache: Vec<Vec<f64>> = Vec::with_capacity(model.tables.len());
+        let mut table_values_cache: Vec<Vec<ResolvedExpr>> = Vec::with_capacity(model.tables.len());
         for table in &model.tables {
             match &table.source {
                 ir::table::TableSource::Inline { values } => {
-                    let vals: Result<Vec<f64>, SimError> = values.iter()
-                        .map(|expr| eval_table_expr(expr, &param_index, &default_params))
+                    let vals: Result<Vec<ResolvedExpr>, SimError> = values.iter()
+                        .map(|expr| resolve_coeff(expr, &param_index))
                         .collect();
                     table_values_cache.push(vals?);
                 }

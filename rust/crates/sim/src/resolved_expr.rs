@@ -543,7 +543,9 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
                         record_table_oob(*table_idx, table_idx_val, *table_len);
                         return f64::NAN;
                     }
-                    cached[table_idx_val as usize]
+                    // Table values are live `ResolvedExpr` (const or
+                    // param-referencing) — evaluate the selected entry.
+                    eval_resolved(&cached[table_idx_val as usize], ctx)
                 }
             }
         }
