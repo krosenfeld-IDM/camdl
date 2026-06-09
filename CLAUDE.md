@@ -270,22 +270,24 @@ A golden or `ir/VERSION` change is a deliberate act, not a side effect. The
 serialized format and content of `ir/golden/`, `ocaml/golden/`, and
 `ir/expected/` are load-bearing (the `ir.json` format is `bf5d13b`'s compact
 serialization — one element per line — chosen for a 4.6×/5× compile+size win on
-national-scale models; see `docs/dev/proposals/archive/post-alpha/2026-05-30-compact-ir-serialization.md`).
+national-scale models; see
+`docs/dev/proposals/archive/post-alpha/2026-05-30-compact-ir-serialization.md`).
 
 - **Stage goldens explicitly.** Never `git add -A` / `git commit -a` when golden
   or doc files are dirty — a formatter/editor that reformats `*.ir.json` or
   reflows markdown must not ride along in an unrelated commit. Review
-  `git status` / `git diff --stat` before every commit; if goldens changed,
-  that is the commit's subject, not a footnote.
+  `git status` / `git diff --stat` before every commit; if goldens changed, that
+  is the commit's subject, not a footnote.
 - **A golden diff is reviewed by a human.** If `make update-golden` changes a
   golden, say what changed and why in the commit, and surface it — do not bundle
   it silently into a feature/docs/proposal commit. (Incident:
   `docs/dev/incidents/2026-06-09-golden-format-reverted-by-autoformat.md` — a
   docs-proposal commit silently re-pretty-printed 48 goldens; the CI gate that
   would have caught it was masked for 4 days.)
-- **An `ir/VERSION` bump or an edit to `ocaml/lib/ir/` or `rust/crates/ir/src/`**
-  breaks every golden and requires the atomic OCaml+Rust+golden update in
-  "Changing the IR schema" below — flag it and confirm before proceeding.
+- **An `ir/VERSION` bump or an edit to `ocaml/lib/ir/` or
+  `rust/crates/ir/src/`** breaks every golden and requires the atomic
+  OCaml+Rust+golden update in "Changing the IR schema" below — flag it and
+  confirm before proceeding.
 
 ## Quick Simulation
 
@@ -427,17 +429,25 @@ runtime autodiff, no finite differences.
 
 ### Backend capabilities
 
-Model features constrain which backends can run them. The `Capabilities`
-bitflags in `rust/crates/sim/src/lib.rs` enforce this at dispatch time:
+The `Capabilities` bitflags (`rust/crates/sim/src/lib.rs`) are **one of three**
+compatibility axes — model-feature × backend.
+`CompiledModel::required_capabilities()` derives a model's needs from the IR (a
+DSL primitive: `overdispersed(...)`, `balance {}`, a real compartment, `dt` in a
+rate); each backend declares what it provides; mismatch → hard error at
+dispatch.
 
-- `OVERDISPERSION`: transitions using `overdispersed(rate, σ²)` require
-  chain-binomial (NegBinomial draws). Gillespie and ODE reject these models with
-  a hard error.
+- `OVERDISPERSION`: `overdispersed(rate, σ²)` transitions require chain-binomial
+  (NegBinomial draws). Gillespie and ODE reject these models with a hard error.
 - `REAL_COMPARTMENTS`: real-valued compartments with ODE equations.
 
-The `CompiledModel::required_capabilities()` scans the IR; each backend's
-`Simulate::capabilities()` declares what it supports. Mismatch → error before
-simulation starts.
+Subtlety: the "what a backend provides" side **forks by execution mode** —
+`Simulate::capabilities()` (simulate path) vs a separate hardcoded table in
+`fit/methods.rs::check_model_capabilities` (inference path), which deliberately
+withholds `REAL_COMPARTMENTS` from chain-binomial inference (gh#191). The other
+two axes — algorithm × backend (the `METHODS` registry) and model-feature ×
+algorithm (scattered ad-hoc checks) — plus the known gaps are mapped in
+[`docs/dev/capabilities-system.md`](docs/dev/capabilities-system.md); read it
+before touching any backend/algorithm/capability gate.
 
 ### Scheduled interventions and simulation backends
 

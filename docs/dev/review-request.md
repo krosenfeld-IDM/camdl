@@ -45,6 +45,15 @@ the design principles the code is supposed to follow. Key ones:
 "no loose semantics", "error messages are a feature", "backwards
 compatibility is a non-goal".
 
+When you assess whether a model/backend/algorithm combination is
+valid — or whether a "this isn't supported" check sits in the
+right place — read `camdl/docs/dev/capabilities-system.md` first.
+It maps the three compatibility axes (model-feature × backend,
+algorithm × backend, model-feature × algorithm) and which are
+enforced by a real mechanism vs. ad-hoc convention. Don't
+reverse-engineer the axes from the code; the doc already did it,
+and conflating them is the single most common reviewer error here.
+
 Review scope — look for, in roughly this priority order:
 
 1. Scientific errors. Wrong math, wrong distribution, wrong
