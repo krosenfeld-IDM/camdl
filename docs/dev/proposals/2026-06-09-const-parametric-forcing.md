@@ -1,48 +1,61 @@
-# Const‖Parametric forcing: keep parameter-referencing coefficients live (and differentiable)
+# Const‖Parametric forcing: a coefficient is an expression, not data (value + gradient)
 
-- **Status:** Draft **v2** — reworked after an adversarial review (2026-06-09,
-  17 confirmed findings incl. 3 blockers) that corrected v1's central design.
-  Changelog at end. This proposal is the **implementation plan** for examples
-  **§7 (gradient half)** and **§8 (value half)** of
-  [`docs/dev/notes/2026-06-08-static-typing-as-bug-prevention.md`](../notes/2026-06-08-static-typing-as-bug-prevention.md),
-  which already designed the typed fix; read those two examples first — this doc
-  does not re-derive them, it stages and tests them against the now-filed
-  incident.
+- **Status:** Draft **v3** — design reworked around "coefficients are
+  `ResolvedExpr`" (Design B) after a 3-reviewer design panel (per-forcing
+  mechanics, performance, engineering) **unanimously** chose it over the v2
+  `Const|Live` enum, including the reviewer assigned to steelman v2. A second
+  3-reviewer pass then checked it lands clean against the code (no blockers; the
+  gradient half is easier than first assumed — corrections folded in). Changelog
+  at end. This proposal is the **implementation plan** for examples **§7
+  (gradient half)** and **§8 (value half)** of
+  [`docs/dev/notes/2026-06-08-static-typing-as-bug-prevention.md`](../notes/2026-06-08-static-typing-as-bug-prevention.md);
+  read those first.
 - **Fixes:** the freeze in
   [`docs/dev/incidents/2026-06-09-forcing-coefficient-param-frozen-at-construction.md`](../incidents/2026-06-09-forcing-coefficient-param-frozen-at-construction.md).
-  Both halves of gh#119; plus gh#186 (value), gh#128/gh#180 (gradient family).
-- **Required reading:** the incident; the static-typing note §7+§8;
-  `docs/camdl-language-spec.md` §7 (line ~1080 advertises the broken feature);
-  the [typed-parameter-surface proposal](2026-06-08-typed-parameter-surface.md).
-- **Discrepancy class:** **code-vs-code** (rate eval live, forcing/table eval
+  **gh#119** (engine value freeze) and **gh#186** (the comprehensive
+  inference-framed issue: all methods, both halves). gh#128 is **closed** and
+  orthogonal (it is _why_ the gradient gap is silent — there is no `rate_grad`
+  key to reject); gh#180 is a **separate** obs-projection gradient bug, out of
+  scope.
+- **Required reading:** the incident; the static-typing note §7+§8 and "The
+  layering rule"; `docs/camdl-language-spec.md` §7 (line ~1080 advertises the
+  broken feature); the
+  [typed-parameter-surface proposal](2026-06-08-typed-parameter-surface.md).
+- **Discrepancy class:** **code-vs-code** (rate/obs eval live, forcing eval
   frozen — same `Expr::Param`) + **doc-vs-code** (spec promises the feature;
-  code is the loser → sync code to spec).
-- **Correction to v1's framing:** v1 claimed "no inference edits." **That is
-  wrong.** The gradient half edits the OCaml autodiff (`autodiff.ml`), which is
-  the _only_ source of the gradients PGAS+NUTS consumes. The value half alone
-  fixes the gradient-free methods (IF2, bootstrap PF) but leaves NUTS broken in
-  a _worse_ way (value responds, gradient stays zero — they disagree). §4 is the
-  core, not a footnote.
+  sync code to spec).
+
+## 0. One root cause, two symptoms
+
+The bug is a single mental-model error — **a forcing's scalar coefficient is
+treated as _data_ (a fixed covariate) when it is an _expression over
+parameters_.** That one premise produced both symptoms:
+
+- **Value freeze** — the coefficient is baked to `f64` at `CompiledModel::new`
+  (`compiled_model.rs:758-840`) and never updated as the params slice varies.
+- **Zero gradient** — `autodiff.ml:23-24` differentiates
+  `TimeFunc`/`TableLookup` to `Const 0.0` ("covariates are data, derivative =
+  0").
+
+The fix is to stop treating coefficients as data and **treat them as what the IR
+already says they are: expressions.** Evaluate them live (value half, §3);
+differentiate the closed form with respect to them (gradient half, §4). The two
+halves are the same reframe applied in two places (Rust runtime eval; OCaml
+autodiff). The genuinely _structural_ parts of a forcing — interpolation knots
+from a CSV, a precomputed cubic-spline basis — are real data and stay
+precomputed; only the scalar coefficient _inputs_ change.
 
 ## 1. What is broken (with the reproduction and the real blast radius)
 
 The spec promises a forcing coefficient may reference a parameter "for
 inference" (`docs/camdl-language-spec.md:1080`, `amplitude = alpha`). The
-runtime silently breaks it: at `CompiledModel::new` every coefficient is
-collapsed to one `f64` and cached; during a fit the model is built once and
-parameters vary as a borrowed slice, so the cached value never updates. Concrete
-reproduction (build once, vary `amp` only in the live slice → byte-identical
-trajectory; vary `sigma`, used in a rate → totally different) is in the
-incident.
+runtime silently breaks it: the model is built once per fit, parameters vary as
+a borrowed slice, and the baked coefficient never updates. Reproduction (build
+once, vary `amp` only in the live slice → byte-identical trajectory; vary
+`sigma`, used in a rate → totally different) is in the incident.
 
-All six forcing variants and inline tables bake every coefficient
-(`compiled_model.rs:724-840`): `Sinusoidal` (amplitude/period/phase/baseline),
-`Piecewise` (breakpoints[]/values[]), `Interpolated` (times[]/values[]),
-`Periodic` (period/values[]), `Fourier` (period/harmonics[]), `PeriodicSpline`
-(period/coefs[]), inline `table` (values[]).
-
-**Blast radius — four committed goldens, not one** (verified by `jq` over
-`ocaml/golden/*.ir.json`; no inline table references a param):
+**Blast radius — four committed goldens** (verified by `jq`; all are
+`Sinusoidal`; no inline table references a param):
 
 | golden                    | forcing param(s)               | IR `ParamValue` |
 | ------------------------- | ------------------------------ | --------------- |
@@ -51,253 +64,337 @@ All six forcing variants and inline tables bake every coefficient
 | `seir_pop_balance`        | pop_amp, pop_mean              | **Required**    |
 | `phenom_mixing_unchecked` | amp                            | **Required**    |
 
-Any past fit of these has a posterior that reflects only the prior for the
-forced parameter. **Three of four are `Required`** — see §3, this is why keying
-on `Estimated` is wrong, and why a **user-facing advisory** is warranted (§7).
+Three of four are `Required`. Any past fit of these has a posterior reflecting
+only the prior for the forced parameter — a **user-facing advisory** is
+warranted (§7).
 
-## 2. Why it happens
+## 2. Why it happens, and where it does NOT
 
-### 2.1 Rates live; forcing/table coefficients frozen; everything else live
+### 2.1 Rate/obs eval is live; forcing eval is frozen; everything else is live
 
 - **Rate (live):** `ResolvedExpr::Param(idx) => ctx.params[idx]`
-  (`resolved_expr.rs:408`) reads the live slice.
+  (`resolved_expr.rs:408`).
+- **Observation models (live):** `ResolvedLikelihood` stores its coefficients
+  (`mean`, `dispersion`, `sd`, …) as `ResolvedExpr` and evaluates them live
+  every call (`obs_model.rs:60-136`, `resolve_likelihood` in
+  `resolved_expr.rs`). **This is Design B already in production** — forcings are
+  the one place that diverged.
 - **Forcing/table coefficient (frozen):**
   `eval_table_expr(expr, &param_index,
-  &default_params)` at 16 sites collapses
-  to `f64`; `Expr::Param(p) =>
-  Ok(params[idx])` (`compiled_model.rs:277-281`)
-  resolves against the _construction_ vector, no error.
-- **The read can't recover:** `eval_time_func(&cache[idx].kind, ctx.t)`
-  (`propensity.rs:186`, `resolved_expr.rs:510`); `eval_time_func(kind, t)`
-  (`:340`) takes no params.
+  &default_params)` (16 sites) → `f64`;
+  `eval_time_func(kind, t)` (`propensity.rs:340`) takes no params, so the read
+  path cannot recover.
 - **Verified NOT siblings** (review): initial conditions
   (`compiled_model.rs:1154-1169`), `balance`, `events`/`interventions`
-  (`effects.rs`), ODE equations, parametric schedules, and observation models
-  (`obs_model.rs:60-136`) all evaluate live against the per-iteration params
-  slice. The freeze is confined to `time_func_cache` + `table_values_cache`.
+  (`effects.rs`), ODE equations, parametric schedules — all live. The freeze is
+  confined to `time_func_cache` + `table_values_cache`.
 
-### 2.2 The two halves (and why the value half alone is not enough)
+### 2.2 The value half alone is not enough for NUTS
 
-`#119` is two bugs sharing one parameter:
+Fixing the value freeze makes the likelihood respond → **IF2 and the bootstrap
+particle filter (gradient-free) work.** But **PGAS+NUTS** drives the θ|X step
+with compiler-emitted `rate_grad`, and `autodiff.ml` zeroes `TimeFunc`, so NUTS
+sees ∂loglik/∂coef ≡ 0. Value-only would ship a _responsive likelihood with a
+zero gradient_ — they disagree, a worse failure than the uniform freeze.
+`gradient_check.rs:448-454` already documents this "doubly-silent zero
+gradient." So §4 is required before forcing params are advertised as
+NUTS-estimable.
 
-- **Value half (§8 of the note):** the frozen `f64` cache above. Fixing it makes
-  the _likelihood_ respond to the parameter — which fixes **IF2** and the
-  **bootstrap particle filter** (gradient-free).
-- **Gradient half (§7 of the note):** `autodiff.ml:23-24` differentiates
-  `TimeFunc _ -> Const 0.0` and `TableLookup _ -> Const 0.0` unconditionally, so
-  the compiler-emitted `rate_grad` for `seasonal[p]*S*I/N` carries **no entry**
-  for `amp` (verified: `seir_seasonal_patch` `infection_*` transitions have null
-  `rate_grad`). `eval_expr_deriv` mirrors it (`propensity.rs:253-255`). So
-  **PGAS+NUTS** (the production Bayesian method) sees ∂loglik/∂amp ≡ 0 and never
-  moves the parameter by gradient.
+### 2.3 Forcing coefficients are NOT constant-folded by the OCaml pass
 
-If we ship the value half alone, NUTS gets a _responsive likelihood with a zero
-gradient_ — they disagree, which is a worse, subtler failure than the original
-uniform freeze. `gradient_check.rs:448-454` already documents this
-"doubly-silent zero gradient" and deliberately avoids estimating
-`alpha`/`phi_season`. **Both halves must land before forcing params are
-advertised as NUTS-estimable.**
+`fold_model` (`constant_fold.ml:103-118`) folds only transitions, bindings, and
+ODE equations — never `time_functions`/`tables`. So a coefficient `2 * 0.15`
+reaches Rust as a `BinOp`. The Rust build must therefore resolve coefficient
+expressions itself (it already has the machinery: `resolve_expr`).
 
-### 2.3 Correction: forcing coefficients are NOT constant-folded
+## 3. Value half: a coefficient is a `ResolvedExpr`, evaluated live
 
-v1 claimed the OCaml fold pre-separates `Const` from `Param` coefficients.
-False: `fold_model` (`constant_fold.ml:103-118`) folds only transitions,
-bindings, and ODE equations — never `time_functions` or `tables` (and it
-short-circuits when there are no inline tables, `:105`). A coefficient like
-`amplitude = 2 * 0.15` reaches Rust as a `BinOp`, not `Const`. The build-time
-decision therefore relies on a **Rust-side recursive scan**, not on any fold
-property.
-
-## 3. Value half: a coefficient is `Const(f64)` or `Live(ResolvedExpr)`
+Store each forcing's **scalar coefficients as `ResolvedExpr`** — exactly how
+rates and observation likelihoods already store theirs. A literal coefficient is
+a `ResolvedExpr::Const(v)`; a parameter coefficient is
+`ResolvedExpr::Param(idx)` (or any expression). There is **no `Const|Live` enum
+and no build-time classifier** — the v2 design reintroduced the
+`expr_refs_param` scan that the note's "layering rule" explicitly names as _the
+inverse mistake_, and that classifier is the exact surface v1's
+`Estimated`-keying got wrong. With Design B there is **no `f64` slot for a
+coefficient to freeze into**: the freeze is unrepresentable, not merely guarded.
+(Panel: B is uniform with rates/obs across 6 of 8 forcing kinds; the v2 `Const`
+variant optimizes a negligible term — see §perf below.)
 
 ```rust
-enum CompiledCoeff { Const(f64), Live(ResolvedExpr) }
+// CompiledTimeFuncKind — scalar coefficients become ResolvedExpr; structural
+// data (precomputed) is unchanged.
+Sinusoidal { amplitude: ResolvedExpr, period: ResolvedExpr,
+             phase: ResolvedExpr, baseline: ResolvedExpr }
+Periodic   { period: ResolvedExpr, values: Vec<ResolvedExpr> }
+Fourier    { period: ResolvedExpr, harmonics: Vec<(ResolvedExpr, ResolvedExpr)> }
+// Interpolated / CubicSpline / PeriodicSpline: structural arrays + the
+// precomputed spline basis stay as today (see "structural" below).
 ```
 
-**Build-time decision — key on "references ANY parameter", not `Estimated`.**
-Use the **existing** `expr_refs_param` predicate (`compiled_model.rs:236`,
-recursive, already used for bindings at `:673`). If a coefficient references any
-param → `Live(resolve_expr(expr))`; else → `Const(eval_table_expr(...))`.
+**Build (`CompiledModel::new`):** replace each
+`eval_table_expr(expr, .., &default_params)?` with `resolve_expr(expr)` — but
+**keep the current grammar whitelist**. `eval_table_expr` hard-errors on
+anything but `Const/Param/BinOp/UnOp/UncheckedDim`
+(`compiled_model.rs:328-330`); `resolve_expr` would silently admit
+`Pop/Time/TimeFunc/TableLookup/BindingRef`, i.e. state/time/forcing-dependent
+coefficients the spec never defined. Add an explicit validation pass over the
+coefficient expression (reject those variants with a clear E-code) **before**
+resolving — preserving today's hard error. **Constant-fold** the resolved
+coefficient at build so an all-constant coefficient is a single
+`ResolvedExpr::Const(f64)` (a bare leaf, no tree walk) — this recovers v2's fast
+path for the common case without a separate type.
 
-Why not key on `ParamValue::Estimated` (v1's error, a confirmed **blocker**):
-the fit pipeline estimates parameters that are **`Required` or `Fixed` in the
-IR, not `Estimated`**. A bare `alpha : probability` compiles to `Required`
-(`expander.ml:3234`); put under `[estimate]`, the runner seeds it with
-`with_value` (`runner.rs:180`), and `with_value` turns `Required → Fixed`
-(`parameter.rs:238`). `CompiledModel::new` receives only the model, never the
-`estimate_set` (`runner.rs:211`), so it sees `Fixed` and would bake —
-re-freezing 3 of the 4 goldens, including the spec example. Keying on **any
-param** is correct regardless of kind: a `Fixed`/`Required` param's coefficient
-live-evaluates to the same number it would have baked, so it is never _wrong_;
-only param-referencing coefficients pay per-substep eval (the all-constant hot
-path is untouched). This is exactly the note's "layering rule": encode the
-structural fact (literal vs expression), never the fit-config fact (estimated vs
-fixed).
+**Readiness snags to budget (none are blockers):** (a) **build-loop ordering** —
+`ResolveCtx` is currently constructed _after_ the table/time-func build loops
+(`compiled_model.rs:~892` vs the loops at `~724-844`), and it depends on
+`table_meta`, which depends on `table_values_cache`. So this is not an in-place
+`eval_table_expr → resolve_expr` swap: hoist a coefficient-only resolve context
+(it needs `param_index`, available at `:609`, plus the indices used _only to
+reject_ via the whitelist) above the loops, or move the loops below
+`ResolveCtx`. This reorder inside a 500-line, CLAUDE.md-flagged constructor is
+the value half's top risk. (b) **`fold_resolved` and the forcing memo are new
+code** (no `ResolvedExpr` fold exists; the binding `CacheScope` is
+binding-keyed, not a drop-in) — but both are _perf_, not correctness, so a
+correct-but-unoptimized value half can land first and add them after. (c)
+**`schema.json` already drifted** — `ir/schema.json:328-331` declares
+`amplitude`/`period`/… as `"number"` while the IR emits exprs (e.g.
+`seir_vaccine_seasonal.ir.json`: `"amplitude": {"param":"alpha"}`); it is
+unenforced (no test validates goldens against it), but fold the
+`number → $ref expr` correction in here (no `ir/VERSION` bump — serialized
+content is unchanged). (d) Preserve the existing build-time numeric checks
+(`period <= 0`, `coefs.len()==n_basis`) by also evaluating those at
+`default_params` for the check — don't let them silently regress.
 
-**Preserve the coefficient grammar whitelist** (confirmed major). Today
-`eval_table_expr` hard-errors on anything but
-`Const/Param/BinOp/UnOp/UncheckedDim` (`compiled_model.rs:328-330`).
-`resolve_expr` accepts `Pop/PopSum/Time/Dt/
-TimeFunc/TableLookup/BindingRef`
-too. The `Live` path must **keep the same whitelist** — reject a coefficient
-that reads compartment state, time, or another forcing — preserving today's hard
-error. State-dependent forcings are a separate feature with their own
-spec/dimcheck rules, not a silent side effect of this fix.
+**Structural data stays precomputed (the real split — kind-by-kind, not
+field-by-field-classified):** the cubic-spline basis (`CubicSpline::new`'s
+construction-time Thomas solve, `compiled_model.rs:46-98`), `PeriodicSpline`
+coefs consumed by the de Boor evaluator, and CSV/inline interpolation knot
+arrays are **data**, not coefficients, and remain precomputed `f64`/derived
+structures. **Correction (readiness review):** `Fourier`'s `period_inv` is _not_
+structural — it is `1/period`, a derived **coefficient**. If `period` becomes a
+`ResolvedExpr`, the cached `period_inv` (`compiled_model.rs:811`) cannot stay
+precomputed; compute `1/eval(period)` live in `eval_forcing` (no golden uses
+`Fourier`, so this is unexercised today, but the machinery must handle it).
 
-**`eval_time_func` stays a pure `(kind, t)` function; add a dispatch.** It has
-**~30 call sites across 3 pure-math test files** (`interpolation.rs`,
-`periodic_forcing.rs`, `fourier_oracle.rs`) that pass no context — not "two
-callers / two lines" as v1 claimed. Keep `eval_time_func(kind, t)` for the
-`Const`-only path (so those tests are untouched), and add
-`eval_coeff(&CompiledCoeff, &ctx) -> f64` (Const → the f64; Live →
-`eval_resolved(e, ctx)`) used where a forcing field may be live. The two
-production read sites (`propensity.rs:186`, `resolved_expr.rs:510`) already hold
-`ctx`.
+**Reject estimated spline knots.** A param-referencing `Interpolated`-spline
+knot or `PeriodicSpline` coef cannot be live (its value feeds a basis derived by
+a construction-time solve; live would mean rebuilding the spline every substep).
+Emit a clear E-code. This is a _structural_ property of those kinds, decidable
+without any Const/Live classifier.
 
-**Splines need a decision (confirmed blocker).** `Interpolated` with
-`method = cubic_spline` does not store knot values as `f64` — it runs
-`CubicSpline::new` (an O(n) Thomas solve, `compiled_model.rs:46-98`) at
-construction to derive b/c/d. `PeriodicSpline` reads `coefs: &[f64]` via a de
-Boor evaluator. A `Live` knot would require **rebuilding the spline every
-substep**, which `CompiledCoeff::Live` cannot represent. **v1 recommendation:
-reject an estimated/param-referencing coefficient in `Interpolated`-spline knots
-and `PeriodicSpline` coefs with a clear E-code** (estimating spline knots is
-rare and the rebuild cost is the dominant term, not "sin/spline math"); defer
-live-spline-coefficient estimation to a follow-up that specifies the rebuild and
-measures it.
+**Eval call structure (preserve the pure math).** Keep `eval_time_func`'s
+closed-form math a pure function of **already-evaluated scalars + `t`** (so the
+Fourier/spline/interp math stays testable in isolation, as the ~30 pure-math
+tests in `interpolation.rs`/`periodic_forcing.rs`/`fourier_oracle.rs` need). Add
+a thin `eval_forcing(&kind, t, ctx)` at the two production read sites
+(`propensity.rs:186`, `resolved_expr.rs:510`, both already hold `ctx`) that
+evaluates the `ResolvedExpr` coefficients against `ctx.params` and then calls
+the pure math. The ~30 tests migrate to calling the pure per-kind math directly
+(testing the math, not resolution) — a one-time, clarity-improving refactor.
 
-**Perf: memoize per (substep, t).** Cost is per _referencing transition_, not
-per substep: a per-patch `seasonal` referenced by N infection transitions pays N
-`eval_resolved` walks per substep per particle (`propensity.rs:461-475`). Add a
-small per-step cache (analogous to the binding `CacheScope`) keying each
-forcing's scalar on `(idx, t)` so N transitions share one eval — bounding the
-regression independent of patch count. The `Const` fast path is a bare f64 load.
+**Perf — memo, not a `Const` type.** The dominant hot-path cost is _not_ the
+coefficient leaf (a `Const` eval is ~1–3 cycles vs the forcing's own `sin()` at
+15–40); it is that a forcing referenced by **N transitions** is evaluated N
+times per substep per particle (`propensity.rs:461-475`) — a cost **identical
+under v2 and B** and _not_ removed by a baked `f64`. Add a per-`(forcing, t)`
+memo using the existing binding `CacheScope` machinery
+(`resolved_expr.rs:360-397`) so the N referencing transitions share one
+evaluation (collapsing N `sin()` to 1 — a win v2 also needed and did not get
+from its `Const` type). `t` is constant within one `eval_propensities` call, so
+the key is just the forcing index. The asymmetry that settles the design: B's
+worst case (a constant misjudged as live) is _slower_; v2's worst case (a
+misclassification) is _silently frozen_ — for a public-health inference tool,
+"never silently wrong" wins.
 
-## 4. Gradient half: differentiate through `TimeFunc`/`TableLookup` (the core)
+## 4. Gradient half: differentiate the closed form w.r.t. coefficient params
 
-The floor is the note §7 ADT — make the dropped derivative explicit so it can
-never be a silent zero:
+Same root cause: once a coefficient is an expression, its derivative is
+well-defined. Two pieces:
 
-```ocaml
-type deriv = Known of expr | Unsupported of { node : string; reason : string }
-```
+1. **The floor — make a dropped derivative explicit** (note §7):
+   `type deriv = Known of expr | Unsupported of { node; reason }`.
+   `differentiate_rate` must _choose_ — `Known (Const 0.0)` (genuinely absent) →
+   omit; `Known d` → emit; `Unsupported` → a compile-time E-code naming the
+   param + forcing. A silent zero becomes unrepresentable.
+2. **The feature — emit ∂forcing/∂coef per kind:** `Sinusoidal` ∂/∂amplitude =
+   `sin(2π(t−phase)/period)` (with nonzero ∂/∂phase, ∂/∂period); `Fourier`/
+   `PeriodicSpline` linear in their coefs; `Piecewise`/`Periodic` differentiable
+   w.r.t. step _values_, `Unsupported` w.r.t. a _param-valued breakpoint_ (the
+   value is discontinuous in it); spline _knots_ → `Unsupported` (dense
+   dependence through the solve — consistent with §3's rejection).
 
-`differentiate_rate` must then _choose_: `Known (Const 0.0)` → omit (genuinely
-absent); `Known d` → emit; `Unsupported u` → a compile-time `E`-code naming the
-param + forcing.
+**Readiness finding — this is the _easy_ world (no IR schema change):** the expr
+language **already has `Sin`/`Cos`/`Tanh`** (`ir.ml:9`, gh#58) with
+differentiation rules already present (`autodiff.ml:165-173`), so
+`sin(2π(t−phase)/period)` is expressible as a plain `Expr` — no new node, no
+`ir/VERSION` bump, no all-golden re-bless. And the **production gradient path is
+emitted `rate_grad` → `resolve_expr` → `eval_resolved`** (`pgas_grad.rs:128`),
+_not_ the forward-mode `eval_expr_deriv` — so the emitted derivative is an
+ordinary `Expr` and there is **no `ResolvedExpr::TimeFunc` identity-threading to
+do** (v3 over-scoped this; `eval_expr_deriv`'s `TimeFunc→0` at
+`propensity.rs:255` is a secondary path, fix-or-document separately). The real
+work is: thread `model.time_functions` into `differentiate` (the data is already
+in scope at the call site, `compiler.ml:354`; ~31 recursive arms re-signed), the
+per-kind derivatives, and the `deriv` ADT (touches ~72 `differentiate` arms —
+uniform, generalizes the existing `Mod` `failwith`). **It changes the IR
+`rate_grad` content** (forcing params gain entries; today null) → an **atomic
+golden re-bless** of the 4 affected `ocaml/golden/*.ir.json` via
+`make update-golden` (forward-sim TSVs are unaffected — `rate_grad` is
+gradient-only — so no `update-expected` churn). **Depends on §3 landing first:**
+an emitted ∂/∂amplitude that references `phase`/`period` is only correct once
+those coefficients are evaluated live (§3); against the baked `f64` it would use
+stale default-param values.
 
-The **feature** above the floor: emit the analytic ∂forcing/∂coef per kind —
-e.g. `Sinusoidal`: ∂/∂amplitude = `sin(2π(t−phase)/period)`, with nonzero
-∂/∂phase and ∂/∂period; `Fourier`/`PeriodicSpline`: linear in their coefs. This
-requires the gradient evaluator to know **which time-function coefficient each
-`TimeFunc` node carries** — today `ResolvedExpr::TimeFunc` is an opaque index
-(`resolved_expr.rs:59`). So this half touches `autodiff.ml`, `eval_expr_deriv`
-(`propensity.rs:253-255`), and the `TimeFunc` node's gradient representation.
-`TableLookup` with a param-dependent value is analogous (a selector/weighted
-sum); a param-dependent _index_ is non-differentiable → emit `Unsupported`.
+**Scope decision (central):** ship the value half (§3) **plus a NUTS guard**
+first; the gradient half second. The guard (Rust, post-resolve — §6) rejects a
+fit when an estimated parameter is referenced _only_ inside a forcing/table
+coefficient and `use_nuts` is on, naming the limitation — so IF2/PF work
+immediately and NUTS fails loud rather than silently mis-sampling.
 
-**Scope decision (the central one — see Open Questions):** _v1_ ships the value
-half (§3) **plus a NUTS guard** that rejects a fit when an estimated parameter
-is referenced _only_ inside a forcing/table coefficient and `use_nuts` is on,
-naming the limitation — so IF2/PF work immediately and NUTS fails loud instead
-of silently mis-sampling. _v2_ ships the gradient half (this section), lifts the
-guard, and makes forcing params NUTS-estimable. Recommended, because the
-gradient half is genuine compiler work and gating it keeps the interim correct.
-
-## 5. Tests (corrected — the v1 set was unusable as written)
+## 5. Tests
 
 - **Red test (the repro):** build once, vary the param in the live slice; today
-  `assert_eq!(lo, hi)` (frozen) → fix flips to `assert_ne!`. Cover **a
-  `Required` case (`seir_vaccine_seasonal`)** and a `Periodic` value and an
-  inline table — _not only_ the `Estimated` `seir_seasonal_patch`, which is the
-  easy case v1's rule happened to handle.
-- **"No dead estimated parameter" invariant — scoped per class** (v1's single
-  "propensity changes" assertion false-positives on nearly every golden:
-  init-only N0/I0, obs-only rho/k, overdispersion sigma_se, intervention
-  vacc_frac all legitimately leave the propensity unchanged). Scope: a param
-  that enters a **rate or forcing coefficient** must move the propensity; init
-  params → assert `initial_state` changes; obs params → obs-likelihood changes;
-  overdispersion → draw variance; intervention → post-fire state. Forcing params
-  _do_ enter the rate (via the `TimeFunc` node), so the scoped propensity check
-  still catches the target bug.
-- **Gradient gate — two stages.** Until §4 lands, the gate is **FD-of-value
-  only** (`loglik(θ±ε)`), never analytic-vs-FD — because the analytic gradient
-  is structurally zero and `gradient_check.rs` would (correctly) go _red_
-  against the value-only fix. After §4, add the analytic-vs-FD check in
-  `gradient_check.rs` for forcing params (the existing seasonal test at `:448`
-  un-`xfail`ed).
-- **Perf guard:** an all-constant forcing stays `Const` (no `eval_resolved`);
-  the `Live` Fourier/spline path allocates zero per substep (reused scratch).
+  `assert_eq!(lo, hi)` (frozen) → fix flips to `assert_ne!`. Cover a
+  **`Required` case (`seir_vaccine_seasonal`)**, a `Periodic` value, and an
+  inline table — not only the `Estimated` `seir_seasonal_patch`.
+- **"No dead estimated parameter" invariant — scoped per class** (a single
+  "propensity changes" assertion false-positives on init-only / obs-only /
+  overdispersion / intervention params): a param entering a **rate or forcing
+  coefficient** must move the propensity; init → `initial_state` changes; obs →
+  obs-likelihood changes; overdispersion → draw variance; intervention →
+  post-fire state. Forcing params enter the rate via the `TimeFunc` node, so the
+  scoped propensity check catches the target bug.
+- **Gradient gate — two stages:** until §4, **FD-of-value only**
+  (`loglik(θ±ε)`), never analytic-vs-FD (the analytic gradient is structurally
+  zero and would go red against the value-only fix). After §4, un-`xfail` the
+  analytic-vs-FD seasonal check at `gradient_check.rs:448`.
+- **Perf guard:** assert the per-`(forcing, t)` memo collapses N referencing
+  transitions to **one** forcing evaluation per substep (the real win), and that
+  an all-constant coefficient folds to a single `Const` leaf.
 
 ## 6. Interim guard — in Rust, post-resolve (not OCaml)
 
-v1 put the guard in the OCaml compiler. **Wrong** (confirmed): OCaml sees
-`Estimated`/`Fixed`/`Required` but not the _fit's_ `estimate_set`, so an OCaml
-guard both false-positives (a `--fixed alpha` run on an `Estimated`-in-IR param
-is _not_ estimating it — freezing is correct) and false-negatives (a bare
-`Required` param under `[estimate]` is the at-risk case and OCaml can't see it).
+OCaml cannot distinguish "estimated in this fit" (a `fit.toml` `[estimate]`
+fact) from `Fixed`/`Required` — so an OCaml guard both false-positives (a
+`--fixed` run) and false-negatives (a bare `Required` param under `[estimate]`).
 Put the guard in the **Rust fit path after `resolve_parameters`**
 (`params_resolver.rs`), where `estimate_set` is known: error iff a param in
-`estimate_set` is referenced _only_ inside a forcing/table coefficient. This is
-also the NUTS-guard home (§4). It is the right immediate user-protection given
-the four affected goldens.
+`estimate_set` is referenced _only_ inside a forcing/table coefficient. Same
+home as the §4 NUTS guard.
+
+**Readiness note:** the `estimate_set` membership test is cheap (it exists,
+`params_resolver.rs:177`), but the discriminating predicate is **new code**. The
+existing param-ref walks (`expr_refs_param` `compiled_model.rs:236`,
+`collect_param_refs` `pgas.rs:34`) treat `Expr::TimeFunc` as **opaque** — and
+the coefficient sub-exprs (`amplitude = alpha`) are **not in the rate AST at
+all**; they live in `model.time_functions[*].kind`. So the guard needs a new
+traversal over every forcing-coefficient and inline-table-value expr
+(`coeff_refs`) versus all rate/obs/init exprs (`body_refs`); fire when
+`θ ∈ estimate_set ∧ θ ∈
+coeff_refs ∧ θ ∉ body_refs`. ~40–60 lines + tests;
+budget it as new code, not a reuse of the existing walks.
 
 ## 7. Blast radius & advisory
 
 The four goldens in §1 are each silently broken for their forcing parameter
-today. Because three are the common `Required` pattern and one is the documented
-spec example, this warrants a **user-facing advisory** (e.g. in the incident and
-release notes): any completed fit of a model that estimates a parameter
-appearing only inside a forcing/table coefficient has a posterior reflecting
-only the prior for that parameter. The Rust guard (§6) makes this loud going
-forward.
+today. A **user-facing advisory** (incident + release notes) is warranted: any
+completed fit of a model estimating a parameter that appears only inside a
+forcing/table coefficient has a posterior reflecting only the prior for that
+parameter. The Rust guard (§6) makes this loud going forward.
 
-## 8. Sequencing & ownership
+## 8. Sequencing, ownership, and lift
 
-- **Value half (§3):** `sim` — `compiled_model.rs`, `propensity.rs`,
-  `resolved_expr.rs`, plus the `eval_coeff` dispatch and the ~30 pure-math test
-  call sites (kept compiling by preserving `eval_time_func(kind, t)`). No
-  `inference/*` edits. Independent of RC1/#191.
-- **Gradient half (§4):** OCaml `autodiff.ml` + Rust `eval_expr_deriv` + the
-  `TimeFunc` gradient representation. This is compiler/gradient work; coordinate
-  with RC1 (it also touches the density/grad path) but it does not share files
-  with RC1's `pgas*.rs`.
-- **`default_params` rename: DEFER.** The active `worktree-param-values` branch
-  concurrently edits `compiled_model.rs` (incl. the `default_params` build loop)
-  and `effects.rs` and _retains_ the field — renaming now is a live merge
-  conflict, not a quiet-lane cleanup. Land the rename inside that branch's work
-  or after it merges.
+- **Value half (§3): medium lift, ~self-contained in `sim`.**
+  `compiled_model.rs` (the `CompiledTimeFuncKind` field types + the ~16-site
+  build loop + the whitelist validation + spline-knot rejection),
+  `propensity.rs`/`resolved_expr.rs` (extract pure per-kind math, add
+  `eval_forcing` + the memo), the ~30 pure-math test refactors, the Rust
+  post-resolve guard, and the new tests. **No IR/schema change and no golden
+  re-bless** — a forward `simulate` rebuilds the model per invocation, so its
+  output is unchanged; only inference (build-once, vary-slice) changes behavior,
+  covered by new tests. **No `inference/*` edits.** Independent of RC1/#191.
+- **Gradient half (§4): larger lift, crosses the language boundary — but the
+  _easy_ world.** `autodiff.ml` (per-kind derivatives + the `deriv` ADT across
+  ~72 arms; thread `model.time_functions` in — data already in scope at
+  `compiler.ml:354`), **and an atomic golden re-bless** of the 4 affected
+  `ocaml/golden/*.ir.json` (forcing params gain `rate_grad` entries; via
+  `make update-golden`). `sin`/`cos` already exist (`ir.ml:9`) so **no schema
+  change / no `ir/VERSION` bump / no all-golden re-bless**, and the emitted
+  derivative rides the existing emitted-`rate_grad` → `eval_resolved` path (no
+  `ResolvedExpr::TimeFunc` threading). Forward-sim TSVs are unaffected
+  (`rate_grad` is gradient-only). Decide whether to also fix `eval_expr_deriv`'s
+  `TimeFunc→0` (secondary path) or document it value-only.
+- **`default_params` rename: re-baseline before deferring.** The readiness
+  review could not reproduce the `worktree-param-values` collision in this clone
+  (that branch is 0 commits ahead of `main` — merged or absent). Two
+  consequences: (i) confirm against _current_ `main` whether
+  `default_params`/`effects.rs` were already touched — if the param-value work
+  merged, the DEFER is **stale** and the rename can ride with the value half;
+  (ii) note that the value half rewrites the **same** `compiled_model.rs` build
+  loop the rename targets, so "rename collides, value half doesn't" is not a
+  real separation — they edit the same lines. Resolve the branch-state question
+  (maintainer knows where the other agent's work lives) before sequencing on a
+  collision.
+
+**Rough estimate (sharpened by the 3 readiness reviewers, in engineer-days):**
+
+- **Value half ≈ 2–4 d.** ~2 if the `fold_resolved` constant-fold and the
+  `(forcing,t)` memo are deferred (both perf, not correctness); ~3–4 for full §3
+  including the build-loop reorder (the real risk), the new whitelist + guard
+  walk, and the test migration. No schema/golden churn — the gating claim, and
+  it holds.
+- **Gradient half ≈ 3–4 d** (lower end of "several days" — `sin`/`cos` already
+  paid for by gh#58, so it's the easy world): the per-kind derivatives + the
+  `deriv` ADT + threading `time_functions` + the atomic 4-golden re-bless + FD
+  validation.
+- **Total ≈ 1–1.5 engineer-weeks, staged.** Value-first delivers the IF2/PF fix
+  and the loud NUTS guard quickly (no goldens move); the gradient half then
+  makes NUTS-estimation work and is the only part that re-blesses goldens.
 
 ## Open questions for the maintainer
 
-1. **Scope: v1 (value + NUTS-guard) then v2 (gradient), or both at once?**
-   Recommend staged — the gradient half is real compiler work and the guard
-   keeps the interim correct (IF2/PF fixed immediately, NUTS fails loud).
-2. **Splines: reject estimated knots in v1 (recommended), or specify the
-   per-substep rebuild now?**
-3. **Advisory wording & placement** for the four affected goldens (§7).
+1. **Scope: v1 (value + NUTS guard) then v2 (gradient), or both at once?**
+   Recommend staged.
+2. **Advisory wording & placement** for the four affected goldens (§7).
+3. **Estimable Fourier/PeriodicSpline _coefs_** (linear, hence feasible) in the
+   first gradient pass, or defer with spline _knots_? (Coefs are differentiable;
+   knots are not.)
 
-## Changelog (v1 → v2, from the adversarial review)
+## Changelog
 
-- **Keying corrected (blocker):** `expr_refs_param` (any param), not
-  `ParamValue::Estimated` — which misses `Required`→`Fixed` params (3 of 4
-  goldens, incl. the spec example). Reuse the existing predicate at `:236`.
-- **Gradient half promoted to core (blocker):** `autodiff.ml` zeroes `TimeFunc`;
-  value-only ships a NUTS gradient/likelihood _disagreement_. "No inference
-  edits" was wrong. Added §4 + the staged scope + the NUTS guard.
-- **Splines (blocker):** `CubicSpline` can't be `Live` (construction-time Thomas
-  solve); reject estimated knots in v1.
-- **Whitelist preserved (major):** keep `eval_table_expr`'s grammar restriction
-  on the `Live` path; don't let `resolve_expr` silently admit state-dependent
-  forcings.
-- **§2.3 corrected (major):** forcings are never constant-folded; the decision
-  is a Rust scan.
-- **Caller count (major):** ~30 test sites; keep `eval_time_func` pure + add
-  `eval_coeff`.
-- **Tests (blocker):** per-class scoping for the invariant; gradient gate is
-  FD-of-value until §4 (analytic-vs-FD would go red on the value-only fix).
-- **Guard relocated (major):** Rust post-resolve on `estimate_set`, not OCaml.
-- **Blast radius (major):** four goldens enumerated; advisory warranted.
-- **Rename (major):** deferred — live collision with `worktree-param-values`.
-- **Perf (major):** cost is ×N-referencing-transitions; add a per-(substep,t)
-  memo.
+**v3 readiness pass (3 implementation-reviewers vs the code — no blockers):**
+gradient half is the _easy_ world — `sin`/`cos` already in the IR (gh#58), so no
+schema change, and the emitted-`rate_grad` path means no `TimeFunc`
+identity-threading (v3's §4 over-scoped both — corrected). `Fourier::period_inv`
+is a derived coefficient, not structural (corrected). The value-half top risk is
+the `CompiledModel::new` build-loop reorder (`ResolveCtx` built after the
+coefficient loops); the whitelist, `fold_resolved`, the memo, and the §6 guard
+walk are all new code (fold/memo perf-deferrable). The `worktree-param-values`
+collision could not be reproduced (branch 0-ahead of `main`) — re-baseline
+before deferring the rename. `schema.json` already drifted (`amplitude:"number"`
+vs emitted expr) — fold the correction in. Sharpened lift: value ≈ 2–4 d,
+gradient ≈ 3–4 d, ≈ 1–1.5 eng-weeks staged.
+
+**v2 → v3 (design panel, 3 reviewers, unanimous for Design B):**
+
+- **Dropped the `CompiledCoeff = Const|Live` enum and its build-time
+  classifier.** Coefficients are `ResolvedExpr`, evaluated live — uniform with
+  rates and the obs path (which already does exactly this). Removes the
+  classifier that is the v1 bug's mechanism; the freeze becomes unrepresentable.
+- **Reframed §3/§4 as one root cause** (coefficient-as-data vs
+  coefficient-as-expression) — §0.
+- **Perf:** the win is a per-`(forcing,t)` memo (collapses N→1), not a baked
+  `f64`; constant-fold gives the common-case fast path for free.
+- **Kept v2's correct guardrails:** structural data precomputed, reject
+  estimated spline knots, preserve the coefficient-grammar whitelist, pure
+  `eval_time_func` math + caller-materialized coefficients (preserving the ~30
+  tests).
+- **Issue mapping corrected:** headline #119+#186; #128 closed/orthogonal; #180
+  out of scope.
+
+**v1 → v2 (adversarial review):** keying corrected from `ParamValue::Estimated`
+to a structural decision (Required→Fixed blocker); gradient half promoted to
+core; splines can't be `Live`; whitelist; §2.3 fold premise corrected; ~30 test
+callers; per-class test scoping; guard relocated to Rust; four-golden blast
+radius; rename deferred; perf is ×N-transitions.
