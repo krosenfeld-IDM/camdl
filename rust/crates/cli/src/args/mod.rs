@@ -326,7 +326,7 @@ pub struct ScenarioArgs {
 /// `--backend` + `--dt`
 #[derive(Args, Clone)]
 pub struct SimBackend {
-    /// Simulation backend (default: gillespie)
+    /// Simulation backend (default: chain_binomial)
     #[arg(long)]
     pub backend: Option<Backend>,
 
@@ -2464,6 +2464,44 @@ mod tests {
         // Smoke test — guards against malformed clap derives that would
         // panic at runtime instead of producing a parse error.
         let _ = Cli::command();
+    }
+
+    /// Regression (gh#183): the `simulate --backend` help text must name
+    /// the *resolved* default. `camdl simulate` resolves an omitted
+    /// `--backend` to `Backend::ChainBinomial` (main.rs:
+    /// `a.backend.backend.unwrap_or(Backend::ChainBinomial)`), so the help
+    /// string claiming `gillespie` was stale doc-vs-code drift dating to
+    /// before the 2026-04-19 backend-default-mismatch fix moved the
+    /// simulate default to chain_binomial. Pin the help to the code-true
+    /// default so it can't silently drift again.
+    #[test]
+    fn simulate_backend_help_names_resolved_default() {
+        // The resolved default, straight from the enum the resolver uses.
+        let resolved_default = Backend::ChainBinomial.as_str(); // "chain_binomial"
+
+        let mut cmd = Cli::command();
+        let simulate = cmd
+            .find_subcommand_mut("simulate")
+            .expect("simulate subcommand exists");
+        let backend_arg = simulate
+            .get_arguments()
+            .find(|a| a.get_id() == "backend")
+            .expect("simulate has a --backend arg");
+        let help = backend_arg
+            .get_help()
+            .map(|h| h.to_string())
+            .unwrap_or_default();
+
+        assert!(
+            help.contains(resolved_default),
+            "simulate --backend help must name the resolved default \
+             ({resolved_default}); got: {help:?}"
+        );
+        assert!(
+            !help.contains("gillespie"),
+            "simulate --backend help must not claim the stale `gillespie` \
+             default (resolved default is {resolved_default}); got: {help:?}"
+        );
     }
 
     /// Regression: writer-side `DEFAULT_OUTPUT_ROOT` ("results") must

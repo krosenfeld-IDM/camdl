@@ -3380,7 +3380,7 @@ camdl inspect MODEL.camdl [OPTIONS]    # inspect compartments, transitions, etc.
 camdl simulate MODEL --params P.toml --seed 42 [OPTIONS]
 
 Options:
-  --backend    gillespie|chain_binomial|ode  (default: gillespie)
+  --backend    gillespie|chain_binomial|ode  (default: chain_binomial)
   --dt         DT         step size for chain_binomial / ode
   --seed       N          RNG seed (default: 1)
   --scenario   NAME       select a named scenario

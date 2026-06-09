@@ -980,7 +980,7 @@ impl SimulateCli {
             model: self.model
                 .ok_or_else(|| anyhow!("model path required"))?,
             params: self.params,
-            backend: self.backend.unwrap_or(Backend::Gillespie),
+            backend: self.backend.unwrap_or(Backend::ChainBinomial),
             dt: self.dt.unwrap_or(1.0),
             output_dir: self.output_dir
                 .unwrap_or_else(|| PathBuf::from("results")),

@@ -906,17 +906,36 @@ impl CompiledModel {
             .collect::<Result<_, _>>()?;
 
         // Index-keyed form: resolve String keys to model param indices once at
-        // construction time. Gradient terms with unknown names are dropped (they
-        // indicate a malformed IR — all known names are in param_index).
+        // construction time. gh#128: a key that is NOT a declared parameter is a
+        // malformed IR (a typo'd or stale autodiff key, or a hand-written test
+        // grad) — reject it loudly rather than silently dropping it. A dropped
+        // gradient component reads as zero to NUTS, so gradient-based inference
+        // would optimize a different model than the simulator's likelihood with
+        // no error surfaced. The name+transition are paired here so the
+        // diagnostic points at the exact offending entry.
         let rate_grads_indexed: Vec<Vec<(usize, ResolvedExpr)>> = rate_grads.iter()
-            .map(|tr_grads| {
+            .zip(&model.transitions)
+            .map(|(tr_grads, tr)| {
                 tr_grads.iter()
-                    .filter_map(|(name, expr)| {
-                        param_index.get(name.as_str()).map(|&idx| (idx, expr.clone()))
+                    .map(|(name, expr)| {
+                        let idx = *param_index.get(name.as_str()).ok_or_else(|| {
+                            SimError::Validation(format!(
+                                "transition '{}' has a rate_grad entry for unknown \
+                                 parameter '{}' — every rate_grad key must be a \
+                                 declared model parameter. A dropped gradient \
+                                 component is silently treated as zero by \
+                                 gradient-based inference (NUTS), which then \
+                                 optimizes a different model than the simulator. \
+                                 This is a malformed IR (likely a typo'd or stale \
+                                 autodiff key); fix the rate_grad key.",
+                                tr.name, name
+                            ))
+                        })?;
+                        Ok((idx, expr.clone()))
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, SimError>>()
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         // Resolve ODE derivatives
         let ode_derivatives: Vec<ResolvedExpr> = model.ode_equations.iter()
@@ -1097,8 +1116,104 @@ impl CompiledModel {
 #[cfg(test)]
 mod tests {
     use super::expr_is_time_dependent;
+    use super::CompiledModel;
     use ir::expr::{BinOp, Expr, UnOp};
     use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// Load a golden IR fixture and resolve every parameter to a concrete value
+    /// (preset first, then a `1.0` placeholder) so `CompiledModel::new` reaches
+    /// the rate_grad resolution under test rather than bailing on a missing
+    /// parameter value. Mirrors the loader in
+    /// `tests/binding_param_free_guard.rs`.
+    fn load_with_params(name: &str) -> ir::Model {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let path = PathBuf::from(&manifest)
+            .join("../../../ocaml/golden")
+            .join(format!("{name}.ir.json"));
+        let contents = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {name}: {e}"));
+        let mut model: ir::Model =
+            ir::from_str(&contents).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+        let preset = model.presets.first().cloned();
+        for p in &mut model.parameters {
+            if p.value.is_none() {
+                p.value = preset
+                    .as_ref()
+                    .and_then(|pr| pr.params.get(&p.name).copied())
+                    .or(Some(1.0));
+            }
+        }
+        model
+    }
+
+    /// Negative control: the unmodified fixture (whose `infection` transition
+    /// carries a real, well-keyed `rate_grad`) compiles. Proves the fixture
+    /// actually exercises the rate_grad path and that the checked resolution
+    /// does not false-positive on a valid key.
+    #[test]
+    fn well_keyed_rate_grad_compiles() {
+        let model = load_with_params("sir_basic");
+        let tr = model
+            .transitions
+            .iter()
+            .find(|t| t.name == "infection")
+            .expect("sir_basic has an `infection` transition");
+        assert!(
+            tr.rate_grad.contains_key("beta"),
+            "fixture must carry a `beta` rate_grad key, else this test is vacuous"
+        );
+        assert!(
+            CompiledModel::new(model).is_ok(),
+            "a model with only well-keyed rate_grad entries must compile"
+        );
+    }
+
+    /// gh#128: a `rate_grad` entry keyed on a parameter that does not exist in
+    /// the model must be rejected at compile time, naming the bad key and the
+    /// transition — NOT silently dropped via `filter_map`. A dropped key means
+    /// gradient-based inference (NUTS) optimizes a different model than the
+    /// simulator's likelihood, with no error surfaced.
+    #[test]
+    fn unknown_rate_grad_key_is_rejected() {
+        let mut model = load_with_params("sir_basic");
+        let tr = model
+            .transitions
+            .iter_mut()
+            .find(|t| t.name == "infection")
+            .expect("sir_basic has an `infection` transition");
+        // Take the real (resolvable) derivative expression for `beta` and
+        // re-key it under a parameter name that is NOT declared. The expression
+        // itself resolves fine, so a failure can only come from the key check —
+        // this keeps the test non-vacuous (it isn't catching a resolve error).
+        let grad_expr = tr
+            .rate_grad
+            .get("beta")
+            .expect("infection has a beta gradient")
+            .clone();
+        tr.rate_grad
+            .insert("not_a_real_param".to_string(), grad_expr);
+        assert!(
+            !model.parameters.iter().any(|p| p.name == "not_a_real_param"),
+            "guard: the bogus key must not accidentally be a real parameter"
+        );
+
+        let err = match CompiledModel::new(model) {
+            Ok(_) => panic!(
+                "a rate_grad keyed on an unknown parameter must be rejected, not silently dropped"
+            ),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not_a_real_param"),
+            "error must name the unknown rate_grad key; got: {msg}"
+        );
+        assert!(
+            msg.contains("infection"),
+            "error must name the offending transition; got: {msg}"
+        );
+    }
 
     /// Regression: a bare `Time` reference must classify as time-dependent.
     /// Before the fix, only `TimeFunc` (named forcings) matched, so a rate like

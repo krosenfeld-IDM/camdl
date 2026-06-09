@@ -64,6 +64,19 @@ pub enum ValidationError {
              is rank-1 (multi-dimensional tables are pre-flattened by the compiler to a \
              single linear index, so a lookup must carry exactly 1 index)")]
     TableLookupArity { table: String, got: usize },
+
+    #[error("initial value for compartment '{compartment}' is not finite (got {value}); \
+             initial conditions must be finite numbers")]
+    InitialValueNotFinite { compartment: String, value: f64 },
+
+    #[error("initial value for compartment '{compartment}' must be nonnegative (got {value}); \
+             a compartment cannot start with a negative population")]
+    InitialValueNegative { compartment: String, value: f64 },
+
+    #[error("initial value for integer compartment '{compartment}' must be a whole number \
+             (got {value}); a fractional value would be silently truncated. Round it to a \
+             whole count, or declare the compartment real if fractional state is intended")]
+    InitialValueNotInteger { compartment: String, value: f64 },
 }
 
 pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
@@ -246,8 +259,30 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
     // while the real cells (e.g. `S_child_kano`) default to zero, silently
     // starting the epidemic in an empty population. The Parameterized variant
     // also carries an expression per key; recurse into it.
+    //
+    // ── Initial-condition VALUE domain checks (gh#124) ─────────────────────────
+    //
+    // For the Explicit variant the IR carries a concrete f64 per compartment.
+    // The runtime converts an integer init via `*val as i64`
+    // (compiled_model.rs), which truncates and saturates: 0.6 → 0, -3 → a
+    // negative compartment from t=0, NaN/inf → 0 / i64::MAX. Each is a "model
+    // runs but starts in the wrong population" failure, so we reject them here
+    // at the contract boundary:
+    //   - non-finite (NaN / ±inf) for any compartment,
+    //   - negative for any compartment (a count is nonnegative, int or real),
+    //   - non-integer for INTEGER compartments (a near-integer tolerance allows
+    //     for float round-trip noise; a clearly-fractional value errors).
+    // Real compartments may hold fractional (but finite, nonnegative) values.
+    // Parameterized / FromDistribution inits carry expressions / priors rather
+    // than literals, so there is nothing to range-check statically here; their
+    // values are produced (and bounds-enforced) at sim/inference time.
     {
         use crate::model::InitialConditions;
+        // Tolerance for the integer check: a value within this of its nearest
+        // integer is treated as that integer (absorbs float round-trip noise
+        // like 3.0000000001). Mirrors the `1e-9` tolerance the issue specifies
+        // for `checked_int_initial_value`.
+        const INT_TOL: f64 = 1e-9;
         let check_init_key = |comp: &str, errors: &mut Vec<ValidationError>| {
             if !comp_names.contains(comp) {
                 errors.push(ValidationError::UnknownCompartmentInInitialConditions(
@@ -255,10 +290,39 @@ pub fn validate(model: &Model) -> Result<(), Vec<ValidationError>> {
                 ));
             }
         };
+        let check_init_value = |comp: &str, v: f64, errors: &mut Vec<ValidationError>| {
+            // Only meaningful for declared compartments; the key check above
+            // already reports an unknown name, so skip the value check for it
+            // (we can't classify int-vs-real for a name we don't know).
+            if !comp_names.contains(comp) {
+                return;
+            }
+            if !v.is_finite() {
+                errors.push(ValidationError::InitialValueNotFinite {
+                    compartment: comp.to_string(),
+                    value: v,
+                });
+                return;
+            }
+            if v < 0.0 {
+                errors.push(ValidationError::InitialValueNegative {
+                    compartment: comp.to_string(),
+                    value: v,
+                });
+                return;
+            }
+            if int_comps.contains(comp) && (v - v.round()).abs() > INT_TOL {
+                errors.push(ValidationError::InitialValueNotInteger {
+                    compartment: comp.to_string(),
+                    value: v,
+                });
+            }
+        };
         match &model.initial_conditions {
             InitialConditions::Explicit(map) => {
-                for k in map.keys() {
+                for (k, v) in map {
                     check_init_key(k, &mut errors);
+                    check_init_value(k, *v, &mut errors);
                 }
             }
             InitialConditions::Parameterized(map) => {
@@ -631,6 +695,151 @@ mod tests {
     fn sir_basic_validates() {
         let m = load_sir();
         validate(&m).expect("sir_basic.ir.json must validate");
+    }
+
+    // ── gh#124: explicit initial-condition VALUE domain checks ────────────────
+    //
+    // The runtime converts an explicit integer init via `*val as i64`
+    // (compiled_model.rs), which truncates and saturates: I0=0.6 → 0 silently,
+    // I0=-3 → a negative compartment from t=0, I0=NaN → 0, I0=1e20 → i64::MAX.
+    // Each is a "model runs but starts in the wrong population" failure. Reject
+    // them at the contract boundary instead.
+
+    /// sir_basic is Parameterized; swap in an Explicit init map keyed on the
+    /// model's (integer) compartments so the VALUE-domain checks have something
+    /// to inspect.
+    fn sir_with_explicit_init(s: f64, i: f64, r: f64) -> Model {
+        let mut m = load_sir();
+        let mut map = std::collections::HashMap::new();
+        map.insert("S".to_string(), s);
+        map.insert("I".to_string(), i);
+        map.insert("R".to_string(), r);
+        m.initial_conditions = InitialConditions::Explicit(map);
+        m
+    }
+
+    /// (124a) A negative explicit init value must be rejected — a negative
+    /// compartment from t=0 is never physical (population counts are
+    /// nonnegative). Reproduces the `I0 = -3` row of gh#124.
+    #[test]
+    fn init_value_negative_is_rejected() {
+        let m = sir_with_explicit_init(99.0, -3.0, 0.0);
+        let errs = validate(&m).expect_err("must reject I0 = -3");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::InitialValueNegative { compartment, value }
+                    if compartment == "I" && *value == -3.0)),
+            "expected InitialValueNegative for 'I' = -3, got: {:?}", errs);
+    }
+
+    /// (124b) A non-finite explicit init value (NaN) must be rejected — it
+    /// converts to 0 under `as i64` with no warning. Reproduces the
+    /// `I0 = NaN` row of gh#124.
+    #[test]
+    fn init_value_nan_is_rejected() {
+        let m = sir_with_explicit_init(99.0, f64::NAN, 0.0);
+        let errs = validate(&m).expect_err("must reject I0 = NaN");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::InitialValueNotFinite { compartment, .. }
+                    if compartment == "I")),
+            "expected InitialValueNotFinite for 'I' = NaN, got: {:?}", errs);
+    }
+
+    /// (124b') A positive-infinity explicit init value must be rejected — it
+    /// saturates to i64::MAX under `as i64`. Same NaN/inf class as above.
+    #[test]
+    fn init_value_inf_is_rejected() {
+        let m = sir_with_explicit_init(99.0, f64::INFINITY, 0.0);
+        let errs = validate(&m).expect_err("must reject I0 = inf");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::InitialValueNotFinite { compartment, .. }
+                    if compartment == "I")),
+            "expected InitialValueNotFinite for 'I' = inf, got: {:?}", errs);
+    }
+
+    /// (124c) A clearly-fractional explicit init value on an INTEGER
+    /// compartment must be rejected, not silently truncated. Reproduces the
+    /// `I0 = 0.6` row of gh#124 (which `as i64` truncates to 0).
+    #[test]
+    fn init_value_fractional_on_integer_compartment_is_rejected() {
+        let m = sir_with_explicit_init(99.0, 0.6, 0.0);
+        let errs = validate(&m).expect_err("must reject I0 = 0.6 on integer compartment");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::InitialValueNotInteger { compartment, value }
+                    if compartment == "I" && *value == 0.6)),
+            "expected InitialValueNotInteger for 'I' = 0.6, got: {:?}", errs);
+    }
+
+    /// Negative control: integer-valued explicit inits (including a within-
+    /// tolerance near-integer like 3.0 + 1e-12) must validate.
+    #[test]
+    fn init_value_integer_on_integer_compartment_is_accepted() {
+        let m = sir_with_explicit_init(99.0, 1.0 + 1e-12, 0.0);
+        validate(&m).expect("near-integer init within tolerance must validate");
+    }
+
+    /// (124d) A fractional value on a REAL compartment must be accepted — real
+    /// compartments may hold fractional (but nonnegative, finite) values.
+    #[test]
+    fn init_value_fractional_on_real_compartment_is_accepted() {
+        let mut m = load_sir();
+        // Make R a real compartment with an ODE so the model still validates
+        // structurally, then give it a fractional init.
+        for c in &mut m.compartments {
+            if c.name == "R" {
+                c.kind = CompartmentKind::Real;
+            }
+        }
+        m.ode_equations.push(crate::ode_equation::OdeEquation {
+            compartment: "R".into(),
+            derivative: Expr::const_(0.0),
+        });
+        // R no longer participates in integer stoichiometry in sir_basic's
+        // recovery transition; drop any stoichiometry entry naming R so the
+        // RealCompartmentInStoichiometry check doesn't fire (we're isolating
+        // the init-VALUE domain behaviour, not stoichiometry).
+        for tr in &mut m.transitions {
+            tr.stoichiometry.retain(|e| e.0 != "R");
+        }
+        let mut map = std::collections::HashMap::new();
+        map.insert("S".to_string(), 99.0);
+        map.insert("I".to_string(), 1.0);
+        map.insert("R".to_string(), 0.6); // fractional on a real compartment: OK
+        m.initial_conditions = InitialConditions::Explicit(map);
+        validate(&m).expect("fractional init on a real compartment must validate");
+    }
+
+    /// (124e) A negative value on a REAL compartment must still be rejected —
+    /// population values are nonnegative regardless of int/real.
+    #[test]
+    fn init_value_negative_on_real_compartment_is_rejected() {
+        let mut m = load_sir();
+        for c in &mut m.compartments {
+            if c.name == "R" {
+                c.kind = CompartmentKind::Real;
+            }
+        }
+        m.ode_equations.push(crate::ode_equation::OdeEquation {
+            compartment: "R".into(),
+            derivative: Expr::const_(0.0),
+        });
+        for tr in &mut m.transitions {
+            tr.stoichiometry.retain(|e| e.0 != "R");
+        }
+        let mut map = std::collections::HashMap::new();
+        map.insert("S".to_string(), 99.0);
+        map.insert("I".to_string(), 1.0);
+        map.insert("R".to_string(), -0.5);
+        m.initial_conditions = InitialConditions::Explicit(map);
+        let errs = validate(&m).expect_err("must reject negative init on real compartment");
+        assert!(
+            errs.iter().any(|e| matches!(e,
+                ValidationError::InitialValueNegative { compartment, value }
+                    if compartment == "R" && *value == -0.5)),
+            "expected InitialValueNegative for 'R' = -0.5, got: {:?}", errs);
     }
 
     /// Regression guard for the gh#123/gh#114 reference checks: every committed

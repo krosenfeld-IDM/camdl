@@ -352,6 +352,64 @@ impl std::fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
+// ─── Shared preset compose-walk ────────────────────────────────────────────────
+
+/// Resolve a named scenario preset to its effective `params` map,
+/// walking `compose = [...]` left-to-right and then applying the
+/// parent's own `params` on top.
+///
+/// Single source of truth for "what params does scenario X set",
+/// shared by [`resolve_parameters`] (the simulate / forward path) and
+/// `fit::config_v2::FixedParams::{expand_from_scenario, resolve_with_model}`
+/// (the fit `[fixed] from_scenario` path). Before gh#36 the fit path
+/// re-implemented this as a bare copy of `preset.params`, silently
+/// dropping every param inherited via `compose` — a fit against a
+/// compose-based scenario then failed with "parameters neither
+/// estimated nor fixed".
+///
+/// Semantics (matches the spec's compose ordering):
+///   - composed sub-scenarios apply first, in list order;
+///   - the parent's own `params` apply last and win on key collision;
+///   - nested compose is rejected (a sub-scenario referenced in
+///     `compose = [...]` may not itself use `compose`).
+///
+/// Returns an `IndexMap` so iteration order is deterministic
+/// (compose-order, then parent keys) for downstream provenance / diff.
+pub fn resolve_preset_params(
+    model: &ir::Model,
+    preset_name: &str,
+) -> Result<IndexMap<String, f64>, ResolveError> {
+    let available = || -> Vec<String> {
+        model.presets.iter().map(|p| p.name.clone()).collect()
+    };
+    let preset = model.presets.iter()
+        .find(|p| p.name == preset_name)
+        .ok_or_else(|| ResolveError::ScenarioNotFound {
+            name: preset_name.to_string(),
+            available: available(),
+        })?;
+
+    let mut params: IndexMap<String, f64> = IndexMap::new();
+    for sc_name in &preset.compose {
+        let sub = model.presets.iter().find(|p| p.name == *sc_name)
+            .ok_or_else(|| ResolveError::ScenarioNotFound {
+                name: sc_name.clone(),
+                available: available(),
+            })?;
+        if !sub.compose.is_empty() {
+            return Err(ResolveError::NestedCompose { name: sc_name.clone() });
+        }
+        for (k, &v) in &sub.params {
+            params.insert(k.clone(), v);
+        }
+    }
+    // Parent's own params apply last → win on key collision.
+    for (k, &v) in &preset.params {
+        params.insert(k.clone(), v);
+    }
+    Ok(params)
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 /// Resolve a `ParameterInputs` to a `ResolvedParameters`, walking the
@@ -404,7 +462,6 @@ pub fn resolve_parameters<'a>(
                 .clone();
             let mut composed_enable: Vec<String> = Vec::new();
             let mut composed_disable: Vec<String> = Vec::new();
-            let mut composed_params: Vec<(String, f64)> = Vec::new();
             let mut composed_scale: Vec<(String, f64)> = Vec::new();
             for sc_name in &preset.compose {
                 let sub = model.presets.iter().find(|p| p.name == *sc_name)
@@ -417,13 +474,18 @@ pub fn resolve_parameters<'a>(
                 }
                 composed_enable.extend(sub.enable.clone());
                 composed_disable.extend(sub.disable.clone());
-                composed_params.extend(sub.params.iter().map(|(k, &v)| (k.clone(), v)));
                 composed_scale.extend(sub.scale.iter().map(|(k, &v)| (k.clone(), v)));
             }
             composed_enable.extend(preset.enable.clone());
             composed_disable.extend(preset.disable.clone());
-            composed_params.extend(preset.params.iter().map(|(k, &v)| (k.clone(), v)));
             composed_scale.extend(preset.scale.iter().map(|(k, &v)| (k.clone(), v)));
+            // gh#36: the params compose-walk is shared with the fit
+            // `[fixed] from_scenario` path via `resolve_preset_params`.
+            // Returns a deduped (parent-wins) map; applying it below is
+            // equivalent to the old last-write-wins Vec since there are no
+            // duplicate keys to re-trigger.
+            let composed_params: Vec<(String, f64)> =
+                resolve_preset_params(&model, name)?.into_iter().collect();
             (composed_enable, composed_disable, composed_params, composed_scale)
         } else {
             (inputs.adhoc_enable.to_vec(), inputs.adhoc_disable.to_vec(),
@@ -968,6 +1030,65 @@ mod tests {
         inputs.scenario = Some("nonesuch");
         let err = resolve_parameters(inputs).unwrap_err();
         assert!(matches!(err, ResolveError::ScenarioNotFound { ref name, .. } if name == "nonesuch"));
+    }
+
+    // ── resolve_preset_params: shared compose-walk (gh#36) ──────────────
+
+    fn mk_preset(name: &str, params: &[(&str, f64)], compose: &[&str]) -> Preset {
+        let mut p = HashMap::new();
+        for (k, v) in params { p.insert((*k).to_string(), *v); }
+        Preset {
+            name: name.into(),
+            label: name.into(),
+            params: p,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: compose.iter().map(|s| s.to_string()).collect(),
+            t_end: None,
+        }
+    }
+
+    #[test]
+    fn resolve_preset_params_walks_compose() {
+        // gh#36: a compose-based parent inherits the composed child's params
+        // plus its own. This is the shared helper the fit `[fixed]
+        // from_scenario` path and the simulate path both call.
+        let mut model = mk_model(vec![]);
+        model.presets.push(mk_preset("child", &[("gamma", 0.1), ("N0", 1000.0)], &[]));
+        model.presets.push(mk_preset("parent", &[("beta", 0.3)], &["child"]));
+        let resolved = resolve_preset_params(&model, "parent").expect("ok");
+        assert_eq!(resolved.get("gamma"), Some(&0.1));
+        assert_eq!(resolved.get("N0"), Some(&1000.0));
+        assert_eq!(resolved.get("beta"), Some(&0.3));
+        assert_eq!(resolved.len(), 3);
+    }
+
+    #[test]
+    fn resolve_preset_params_parent_wins_on_collision() {
+        // Parent's own param overrides the composed child's on key collision.
+        let mut model = mk_model(vec![]);
+        model.presets.push(mk_preset("child", &[("gamma", 0.1)], &[]));
+        model.presets.push(mk_preset("parent", &[("gamma", 0.2)], &["child"]));
+        let resolved = resolve_preset_params(&model, "parent").expect("ok");
+        assert_eq!(resolved.get("gamma"), Some(&0.2));
+    }
+
+    #[test]
+    fn resolve_preset_params_rejects_nested_compose() {
+        let mut model = mk_model(vec![]);
+        model.presets.push(mk_preset("leaf", &[], &[]));
+        model.presets.push(mk_preset("mid", &[("gamma", 0.1)], &["leaf"]));
+        model.presets.push(mk_preset("parent", &[("beta", 0.3)], &["mid"]));
+        let err = resolve_preset_params(&model, "parent").unwrap_err();
+        assert!(matches!(err, ResolveError::NestedCompose { ref name } if name == "mid"));
+    }
+
+    #[test]
+    fn resolve_preset_params_not_found_errors() {
+        let model = mk_model(vec![]);
+        let err = resolve_preset_params(&model, "nope").unwrap_err();
+        assert!(matches!(err, ResolveError::ScenarioNotFound { ref name, .. } if name == "nope"));
     }
 
     // ── Tier 3: fit.toml [fixed] ────────────────────────────────────────

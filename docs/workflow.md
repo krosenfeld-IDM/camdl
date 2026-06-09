@@ -29,8 +29,10 @@ camdl check model.camdl
 camdl simulate model.camdl --params p.toml --obs sim.tsv --seed 1
 ```
 
-`simulate` defaults to the `gillespie` backend; pass `--backend chain_binomial`
-(or `ode`) to match how you'll fit. The same `observations {}`
+`simulate` defaults to the `chain_binomial` backend — the same default `fit`
+uses, so a forward sim of an MLE reproduces the fit's dynamics. Pass
+`--backend gillespie` (exact SSA) or `--backend ode` (deterministic) to switch.
+The same `observations {}`
 block that _scores_ real data in the fit also _samples_ synthetic data here via
 `--obs` — that duality is why the next step is a valid test. Look at `sim.tsv`:
 is the curve epidemiologically reasonable (timing, peak, final size)?

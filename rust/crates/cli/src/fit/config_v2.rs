@@ -690,27 +690,35 @@ impl FixedParams {
                 scen_name, names.join(", ")));
         }
 
-        let preset = model.presets.iter()
-            .find(|p| p.name == scen_name)
-            .ok_or_else(|| {
-                let available: Vec<&str> = model.presets.iter()
-                    .map(|p| p.name.as_str()).collect();
-                format!(
-                    "[fixed] from_scenario = \"{}\" not found in model. Available scenarios: {}",
-                    scen_name,
-                    if available.is_empty() { "(none declared)".into() }
-                    else { available.join(", ") })
-            })?;
+        if !model.presets.iter().any(|p| p.name == scen_name) {
+            let available: Vec<&str> = model.presets.iter()
+                .map(|p| p.name.as_str()).collect();
+            return Err(format!(
+                "[fixed] from_scenario = \"{}\" not found in model. Available scenarios: {}",
+                scen_name,
+                if available.is_empty() { "(none declared)".into() }
+                else { available.join(", ") }));
+        }
+
+        // gh#36: walk `compose = [...]` so the import inherits params from
+        // composed sub-scenarios, not just the parent's own `set`. Shared
+        // with the simulate path via `resolve_preset_params` — before this
+        // the fit path copied only `preset.params`, silently dropping every
+        // inherited param and failing with "parameters neither estimated
+        // nor fixed".
+        let preset_params = crate::params_resolver::resolve_preset_params(model, &scen_name)
+            .map_err(|e| e.to_string())?;
 
         // gh#37 carve-out: import every scenario param EXCEPT the ones
         // being estimated. An estimated param is, by definition, not a
         // fixed param — `validate`'s `estimate ∩ fixed = ∅` check would
-        // otherwise reject the import.
-        for (k, &v) in &preset.params {
+        // otherwise reject the import. Applied AFTER the compose-walk so it
+        // carves out inherited params too.
+        for (k, v) in &preset_params {
             if estimate.contains_key(k) {
                 continue;
             }
-            self.values.insert(k.clone(), v);
+            self.values.insert(k.clone(), *v);
         }
         self.from_scenario = None;
         Ok(())
@@ -734,23 +742,21 @@ impl FixedParams {
                     scen_name, names.join(", ")));
             }
 
-            let preset = model.presets.iter()
-                .find(|p| p.name == *scen_name)
-                .ok_or_else(|| {
-                    let available: Vec<&str> = model.presets.iter()
-                        .map(|p| p.name.as_str()).collect();
-                    format!(
-                        "[fixed] from_scenario = \"{}\" not found in model. Available scenarios: {}",
-                        scen_name,
-                        if available.is_empty() { "(none declared)".into() }
-                        else { available.join(", ") })
-                })?;
-
-            let mut map = IndexMap::new();
-            for (k, &v) in &preset.params {
-                map.insert(k.clone(), v);
+            if !model.presets.iter().any(|p| p.name == *scen_name) {
+                let available: Vec<&str> = model.presets.iter()
+                    .map(|p| p.name.as_str()).collect();
+                return Err(format!(
+                    "[fixed] from_scenario = \"{}\" not found in model. Available scenarios: {}",
+                    scen_name,
+                    if available.is_empty() { "(none declared)".into() }
+                    else { available.join(", ") }));
             }
-            return Ok(map);
+
+            // gh#36: walk compose so the resolved map inherits composed
+            // params. Shared with the simulate path via
+            // `resolve_preset_params`.
+            return crate::params_resolver::resolve_preset_params(model, scen_name)
+                .map_err(|e| e.to_string());
         }
         self.resolve()
     }
@@ -3322,6 +3328,161 @@ cooling = 0.9
         assert_eq!(resolved.len(), 4);
         assert_eq!(resolved.get("beta"), Some(&0.3));
         assert_eq!(resolved.get("gamma"), Some(&0.1));
+    }
+
+    /// Build a model with a compose-based parent scenario `parent` that
+    /// inherits from `child` (which carries `child_params`) and layers its
+    /// own `parent_params` on top. Mirrors the gh#36 reproducer:
+    ///
+    /// ```text
+    /// scenarios {
+    ///   child  { set = { child_params... } }
+    ///   parent { compose = [child], set = { parent_params... } }
+    /// }
+    /// ```
+    fn model_with_compose_scenario(
+        parent: &str,
+        parent_params: &[(&str, f64)],
+        child: &str,
+        child_params: &[(&str, f64)],
+    ) -> ir::Model {
+        use std::collections::HashMap;
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let golden = format!("{}/../../../ir/golden/sir_basic.ir.json", manifest);
+        let s = std::fs::read_to_string(&golden).unwrap();
+        let mut model: ir::Model = ir::from_str(&s).unwrap();
+        let mut cp = HashMap::new();
+        for (k, v) in child_params { cp.insert((*k).to_string(), *v); }
+        model.presets.push(ir::model::Preset {
+            name: child.to_string(),
+            label: format!("test scenario {}", child),
+            params: cp,
+            enable: vec![],
+            disable: vec![],
+            scale: HashMap::new(),
+            compose: vec![],
+            t_end: None,
+        });
+        let mut pp = HashMap::new();
+        for (k, v) in parent_params { pp.insert((*k).to_string(), *v); }
+        model.presets.push(ir::model::Preset {
+            name: parent.to_string(),
+            label: format!("test scenario {}", parent),
+            params: pp,
+            enable: vec![],
+            disable: vec![],
+            scale: HashMap::new(),
+            compose: vec![child.to_string()],
+            t_end: None,
+        });
+        model
+    }
+
+    #[test]
+    fn from_scenario_walks_compose_inherits_params() {
+        // gh#36: `[fixed] from_scenario = "parent"` where `parent` is a
+        // compose-based scenario must import the params it inherits via
+        // `compose = [child]`, not just `parent.set`. Pre-fix the inline
+        // walk copied only `parent.params`, so `gamma`/`N0` (which live in
+        // `child`) were silently dropped — the fit then errored with
+        // "parameters neither estimated nor fixed: N0, gamma".
+        let model = model_with_compose_scenario(
+            "baseline_compose", &[("beta", 0.3)],
+            "fit_pinned", &[("gamma", 0.1), ("N0", 1000.0)]);
+        let mut fixed = FixedParams {
+            from_file: None,
+            from_scenario: Some("baseline_compose".into()),
+            values: IndexMap::new(),
+        };
+        fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap();
+        assert!(fixed.from_scenario.is_none(), "expansion clears from_scenario");
+        let resolved = fixed.resolve().unwrap();
+        // Inherited (composed) params must be present, not just parent.set.
+        assert_eq!(resolved.get("gamma"), Some(&0.1),
+            "composed child param `gamma` must be inherited: {:?}", resolved);
+        assert_eq!(resolved.get("N0"), Some(&1000.0),
+            "composed child param `N0` must be inherited: {:?}", resolved);
+        assert_eq!(resolved.get("beta"), Some(&0.3),
+            "parent's own `beta` must be present: {:?}", resolved);
+        assert_eq!(resolved.len(), 3,
+            "exactly the composed + parent params: {:?}", resolved);
+    }
+
+    #[test]
+    fn from_scenario_compose_parent_overrides_child_on_collision() {
+        // Left-to-right semantics: compose entries apply first, then the
+        // parent's own params override on key collision. `child.gamma = 0.1`
+        // but `parent.gamma = 0.2` → resolved gamma must be 0.2 (parent wins).
+        let model = model_with_compose_scenario(
+            "parent", &[("gamma", 0.2)],
+            "child", &[("gamma", 0.1), ("N0", 1000.0)]);
+        let mut fixed = FixedParams {
+            from_file: None,
+            from_scenario: Some("parent".into()),
+            values: IndexMap::new(),
+        };
+        fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap();
+        let resolved = fixed.resolve().unwrap();
+        assert_eq!(resolved.get("gamma"), Some(&0.2),
+            "parent's own param wins over the composed child's: {:?}", resolved);
+        assert_eq!(resolved.get("N0"), Some(&1000.0));
+    }
+
+    #[test]
+    fn from_scenario_compose_carves_out_estimated_params() {
+        // gh#37 carve-out must apply to inherited (composed) params too:
+        // an estimated param living in the composed child is carved out of
+        // the fixed import, just as it would be for a parent-level param.
+        let model = model_with_compose_scenario(
+            "baseline_compose", &[("beta", 0.3)],
+            "fit_pinned", &[("gamma", 0.1), ("N0", 1000.0)]);
+        let mut fixed = FixedParams {
+            from_file: None,
+            from_scenario: Some("baseline_compose".into()),
+            values: IndexMap::new(),
+        };
+        // `gamma` is inherited from the child AND estimated → must be carved.
+        fixed.expand_from_scenario(&model, &estimate_set(&["gamma"])).unwrap();
+        let resolved = fixed.resolve().unwrap();
+        assert!(!resolved.contains_key("gamma"),
+            "estimated composed param `gamma` must be carved out: {:?}", resolved);
+        assert_eq!(resolved.get("N0"), Some(&1000.0));
+        assert_eq!(resolved.get("beta"), Some(&0.3));
+        assert_eq!(resolved.len(), 2);
+    }
+
+    #[test]
+    fn from_scenario_rejects_nested_compose() {
+        // Nested compose is rejected (same as the simulate path). A scenario
+        // referenced inside compose = [...] may not itself use compose.
+        use std::collections::HashMap;
+        let mut model = model_with_compose_scenario(
+            "parent", &[("beta", 0.3)],
+            "mid", &[("gamma", 0.1)]);
+        // Make `mid` itself compose `leaf` → nested.
+        model.presets.push(ir::model::Preset {
+            name: "leaf".to_string(),
+            label: "leaf".to_string(),
+            params: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            scale: HashMap::new(),
+            compose: vec![],
+            t_end: None,
+        });
+        for p in &mut model.presets {
+            if p.name == "mid" { p.compose = vec!["leaf".to_string()]; }
+        }
+        let mut fixed = FixedParams {
+            from_file: None,
+            from_scenario: Some("parent".into()),
+            values: IndexMap::new(),
+        };
+        let err = fixed.expand_from_scenario(&model, &IndexMap::new()).unwrap_err();
+        assert!(err.contains("nested compose"),
+            "error names the nested-compose rejection: {}", err);
+        assert!(err.contains("mid"),
+            "error names the offending sub-scenario: {}", err);
     }
 
     #[test]
