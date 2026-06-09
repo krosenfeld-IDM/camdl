@@ -13,10 +13,11 @@ same thing across passes.
 - **L** — large: multi-day, cross-cutting, or **needs a `docs/dev/proposals/`
   RFC first** (schema/IR change, new inference method, an architectural seam).
 
-## Triage buckets (what to *do* with an issue)
+## Triage buckets (what to _do_ with an issue)
 
 - **dup** — same defect/ask as another open issue → close it, comment pointing
-  to the canonical (richer / lower-number) one. Verify by *mechanism*, not title.
+  to the canonical (richer / lower-number) one. Verify by _mechanism_, not
+  title.
 - **stale** — already fixed on current `main`, or obsolete (feature never
   merged). Verify the load-bearing artifact (commit ancestor / file:line / test)
   exists, then close with that evidence.
@@ -27,16 +28,17 @@ same thing across passes.
   scoped tighter).
 - **l-or-proposal** — needs design / an RFC.
 - **inference-owned** — primary edits land in another active owner's files
-  (`sim/src/inference/*`, `effects.rs`, `lifecycle.rs`) → coordinate, don't fork.
-- **tricky-leave** — genuine engineering + scientific-judgment calls; the residue
-  left after dedup + stale + s-class.
+  (`sim/src/inference/*`, `effects.rs`, `lifecycle.rs`) → coordinate, don't
+  fork.
+- **tricky-leave** — genuine engineering + scientific-judgment calls; the
+  residue left after dedup + stale + s-class.
 
 ## Count-reduction order (fastest → slowest, by risk)
 
 1. **dedup** (no code) → close dups.
-2. **stale** (verify-only) → close already-fixed. *These two are the biggest
+2. **stale** (verify-only) → close already-fixed. _These two are the biggest
    cheap wins — backlogs accumulate issues whose fixes landed but were never
-   closed.*
+   closed._
 3. **s-class** → parallel worktree batches (~4 at a time), each clean-verified.
 4. leaves the **tricky-leave / l-or-proposal / inference-owned** tier for
    deliberate work.
@@ -59,3 +61,17 @@ reviewer**, then:
   `ocaml/lib/ir/ir_version_generated.ml` from `ir/VERSION` first.
 - Land via `gh#NN`-named branches / patches; **don't merge or close until the
   clean re-verify is green**; rebase onto `origin/main` before push (it moves).
+- **Generate the patch against the merge-base, not the moving `origin/main`.**
+  Use `git diff $(git merge-base origin/main HEAD)..HEAD`, not
+  `git diff origin/main..HEAD`. If `origin/main` advances after the worktree is
+  created, the latter form shows everything added upstream meanwhile as a
+  phantom _deletion_ by the branch (a Tier-A worker's diff appeared to delete a
+  doc section that had just landed on `origin/main` — the actual patch was
+  clean). When **reviewing**, review the captured patch, not
+  `git diff origin/main..branch` (same artifact).
+- **Split bundled issues before batching.** Some tracker issues bundle 2+
+  independent findings (e.g. #127 = OOB-panic + Gillespie-clamp; #134 =
+  Invalid_argument-crash + calendar-symmetry). One worker per bundled issue
+  yields a partial fix the reviewer correctly flags on scope. Either split into
+  focused issues first, or brief the worker to fix the named part and flag the
+  rest — and never auto-close the bundle on a partial fix.
