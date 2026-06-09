@@ -1,6 +1,6 @@
 ---
 date: 2026-06-09
-status: proposal
+status: accepted — implementing v1 (pack side); decisions resolved
 area: cli / compiler (camdlc) / bundle format
 related:
   - 2026-06-02-cas-run-identity (runid crate; ContentHash identity)
@@ -336,15 +336,14 @@ per command (each verified against the arg/config structs):
   pfilter/profile (`Vec<DataSpec>`), not simulate.
 
 `survey_path` and the `*FitDir`/`Directory` init sources are per-stage upstream
-CAS dirs. v1 **warns and skips** them rather than recursively bundling a CAS
-tree — but the warning must be honest about a real asymmetry: for **Bayesian
-stages (PGAS/PMMH)** the chain start does not change the stationary posterior
-(`config_v2.rs:893`), so a skipped survey/posterior seed is harmless; for **MLE
-stages (IF2/NLopt)** the start selects the basin θ̂ lands in, so dropping
-`init = survey_top_k` (→ `lhs`) can move θ̂ and the _numerical_ symptom may not
-reproduce. So: skip-with-loud-warning for Bayesian stages, and for MLE stages
-either bundle the landscape (`landscape.tsv` + `run.json`) or warn that the MLE
-may shift. Open question below.
+CAS dirs that v1 does **not** bundle. Rather than silently skip them (which can
+produce a non-reproducing bundle), **v1 hard-errors** when a fit uses one,
+naming the fix: _"`camdl mre` does not yet bundle survey/posterior-seeded fits
+(stage `refine` uses `init = survey_top_k`). Remove that init source or run the
+seed inline to make a self-contained MRE."_ Fail-loud-with-guidance beats a
+partial bundle, and it keeps v1's collector to the common case. (Bundling these
+upstream CAS dirs is a later increment; the seed-changes-θ̂-for-MLE-stages nuance
+lives there.)
 
 ## Part 3 — Bundle format
 
@@ -425,17 +424,18 @@ Stamping `origin` + `origin_run_id` is free leverage given the existing CAS
 identity layer and the recurring camdlc-version-guard pain: the bundle records
 the exact `(compiler_hash, engine_version)` that produced the bug.
 
-## Part 4 — Data consent (explicit and loud)
+## Part 4 — Data consent (include by default, flag it)
 
-The reporter is sharing real observed data; that must be impossible to do
-silently. As proposed (default subject to Open question 5),
-`camdl mre fit
-fit.toml` **includes** data (a no-data bundle usually cannot
-reproduce an inference bug) and:
+**Decision: default-include + a loud banner; `--no-data` to exclude.** The user
+is deliberately packaging an MRE from data they already reference (in `fit.toml`
+or via `--data`); requiring a second flag to include what they're already
+pointing at is friction for no gain, and a data-less bundle usually can't
+reproduce an inference bug. So `camdl mre fit fit.toml`:
 
+- **includes** the data, and
 - prints a prominent banner — _"⚠ This bundle contains observed data: cases.tsv
-  (142 rows), holdout.tsv (20 rows). Share only with the maintainer."_
-- records a per-file inventory (name, rows, sha256) under
+  (142 rows), holdout.tsv (20 rows). Share only with the maintainer."_ — and
+  records a per-file inventory (name, rows, sha256) under
   `DataConsent::Included`.
 
 `--no-data` produces a **structure-only** bundle: model + config + data _schema_
@@ -443,24 +443,18 @@ reproduce an inference bug) and:
 bugs where the data is sensitive. Many engine-class issues (gh#198, gh#199,
 gh#208, gh#202, gh#207) reproduce from structure alone.
 
-**Decision to confirm — opt-out vs opt-in (default matters for real PHI-adjacent
-data).** The default above is _opt-out_: a bare `camdl mre fit` includes the
-data and warns. The counter-case is strong and worth weighing: the banner fires
-_after_ the bytes are staged and hashed; an agent or CI loop driving `camdl mre`
-suppresses exactly the warning channel consent rides on (the same reason this
-proposal prefers hard errors elsewhere); and a `.mre.tar.gz` is built to be
-emailed and issue-attached, so the failure mode of opt-out is a one-drag PHI
-leak while the failure mode of opt-in is one re-run with a flag — asymmetric
-harm favouring the safe default. The opt-in alternative: a bare `camdl mre`
-emits the **structure-only** bundle and prints "add `--include-data` to include
-observed values"; `--include-data` _is_ the deliberate consent token (honored
-without a prompt off-TTY, since the flag is the act), with an optional one-shot
-TTY confirm. The banner + inventory stay either way — as confirmation of a
-chosen inclusion rather than as the consent mechanism. This contradicts the
-original "include by default + flag" framing, so it is **flagged for the
-maintainer to decide** (Open question 5), not silently flipped.
+(An opt-in `--include-data` default was considered for PHI safety but rejected
+as over-engineering for the actual workflow — the user already has and
+references the data they're bundling.)
 
-## Part 5 — Verification (`--verify`), phased
+## Part 5 — Verification (`--verify`) — fast-follow, not v1
+
+> **Decision: deferred to v1.1.** v1 ships the pack side only. The bundle's
+> README documents the exact reproduce command (`camdl fit run fit.toml`), so
+> the maintainer can run it immediately against the existing `fit run` — no
+> `mre run` needed for the loop to work. `--verify` + `mre run` land right
+> after, once the format is stable. The design below is the target for that
+> follow-up.
 
 Packing assembles the bundle's files in a _staging_ dir (the working tree that
 gets tarred). The subtlety: `--verify` must **not** run the fit from the staging
@@ -516,12 +510,15 @@ cut.
    command, per-source subcommands reusing `FitRunArgs`/`SimulateArgs` +
    existing config validation.
 3. Bundle `.tar.gz` (`tar` + `flate2`) + `MreManifest` + auto-generated README.
-4. Data consent: loud banner + inventory + `--no-data` structure-only. Default
-   (opt-out include vs opt-in `--include-data`) is Open question 5.
+4. Data consent: **default-include** + loud banner + inventory; `--no-data`
+   structure-only.
+5. Hard-error (with guidance) on fits whose init seeds from an upstream CAS dir
+   (`survey_top_k` / `*FitDir` / `Directory`) — not yet bundled.
 
-**Deferred:** `--verify` + `camdl mre run` (if not v1); `mre profile`;
-passthrough sugar (`camdl mre <subcommand> …`); recursive `survey_path`
-bundling; `--synthetic`; `.zip` output.
+**Deferred (fast-follow):** `--verify` + `camdl mre run`. **Later:**
+`mre
+profile`; from-CAS-run entry (`camdl mre <run-dir>`); passthrough sugar;
+bundling upstream CAS-dir seeds; `--synthetic`; `.zip` output.
 
 ## Lift estimate
 
@@ -566,33 +563,21 @@ The one remaining risk is contained: fit.toml path-rewriting (mitigated by the
 round-trip `run_id` test, which fails loudly if a path is mis-rewritten or a
 file is missed). The OCaml compile-return-shape question is resolved (Part 1).
 
-## Open questions
+## Decisions (resolved)
 
-1. **`--verify` in v1 or v1.1?** It is the single highest-value add (kills
-   non-reproducing bundles) but the most scope (a pack-time run). Lean: ship the
-   bundle in v1, add `--verify` immediately after once the format is stable.
-2. **From-CAS-run entry?** A `camdl mre <run-dir>` that recovers input paths
-   from the failing run's `run.json` provenance (`RunProvenance.argv`,
-   `inputs.rs:218`) and repackages. Convenient, but fragile (input files must
-   still exist at their original paths). Lean: config-first for v1, run-dir form
-   later.
-3. **Upstream CAS-dir seeds (`survey_path`, `*FitDir`, `Directory`).**
-   Warn-and-skip (require a self-contained fit) for v1, or bundle the upstream
-   CAS dir? Lean: warn-and-skip — but with the MLE/Bayesian asymmetry stated
-   (Part 2): harmless for PGAS/PMMH, can move θ̂ for IF2/NLopt.
-4. **Depfile and the IR cache.** When the model compile is cache-hit (`util.rs`
-   ir_cache), there is no fresh compile to attach `--emit-deps` to. v1 can force
-   a compile under `mre` (correctness over speed; MRE packing is not hot), or
-   cache the depfile next to the cached IR. Lean: force-compile in v1; cache
-   later if it bites.
-5. **Consent default — opt-out or opt-in?** Keep the original default-include
-   (`--no-data` to exclude), or flip to default structure-only with
-   `--include-data` as the explicit consent token (Part 4)? The opt-in case is
-   safety-driven (a `.mre.tar.gz` is one drag from a public tracker; the banner
-   can't un-write the bytes; agents suppress warnings). The opt-out case is
-   ergonomic (most inference bugs need the data; one fewer flag). Maintainer's
-   call — this is the one decision that touches how a user's real surveillance
-   data leaves their machine.
+1. **`--verify` / `mre run`** — fast-follow, **not v1** (Part 5). v1 ships pack
+   only; the bundle README documents the reproduce command so the maintainer
+   runs it against the existing `fit run`.
+2. **From-CAS-run entry** (`camdl mre <run-dir>`) — **later.** Config-first for
+   v1.
+3. **Upstream CAS-dir seeds** (`survey_top_k` / `*FitDir` / `Directory`) —
+   **hard-error with guidance** in v1 (Part 2), not silent-skip. Bundling them
+   is a later increment.
+4. **Depfile + IR cache** — **force a compile** under `mre` (packing isn't hot);
+   no cache interaction in v1.
+5. **Consent default** — **default-include** + loud banner; `--no-data` to
+   exclude (Part 4). The opt-in `--include-data` alternative was rejected: the
+   user already references the data they're bundling.
 
 ## Testing plan
 
