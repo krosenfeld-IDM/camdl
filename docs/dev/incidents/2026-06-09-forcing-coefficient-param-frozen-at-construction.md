@@ -4,11 +4,10 @@ Date: 2026-06-09 Severity: high (silent wrong inference; no error, no warning)
 Backends affected: **all** (the freeze is in the shared `CompiledModel`, not a
 backend) — bites **inference**, where the model is built once and parameters
 vary; a single forward `simulate` run is unaffected because it rebuilds the
-model each invocation. Status: open — fix proposed (see Remediation), not yet
-landed. Discrepancy class (per CLAUDE.md): **code-vs-code** — two internal
-evaluation paths disagree about the same `Expr::Param`: rate eval reads it live,
-forcing / table-coefficient eval freezes it. Fix the code; add a test pinning
-agreement.
+model each invocation. Status: **resolved** (2026-06-09) — see Resolution.
+Discrepancy class (per CLAUDE.md): **code-vs-code** — two internal evaluation
+paths disagree about the same `Expr::Param`: rate eval reads it live, forcing /
+table-coefficient eval freezes it. Fix the code; add a test pinning agreement.
 
 ## What happened
 
@@ -211,31 +210,40 @@ needs no test. (The existing `gate_constant_fold_ab.rs` does _not_ cover this �
 it proves the OCaml `constant_fold.ml` pass is trajectory-preserving; the freeze
 is a Rust runtime bake at a different layer.)
 
-## Remediation (proposed — not yet landed)
+## Resolution (landed 2026-06-09)
 
-Designed in `docs/dev/proposals/` (const‖parametric forcing; in draft). The
-shape:
+Fixed per `docs/dev/proposals/2026-06-09-const-parametric-forcing.md` (Design B:
+a coefficient is a `ResolvedExpr`, not data). The freeze is now
+**unrepresentable** — there is no `f64` slot for a coefficient to freeze into.
 
-- **Fold only constants / `ParamValue::Fixed`.** Key the build-time collapse on
-  the kind: a coefficient that is `Const` (or references only `Fixed` params)
-  may bake to `f64`; a coefficient referencing an `Estimated`/`Required`
-  parameter must stay a live `ResolvedExpr`, evaluated each step against
-  `ctx.params` — identical to how rates already work. The `ParamValue` ADT (last
-  night's work) is the enabler: the fold decision can now key on `Fixed` vs
-  `Estimated`/`Required` instead of an opaque `Option<f64>`.
-- **`eval_time_func` (and the table path) take the params slice** so a live
-  coefficient can read it — closing the structural hole.
-- **Add the identifiability invariant test (option 2)** and a gradient
-  sensitivity gate (option 3); the reproduction above is the red test (today
-  `assert_eq!(amp_lo, amp_hi)` passes — the freeze; the fix flips it to
-  `assert_ne!`).
+- **Value half** — _fix(sim): evaluate forcing coefficients live, not frozen at
+  build_ and _fix(sim): evaluate inline-table values live, not frozen at build_
+  (both 2026-06-09). Sinusoidal/Periodic/Fourier scalar coefficients and inline
+  `table_values_cache` entries are stored as `ResolvedExpr` and evaluated each
+  step against `ctx.params`, exactly like rates and observation likelihoods.
+  `eval_time_func(kind, t)` became `eval_forcing(kind, t, ctx)`. The
+  reproduction above is the red test (`assert_eq!` → `assert_ne!`). Structural
+  data (interpolation knots, spline bases) stays precomputed and rejects a param
+  reference. This makes **IF2 and the bootstrap particle filter** work for
+  coefficient parameters.
+- **Gradient half** — _feat(autodiff): analytic forcing/table-coefficient
+  gradients_ (2026-06-09). OCaml autodiff differentiates through the forcing
+  closed form (Sinusoidal/Fourier) and constant-indexed parameter tables, so the
+  analytic `rate_grad` is no longer a silent `Const 0.0`. A `deriv` ADT makes
+  any remaining dropped derivative an explicit compile error rather than a
+  silent zero (gh#215 tracks the rest). This makes **NUTS** estimable for those
+  parameters; validated analytic-vs-FD in `gradient_check.rs`.
+- **Guard** — _feat(cli): NUTS guard for params only inside a forcing/table
+  coefficient_ (2026-06-09). A NUTS fit is refused (loudly) when an estimated
+  parameter appears only inside a coefficient whose derivative is not yet
+  emitted.
 
-Until the fix lands, **estimating a parameter that appears only inside a forcing
-or inline-table coefficient silently does not work.** A compile-time diagnostic
-rejecting that construct (E-code with hint: "parameter `amp` is used in a
-forcing coefficient, which is currently evaluated once at load; estimating it
-has no effect — use it in a rate, or mark it fixed") would be a cheap interim
-guard if the full fix is deferred.
+**Advisory (past fits).** Any completed fit that estimated a parameter appearing
+only inside a forcing or inline-table coefficient — including the goldens
+`seir_seasonal_patch` (amp_urban/amp_rural), `seir_vaccine_seasonal`
+(alpha/phi_season), `phenom_mixing_unchecked` (amp), and `seir_pop_balance`
+(pop_amp/pop_mean) — produced a posterior reflecting **only the prior** for that
+parameter; re-run those fits.
 
 ## What it suggests
 
