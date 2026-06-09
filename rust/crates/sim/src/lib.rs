@@ -67,6 +67,19 @@ bitflags::bitflags! {
         /// CLI checks `backend.capabilities().contains(LINEAGES)` at the
         /// point of the request rather than via the IR scan.
         const LINEAGES          = 1 << 3;
+        /// gh#54. A transition rate references the runtime substep `dt`
+        /// (`Expr::Dt`). The value is only meaningful on a backend that
+        /// realizes a substep length and feeds it to `EvalCtx.dt`:
+        /// chain-binomial (StepClock substeps) and ODE (RK4 flow
+        /// accumulation at the realized `dt_actual`) both do. Gillespie's
+        /// SSA loop has no substep — it freezes `Expr::Dt` to the nominal
+        /// `simulation.dt`-or-`1.0` (gillespie.rs), so a rate written
+        /// against `dt` evaluates to a DIFFERENT, degenerate value there.
+        /// Previously silently substituted on gillespie — a model with a
+        /// `dt`-scaled rate produced a different trajectory on each backend
+        /// with no warning (the BALANCE failure mode). Declaring the
+        /// requirement makes gillespie fail dispatch rather than mislead.
+        const RUNTIME_DT        = 1 << 4;
     }
 }
 

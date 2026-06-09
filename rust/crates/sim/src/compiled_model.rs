@@ -464,6 +464,40 @@ pub struct ResolvedModel {
     pub intervention_at_time_exprs: Vec<Option<Vec<ResolvedExpr>>>,
 }
 
+/// True if the expression tree references the runtime substep `dt`
+/// (`Expr::Dt`) anywhere. Used by `required_capabilities` to derive the
+/// `RUNTIME_DT` requirement from the rate ASTs (gh#54). Covers all 15
+/// `Expr` variants; the leaves (`Const`/`Param`/`Pop`/`PopSum`/`Time`/
+/// `Projected`/`BindingRef`) cannot contain `Dt`, the compound variants
+/// recurse into their children.
+fn expr_contains_dt(e: &Expr) -> bool {
+    match e {
+        Expr::Dt(_) => true,
+        Expr::Const(_)
+        | Expr::Param(_)
+        | Expr::Pop(_)
+        | Expr::PopSum(_)
+        | Expr::Time(_)
+        | Expr::Projected(_)
+        | Expr::BindingRef(_) => false,
+        Expr::BinOp(w) => {
+            expr_contains_dt(&w.bin_op.left) || expr_contains_dt(&w.bin_op.right)
+        }
+        Expr::UnOp(w) => expr_contains_dt(&w.un_op.arg),
+        Expr::Cond(w) => {
+            expr_contains_dt(&w.cond.pred)
+                || expr_contains_dt(&w.cond.then)
+                || expr_contains_dt(&w.cond.else_)
+        }
+        // A time_func is a named reference to a model-level forcing; its body
+        // is not inline here and cannot itself read the substep `dt`.
+        Expr::TimeFunc(_) => false,
+        Expr::TableLookup(w) => w.table_lookup.indices.iter().any(expr_contains_dt),
+        Expr::UncheckedDim(w) => expr_contains_dt(&w.unchecked_dim.inner),
+        Expr::Reduce(w) => w.reduce.iter().any(expr_contains_dt),
+    }
+}
+
 impl CompiledModel {
     /// Compartment name for a local **integer** state index, for
     /// diagnostics. O(n) reverse walk of `comp_index` → `global_to_int`;
@@ -1065,6 +1099,19 @@ impl CompiledModel {
             // the requirement makes other backends fail dispatch
             // rather than silently drop it.
             caps |= crate::Capabilities::BALANCE;
+        }
+        // gh#54. A rate (or its gradient, evaluated in PGAS) that references
+        // the runtime substep `dt` (`Expr::Dt`) is only meaningful on a
+        // backend that realizes a substep length. Gillespie freezes it to
+        // the nominal `simulation.dt`-or-`1.0`, so it would silently produce
+        // a different trajectory. Walk the rate ASTs; if any contains
+        // `Expr::Dt`, require RUNTIME_DT so gillespie fails dispatch.
+        let uses_dt = self.model.transitions.iter().any(|t| {
+            expr_contains_dt(&t.rate)
+                || t.rate_grad.values().any(expr_contains_dt)
+        });
+        if uses_dt {
+            caps |= crate::Capabilities::RUNTIME_DT;
         }
         caps
     }

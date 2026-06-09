@@ -414,8 +414,16 @@ pub fn check_model_capabilities(
         // be fit with its real compartments frozen at their init value —
         // silently mis-fit (gh#191). Re-grant REAL_COMPARTMENTS here once
         // inference advances real state.
-        "chain_binomial" => Capabilities::OVERDISPERSION | Capabilities::BALANCE,
-        "ode"            => Capabilities::REAL_COMPARTMENTS,
+        // RUNTIME_DT (gh#54): both inference backends realize a substep `dt`
+        // — chain_binomial via the PGAS StepClock substeps
+        // (gate_dt_rate_exact_clip.rs) and ode via RK4 flow accumulation
+        // (ode_dt_rate_flow.rs) — so a `dt`-in-rate model fits on either. The
+        // requirement only excludes gillespie, which is not an inference
+        // backend here.
+        "chain_binomial" => {
+            Capabilities::OVERDISPERSION | Capabilities::BALANCE | Capabilities::RUNTIME_DT
+        }
+        "ode"            => Capabilities::REAL_COMPARTMENTS | Capabilities::RUNTIME_DT,
         other            => return Err(format!(
             "check_model_capabilities: unknown backend '{}'", other
         )),
@@ -472,6 +480,13 @@ fn capability_hint(name: &str, flag: sim::Capabilities) -> String {
              conserves population algebraically and has no substep to apply \
              it. Use backend = \"chain_binomial\", or remove the `balance{}` \
              block.".to_string(),
+        Capabilities::RUNTIME_DT =>
+            "RUNTIME_DT: the model uses `dt` in a rate (the runtime substep \
+             length). gillespie has no substep — its SSA loop would freeze \
+             `dt` to the nominal `simulation.dt`-or-`1.0`, silently changing \
+             the rate. Use backend = \"chain_binomial\" or \"ode\" (both \
+             evaluate the rate at the realized substep length), or remove the \
+             `dt` factor from the rate.".to_string(),
         // Any other flag (e.g. LINEAGES) still gets a named, non-blank line.
         _ => format!(
             "{name}: required by the model but not supported by this backend."
@@ -772,5 +787,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// gh#54: a `dt`-in-rate model requires RUNTIME_DT. Both inference
+    /// backends realize a substep `dt` (chain_binomial via PGAS StepClock,
+    /// ode via RK4 flow accumulation), so the inference capability gate must
+    /// ACCEPT it on both — a missing grant here would falsely reject a
+    /// legitimate dt-rate fit. (gillespie is not an inference backend.)
+    #[test]
+    fn inference_accepts_dt_in_rate_on_both_backends() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/fixtures/corner_cases/ir/dt_rate.ir.json"
+        );
+        let json = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let model = ir::from_str(&json).expect("parse dt_rate IR");
+        let compiled = sim::CompiledModel::new(model).expect("compile dt_rate");
+        assert!(
+            compiled
+                .required_capabilities()
+                .contains(sim::Capabilities::RUNTIME_DT),
+            "fixture must actually require RUNTIME_DT"
+        );
+        check_model_capabilities("chain_binomial", &compiled).unwrap_or_else(|e| {
+            panic!("chain_binomial inference must ACCEPT dt-in-rate models: {e}")
+        });
+        check_model_capabilities("ode", &compiled).unwrap_or_else(|e| {
+            panic!("ode inference must ACCEPT dt-in-rate models: {e}")
+        });
+    }
+
+    /// The RUNTIME_DT hint must name the feature (`dt`) and the fix
+    /// (chain_binomial / ode) — not fall through to the blank-safe generic
+    /// fallback. Exercised by driving an unsupported RUNTIME_DT through a
+    /// backend grant that lacks it.
+    #[test]
+    fn runtime_dt_hint_names_feature_and_fix() {
+        let hint = capability_hint("RUNTIME_DT", sim::Capabilities::RUNTIME_DT);
+        assert!(hint.contains("RUNTIME_DT"), "hint must name the capability: {hint}");
+        assert!(hint.contains("dt"), "hint must name the `dt` feature: {hint}");
+        assert!(
+            hint.contains("chain_binomial") && hint.contains("ode"),
+            "hint must name the fix backends: {hint}"
+        );
     }
 }

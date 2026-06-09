@@ -32,7 +32,10 @@ impl Simulate for OdeSim {
     }
 
     fn capabilities(&self) -> crate::Capabilities {
-        crate::Capabilities::REAL_COMPARTMENTS
+        // RUNTIME_DT: the RK4 flow accumulation evaluates a `dt`-referencing
+        // rate at the REALIZED substep length (`dt_actual`), see
+        // `ode_dt_rate_flow.rs`. gh#54.
+        crate::Capabilities::REAL_COMPARTMENTS | crate::Capabilities::RUNTIME_DT
     }
 
     fn name(&self) -> &'static str { "ode" }

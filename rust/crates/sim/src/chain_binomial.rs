@@ -114,6 +114,10 @@ impl Simulate for ChainBinomialSim {
             | crate::Capabilities::REAL_COMPARTMENTS
             | crate::Capabilities::BALANCE  // gh#audit-C3
             | crate::Capabilities::LINEAGES
+            // RUNTIME_DT: StepClock substeps feed the realized `dt` into
+            // `EvalCtx.dt`, so a `dt`-referencing rate is meaningful here
+            // (see `gate_dt_rate_exact_clip.rs`). gh#54.
+            | crate::Capabilities::RUNTIME_DT
     }
 
     fn name(&self) -> &'static str { "chain_binomial" }

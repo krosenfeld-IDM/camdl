@@ -121,10 +121,12 @@ const BASELINES: &[(&str, &str, u64)] = &[
     // grid dt=1 and the dt/tau factor is identically 1.0 (tau=1) — hence these
     // hashes EQUAL off_grid_obs above (same SIR otherwise). The dt-factor only
     // bites under Exact substep clipping, where dt_actual ≠ grid_dt; that path
-    // is pinned by gate_dt_rate_exact_clip.rs, not here. (On gillespie/ode the
-    // `Expr::Dt` node freezes to sim.dt-or-1.0 — deterministic but degenerate;
-    // dt-rates are only meaningful on the fixed-step / inference path.)
-    ("dt_rate", "gillespie", 0x3a47fe1458a43c93),
+    // is pinned by gate_dt_rate_exact_clip.rs, not here.
+    //
+    // gillespie is INTENTIONALLY ABSENT: a `dt`-in-rate model now requires the
+    // RUNTIME_DT capability (gh#54), which gillespie does not declare (no
+    // substep). The capability-skip below therefore drops dt_rate/gillespie —
+    // the gate is enforced by gate_runtime_dt_capability.rs.
     ("dt_rate", "chain_binomial", 0x38f9706bf047cf25),
     ("dt_rate", "ode", 0xfb342768c44ea834),
     // seasonal_drift runs here at dt=1 (integer), where s*dt == accumulated, so
