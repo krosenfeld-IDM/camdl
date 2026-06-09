@@ -753,6 +753,22 @@ same silent-wrong-posterior class), #180 (open: parametric DerivedExpr
 projection drops a chain-rule term — same "dropped derivative term" shape) ·
 **M-class**
 
+**Update 2026-06-09 — this is the load-bearing half for PGAS+NUTS.** An
+adversarial review confirmed (`autodiff.ml:23`, `propensity.rs:253-255`,
+`pgas_grad.rs:128-129`) that `TimeFunc _ -> Const 0.0` makes the analytic
+gradient of a forcing-coefficient param **structurally zero**, so even after
+example 8's value un-freeze lands, NUTS still sees ∂loglik/∂amp ≡ 0 — the
+likelihood responds but the gradient does not, and the two _disagree_.
+`gradient_check.rs:448-454` already documents this "doubly-silent zero
+gradient." So the real work here is not just the `Deriv = Known | Unsupported`
+floor below (make the drop loud) but emitting the analytic ∂forcing/∂coef (e.g.
+sinusoidal ∂/∂amplitude = `sin(2π(t−phase)/period)`), which means threading each
+`TimeFunc` node's coefficient identity into the gradient evaluator. Examples 7
+and 8 must land together for gradient-based estimation of forcing params;
+example 8 alone fixes only the gradient-free methods (IF2, bootstrap PF).
+Tracked with example 8 in
+[`docs/dev/proposals/2026-06-09-const-parametric-forcing.md`](../proposals/2026-06-09-const-parametric-forcing.md).
+
 **The bug.** OCaml autodiff differentiates TimeFunc and TableLookup nodes to
 Const 0.0 unconditionally. A parameter that enters a transition rate ONLY
 through a forcing function (e.g. seasonal amplitude) or a table entry gets a
@@ -868,6 +884,29 @@ number. This is the **value** half of the same `#119` bug whose **gradient**
 half is example 7; the two types together close it.\
 **Solves:** #119 (the freeze), #186 (parametric `time_function` params
 un-estimable) · **M/L**
+
+**Update 2026-06-09 — now reproduced and being implemented.** This example is no
+longer hypothetical: it has a filed incident with a concrete input→output
+reproduction
+([`docs/dev/incidents/2026-06-09-forcing-coefficient-param-frozen-at-construction.md`](../incidents/2026-06-09-forcing-coefficient-param-frozen-at-construction.md)
+— build once, vary `amp` only in the live slice → byte-identical trajectory;
+vary a rate param → changes) and an implementation plan
+([`docs/dev/proposals/2026-06-09-const-parametric-forcing.md`](../proposals/2026-06-09-const-parametric-forcing.md)).
+Three corrections an adversarial review confirmed against the code, sharpening
+the design below: (1) the `expr_refs_param` predicate this example calls for
+**already exists** at `compiled_model.rs:236` (recursive, used for bindings at
+`:673`) — and the layering rule below is exactly right: key the Const/Live split
+on **references-any-param**, _not_ `ParamValue::Estimated`, because a
+`Required`-declared param put under `[estimate]` becomes `Fixed` at
+`CompiledModel::new` (`with_value`: `Required → Fixed`) and an Estimated-keyed
+scan would silently leave it frozen — which is the **common** case (3 of the 4
+affected goldens). (2) Blast radius is **four** goldens, not one:
+`seir_seasonal_patch`, `phenom_mixing_unchecked`, `seir_pop_balance`,
+`seir_vaccine_seasonal` (the last is the spec §7 example). (3) The value
+un-freeze here fixes IF2/PF, but **example 7's gradient half is required for
+PGAS+NUTS** — without it the likelihood responds while the analytic gradient
+stays zero (the two then _disagree_), so the two examples must land together for
+the production Bayesian path.
 
 **The bug.** A forcing/table field — a seasonal `amplitude`, a reporting ramp's
 `phase`, a contact-matrix cell — may be a literal (`0.3`) or an expression over
