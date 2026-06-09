@@ -117,6 +117,20 @@ simulate {
 }
 ```
 
+`date(...)` is accepted in **every absolute-time position**, not just
+`simulate.from/to`: the `at = [...]` schedule of an `interventions {}` or
+`events {}` entry takes dates too, each resolving to its internal offset via
+`origin`. Prefer it to a bare number anywhere the time is a calendar instant — a
+bare numeric there under a date `origin` warns **W324** (`simulate`) / **W325**
+(`at`-schedules); a `date(...)` is the legible form that silences it.
+
+```camdl
+interventions {
+  vacc : transfer(from = S, to = V, fraction = 0.1)
+         at [date("2020-03-01"), date("2020-06-01")]   # no W325 — dates are explicit
+}
+```
+
 Without a top-level `origin`, `date(...)` is **E220**.
 
 **Anchored vs unanchored** models — see [`docs/dates.md`](dates.md) for the full

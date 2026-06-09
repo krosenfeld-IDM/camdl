@@ -28,61 +28,61 @@ diagnostic emit-site that isn't in the catalog.
 (Errors block compilation. The list below is the current state; specifics are
 documented at each emit site in `ocaml/lib/compiler/`.)
 
-| Code      | Category       | Summary                                                                                                                                            |
-| --------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| E001      | meta           | internal compiler error / unreachable                                                                                                              |
-| E100      | parse          | undeclared name                                                                                                                                    |
-| E101      | parse          | duplicate compartment                                                                                                                              |
-| E102      | parse          | duplicate parameter                                                                                                                                |
-| E103      | parse          | duplicate let binding                                                                                                                              |
-| E104      | parse          | reserved name used as identifier                                                                                                                   |
-| E105      | parse          | unknown unit suffix                                                                                                                                |
-| E106      | parse          | unknown / conflicting key in a config block (`output {}` section, `simulate {}` key, schedule `every`/`at` conflict)                               |
-| E107      | parse          | ambiguous unit literal after `/`                                                                                                                   |
-| E108      | parse          | malformed initial-condition expression                                                                                                             |
-| E109      | parse          | unknown forcing function shape                                                                                                                     |
-| E110      | parse          | unknown transition attribute `#[...]` (only `#[lineage]` is supported)                                                                             |
-| E200–E221 | semantic       | scoping / declaration / resolution errors (multiple variants); E221 = read() data-file header has too few columns for the table's index dimensions |
-| E222      | semantic       | table uses `read(...)` but declares no index dimensions                                                                                            |
-| E223      | semantic       | `date(...)` / `origin` ISO date is malformed or out of range (month 1–12, day valid for the month, leap-aware); mirrors Rust `caltime::parse_iso_date` |
-| E230–E276 | semantic       | observation, balance, simulation-block validation                                                                                                  |
-| E277      | semantic       | initial condition does not name an expanded compartment cell (bare stratified, or unknown compartment)                                             |
+| Code      | Category       | Summary                                                                                                                                                                           |
+| --------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E001      | meta           | internal compiler error / unreachable                                                                                                                                             |
+| E100      | parse          | undeclared name                                                                                                                                                                   |
+| E101      | parse          | duplicate compartment                                                                                                                                                             |
+| E102      | parse          | duplicate parameter                                                                                                                                                               |
+| E103      | parse          | duplicate let binding                                                                                                                                                             |
+| E104      | parse          | reserved name used as identifier                                                                                                                                                  |
+| E105      | parse          | unknown unit suffix                                                                                                                                                               |
+| E106      | parse          | unknown / conflicting key in a config block (`output {}` section, `simulate {}` key, schedule `every`/`at` conflict)                                                              |
+| E107      | parse          | ambiguous unit literal after `/`                                                                                                                                                  |
+| E108      | parse          | malformed initial-condition expression                                                                                                                                            |
+| E109      | parse          | unknown forcing function shape                                                                                                                                                    |
+| E110      | parse          | unknown transition attribute `#[...]` (only `#[lineage]` is supported)                                                                                                            |
+| E200–E221 | semantic       | scoping / declaration / resolution errors (multiple variants); E221 = read() data-file header has too few columns for the table's index dimensions                                |
+| E222      | semantic       | table uses `read(...)` but declares no index dimensions                                                                                                                           |
+| E223      | semantic       | `date(...)` / `origin` ISO date is malformed or out of range (month 1–12, day valid for the month, leap-aware); mirrors Rust `caltime::parse_iso_date`                            |
+| E230–E276 | semantic       | observation, balance, simulation-block validation                                                                                                                                 |
+| E277      | semantic       | initial condition does not name an expanded compartment cell (bare stratified, or unknown compartment)                                                                            |
 | E278      | semantic       | declaration name is duplicated within a namespace or ambiguous across namespaces (compartments / parameters / lets / forcings / tables), including after stratification expansion |
-| E300      | dimensional    | transition rate has wrong dimension (e.g. per-capita where total propensity expected)                                                              |
-| E301      | dimensional    | exponent has non-dimensionless dimension                                                                                                           |
-| E302      | dimensional    | dimension mismatch (e.g. adding a count and a rate)                                                                                                |
-| E303      | dimensional    | parameter used with conflicting dimensions across transitions                                                                                      |
-| E304      | dimensional    | `sqrt` requires even dimension exponents / distribution parameter has wrong dimension (e.g. binomial `p` is a count)                               |
-| E305      | dimensional    | balance expression has wrong dimension                                                                                                             |
-| E306      | dimensional    | ODE derivative has wrong dimension                                                                                                                 |
-| E307      | dimensional    | observation dispersion parameter must be dimensionless                                                                                             |
-| E308      | dimensional    | overdispersion `sigma^2` must be dimensionless                                                                                                     |
-| E310      | dimensional    | misc dimensional mismatch                                                                                                                          |
-| E320      | calendar       | integer `time_unit` cannot be combined with `origin = date("...")`                                                                                 |
-| E321      | calendar       | calendar duration cannot translate an instant in the model's time unit                                                                             |
-| E322      | calendar       | calendar duration used in a recurring schedule field                                                                                               |
-| E323      | calendar       | periodic forcing has bare-numeric entries in `on=[...]` under a calendar origin                                                                    |
-| E327      | calendar       | `date_range` with `start = origin` requires an anchored model                                                                                      |
-| E328      | calendar       | `date_range` missing required `start` argument                                                                                                     |
-| E329      | calendar       | `date_range` `count`/`every` out of range (must be ≥ 1 / positive)                                                                                 |
-| E401      | schedule       | recurring block missing required field                                                                                                             |
-| E402–E408 | schedule       | recurring/periodic block validation (period, on-list, alignment)                                                                                   |
-| E500      | validate       | duplicate compartment after expansion                                                                                                              |
-| E501      | validate       | duplicate transition after expansion                                                                                                               |
-| E502      | validate       | duplicate parameter                                                                                                                                |
-| E503      | validate       | unknown compartment referenced                                                                                                                     |
-| E504      | validate       | unknown parameter referenced                                                                                                                       |
-| E505      | validate       | unknown table referenced                                                                                                                           |
-| E506      | validate       | unknown time_function referenced                                                                                                                   |
-| E507      | validate       | unknown transition referenced in observation                                                                                                       |
-| E508      | validate       | real-valued compartment in transition stoichiometry                                                                                                |
-| E509      | validate       | real-valued compartment has no ODE equation                                                                                                        |
-| E510      | validate       | ODE equation for a non-real compartment                                                                                                            |
-| E511      | validate       | transition has zero delta for a compartment                                                                                                        |
-| E512      | validate       | hoisted binding references a parameter (gradient would be silently zeroed)                                                                          |
-| E513      | validate       | initial condition names a compartment absent from the expanded model (contract-boundary net; frontend reports the located E277)                     |
-| E600      | runtime config | rejected before backend dispatch                                                                                                                   |
-| E601      | semantic       | lineage tracking requires linear dependence on parent compartments                                                                                 |
+| E300      | dimensional    | transition rate has wrong dimension (e.g. per-capita where total propensity expected)                                                                                             |
+| E301      | dimensional    | exponent has non-dimensionless dimension                                                                                                                                          |
+| E302      | dimensional    | dimension mismatch (e.g. adding a count and a rate)                                                                                                                               |
+| E303      | dimensional    | parameter used with conflicting dimensions across transitions                                                                                                                     |
+| E304      | dimensional    | `sqrt` requires even dimension exponents / distribution parameter has wrong dimension (e.g. binomial `p` is a count)                                                              |
+| E305      | dimensional    | balance expression has wrong dimension                                                                                                                                            |
+| E306      | dimensional    | ODE derivative has wrong dimension                                                                                                                                                |
+| E307      | dimensional    | observation dispersion parameter must be dimensionless                                                                                                                            |
+| E308      | dimensional    | overdispersion `sigma^2` must be dimensionless                                                                                                                                    |
+| E310      | dimensional    | misc dimensional mismatch                                                                                                                                                         |
+| E320      | calendar       | integer `time_unit` cannot be combined with `origin = date("...")`                                                                                                                |
+| E321      | calendar       | calendar duration cannot translate an instant in the model's time unit                                                                                                            |
+| E322      | calendar       | calendar duration used in a recurring schedule field                                                                                                                              |
+| E323      | calendar       | periodic forcing has bare-numeric entries in `on=[...]` under a calendar origin                                                                                                   |
+| E327      | calendar       | `date_range` with `start = origin` requires an anchored model                                                                                                                     |
+| E328      | calendar       | `date_range` missing required `start` argument                                                                                                                                    |
+| E329      | calendar       | `date_range` `count`/`every` out of range (must be ≥ 1 / positive)                                                                                                                |
+| E401      | schedule       | recurring block missing required field                                                                                                                                            |
+| E402–E408 | schedule       | recurring/periodic block validation (period, on-list, alignment)                                                                                                                  |
+| E500      | validate       | duplicate compartment after expansion                                                                                                                                             |
+| E501      | validate       | duplicate transition after expansion                                                                                                                                              |
+| E502      | validate       | duplicate parameter                                                                                                                                                               |
+| E503      | validate       | unknown compartment referenced                                                                                                                                                    |
+| E504      | validate       | unknown parameter referenced                                                                                                                                                      |
+| E505      | validate       | unknown table referenced                                                                                                                                                          |
+| E506      | validate       | unknown time_function referenced                                                                                                                                                  |
+| E507      | validate       | unknown transition referenced in observation                                                                                                                                      |
+| E508      | validate       | real-valued compartment in transition stoichiometry                                                                                                                               |
+| E509      | validate       | real-valued compartment has no ODE equation                                                                                                                                       |
+| E510      | validate       | ODE equation for a non-real compartment                                                                                                                                           |
+| E511      | validate       | transition has zero delta for a compartment                                                                                                                                       |
+| E512      | validate       | hoisted binding references a parameter (gradient would be silently zeroed)                                                                                                        |
+| E513      | validate       | initial condition names a compartment absent from the expanded model (contract-boundary net; frontend reports the located E277)                                                   |
+| E600      | runtime config | rejected before backend dispatch                                                                                                                                                  |
+| E601      | semantic       | lineage tracking requires linear dependence on parent compartments                                                                                                                |
 
 ## Warnings
 
@@ -105,6 +105,38 @@ documenting the failure mode the warning catches. Future emit-site additions
 must update this table in the same commit — the catalog-consistency meta-test in
 `ocaml/test/test_diagnostics.ml` fails the build if an emit-site code is missing
 here.)
+
+### W324 / W325 — bare numeric in an absolute-time position under a date origin
+
+**Fires when:** the model declares `origin = date(...)` (anchored) and a _bare
+numeric_ literal appears in an absolute-time position: `simulate.from` /
+`simulate.to` (**W324**), or an `at = [...]` schedule entry / a recurring
+`from`/`until` bound on an `interventions {}` or `events {}` entry (**W325**). A
+unit-annotated literal (`730 'days`) or a `date(...)` literal does NOT fire —
+those state their intent. `simulate.dt` is a step _length_ (a duration), so a
+bare numeric `dt` is correct and never warns.
+
+**Why:** under a date origin, `from = 730` silently means "730 internal-time
+units (here days) after origin" — the reader has to compute the calendar date in
+their head, and an off-by-a-window mistake (e.g. `from = 0` against a data
+window that begins years after origin) is invisible. `from = date("1952-01-01")`
+reads in calendar terms and makes the offset auditable. This is the model-side
+mirror of the data loader's **W326** (numeric `--data` time column under a date
+origin): gh#134 closed the asymmetry so the calendar-vs-raw choice is surfaced
+the same way on both the model surface and the data surface.
+
+**Fix / silence:** write `date("YYYY-MM-DD")` for a calendar instant, or — if
+the offset really is an intentional internal-time count — annotate it with a
+unit literal (`<n> 'days`) to state that and suppress the warning. The emit site
+and hint text live in `ocaml/lib/compiler/expander.ml` (`warn_bare_numeric`) and
+`ocaml/lib/compiler/time_typing.ml` (`hint_bare_numeric_simulate` /
+`hint_bare_numeric_at_schedule`).
+
+**Not (yet) covered — gh#134 request 2 (deferred):** a separate _first-interval
+sanity_ warning — flag when the first inter-observation interval
+(`simulate.from` → first bound data time) is `≫` the modal observation spacing —
+lives on the Rust fit/data-loading side, not here. See the gh#134 follow-up
+note.
 
 ## Info
 

@@ -5456,6 +5456,105 @@ let test_typed_time_w325_bare_numeric_at_schedule_warning () =
   let d = expect_diag ~severity:Diagnostics.Warning ~code:"W325" src in
   assert_hint_contains ~needle:"date(" d
 
+(* gh#134: the model-side calendar nudge (W324/W325) is the symmetric
+   sibling of the data-loader's W326. The cases below pin the three
+   negative/coverage gaps the issue's ergonomics ask depends on but
+   that the suite did not previously lock:
+
+     - a `date(...)` literal in `simulate.from/to` (the legible form
+       the warning steers toward) must NOT itself warn W324;
+     - a `date(...)` literal in an intervention `at [...]` schedule
+       must NOT warn W325 — date() is the suppression-by-clarity path;
+     - the `events {}` block (sister construct to `interventions {}`)
+       must warn W325 on a bare-numeric `at [...]` symmetrically with
+       interventions;
+     - an UNanchored model (no `origin = date(...)`) must NOT warn at
+       all — the nudge fires only when origin is a date. *)
+
+let count_code ~code (d : Compiler.compile_detail) : int =
+  diags_of_detail d
+  |> List.filter (fun (x : Diagnostics.diagnostic) -> x.code = code)
+  |> List.length
+
+let test_gh134_date_simulate_from_to_no_w324 () =
+  (* The form the W324 hint steers the author toward must be clean. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, I }
+    parameters { beta : rate in [0.1, 2.0] }
+    transitions { infection : S --> I @ beta * S }
+    init { S = 100  I = 1 }
+    simulate { from = date("2020-03-01")  to = date("2020-12-31") }
+  |} in
+  match compile_with_diags src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok d ->
+    Alcotest.(check int) "no W324 when simulate.from/to are date()"
+      0 (count_code ~code:"W324" d)
+
+let test_gh134_date_intervention_at_no_w325 () =
+  (* date() in an intervention at-schedule is the legible alternative
+     the W325 hint names — it must not itself warn. *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, V }
+    parameters { N0 : count }
+    transitions { leak : S --> V @ 0.0 'per_day * S }
+    interventions {
+      vacc : transfer(from = S, to = V, fraction = 0.1)
+             at [date("2020-03-01"), date("2020-06-01")]
+    }
+    init { S = N0 }
+    simulate { from = date("2020-01-01")  to = date("2020-12-31") }
+  |} in
+  match compile_with_diags src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok d ->
+    Alcotest.(check int) "no W325 when intervention at[..] is date()"
+      0 (count_code ~code:"W325" d)
+
+let test_gh134_events_bare_numeric_at_warns_w325 () =
+  (* The `events {}` block is the sister construct to `interventions {}`;
+     a bare-numeric `at [...]` under a date origin must warn W325 in the
+     events block too (the issue calls out "events / intervention at"). *)
+  let src = {|
+    time_unit = 'days
+    origin = date("2020-01-01")
+    compartments { S, I }
+    parameters { N0 : count }
+    transitions { leak : S --> I @ 0.0 'per_day * S }
+    events {
+      seed : add(I, 5) at [60, 120]
+    }
+    init { S = N0 }
+    simulate { from = date("2020-01-01")  to = date("2020-12-31") }
+  |} in
+  let d = expect_diag ~severity:Diagnostics.Warning ~code:"W325" src in
+  assert_hint_contains ~needle:"date(" d
+
+let test_gh134_unanchored_bare_numeric_no_nudge () =
+  (* No `origin = date(...)`: bare-numeric time positions are the
+     normal, intended idiom and must NOT warn W324/W325. The nudge is
+     a date-origin-only refinement (the torsor is inactive otherwise). *)
+  let src = {|
+    time_unit = 'days
+    compartments { S, I }
+    parameters { beta : rate in [0.1, 2.0]  N0 : count }
+    transitions { infection : S --> I @ beta * S }
+    interventions {
+      pulse : transfer(from = S, to = I, fraction = 0.1) at [50, 100]
+    }
+    init { S = N0  I = 1 }
+    simulate { from = 730  to = 5000 }
+  |} in
+  match compile_with_diags src with
+  | Error e -> Alcotest.failf "compile failed: %s" e
+  | Ok d ->
+    Alcotest.(check int) "no W324 when unanchored" 0 (count_code ~code:"W324" d);
+    Alcotest.(check int) "no W325 when unanchored" 0 (count_code ~code:"W325" d)
+
 (* ── Phase 2 of the 2026-05-22 typed-time proposal ──────────────────────────
    Calendar-arithmetic primitives and `date_range`. Errors and warnings
    under test:
@@ -6653,6 +6752,16 @@ let () =
         `Quick test_typed_time_w324_unit_annotated_simulate_no_warning;
       Alcotest.test_case "W325 bare-numeric at-schedule warns under origin"
         `Quick test_typed_time_w325_bare_numeric_at_schedule_warning;
+      (* gh#134: symmetric negatives + events-block coverage for the
+         model-side calendar nudge (sibling of data-loader W326). *)
+      Alcotest.test_case "gh134 date() simulate.from/to does not warn W324"
+        `Quick test_gh134_date_simulate_from_to_no_w324;
+      Alcotest.test_case "gh134 date() intervention at[..] does not warn W325"
+        `Quick test_gh134_date_intervention_at_no_w325;
+      Alcotest.test_case "gh134 bare-numeric events at[..] warns W325"
+        `Quick test_gh134_events_bare_numeric_at_warns_w325;
+      Alcotest.test_case "gh134 unanchored bare-numeric does not warn W324/W325"
+        `Quick test_gh134_unanchored_bare_numeric_no_nudge;
     ];
     "typed_time_phase2", [
       (* add_calendar_months / add_calendar_years: canonical cases (§8) *)

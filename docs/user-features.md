@@ -97,6 +97,28 @@ by calendar months/years; month-end clamping is canonical
 `date(...) + N 'months` is a hard error (**E321**) — the language forbids the
 silent affine-drift that would produce.
 
+In an anchored model, write absolute-time positions as `date(...)` rather than
+as bare numbers — not only `simulate { from / to }` but the `at = [...]`
+schedule of any `interventions {}` or `events {}` entry. Each `date(...)`
+resolves to its internal offset through `origin`, so the model reads in calendar
+terms instead of opaque day counts:
+
+```camdl
+# `from = 730` says "730 days after origin"; the reader has to do the arithmetic.
+simulate { from = date("1952-01-01")  to = date("1963-09-08") }
+
+events {
+  importation : add(I, 1) at [date("1952-03-15"), date("1955-09-01")]
+}
+```
+
+A bare number in one of these positions under `origin = date(...)` is read as
+internal-time units from origin and warns — **W324** in `simulate.from/to`,
+**W325** in an `at`-schedule — pointing you to the `date(...)` form (or an
+explicit `<n> 'days` if the offset really is intentional). This mirrors the data
+loader's **W326** nudge on numeric `--data` time columns, so the calendar-vs-raw
+choice is surfaced the same way on both the model and the data side.
+
 ---
 
 ## Calendar-based forcing with range syntax
