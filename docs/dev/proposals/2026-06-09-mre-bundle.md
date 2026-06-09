@@ -4,7 +4,8 @@ status: proposal
 area: cli / compiler (camdlc) / bundle format
 related:
   - 2026-06-02-cas-run-identity (runid crate; ContentHash identity)
-issues: (new — file as the tracking issue)
+  - gh#211 (spun off: warn on absolute read() paths — portability lint)
+issues: (new — file an MRE tracking issue)
 ---
 
 # `camdl mre`: one-command minimal-reproducible-example bundles
@@ -344,6 +345,13 @@ camdlc already resolves `read()` paths relative to the model dir
 relative to the fit.toml (`resolve_config_path`, `util.rs:361`), so reproducing
 that layout is what makes the bundle relocatable. The round-trip `run_id` test
 (Testing plan) is the guard that the rewrite was faithful.
+
+An absolute `read()` path is a portability smell in its own right (it makes the
+_model_ non-reproducible, independent of MRE). The upstream fix — an
+expander-time warning at `resolve_data_path`, where the `Filename.is_relative`
+branch already lives — is filed as gh#211; `camdl mre` additionally surfaces the
+smell at pack time when it has to rewrite such a path. (It must be an expander
+warning, not an `ir/lint.ml` lint: the `read()` path is absent from the IR.)
 
 The manifest is the load-bearing artifact:
 
