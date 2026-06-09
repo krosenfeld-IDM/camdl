@@ -6,6 +6,7 @@
 //! `docs/dev/proposals/2026-04-15-fit-run-spec-v0.4.md`.
 
 pub mod cas;  // gh#147 M3.2: fit-stage CAS identity (resolve_fit_stage)
+pub mod coeff_guard;  // gh#119: NUTS guard — param only inside a forcing/table coefficient
 pub mod config_v2;
 pub mod state;
 pub mod provenance;

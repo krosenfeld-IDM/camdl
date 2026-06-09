@@ -161,6 +161,21 @@ pub fn run_stage(
 
     let dt = config.if2_config.dt;
 
+    // gh#119: NUTS drives the θ|X step with compiler-emitted `rate_grad`, which
+    // differentiates a forcing/table coefficient to zero — so an estimated
+    // parameter that drives ONLY a coefficient has a flat gradient and NUTS
+    // would silently mis-sample it. The value half makes such a parameter work
+    // for the gradient-free methods (IF2 / particle filter); until the gradient
+    // half lands, refuse it under NUTS rather than return a garbage posterior.
+    if use_nuts {
+        let estimated: std::collections::HashSet<String> =
+            config.estimated_params.iter().map(|s| s.name.clone()).collect();
+        let offenders = super::coeff_guard::coefficient_only_estimated(&config.model, &estimated);
+        if !offenders.is_empty() {
+            return Err(super::coeff_guard::nuts_guard_error(&offenders));
+        }
+    }
+
     // gh#audit-C4. PGAS produces Bayesian posteriors. Reporting a
     // credible interval as "Bayesian" when the prior is silently
     // improper-uniform (Prior::Flat) means we've reported a
