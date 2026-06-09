@@ -624,6 +624,28 @@ mod tests {
             "explicit allow_degenerate_rates=false must match the default (no re-key)");
     }
 
+    /// gh#189: the integrator `[config] dt` changes the substep grid (and, via
+    /// `Expr::Dt` and the obs-alignment substep window, the computed output), so
+    /// two fits differing only in `dt` must get distinct fit-level hashes — else
+    /// a changed `dt` silently reuses a stale fit / stage leaf (the
+    /// count-in-the-key, silent-wrong-answer class). `dt` is keyed at the fit
+    /// level (`[config]` is part of the serialized fit blob); the stage leaf
+    /// nests under it, so the whole stage artifact (incl. `resume_state.bin`)
+    /// relocates when `dt` changes — there is no stale resume.
+    #[test]
+    fn dt_changes_the_fit_identity() {
+        let a = fit_config_blob_hash(&minimal_config("[config]\ndt = 1.0\n")).unwrap();
+        let b = fit_config_blob_hash(&minimal_config("[config]\ndt = 3.0\n")).unwrap();
+        assert_ne!(
+            a, b,
+            "two fits differing only in [config] dt must have distinct fit-level \
+             hashes (gh#189) — a changed dt changes the substep grid and the \
+             output, so it must re-key the fit"
+        );
+        // No spurious sensitivity: identical dt → identical hash.
+        assert_eq!(a, fit_config_blob_hash(&minimal_config("[config]\ndt = 1.0\n")).unwrap());
+    }
+
     /// gh#190: holdout files are digested by CONTENT, not path. Two configs
     /// with the SAME holdout path but DIFFERENT bytes on disk must produce
     /// different holdout digests — so editing a holdout file (same path)
