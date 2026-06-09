@@ -683,14 +683,15 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
         // per-stream map before hashing, so the shorthand and the
         // verbose `[data.observations]` form produce identical stage
         // hashes when they reference the same data.
-        let model_obs_names: Vec<String> = serde_json::from_str::<serde_json::Value>(&model_json)
-            .ok()
-            .and_then(|v| v.get("observations").cloned())
-            .and_then(|obs| serde_json::from_value::<Vec<serde_json::Value>>(obs).ok())
-            .map(|obs| obs.into_iter()
-                .filter_map(|o| o.get("name").and_then(|n| n.as_str().map(String::from)))
-                .collect())
-            .unwrap_or_default();
+        // The model's declared observation stream names, used to expand the
+        // `[data] file = "..."` single-file shorthand. The prior code navigated
+        // `model_json["observations"]` — the IR *envelope*'s top level — but the
+        // streams live under `model.observations`, so this always saw zero
+        // streams and the single-file form errored with "model declares no
+        // observation streams". Use the typed model (already loaded above), as
+        // the sibling sites at lines 414 / 547 do.
+        let model_obs_names: Vec<String> =
+            model.observations.iter().map(|o| o.name.clone()).collect();
         let effective_obs = data_spec.effective_observations(&model_obs_names)
             .unwrap_or_else(|e| {
                 eprintln!("error: {}", e);
