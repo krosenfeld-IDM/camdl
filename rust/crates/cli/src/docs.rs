@@ -102,6 +102,12 @@ const TOPICS: &[Topic] = &[
         summary: "Debugging via `camdl eval` and the substep tracer",
         body: include_str!("../../../../docs/debugging.md"),
     },
+    Topic {
+        slug: "mre",
+        aliases: &["bundle", "repro", "reproducible", "report-bug"],
+        summary: "Package a minimal reproducible example (`camdl mre fit`) to send the maintainer when a fit misbehaves",
+        body: include_str!("../../../../docs/mre.md"),
+    },
 ];
 
 fn resolve(name: &str) -> Option<&'static Topic> {

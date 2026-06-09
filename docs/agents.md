@@ -5,10 +5,10 @@ camdl. Read it once at the start of a session — it's denser than a tutorial an
 covers what you can't infer from a `.camdl` file alone. Surfaced offline and
 version-matched via `camdl docs agents`.
 
-This is about _using_ camdl — writing models, fitting them, reading
-diagnostics. It is **not** about developing camdl itself (the OCaml compiler,
-the Rust runtime); that lives in the source tree's `CLAUDE.md` and you do not
-need it to build models.
+This is about _using_ camdl — writing models, fitting them, reading diagnostics.
+It is **not** about developing camdl itself (the OCaml compiler, the Rust
+runtime); that lives in the source tree's `CLAUDE.md` and you do not need it to
+build models.
 
 ---
 
@@ -43,8 +43,8 @@ compiler (`camdlc`) reads the `.camdl` file, dim-checks every expression,
 expands stratification at compile time, emits source-to-source gradients for
 every rate, and serialises the result as a versioned IR JSON envelope. The Rust
 runtime (`camdl`) consumes that IR and runs simulation backends (Gillespie,
-chain-binomial, ODE) plus inference algorithms (particle filter, IF2,
-PGAS+NUTS, PMMH). Parameter values are supplied at runtime — the model file is
+chain-binomial, ODE) plus inference algorithms (particle filter, IF2, PGAS+NUTS,
+PMMH). Parameter values are supplied at runtime — the model file is
 parameter-free.
 
 ---
@@ -115,6 +115,12 @@ error costs much more. Default to pausing.
   numbers don't match within the expected tolerance, surface immediately rather
   than tweaking until they match.
 
+When a bug looks like a camdl defect (not a modeling mistake) and you can't
+resolve it, **package a minimal reproducible example** for the maintainer rather
+than guessing: `camdl mre fit fit.toml` bundles the model, its compile-time
+`read()` files, the data, and the config into one tarball. See `camdl docs mre`
+(includes `--no-data` for sensitive data).
+
 **Safe to do autonomously:**
 
 - Run `camdl check`, `camdl simulate`, `camdl survey`, `camdl pfilter`,
@@ -142,10 +148,12 @@ progress."
 
 Compile-time errors (from `camdlc`):
 
-> If a construct looks correct but still errors — especially a bare `E001` syntax
-> error on a forcing, a block keyword, or a likelihood — the **DSL may have
-> changed since the model (or doc) was written**. Check `camdl docs
-> language-changes` for the migration (old → new) before "fixing" the model.
+> If a construct looks correct but still errors — especially a bare `E001`
+> syntax error on a forcing, a block keyword, or a likelihood — the **DSL may
+> have changed since the model (or doc) was written**. Check
+> `camdl docs
+> language-changes` for the migration (old → new) before "fixing"
+> the model.
 
 | Code   | What it says                                                  | What it usually means                                                 | What to do                                                                                                                   |
 | ------ | ------------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -297,6 +305,7 @@ version-matched to the `camdl` you're running. No checkout, no network:
 | The `fit.toml` schema                               | `camdl docs fit-toml`                               |
 | The reasoning (identifiability, priors, the stance) | `camdl docs concepts`                               |
 | Backends / data format / debugging                  | `camdl docs backends` / `data` / `debugging`        |
+| Packaging a bug report (minimal repro example)      | `camdl docs mre`                                    |
 | Full topic list / search                            | `camdl docs` / `camdl docs --search <term>`         |
 
 For sustained work you can also pin the source (working `.camdl` for every
