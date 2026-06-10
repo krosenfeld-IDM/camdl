@@ -396,6 +396,29 @@ fn resolve_coeff(
     }
 }
 
+/// Collect parameter names referenced in `expr` (in encounter order, deduped) —
+/// used to name the offender in a structural-rejection diagnostic.
+fn collect_param_names(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Param(p) => if !out.iter().any(|n| n == &p.param) { out.push(p.param.clone()); },
+        Expr::BinOp(w) => {
+            collect_param_names(&w.bin_op.left, out);
+            collect_param_names(&w.bin_op.right, out);
+        }
+        Expr::UnOp(w) => collect_param_names(&w.un_op.arg, out),
+        Expr::Cond(w) => {
+            collect_param_names(&w.cond.pred, out);
+            collect_param_names(&w.cond.then, out);
+            collect_param_names(&w.cond.else_, out);
+        }
+        Expr::TableLookup(w) => w.table_lookup.indices.iter().for_each(|e| collect_param_names(e, out)),
+        Expr::Reduce(w) => w.reduce.iter().for_each(|e| collect_param_names(e, out)),
+        Expr::UncheckedDim(w) => collect_param_names(&w.unchecked_dim.inner, out),
+        Expr::Const(_) | Expr::Pop(_) | Expr::PopSum(_) | Expr::Time(_) | Expr::Dt(_)
+        | Expr::TimeFunc(_) | Expr::Projected(_) | Expr::BindingRef(_) => {}
+    }
+}
+
 /// Evaluate a *structural* forcing array element (interpolation knot, spline
 /// coefficient, periodic-spline coef, piecewise breakpoint/value) to `f64`.
 ///
@@ -410,9 +433,12 @@ fn eval_structural(
     param_index: &HashMap<String, usize>,
     params: &[f64],
 ) -> Result<f64, SimError> {
-    if expr_refs_param(expr) {
+    let mut names = Vec::new();
+    collect_param_names(expr, &mut names);
+    if !names.is_empty() {
+        let plist = names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ");
         return Err(SimError::Validation(format!(
-            "forcing '{forcing}': {what} references a parameter, but it is \
+            "forcing '{forcing}': {what} references parameter {plist}, but it is \
              structural data — {what}s are fixed at construction and cannot be \
              estimated. Use a scalar-coefficient forcing (sinusoidal, periodic, \
              fourier) for an estimated parameter, or make this value constant."
