@@ -126,9 +126,21 @@ fn collect_forcing(kind: &TimeFuncKind, out: &mut HashSet<String>) {
     }
 }
 
-/// Estimated parameters referenced ONLY inside a forcing/table coefficient —
-/// never in a rate, observation, or initial-value expression. Sorted, for a
-/// deterministic diagnostic.
+/// Estimated parameters that NUTS cannot estimate because their gradient is a
+/// silent zero: referenced inside a forcing/table coefficient, present in no
+/// rate/observation/initial-value body, **and** carrying no emitted `rate_grad`
+/// entry.
+///
+/// The `rate_grad` exclusion is what keeps this honest after the gradient half
+/// (gh#119): the compiler now emits an analytic ∂forcing/∂coef for Sinusoidal
+/// and Fourier coefficients and constant-indexed parameter tables, so such a
+/// parameter *does* have a usable gradient and must NOT be flagged — otherwise
+/// the guard would refuse the very fits the gradient half enables. What remains
+/// flagged is the genuinely gradient-less case: a coefficient parameter whose
+/// kind has no derivative (it would have failed to compile if it entered a
+/// rate — the E600 floor; so this is reachable for a forcing referenced only
+/// through an observation, where the obs gradient zeroes the forcing). Sorted,
+/// for a deterministic diagnostic.
 pub fn coefficient_only_estimated(model: &ir::Model, estimated: &HashSet<String>) -> Vec<String> {
     let mut body = HashSet::new();
     for t in &model.transitions {
@@ -155,9 +167,18 @@ pub fn coefficient_only_estimated(model: &ir::Model, estimated: &HashSet<String>
         }
     }
 
+    // Parameters the compiler emitted a derivative for (any transition) — these
+    // have a usable NUTS gradient and are never blocked.
+    let mut has_grad: HashSet<&str> = HashSet::new();
+    for t in &model.transitions {
+        for name in t.rate_grad.keys() {
+            has_grad.insert(name.as_str());
+        }
+    }
+
     let mut offenders: Vec<String> = estimated
         .iter()
-        .filter(|p| coeff.contains(*p) && !body.contains(*p))
+        .filter(|p| coeff.contains(*p) && !body.contains(*p) && !has_grad.contains(p.as_str()))
         .cloned()
         .collect();
     offenders.sort();
@@ -239,7 +260,10 @@ mod tests {
         }
     }
 
-    /// `alpha` drives only the forcing amplitude → flagged.
+    /// `alpha` drives only the forcing amplitude and no transition emits a
+    /// derivative for it (no `rate_grad`) → no usable gradient → flagged. This
+    /// is the residual case the guard exists for after the gradient half (e.g.
+    /// a forcing referenced only through an observation).
     #[test]
     fn flags_param_only_in_forcing_coefficient() {
         let mut m = base_model();
@@ -264,6 +288,34 @@ mod tests {
         }];
         let estimated: HashSet<String> = ["alpha".to_string()].into_iter().collect();
         assert!(coefficient_only_estimated(&m, &estimated).is_empty());
+    }
+
+    /// gh#119 gradient half: `alpha` enters only the forcing coefficient, but
+    /// the compiler now emits ∂rate/∂alpha (the Sinusoidal derivative), so it
+    /// has a usable NUTS gradient and must NOT be flagged — otherwise the guard
+    /// would refuse the very fits the gradient half enables (the headline
+    /// regression this fixes).
+    #[test]
+    fn does_not_flag_forcing_param_with_emitted_gradient() {
+        let mut m = base_model();
+        m.time_functions = vec![sinusoidal_forcing(Expr::param("alpha"))];
+        // `alpha` is not in the rate body (the forcing is opaque there), but the
+        // compiler emitted a derivative entry for it.
+        let mut rate_grad = HashMap::new();
+        rate_grad.insert("alpha".to_string(), Expr::pop("S"));
+        m.transitions = vec![ir::transition::Transition {
+            name: "infection".into(),
+            stoichiometry: vec![ir::transition::StoichiometryEntry("S".into(), -1)],
+            rate: Expr::pop("S"),
+            metadata: None,
+            draw_method: ir::transition::DrawMethod::Poisson,
+            rate_grad,
+            lineage: None,
+        }];
+        let estimated: HashSet<String> = ["alpha".to_string()].into_iter().collect();
+        assert!(coefficient_only_estimated(&m, &estimated).is_empty(),
+            "a forcing param with an emitted rate_grad has a usable gradient and \
+             must not be blocked");
     }
 
     /// A non-estimated coefficient parameter is not flagged.
