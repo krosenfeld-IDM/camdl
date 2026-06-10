@@ -230,13 +230,20 @@ a coefficient is a `ResolvedExpr`, not data). The freeze is now
   gradients_ (2026-06-09). OCaml autodiff differentiates through the forcing
   closed form (Sinusoidal/Fourier) and constant-indexed parameter tables, so the
   analytic `rate_grad` is no longer a silent `Const 0.0`. A `deriv` ADT makes
-  any remaining dropped derivative an explicit compile error rather than a
-  silent zero (gh#215 tracks the rest). This makes **NUTS** estimable for those
-  parameters; validated analytic-vs-FD in `gradient_check.rs`.
+  every dropped derivative an explicit decision: a parameter driving
+  _structural_ data (interpolation knots, spline basis, piecewise steps, or a
+  non-constant lookup index) is a hard compile error; a parameter driving a
+  _live_ coefficient whose gradient is not yet emitted (a periodic step value,
+  an inline-table value via a non-constant index) is omitted from `rate_grad` so
+  the model still compiles and runs (gh#215 tracks emitting those derivatives).
+  This makes **NUTS** estimable for the differentiated cases; validated
+  analytic-vs-FD in `gradient_check.rs`.
 - **Guard** — _feat(cli): NUTS guard for params only inside a forcing/table
   coefficient_ (2026-06-09). A NUTS fit is refused (loudly) when an estimated
-  parameter appears only inside a coefficient whose derivative is not yet
-  emitted.
+  parameter drives a coefficient whose derivative is not yet emitted — including
+  a periodic step value even when the parameter also appears in a rate body (the
+  body gradient does not carry the forcing contribution). IF2/PF still estimate
+  it (the value is live).
 
 **Advisory (past fits).** Any completed fit that estimated a parameter appearing
 only inside a forcing or inline-table coefficient — including the goldens

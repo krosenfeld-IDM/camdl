@@ -21,20 +21,33 @@ inference, so it is genuinely estimable — previously it was frozen at its
 construction-time value (a silent flat likelihood; see the incident
 `2026-06-09-forcing-coefficient-param-frozen-at-construction.md`). Sinusoidal
 and Fourier coefficients, and constant-indexed parameter tables, also get an
-analytic gradient, so they are estimable under **NUTS** as well as IF2/PF. As
-the loud floor for the not-yet-differentiated cases, a parameter inside a
-**periodic/piecewise step value, a spline knot, or a non-constant table lookup**
-is now a **compile error** (it was a silent zero gradient). Such parameters
-remain estimable with IF2 or the bootstrap particle filter — the error is
-specific to the missing gradient; full derivatives are tracked in gh#215.
+analytic gradient, so they are estimable under **NUTS** as well as IF2/PF.
 
-**Migration.** No change for the common (now-working) cases. If you hit the
-error, either reference the parameter in a transition rate as well, use a
-`sinusoidal` or `fourier` forcing, or estimate it with IF2/PF instead of NUTS.
+Two cases are newly constrained:
 
-**Diagnostic.** `error[E600]` "parameter '…' enters a … forcing coefficient (or
-table), whose derivative is not yet emitted (gh#215) …", naming the parameter,
-the forcing/table, and the fix.
+- **Structural data cannot be a parameter (compile error).** Interpolation
+  knots, piecewise step grids, and the periodic-spline basis are precomputed at
+  construction and cannot vary per step, so a parameter driving one of those —
+  or a parameter used as a **non-constant table lookup index** — is now a
+  **compile error** (it was a silently-broken zero gradient). Use a constant, or
+  a forcing whose coefficients are live (`sinusoidal`, `fourier`, `periodic`).
+- **NUTS-only limitation (no error; the model compiles and runs).** A parameter
+  that is a **periodic step value** or an **inline-table value reached by a
+  non-constant index** evaluates live — estimable with IF2 or the bootstrap
+  particle filter — but its gradient is not yet emitted, so a **NUTS** fit that
+  depends on it is refused at fit time (not compile time) with a clear message.
+  Full derivatives are tracked in gh#215.
+
+**Migration.** No change for the common (now-working) cases. For the structural
+compile error, make the coefficient constant or switch to a `sinusoidal`/
+`fourier`/`periodic` forcing. For the NUTS limitation, estimate with IF2/PF, or
+express the seasonality as a `sinusoidal`/`fourier` forcing (analytic gradient).
+
+**Diagnostic.** Compile-time `error[E600]` "parameter '…' drives a … forcing
+coefficient, which is structural data … cannot be an estimated parameter",
+naming the parameter and forcing. The NUTS limitation surfaces at fit time:
+"NUTS cannot estimate parameter(s) […]: each drives a forcing or inline-table
+coefficient whose gradient is not yet emitted (gh#215) …".
 
 ## 2026-06-04 — phantom `output {}` sub-blocks removed
 

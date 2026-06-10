@@ -173,7 +173,7 @@ let differentiate (top : expr) (param : string)
            Unsupported
              { node = Printf.sprintf "forcing `%s`" fname;
                reason = Printf.sprintf
-                 "parameter '%s' drives a %s forcing coefficient, which is \
+                 "parameter '%s' drives the %s forcing coefficient, which is \
                   structural data — interpolation knots, piecewise step grids, \
                   and the spline basis are precomputed at construction and \
                   cannot vary per step, so they cannot be an estimated \
