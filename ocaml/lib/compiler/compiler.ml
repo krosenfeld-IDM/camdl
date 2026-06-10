@@ -345,12 +345,17 @@ let run_lint (d : compile_detail) : Diagnostics.diagnostic list =
 
 (** Autodiff pass: differentiate every transition rate w.r.t. all
     parameters, returning the transition list with [rate_grad] filled in,
-    paired with any diagnostics produced. If a rate contains `mod` over a
-    parameter, differentiation raises [Failure] — caught per-transition,
-    producing an E600 (with source location) in the returned list and
-    leaving that transition's [rate_grad] empty. Pure: it neither emits
-    into a context nor renders, so [compile] (which short-circuits on the
-    resulting errors) and [collect_diagnostics] (which does not) share it. *)
+    paired with any diagnostics produced. A non-differentiable construct
+    that a parameter cannot legitimately drive — `mod` over a parameter,
+    structural forcing data (interpolation knots / spline basis / piecewise
+    steps), or a non-constant table lookup index — yields an E600 (with
+    source location) and leaves that transition's [rate_grad] empty. Live
+    coefficients whose gradient is not yet emitted (a periodic step value, an
+    inline-table value via a non-constant index — gh#215) are NOT errors: the
+    parameter is simply omitted from [rate_grad] and the Rust NUTS guard
+    rejects a NUTS fit that depends on it. Pure: it neither emits into a
+    context nor renders, so [compile] (which short-circuits on the resulting
+    errors) and [collect_diagnostics] (which does not) share it. *)
 let differentiate_transitions (d : compile_detail)
     : Ir.transition list * Diagnostics.diagnostic list =
   let param_names = List.map (fun (p : Ir.parameter) -> p.name) d.model.Ir.parameters in
@@ -377,9 +382,10 @@ let differentiate_transitions (d : compile_detail)
                      ~code:"E600"
                      ~loc:(tr_loc t.name)
                      ~message:(Printf.sprintf "transition '%s': %s" t.name msg)
-                     ~hint:"this parameter's derivative is not representable; \
-                            reparameterize as the message describes (full \
-                            forcing/table derivatives tracked in gh#215)"
+                     ~hint:"reparameterize as the message describes — a \
+                            parameter cannot drive structural forcing data or a \
+                            non-constant lookup index; see \
+                            `camdl docs language-changes`"
                      () :: !diags;
           { t with Ir.rate_grad = [] }
       ) d.model.Ir.transitions)

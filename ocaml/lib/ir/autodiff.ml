@@ -9,10 +9,19 @@
     or a table entry still has a real derivative. [differentiate] looks the
     forcing/table definition up (hence the [time_function]/[table] lists) and
     emits the analytic ∂forcing/∂coef for the kinds it supports (Sinusoidal,
-    Fourier). For a kind it does not yet differentiate (Periodic/Piecewise
-    step values, splines, table values — gh#215) it returns [Unsupported]
-    rather than a silent [Const 0.0]; [differentiate_rate] turns that into a
-    compile-time error rather than a flat (silently un-estimable) gradient.
+    Fourier, constant-indexed inline tables).
+
+    Two distinct not-yet-supported cases, handled differently (gh#215):
+    - LIVE coefficients the gradient just doesn't cover yet — a Periodic step
+      value, or an inline-table value reached by a non-constant index. The Rust
+      runtime evaluates these live, so the model must compile (forward sim and
+      gradient-free IF2/PF work). [differentiate] omits the parameter (a
+      [Known (Const 0.0)] that [differentiate_rate] drops); the Rust NUTS guard
+      (coeff_guard.rs) refuses a NUTS fit that depends on the missing gradient.
+    - STRUCTURAL data a parameter cannot drive at all — interpolation knots, a
+      piecewise step grid, the spline basis, or a non-constant lookup index.
+      These return [Unsupported], which [differentiate_rate] turns into a
+      compile-time error (the Rust runtime also rejects them at IR-load).
 
     Compartment counts (Pop/PopSum), Time, Dt and Projected are constants in
     the PGAS θ|X step (the trajectory X is fixed), so their derivative is 0. *)
@@ -141,23 +150,36 @@ let differentiate (top : expr) (param : string)
     (* Parameter reference — 1 if it's the target, 0 otherwise. *)
     | Param p -> Known (if p = param then Const 1.0 else Const 0.0)
 
-    (* Forcing: differentiate through its closed form when we have one;
-       otherwise an explicit Unsupported when the parameter actually enters it
-       (gh#215), else a genuine zero. *)
+    (* Forcing. Three cases:
+       - Sinusoidal/Fourier: differentiate through the closed form (real grad).
+       - Periodic: period + step values are LIVE scalar coefficients (the Rust
+         runtime evaluates them per-step via `resolve_coeff`), but the gradient
+         is not yet emitted (gh#215). Omit it (Known (Const 0.0)) so the model
+         compiles — forward sim and gradient-free IF2/PF use the live value, and
+         the Rust NUTS guard (coeff_guard.rs) refuses a NUTS fit that depends on
+         it. NOT a hard error: that would also break forward sim and IF2/PF.
+       - Piecewise/Interpolated/PeriodicSpline: a parameter there drives
+         STRUCTURAL data (interpolation knots, a piecewise step grid, the
+         de-Boor spline basis) — precomputed at construction, so it cannot be a
+         live coefficient at all. Hard compile error (the Rust runtime also
+         rejects it at IR-load via `eval_structural`). *)
     | TimeFunc fname ->
       (match List.find_opt (fun (tf : time_function) -> tf.name = fname) tfs with
        | Some { kind = Sinusoidal s; _ } -> d (sinusoidal_closed s)
        | Some { kind = Fourier f; _ } -> d (fourier_closed f)
-       | Some { kind; _ } ->
+       | Some { kind = Periodic _; _ } -> Known (Const 0.0)
+       | Some { kind = (Piecewise _ | Interpolated _ | PeriodicSpline _) as kind; _ } ->
          if forcing_mentions fname then
            Unsupported
              { node = Printf.sprintf "forcing `%s`" fname;
                reason = Printf.sprintf
-                 "parameter '%s' enters a %s forcing coefficient, whose \
-                  derivative is not yet emitted (gh#215). It is estimable with \
-                  IF2 or the bootstrap particle filter but not NUTS; reference \
-                  it in a transition rate, or use a sinusoidal or fourier \
-                  forcing" param (kind_label kind) }
+                 "parameter '%s' drives a %s forcing coefficient, which is \
+                  structural data — interpolation knots, piecewise step grids, \
+                  and the spline basis are precomputed at construction and \
+                  cannot vary per step, so they cannot be an estimated \
+                  parameter. Make the coefficient a constant, or use a \
+                  sinusoidal, fourier, or periodic forcing (whose coefficients \
+                  are live)" param (kind_label kind) }
          else Known (Const 0.0)
        | None -> Known (Const 0.0))
 
@@ -176,14 +198,25 @@ let differentiate (top : expr) (param : string)
           | None -> Known (Const 0.0))  (* OOB — surfaced by validate/runtime *)
        | _ -> Known (Const 0.0))  (* external table: values are runtime data *)
     | TableLookup (name, args) ->
-      if List.exists (mentions param) args || table_value_mentions name then
+      if List.exists (mentions param) args then
+        (* The parameter is in a non-constant LOOKUP INDEX — it selects which
+           cell, so the lookup is undifferentiable and the index is not a live
+           coefficient the NUTS guard covers (it treats indices as body
+           sub-expressions). Reject at compile time. *)
         Unsupported
           { node = Printf.sprintf "table `%s`" name;
             reason = Printf.sprintf
-              "parameter '%s' enters table `%s` through a non-constant lookup; \
-               the table-lookup derivative is not yet emitted (gh#215). It is \
-               estimable with IF2 or the bootstrap particle filter but not \
-               NUTS; reference it in a transition rate instead" param name }
+              "parameter '%s' is used as a non-constant lookup index into table \
+               `%s`; the lookup selects a cell by its value, so it is not \
+               differentiable. Index the table by a constant or a compartment, \
+               not by an estimated parameter" param name }
+      else if table_value_mentions name then
+        (* The parameter is an inline-table VALUE selected by a non-constant
+           index. The value is a live coefficient (the Rust runtime resolves it),
+           but the gradient through a runtime-chosen cell is not yet emitted
+           (gh#215). Omit it so the model compiles — IF2/PF use the live value,
+           and the NUTS guard refuses a NUTS fit that depends on it. *)
+        Known (Const 0.0)
       else Known (Const 0.0)
 
     (* Binary operations — standard calculus rules; Unsupported propagates. *)

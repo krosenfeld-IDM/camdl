@@ -2273,20 +2273,78 @@ let test_fourier_autodiff_emitted () =
      | Some _ -> ()  (* emitted a (nonzero) cos derivative — Known, not dropped *)
      | None -> Alcotest.failf "Fourier ∂/∂a1 was dropped (expected a cos term)")
 
-let test_unsupported_forcing_coeff_errors () =
-  (* gh#119/gh#215: a parameter inside an as-yet-undifferentiated forcing kind
-     (periodic step value) must produce a hard compile error, not a silent zero
-     gradient. *)
+let test_periodic_forcing_coeff_omitted () =
+  (* gh#119/gh#215: a parameter that is a periodic step value is a LIVE
+     coefficient (the Rust runtime evaluates it per-step), so the model must
+     COMPILE — its gradient is not yet emitted, so the param is simply omitted
+     from rate_grad and the Rust NUTS guard refuses a NUTS fit that depends on
+     it. It must NOT be a hard compile error (which would also break forward
+     simulation and gradient-free IF2/PF). *)
   let p : Ir.periodic =
     { period = Ir.Const 7.0; values = [ Ir.Param "v0"; Ir.Const 1.0 ] } in
   let tf : Ir.time_function = { name = "g"; kind = Ir.Periodic p; dim = (0, 0) } in
   let rate = Ir.TimeFunc "g" in
   match Autodiff.differentiate_rate rate [ "v0" ] [ tf ] [] with
-  | Ok _ -> Alcotest.failf "expected Unsupported error for a param in a periodic value"
+  | Error msg -> Alcotest.failf
+      "a periodic step-value param must compile (omit its gradient), got error: %s" msg
+  | Ok grads ->
+    (match List.assoc_opt "v0" grads with
+     | None -> ()  (* omitted — the NUTS guard handles the missing gradient *)
+     | Some _ -> Alcotest.failf "periodic ∂/∂v0 is not emitted yet; expected it omitted, not present")
+
+let test_structural_forcing_coeff_errors () =
+  (* gh#119/gh#215: a parameter that drives STRUCTURAL forcing data (an
+     interpolation knot, a piecewise step, a spline basis coefficient) cannot
+     be a live coefficient at all — those arrays are precomputed at
+     construction. This must be a hard compile error naming the parameter and
+     calling the data structural (the Rust runtime also rejects it at IR-load
+     via eval_structural). *)
+  let i : Ir.interpolated =
+    { times = [ Ir.Const 0.0; Ir.Const 1.0 ];
+      values = [ Ir.Param "knot0"; Ir.Const 1.0 ]; method_ = "linear" } in
+  let tf : Ir.time_function = { name = "g"; kind = Ir.Interpolated i; dim = (0, 0) } in
+  let rate = Ir.TimeFunc "g" in
+  match Autodiff.differentiate_rate rate [ "knot0" ] [ tf ] [] with
+  | Ok _ -> Alcotest.failf "expected a structural compile error for a param in an interpolation knot"
   | Error msg ->
-    Alcotest.(check bool) "names the forcing + gh#215"
-      true (contains_substring ~needle:"periodic" msg
-            && contains_substring ~needle:"gh#215" msg)
+    Alcotest.(check bool) "names the param and calls the data structural"
+      true (contains_substring ~needle:"knot0" msg
+            && contains_substring ~needle:"structural" msg)
+
+let test_periodic_param_in_rate_compiles () =
+  (* gh#119/gh#215 regression: a full model with a periodic forcing whose step
+     value is a parameter, referenced in a transition rate, must compile to IR
+     (it built on `main`; the over-firing E600 floor broke forward sim + IF2/PF
+     for it). *)
+  let m = compile_expect_ok {|
+time_unit = 'days
+compartments { S, I }
+parameters {
+  beta  : rate
+  wpeak : real
+  S0    : count
+  I0    : count
+}
+let N = S + I
+forcing {
+  weekly : periodic 'ratio {
+    period = 7
+    values = [wpeak, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  }
+}
+transitions { infection : S --> I @ beta * weekly(t) * S * I / N }
+init { S = S0  I = I0 }
+simulate { from = 0 'days  to = 30 'days }
+scenarios { baseline { set = { beta = 0.3
+      wpeak = 1.5
+      S0 = 990
+      I0 = 10 } } }
+|} in
+  (* wpeak's gradient is not emitted (periodic, gh#215) → no rate_grad entry. *)
+  List.iter (fun (t : Ir.transition) ->
+    if List.mem_assoc "wpeak" t.rate_grad then
+      Alcotest.failf "wpeak should be omitted from rate_grad (periodic, gh#215), but is present in '%s'" t.name)
+    m.Ir.transitions
 
 let test_trig_pi_reserved () =
   (* Declaring a parameter named `pi` is rejected. *)
@@ -6652,7 +6710,9 @@ let () =
       Alcotest.test_case "cos(t) rejected with E301"                `Quick test_trig_cos_rejects_dimensional_arg;
       Alcotest.test_case "autodiff emits rate_grad for sin(...)"    `Quick test_trig_autodiff_matches_finite_diff;
       Alcotest.test_case "autodiff emits rate_grad for a Fourier coef" `Quick test_fourier_autodiff_emitted;
-      Alcotest.test_case "param in an unsupported forcing coeff errors (gh#215)" `Quick test_unsupported_forcing_coeff_errors;
+      Alcotest.test_case "periodic step-value param compiles, gradient omitted (gh#215)" `Quick test_periodic_forcing_coeff_omitted;
+      Alcotest.test_case "structural forcing-coeff param is a compile error (gh#215)" `Quick test_structural_forcing_coeff_errors;
+      Alcotest.test_case "periodic-param-in-rate model compiles to IR (gh#215)" `Quick test_periodic_param_in_rate_compiles;
       Alcotest.test_case "pi as parameter name is reserved (E100)"  `Quick test_trig_pi_reserved;
     ];
     "time_functions", [
