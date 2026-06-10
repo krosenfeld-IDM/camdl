@@ -137,10 +137,17 @@ fn collect_forcing(kind: &TimeFuncKind, out: &mut HashSet<String>) {
 /// parameter *does* have a usable gradient and must NOT be flagged — otherwise
 /// the guard would refuse the very fits the gradient half enables. What remains
 /// flagged is the genuinely gradient-less case: a coefficient parameter whose
-/// kind has no derivative (it would have failed to compile if it entered a
-/// rate — the E600 floor; so this is reachable for a forcing referenced only
-/// through an observation, where the obs gradient zeroes the forcing). Sorted,
-/// for a deterministic diagnostic.
+/// kind has no emitted derivative. Two sub-cases:
+/// - A Periodic step value (or an inline-table value via a non-constant index):
+///   the compiler omits its gradient (gh#215) but the value is live, so the
+///   model compiles and IF2/PF estimate it — only NUTS is blocked. The Periodic
+///   case is flagged even when the param also drives a rate body (its forcing
+///   contribution is never in the emitted gradient — see `periodic_coeff`).
+/// - A forcing/table coefficient referenced only through an observation (the
+///   obs gradient zeroes the forcing), with no rate appearance and no emitted
+///   gradient — caught by the `coeff ∧ ¬body ∧ ¬has_grad` clause.
+///
+/// Sorted, for a deterministic diagnostic.
 pub fn coefficient_only_estimated(model: &ir::Model, estimated: &HashSet<String>) -> Vec<String> {
     let mut body = HashSet::new();
     for t in &model.transitions {
@@ -167,6 +174,24 @@ pub fn coefficient_only_estimated(model: &ir::Model, estimated: &HashSet<String>
         }
     }
 
+    // Periodic step values are LIVE coefficients but the compiler never emits
+    // their gradient (gh#215, `autodiff.ml`: Periodic → omit). So a Periodic
+    // coefficient param has NO usable forcing gradient — and unlike the cases
+    // below, that holds even when the same param also drives a rate body: the
+    // emitted body gradient is real but does not include the forcing
+    // contribution, so NUTS would sample against an incomplete gradient. Flag
+    // such a param unconditionally (no body / no `has_grad` escape). No false
+    // positive: a Periodic coefficient gradient is never emitted, so a param
+    // here never legitimately has its forcing contribution covered. (When
+    // gh#215 emits Periodic derivatives, drop this set.)
+    let mut periodic_coeff = HashSet::new();
+    for tf in &model.time_functions {
+        if let TimeFuncKind::Periodic(p) = &tf.kind {
+            collect(&p.period, &mut periodic_coeff);
+            p.values.iter().for_each(|e| collect(e, &mut periodic_coeff));
+        }
+    }
+
     // Parameters the compiler emitted a derivative for (any transition) — these
     // have a usable NUTS gradient and are never blocked.
     let mut has_grad: HashSet<&str> = HashSet::new();
@@ -178,7 +203,10 @@ pub fn coefficient_only_estimated(model: &ir::Model, estimated: &HashSet<String>
 
     let mut offenders: Vec<String> = estimated
         .iter()
-        .filter(|p| coeff.contains(*p) && !body.contains(*p) && !has_grad.contains(p.as_str()))
+        .filter(|p| {
+            periodic_coeff.contains(*p)
+                || (coeff.contains(*p) && !body.contains(*p) && !has_grad.contains(p.as_str()))
+        })
         .cloned()
         .collect();
     offenders.sort();
@@ -188,13 +216,15 @@ pub fn coefficient_only_estimated(model: &ir::Model, estimated: &HashSet<String>
 /// Error message for a NUTS fit blocked by [`coefficient_only_estimated`].
 pub fn nuts_guard_error(offenders: &[String]) -> String {
     format!(
-        "NUTS cannot estimate parameter(s) [{}]: each appears only inside a \
-         forcing or inline-table coefficient, where the gradient is not yet \
-         emitted (the compiler differentiates a forcing/table to zero), so NUTS \
-         would sample against a flat surface and silently mis-estimate them. \
-         Use IF2 or the bootstrap particle filter (gradient-free, and these \
-         parameters now evaluate live), reference the parameter in a transition \
-         rate, or run PGAS with --no-nuts.",
+        "NUTS cannot estimate parameter(s) [{}]: each drives a forcing or \
+         inline-table coefficient whose gradient is not yet emitted (a periodic \
+         step value, or an inline-table value via a non-constant index — \
+         gh#215), so NUTS would sample against an incomplete gradient and \
+         silently mis-estimate them. These parameters now evaluate live, so \
+         estimate them with IF2 or the bootstrap particle filter (gradient-free), \
+         or run PGAS with --no-nuts. To estimate under NUTS, express the \
+         seasonality as a sinusoidal or fourier forcing (whose coefficients have \
+         analytic gradients).",
         offenders.join(", ")
     )
 }
@@ -325,6 +355,45 @@ mod tests {
         m.time_functions = vec![sinusoidal_forcing(Expr::param("alpha"))];
         let estimated: HashSet<String> = HashSet::new();
         assert!(coefficient_only_estimated(&m, &estimated).is_empty());
+    }
+
+    /// gh#119/gh#215: a `Periodic` step value has NO emitted gradient (the
+    /// compiler omits it; only Sinusoidal/Fourier/const-table are differentiated),
+    /// so even when the same param ALSO drives a rate body — where the emitted
+    /// body gradient is real but does NOT include the forcing contribution — NUTS
+    /// would sample against an incomplete gradient. It must be flagged regardless
+    /// of body presence or a (partial) `rate_grad` entry. Contrast
+    /// `does_not_flag_forcing_param_with_emitted_gradient`: a Sinusoidal coef's
+    /// gradient IS complete, so it stays unflagged.
+    #[test]
+    fn flags_periodic_coeff_param_even_when_in_a_rate_body() {
+        use ir::time_func::Periodic;
+        let mut m = base_model();
+        m.time_functions = vec![TimeFunction {
+            name: "weekly".into(),
+            kind: TimeFuncKind::Periodic(Periodic {
+                period: Expr::const_(7.0),
+                values: vec![Expr::param("wpeak"), Expr::const_(1.0)],
+            }),
+            dim: (0, 0),
+        }];
+        // `wpeak` also appears directly in a rate, with a (partial) rate_grad
+        // entry for that body appearance — but it misses the forcing part.
+        let mut rate_grad = HashMap::new();
+        rate_grad.insert("wpeak".to_string(), Expr::pop("S"));
+        m.transitions = vec![ir::transition::Transition {
+            name: "infection".into(),
+            stoichiometry: vec![ir::transition::StoichiometryEntry("S".into(), -1)],
+            rate: Expr::bin_op(ir::expr::BinOp::Mul, Expr::param("wpeak"), Expr::pop("S")),
+            metadata: None,
+            draw_method: ir::transition::DrawMethod::Poisson,
+            rate_grad,
+            lineage: None,
+        }];
+        let estimated: HashSet<String> = ["wpeak".to_string()].into_iter().collect();
+        assert_eq!(coefficient_only_estimated(&m, &estimated), vec!["wpeak".to_string()],
+            "a periodic-coeff param has no emitted forcing gradient; NUTS must be \
+             blocked even though it also appears in a rate body");
     }
 
     /// An inline-table value parameter, used nowhere else, is flagged.
