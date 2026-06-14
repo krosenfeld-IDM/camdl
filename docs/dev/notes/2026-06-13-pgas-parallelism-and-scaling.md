@@ -102,6 +102,32 @@ CSMC is a real ~linear lever (not bandwidth-capped) up to the load-balance limit
 global pool — `RAYON_NUM_THREADS` is the real control. PGAS's CSMC has neither
 (serial loops), which is exactly #209.
 
+### Implemented + measured (#209 landed)
+
+`csmc_as`'s three per-particle loops now use `par_iter` (commit on
+worktree-profiling). Byte-identity proven by a 1-thread vs 4-thread A/B
+(`gate_pgas_thread_invariance.rs`) + 8 unchanged PGAS gates. Direct end-to-end
+PGAS-fit before/after (P=44 polio, 48 particles, 6 sweeps; raw in
+`assets/.../pgas_speedup.tsv`):
+
+| threads | PGAS total | csmc_as | end-to-end | csmc_as scaling |
+| --- | --- | --- | --- | --- |
+| 1 | 57.2 s | 50.6 s (92%) | 1.0× | 1.0× |
+| 8 | 17.0 s | 10.5 s | **3.4×** | 4.8× |
+| 16 | 12.3 s | 5.7 s | **4.7×** | **8.9×** |
+
+The serial **NUTS + complete_data_loglik** step is a *fixed* ~6.5 s (driven by
+the `afp_influx` global-accumulator gradient — one transition summing FOI over
+all 132 strata). At 48 particles that fixed slice caps the end-to-end speedup
+(Amdahl); at Daniel's 5000 particles `csmc_as` is ~100× larger and dominates, so
+the end-to-end speedup approaches the `csmc_as` ceiling (8.9×/16 here, higher on
+120 cores). **Second lever: parallelize/restructure that NUTS gradient.**
+
+GOTCHA (cost a measurement cycle): the first before/after read a flat 1.0× —
+it timed a stale `target/release/camdl` built *before* the `par_iter` change.
+Rebuild and verify the binary under test; a leaf/total that looks serial may be
+the wrong binary, not the wrong code.
+
 ## Finding 3 — the statistical wall: a constant factor cannot beat an exponential
 
 Even granting #209, particle filters degenerate as the *effective observation
