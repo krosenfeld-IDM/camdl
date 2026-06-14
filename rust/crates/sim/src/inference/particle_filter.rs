@@ -100,10 +100,18 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
     let n_obs = obs_model.n_observations();
     let n_int = process.n_compartments();
     let n_tr = process.n_transitions();
+    // Per-Interval-stream `acc` bins (multi-cadence Phase 2a): one `u64` per
+    // incidence stream, sized from the OBS model (the process does not know it).
+    let n_acc = obs_model.n_interval_streams();
 
-    // Initialize particles from model init
-    let init = process.initial_state(params)?;
-    let mut swarm = ParticleSwarm::new(n_particles, n_int, n_tr);
+    // Initialize particles from model init. The process sizes `acc` to 0 (it
+    // does not know `n_interval_streams`); resize the init state's `acc` to
+    // `n_acc` so the `has_predictions` probe (`obs_model.mean(&init, …)`, which
+    // projects `acc[k]`) does not index out of bounds. Swarm states are sized
+    // by `ParticleSwarm::new`.
+    let mut init = process.initial_state(params)?;
+    init.acc.resize(n_acc, 0);
+    let mut swarm = ParticleSwarm::new(n_particles, n_int, n_tr, n_acc);
     for p in &mut swarm.states {
         p.counts.copy_from_slice(&init.counts);
     }
@@ -120,7 +128,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
 
     // Double-buffer for resampling (avoids clone allocation)
     let mut states_buf: Vec<ParticleState> = (0..n_particles)
-        .map(|_| ParticleState::new(n_int, n_tr))
+        .map(|_| ParticleState::new(n_int, n_tr, n_acc))
         .collect();
 
     // Per-particle scratch buffers (allocated once, reused across all steps)
@@ -148,9 +156,30 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
     // dt.min(obs_time - t) exactly. (Substep TIME stays accumulated here — the s*dt
     // convention for the EXACT steppers is deferred, task #14.)
     let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+
+    // gh#216: scheduled interventions fire CURSOR-keyed off the timeline's effect
+    // boundaries (registered as `effect_times` below), NOT on the `round(t/dt)`
+    // key inside step_one — so an off-grid observation re-tiling the Exact substep
+    // grid no longer moves the firing instant. Two Exact cases stay unsupported
+    // and are refused loudly: a parametric `at [<param>]` schedule (one shared
+    // `effect_times` can't hold per-particle times), and a scheduled fire time off
+    // the dt grid (the drift-free PGAS walk would need to re-anchor there — a
+    // deferred follow-up). Always-active events are out of scope (grid_dt-keyed).
+    let scheduled = if let Some(model) = process.try_compiled_model() {
+        crate::intervention::guard_attimesexpr_exact(model, StepPolicy::Exact)?;
+        crate::intervention::guard_exact_offgrid_effect_time(
+            model, params, config.t_start, dt, StepPolicy::Exact,
+        )?;
+        crate::intervention::timeline_effects(model, params)
+    } else {
+        crate::intervention::TimelineEffects::default()
+    };
+
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
-    let schedule =
-        Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
+    let schedule = Schedule::new(
+        dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), scheduled.times.clone(),
+    )
+    .with_obs(obs_times);
 
     // gh#147 (M3.1). Cumulative particle-substep count for the
     // deterministic compute-budget guard. Bounds a single PF evaluation;
@@ -233,9 +262,15 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         iters = iters.saturating_add(cost);
 
         // Propagate all particles from t to obs_time. The schedule clips each
-        // substep to obs_time; the cursor points at this observation.
+        // substep to obs_time; the cursor points at this observation. The effect
+        // cursor is positioned at the first scheduled-effect boundary not yet
+        // fired by `t` so the monotone effect walk carries across windows (gh#216).
         let t_start_interval = t;
-        let cur = Cursor { obs_idx, ..Default::default() };
+        let cur = Cursor {
+            obs_idx,
+            effect_idx: schedule.effect_idx_at(t_start_interval),
+            ..Default::default()
+        };
         let outcomes: Vec<Result<bool, SimError>> = swarm.states.par_iter_mut()
             .zip(rngs.par_iter_mut())
             .zip(scratches.par_iter_mut())
@@ -243,9 +278,15 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
             .map(|(((state, rng), scratch), &dead)| {
                 if dead { return Ok(true); }  // already dead; skip
                 // Shared inner-substep walk (Schedule::substeps); this body keeps
-                // the per-particle death-on-recoverable-error policy.
-                for (t_local, step_dt) in schedule.substeps(cur, t_start_interval) {
-                    match process.step(state, params, t_local, step_dt, rng, scratch) {
+                // the per-particle death-on-recoverable-error policy. `fired` is
+                // Some(effect_idx) when this substep lands on a scheduled-effect
+                // boundary — fire that boundary's batch cursor-keyed.
+                for (t_local, step_dt, fired) in schedule.substeps(cur, t_start_interval) {
+                    let due_iv: &[usize] = match fired {
+                        Some(idx) => &scheduled.batches[idx],
+                        None => &[],
+                    };
+                    match process.step(state, params, t_local, step_dt, rng, scratch, due_iv) {
                         Ok(()) => {}
                         Err(e) if e.is_per_particle_recoverable() => {
                             // Mark dead — the caller folds this into the dead vec
@@ -263,16 +304,35 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         }
         t = schedule.window_end(cur, t);
 
+        // FOLD (multi-cadence Phase 2a, "Option Z"): close this interval's flow
+        // into each Interval stream's persistent `acc` bin, ONCE per
+        // observation (serial — NOT inside the per-substep par_iter above). The
+        // `flow_accumulators` tally is left untouched (blanket-zeroed only at
+        // the per-obs reset below, exactly as before). Every reader of `acc`
+        // downstream this iteration (predictions via `mean`/`sample`, the gh#48
+        // capture, scoring) sees the just-folded bin.
+        for state in &mut swarm.states {
+            obs_model.fold_into_acc(&state.flow_accumulators, &mut state.acc);
+        }
+
         // Prediction diagnostics
         if has_predictions {
+            // Multi-cadence: `mean`/`sample` return `f64::NAN` for a stream NOT
+            // scheduled at this union index (proposal 2026-06-10 §3.6). Filter
+            // the non-finite entries before summing — a not-scheduled stream
+            // contributes nothing to the summed prediction at this union time.
+            // Homogeneous (every stream scheduled at every index) never yields a
+            // NaN, so this filter is a no-op there.
             let means: Vec<f64> = swarm.states.iter()
-                .map(|s| obs_model.mean(s, obs_idx, params).into_iter().sum::<f64>())
+                .map(|s| obs_model.mean(s, obs_idx, params)
+                    .into_iter().filter(|v| v.is_finite()).sum::<f64>())
                 .collect();
             let equal_lw = vec![0.0_f64; n_particles];
             let (state_mean, state_q05, state_q50, state_q95) = weighted_quantiles(&means, &equal_lw);
 
             let obs_draws: Vec<f64> = swarm.states.iter().enumerate()
-                .map(|(i, s)| obs_model.sample(s, obs_idx, params, &mut diag_rngs[i]).into_iter().sum())
+                .map(|(i, s)| obs_model.sample(s, obs_idx, params, &mut diag_rngs[i])
+                    .into_iter().filter(|v| v.is_finite()).sum())
                 .collect();
             let (_, obs_q05, obs_q50, obs_q95) = weighted_quantiles(&obs_draws, &equal_lw);
 
@@ -301,9 +361,12 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         // particles via obs_model.sample and feed CRPS/PIT.
         if config.record_prequential {
             let log_liks: Vec<f64> = swarm.log_weights.clone();
+            // Multi-cadence: drop the not-scheduled streams' NaN before summing
+            // (else the prequential sample poisons CRPS/PIT). Homogeneous is a
+            // no-op (no NaN). See the prediction block above.
             let y_draws: Vec<f64> = swarm.states.iter().enumerate()
                 .map(|(i, s)| obs_model.sample(s, obs_idx, params, &mut diag_rngs[i])
-                    .into_iter().sum::<f64>())
+                    .into_iter().filter(|v| v.is_finite()).sum::<f64>())
                 .collect();
             preq_times.push(obs_time);
             preq_log_liks.push(log_liks);
@@ -334,6 +397,15 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
             // which is what incidence projections need. After
             // resampling + reset two lines below, flow_accumulators
             // start the next interval at zero.
+            //
+            // Multi-cadence: this stores the PER-STREAM vector unchanged. A
+            // stream NOT scheduled at this union index yields `f64::NAN` from
+            // `mean()` (proposal 2026-06-10 §3.6). That NaN is NOT summed — it
+            // is walked along the ancestor chain into its OWN per-stream column
+            // in `--save-paths` (`write_sampled_paths`, which already emits NaN
+            // for an absent stream cell). So a not-scheduled stream reads NaN in
+            // its column at that union row — the honest "no observation here"
+            // marker, NOT a fictitious 0. Homogeneous never produces a NaN.
             let step_projections: Vec<Vec<f64>> = swarm.states.iter()
                 .map(|s| obs_model.mean(s, obs_idx, params))
                 .collect();
@@ -381,6 +453,10 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         for (i, &src) in indices.iter().enumerate() {
             states_buf[i].counts.copy_from_slice(&swarm.states[src].counts);
             states_buf[i].flow_accumulators.copy_from_slice(&swarm.states[src].flow_accumulators);
+            // Phase 2a: the per-stream `acc` bins travel with the particle, so
+            // an ancestor swap carries the right partial bins for streams not
+            // observed at this union index.
+            states_buf[i].acc.copy_from_slice(&swarm.states[src].acc);
         }
         std::mem::swap(&mut swarm.states, &mut states_buf);
 
@@ -411,8 +487,17 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         // per-stream observation" at different cadences per stream,
         // this reset needs to become per-flow and indexed by which
         // stream last observed. Keep this comment as the canary.
+        //
+        // Phase 2a (the feature the canary predicted): `flow_accumulators` is
+        // STILL blanket-reset here (its lifecycle unchanged); the per-stream
+        // `acc` bins are reset SEPARATELY and per-stream — only the Interval
+        // streams scheduled at THIS union index (`at_union[obs_idx].is_some()`)
+        // zero, so a sibling on a different cadence keeps its running bin.
+        // Homogeneous (every stream scheduled every interval) ⇒ every `acc`
+        // zeroes every interval ⇒ identical to the blanket reset.
         for state in &mut swarm.states {
             state.reset_flows();
+            obs_model.reset_due_acc(obs_idx, &mut state.acc);
         }
 
         // Reset weights

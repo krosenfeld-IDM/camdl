@@ -42,5 +42,8 @@ pub use obs_loglik::{negbin_logpmf, normal_logpdf, discretized_normal_logpmf, no
 pub use particle_filter::bootstrap_filter;
 pub use traits::{ProcessModel, DensityProcess, ObservationModel, Resettable, SMCConfig, InferenceConfig};
 pub use chain_binomial_process::ChainBinomialProcess;
-pub use multi_stream_obs::{MultiStreamObsModel, NullObsModel};
+pub use multi_stream_obs::{
+    dense_cells, BindReport, BoundObs, Finding, MultiStreamObsModel, NullObsModel, ObsCell,
+    Severity,
+};
 pub use prior::Prior;

@@ -44,6 +44,8 @@ use ir::{
 };
 use sim::compiled_model::CompiledModel;
 use sim::inference::if2::{EstimatedParam, Transform};
+use sim::inference::BoundObs;
+use sim::inference::dense_cells;
 use sim::inference::multi_stream_obs::{MultiStreamObsModel, StreamProjection, StreamSpec};
 use sim::inference::particle_filter::Observation;
 use sim::inference::pgas::{log_transition_density_substep, run_pgas, simulate_reference, PGASConfig};
@@ -356,11 +358,18 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
 
     // NegBin obs model.
     let obs_model = MultiStreamObsModel::new(
-        vec![StreamSpec {
+        BoundObs::bind(vec![StreamSpec {
             projection: StreamProjection::FlowSum(vec![0]),  // infection
             ir_model: ir::observation::ObservationModel {
                 name: "cases".into(),
-                schedule: ir::observation::ObservationSchedule::AtTimes(vec![]),
+                source: "cases".into(),
+                columns: vec![
+                    ir::observation::ObsColumn { name: "time".into(), role: ir::observation::ColumnRole::Time },
+                    ir::observation::ObsColumn { name: "cases".into(), role: ir::observation::ColumnRole::Value(ir::parameter::ParamKind::Count) },
+                ],
+                scored: "cases".into(),
+                emit_schedule: Some(ir::observation::ObservationSchedule::AtTimes(vec![])),
+                stratum: vec![],
                 projection: ir::observation::Projection::CumulativeFlow("infection".into()),
                 likelihood: ir::observation::Likelihood::NegBinomial(
                     ir::observation::NegBinomialLikelihood {
@@ -376,9 +385,10 @@ fn pgas_nuts_runs_cleanly_on_seir_with_discrete_seed_event() {
                         dispersion: ir::expr::Expr::Const(ir::expr::ConstExpr { value: 10.0 }),
                     }),
             },
-            observations: obs.iter().map(|o| o.value).collect(),
+            observations: dense_cells(obs.iter().map(|o| o.value).collect()),
             obs_times: obs.iter().map(|o| o.time).collect(),
-        }],
+            aux: vec![],
+        }]).unwrap().0,
         compiled.clone(),
     ).unwrap();
 

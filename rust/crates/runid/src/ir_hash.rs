@@ -33,7 +33,8 @@ use ir::model::{
     ModelStructure, OutputConfig, OutputSchedule, Preset, RegularOutputSchedule, SimulationConfig,
 };
 use ir::observation::{
-    Likelihood, ObservationModel, ObservationSchedule, Projection, RegularSchedule,
+    ColumnRole, Likelihood, ObsColumn, ObservationModel, ObservationSchedule, Projection,
+    RegularSchedule, StratumKey,
 };
 use ir::ode_equation::OdeEquation;
 use ir::parameter::{
@@ -189,6 +190,10 @@ impl ContentAddressed for Expr {
             Expr::BindingRef(w) => {
                 h.write_u32(14);
                 h.write_str(&w.binding_ref);
+            }
+            Expr::ObsColumnRef(w) => {
+                h.write_u32(15);
+                h.write_str(&w.obs_column_ref);
             }
         }
     }
@@ -507,11 +512,58 @@ impl ContentAddressed for ObservationSchedule {
     }
 }
 
+impl ContentAddressed for ColumnRole {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::observation::ColumnRole");
+        // Permanent variant indices (run-id stability) — new roles append.
+        match self {
+            ColumnRole::Time => h.write_u32(0),
+            ColumnRole::Dim(d) => {
+                h.write_u32(1);
+                h.write_str(d);
+            }
+            ColumnRole::Value(k) => {
+                h.write_u32(2);
+                k.hash_into(h);
+            }
+        }
+    }
+}
+
+impl ContentAddressed for ObsColumn {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::observation::ObsColumn");
+        h.write_str(&self.name);
+        self.role.hash_into(h);
+    }
+}
+
+impl ContentAddressed for StratumKey {
+    fn hash_into(&self, h: &mut CanonicalHasher) {
+        header(h, "ir::observation::StratumKey");
+        h.write_str(&self.dim);
+        h.write_str(&self.level);
+    }
+}
+
 impl ContentAddressed for ObservationModel {
     fn hash_into(&self, h: &mut CanonicalHasher) {
         header(h, "ir::observation::ObservationModel");
         h.write_str(&self.name);
-        self.schedule.hash_into(h);
+        h.write_str(&self.source);
+        self.columns.hash_into(h);
+        h.write_str(&self.scored);
+        self.emit_schedule.hash_into(h);
+        // `stratum` is hashed ONLY when non-empty: an empty stratum (every
+        // model without a stratified observation header) writes nothing, so
+        // existing run_ids are byte-identical. A non-empty stratum exists only
+        // on new stratified-obs leaves (no stored run_ids yet) and is
+        // load-bearing — it routes file rows to this leaf — so it must enter
+        // the hash. (`Vec::hash_into` would write a `len=0` prefix even when
+        // empty, churning every existing id; guard against that.)
+        if !self.stratum.is_empty() {
+            self.stratum.hash_into(h);
+        }
         self.projection.hash_into(h);
         self.likelihood.hash_into(h);
     }

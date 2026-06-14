@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::expr::Expr;
+use crate::parameter::ParamKind;
 
 // ── Projection ────────────────────────────────────────────────────────────────
 
@@ -14,6 +15,45 @@ pub enum Projection {
     // variants by position, so declaration order == hash index, and that
     // index is permanent. Inserting earlier would churn stored run_ids.
     CumulativeFlowSum(Vec<String>),
+}
+
+/// Whether an observation stream measures a quantity accumulated over a
+/// reporting *interval* (incidence) or sampled at an *instant* (prevalence).
+///
+/// This is a **derived classification of [`Projection`], never a stored
+/// field** — every projection variant maps to exactly one kind (see
+/// [`Projection::temporal_kind`]), so an independently-stored `kind` could
+/// only ever *disagree* with the projection and would be an illegal state to
+/// validate against. Code that needs the distinction (reset semantics,
+/// missing-data handling, cadence) derives it; it is not serialized and does
+/// not appear in the IR.
+///
+/// - [`Interval`](TemporalKind::Interval) — incidence: a flow accumulated
+///   between observations. The accumulator resets on the reporting cadence.
+/// - [`Instant`](TemporalKind::Instant) — prevalence: a function of state read
+///   at the observation instant. No accumulation, no reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalKind {
+    Interval,
+    Instant,
+}
+
+impl Projection {
+    /// Classify this projection as incidence ([`Interval`](TemporalKind::Interval))
+    /// or prevalence ([`Instant`](TemporalKind::Instant)). Total over all
+    /// variants — the single source of truth for the distinction.
+    pub fn temporal_kind(&self) -> TemporalKind {
+        match self {
+            // incidence — cumulative flow over the reporting interval
+            Projection::CumulativeFlow(_) | Projection::CumulativeFlowSum(_) => {
+                TemporalKind::Interval
+            }
+            // prevalence — state read at the observation instant
+            Projection::CurrentPop(_)
+            | Projection::CurrentPopSum(_)
+            | Projection::DerivedExpr(_) => TemporalKind::Instant,
+        }
+    }
 }
 
 // ── Likelihood ────────────────────────────────────────────────────────────────
@@ -80,12 +120,94 @@ pub enum ObservationSchedule {
     Regular(RegularSchedule),
 }
 
+// ── Declared file columns ──────────────────────────────────────────────────────
+
+/// The role of a declared file column (the `columns { name : role }` block;
+/// 2026-06-10 observation data-entry §2.2).
+///
+/// Serialises to match the OCaml IR: `Time` → the bare string `"time"`;
+/// `Dim(d)` → `{"dim": d}`; `Value(k)` → `{"value": "<param_kind>"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnRole {
+    /// The time axis (exactly one per stream) — the FIT time source.
+    Time,
+    /// A model dimension; values bind to that dimension's levels.
+    Dim(String),
+    /// An observed value of the given DSL type (count/real/probability/…) —
+    /// either the `~` LHS (scored) or RHS-referenced auxiliary data.
+    Value(ParamKind),
+}
+
+/// One declared file column: header name + role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObsColumn {
+    pub name: String,
+    pub role: ColumnRole,
+}
+
+/// One `(dimension, level)` pair identifying a stratum cell. Named fields
+/// (not a tuple) so an illegal half-built selector is unrepresentable, and
+/// the JSON shape mirrors `ColumnRole::Dim`'s `{"dim": d}` object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StratumKey {
+    pub dim:   String,
+    pub level: String,
+}
+
 // ── Observation model ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservationModel {
-    pub name:        String,
-    pub schedule:    ObservationSchedule,
-    pub projection:  Projection,
-    pub likelihood:  Likelihood,
+    pub name:          String,
+    /// The `from <label>` data-source key — the thing `--data label=file`
+    /// binds a file to (defaults to `name`).
+    pub source:        String,
+    /// The explicit file schema. The loader binds the data file's columns by
+    /// these declared names; the `Time` column is the fit time source.
+    pub columns:       Vec<ObsColumn>,
+    /// The `~` LHS — the declared value column the likelihood scores.
+    pub scored:        String,
+    /// SIMULATE-only emission cadence (`emit_schedule`). The fit path reads
+    /// the data file's time column and never consults this; `None` for a
+    /// fit-only model that omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emit_schedule: Option<ObservationSchedule>,
+    /// For a stratified observation stream (`cases[p in patch] ~ ...`), the
+    /// (dimension, level) pairs identifying which stratum cell this expanded
+    /// leaf observes — `[{dim: "patch", level: "p1"}]`. Empty for an
+    /// unstratified stream. Populated by the OCaml expander from the stream's
+    /// header indices; the long-form loader routes each file row to the leaf
+    /// whose `stratum` matches the row's `: dim` column values BY NAME.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stratum:       Vec<StratumKey>,
+    pub projection:    Projection,
+    pub likelihood:    Likelihood,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::{ConstExpr, Expr};
+
+    #[test]
+    fn temporal_kind_classifies_every_projection_variant() {
+        use TemporalKind::*;
+        // incidence — accumulated over a reporting interval
+        assert_eq!(Projection::CumulativeFlow("inc".into()).temporal_kind(), Interval);
+        assert_eq!(
+            Projection::CumulativeFlowSum(vec!["a".into(), "b".into()]).temporal_kind(),
+            Interval
+        );
+        // prevalence — read at the observation instant
+        assert_eq!(Projection::CurrentPop("I".into()).temporal_kind(), Instant);
+        assert_eq!(
+            Projection::CurrentPopSum(vec!["B1".into(), "B2".into()]).temporal_kind(),
+            Instant
+        );
+        assert_eq!(
+            Projection::DerivedExpr(Expr::Const(ConstExpr { value: 0.0 })).temporal_kind(),
+            Instant
+        );
+    }
 }

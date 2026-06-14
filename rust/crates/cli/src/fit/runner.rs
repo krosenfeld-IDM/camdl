@@ -28,7 +28,23 @@ pub struct ObsStream {
     /// built from the IR observation block.
     pub projection: sim::inference::multi_stream_obs::StreamProjection,
     pub obs_model_ir: ir::observation::ObservationModel,
+    /// Dense placeholder view (a hole shows as value 0) used only by the
+    /// startup diagnostics and the canonical-times path. NOT load-bearing for
+    /// scoring — the authoritative per-grid-time cells (with holes) are in
+    /// `cells`. Times are always correct here regardless of holes.
     pub data: Vec<Observation>,
+    /// Authoritative per-grid-time observation cells, parallel to `data` and to
+    /// `obs_times`. `None` = a hole (the `NA` token): its time stays in the
+    /// grid (so the incidence accumulator still resets at its index) but it
+    /// carries no value (no likelihood term). `Some(ObsCell::Scalar(v))` =
+    /// observed value `v`. Threaded into the obs model so the already
+    /// hole-correct scoring seam (`MultiStreamObsModel`) handles missing values.
+    pub cells: Vec<Option<sim::inference::ObsCell>>,
+    /// Per-observation auxiliary data (binomial `n = tested`, person-time
+    /// offset), parallel to `cells`; each row a name→value list the likelihood
+    /// reads by `Expr::ObsColumnRef`. Empty inner vec when the likelihood
+    /// references no aux column or the cell is a hole. (§3, §6.1.)
+    pub aux: Vec<Vec<(String, f64)>>,
 }
 
 pub struct FitRunConfig {
@@ -259,25 +275,59 @@ impl FitRunConfig {
         // stream name to that file. From here on the loop is the same.
         let dt = fit.config.dt;
         let data_spec = fit.data_spec()?;
-        let model_obs_names: Vec<String> = model.observations.iter()
-            .map(|o| o.name.clone()).collect();
-        let effective = data_spec.effective_observations(&model_obs_names)?;
+        // `--data`/`[data.observations]` keys by the `from <label>` SOURCE
+        // (defaults to the stream name; §2.4). Resolve against the distinct
+        // source labels so several streams can share one wide file.
+        let mut source_labels: Vec<String> = model.observations.iter()
+            .map(|o| o.source.clone()).collect();
+        source_labels.sort();
+        source_labels.dedup();
+        let effective = data_spec.effective_observations(&source_labels)?;
         if effective.is_empty() {
             return Err(
                 "fit.toml [data] resolves to zero observation streams. Either \
                  set `[data] file = \"<path>\"` (one wide TSV) or fill \
-                 [data.observations] (per-stream paths).".into());
+                 [data.observations] (per-source paths).".into());
         }
 
         let mut streams = Vec::new();
-        let mut canonical_times: Option<Vec<f64>> = None;
 
-        // Sort by name for deterministic ordering. (IndexMap preserves
-        // insertion order — we pin a sort here so two fits with the
-        // same observations but different toml ordering still hash
-        // identically downstream.)
-        let mut data_entries: Vec<_> = effective.iter().collect();
-        data_entries.sort_by_key(|(k, _)| k.as_str());
+        // Iterate the model's observation blocks whose `source` is BOUND to a
+        // data file (sorted by name for deterministic ordering — two fits with
+        // the same observations but different toml ordering hash identically
+        // downstream). A stream whose source is not in `[data.observations]` is
+        // not fit against — only the bound streams are loaded (the caller may
+        // deliberately fit a subset). Each stream resolves its file via its
+        // declared `source`; columns bind by name.
+        let mut obs_blocks: Vec<&ir::observation::ObservationModel> =
+            model.observations.iter()
+                .filter(|o| effective.contains_key(&o.source))
+                .collect();
+        obs_blocks.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Every bound source must name a real observation stream — a key in
+        // `[data.observations]` (or a `--data NAME=` source) that matches no
+        // stream's `source` is a typo, not a silent no-op.
+        for src in effective.keys() {
+            if !model.observations.iter().any(|o| &o.source == src) {
+                return Err(format!(
+                    "data source '{}' is bound to a file but matches no observation \
+                     stream's source. Available sources: {}",
+                    src,
+                    {
+                        let mut s: Vec<&str> = model.observations.iter()
+                            .map(|o| o.source.as_str()).collect();
+                        s.sort_unstable(); s.dedup();
+                        s.join(", ")
+                    }));
+            }
+        }
+        if obs_blocks.is_empty() {
+            return Err(
+                "no observation stream is bound to a data file — check that \
+                 [data.observations] / --data names match the model's stream \
+                 sources.".into());
+        }
 
         let time_opts = crate::caltime_load::TimeOpts {
             origin: model.origin.as_deref(),
@@ -286,26 +336,46 @@ impl FitRunConfig {
             t_start: compiled.model.simulation.t_start,
             format: crate::caltime_load::TimeFormat::Auto,
         };
-        for (stream_name, data_path) in &data_entries {
-            let obs = load_observations(data_path, stream_name, dt, &time_opts)?;
-            let obs_model = model.observations.iter()
-                .find(|o| o.name == **stream_name)
-                .cloned()
-                .ok_or_else(|| format!(
-                    "no observation block named '{}'. Available: {}",
-                    stream_name,
-                    model.observations.iter().map(|o| o.name.as_str()).collect::<Vec<_>>().join(", ")
-                ))?;
+        for obs_model in &obs_blocks {
+            let stream_name = obs_model.name.clone();
+            let data_path = effective.get(&obs_model.source)
+                .expect("filtered to bound sources above");
+            let siblings: Vec<&ir::observation::ObservationModel> = model.observations.iter()
+                .filter(|o| o.source == obs_model.source)
+                .collect();
+            let (obs, cells, aux) =
+                load_observations(data_path, obs_model, &siblings, dt, &time_opts)?;
+            let obs_model: ir::observation::ObservationModel = (*obs_model).clone();
             let projection = sim::inference::multi_stream_obs::StreamProjection::from_ir(
-                &obs_model.projection, &compiled, stream_name,
+                &obs_model.projection, &compiled, &stream_name,
             )?;
+            let stream_name = stream_name.as_str();
 
+            // F4: reject an observation strictly before the model origin.
+            // The integrator never propagates a particle to a time it has
+            // already passed, so the window yields zero substeps yet the obs
+            // is still scored — a silent wrong answer. Hard error at load.
             // gh#174: reject a positive incidence observation at the model
             // origin (zero-width first window → -Inf masquerading as filter
             // degeneracy). Hard error before any stage runs.
             {
                 let obs_times: Vec<f64> = obs.iter().map(|o| o.time).collect();
-                let first_value = obs.first().map(|o| o.value).unwrap_or(0.0);
+                crate::util::check_obs_before_origin(
+                    stream_name,
+                    compiled.model.simulation.t_start,
+                    &obs_times,
+                )?;
+                // The degenerate-origin-window check fires only when the FIRST
+                // observation sits exactly on the origin AND carries a positive
+                // incidence value. If the first cell is a HOLE there is no value
+                // scored at the origin (the term is omitted), so the -Inf risk
+                // does not arise — pass a non-positive sentinel so the check is a
+                // no-op. We must NOT substitute a later present value (it belongs
+                // to a later time, not the origin) nor a fictitious 0 that scores.
+                let first_value = match cells.first() {
+                    Some(Some(sim::inference::ObsCell::Scalar(v))) => *v,
+                    _ => 0.0, // first cell is a hole (or no obs) → check is a no-op
+                };
                 crate::util::check_incidence_origin_window(
                     stream_name,
                     &obs_model.projection,
@@ -315,45 +385,198 @@ impl FitRunConfig {
                 )?;
             }
 
-            // Validate all streams share the same observation times
-            let times: Vec<f64> = obs.iter().map(|o| o.time).collect();
-            match &canonical_times {
-                None => canonical_times = Some(times),
-                Some(ct) => {
-                    if ct.len() != times.len() || ct.iter().zip(&times).any(|(a, b)| (a - b).abs() > 1e-9) {
-                        return Err(format!(
-                            "observation times for stream '{}' differ from first stream. \
-                             All streams must have identical observation times.",
-                            stream_name
-                        ));
-                    }
-                }
-            }
+            // Multi-cadence (proposal 2026-06-10 §3.3): each stream keeps its
+            // OWN observation times + cells. `bind` merges the streams to the
+            // sorted-unique UNION axis and records per-stream membership
+            // (`at_union`); the per-stream incidence reset (Phase 2a) fires only
+            // where a stream is scheduled. The old "must have identical
+            // observation times" guard was the no-silent-gaps stance for
+            // machinery that did not yet exist — that machinery now exists.
 
             streams.push(ObsStream {
                 name: stream_name.to_string(),
                 projection,
                 obs_model_ir: obs_model,
                 data: obs,
+                cells,
+                aux,
             });
         }
 
-        // Canonical observations (from first stream)
-        let observations = streams[0].data.clone();
+        // Canonical observations: the sorted-unique UNION of every stream's
+        // observation times (multi-cadence, proposal 2026-06-10 §3.3). This is
+        // what feeds the filter's substep grid, `n_observations`, the W329
+        // first-window guard, the obs-alignment gate, and the single-stream
+        // output labels — so it MUST be the union, not stream 0's schedule
+        // (else heterogeneous streams silently collapse onto stream 0's dates).
+        // The per-stream scored VALUES live in each `ObsStream.cells`; the
+        // canonical's `value` is a never-scored placeholder (0.0). `bind`
+        // re-derives this same union from each stream's own times below.
+        let mut observations: Vec<Observation> = {
+            let mut times: Vec<f64> = streams.iter()
+                .flat_map(|s| s.data.iter().map(|o| o.time))
+                .collect();
+            times.sort_by(|a, b| a.partial_cmp(b).expect("observation times are finite"));
+            times.dedup();
+            times.into_iter().map(|time| Observation { time, value: 0.0 }).collect()
+        };
 
-        // gh#134 (request 3, W329): warn once on the canonical stream when the
-        // first inter-observation interval is far larger than the modal cadence
-        // — `simulate.from` sitting well behind the first data point, so the
-        // model free-runs unconditioned over a giant first window. Pure soft
-        // warning (never rejects); the harder principled fix is a conditioning
-        // boundary (see the cited proposal in the message).
+        // gh#134 / multi-cadence Phase 3: PER-STREAM conditioning + the W329
+        // wide-first-window enforcer, both keyed on each stream's
+        // observation-block label (its IR `source`). The conditioning window is
+        // EXPLICIT — there is no automatic / inferred boundary; a late-starting
+        // incidence stream that resolves to no `condition_from` HARD-ERRORS,
+        // naming the fix. The boundary, when given, is resolved per stream and
+        // prepended as a LEADING reset-only HOLE to THAT stream's data/cells/aux
+        // and added to the canonical union grid.
         {
-            let obs_times: Vec<f64> = observations.iter().map(|o| o.time).collect();
-            if let Some(msg) = crate::util::check_first_interval_window(
-                compiled.model.simulation.t_start,
-                &obs_times,
-            ) {
-                eprintln!("{msg}");
+            use ir::observation::TemporalKind;
+            let t_start = compiled.model.simulation.t_start;
+
+            // Validate `[condition_from]` shadow labels (typo-safety + the
+            // reserved-`default` collision) against the bound streams' labels.
+            if let Some(spec) = &fit.condition_from {
+                let valid_labels: Vec<String> = {
+                    let mut v: Vec<String> =
+                        streams.iter().map(|s| s.obs_model_ir.source.clone()).collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                };
+                spec.validate_labels(&valid_labels)?;
+            }
+
+            // Walk streams in a deterministic order, resolving each one's
+            // conditioning spec and applying the leading hole (or running the
+            // W329 enforcer when it resolves to NONE). Collect each inserted
+            // boundary so the canonical union is updated once afterwards.
+            let mut union_inserts: Vec<f64> = Vec::new();
+            for s in streams.iter_mut() {
+                let label = s.obs_model_ir.source.as_str();
+                let kind = s.projection.temporal_kind();
+                let first_obs_s = s.data.iter()
+                    .map(|o| o.time)
+                    .fold(f64::INFINITY, f64::min);
+
+                // The spec that applies to THIS stream: its shadow, else the
+                // all-streams default, else None (no conditioning).
+                let resolved_spec = fit.condition_from
+                    .as_ref()
+                    .and_then(|c| c.resolve_for(label));
+
+                match resolved_spec {
+                    Some(raw) => {
+                        // Explicit conditioning for this stream. Resolve against
+                        // ITS first obs + validate ∈ [t_start, first_obs_s).
+                        match resolve_condition_from(
+                            raw,
+                            first_obs_s,
+                            t_start,
+                            model.origin.as_deref(),
+                            &model.time_unit,
+                            dt,
+                        ).map_err(|e| format!("stream '{}': {e}", s.name))? {
+                            Some(cond_from) => {
+                                eprintln!(
+                                    "  \x1b[36mconditioning window:\x1b[0m stream \
+                                     '{}': warm-up [{t_start}, {cond_from}) simulated \
+                                     but not scored; first scored bin is \
+                                     ({cond_from}, {first_obs_s}]",
+                                    s.name
+                                );
+                                // Prepend the per-stream leading reset-only hole.
+                                // The `cells` are authoritative for scoring; the
+                                // `data` row's value (0.0) is a never-read
+                                // placeholder.
+                                s.data.insert(0, Observation { time: cond_from, value: 0.0 });
+                                s.cells.insert(0, None);
+                                s.aux.insert(0, Vec::new());
+                                union_inserts.push(cond_from);
+                            }
+                            None => {
+                                // cond_from == t_start: the user explicitly set
+                                // conditioning to the model origin — the documented
+                                // "score the whole leading window" opt-in. No
+                                // warm-up is discarded; the first bin is the full
+                                // (t_start, first_obs_s]. This is the deliberate
+                                // escape hatch out of W329, NOT a no-op to hide: on
+                                // a WIDE incidence window (the gh#134 shape) say so
+                                // loudly so the choice is visible, not silent.
+                                if kind == TemporalKind::Interval {
+                                    let obs_times: Vec<f64> =
+                                        s.data.iter().map(|o| o.time).collect();
+                                    if let Some(anomaly) =
+                                        crate::util::check_first_interval_window(t_start, &obs_times)
+                                    {
+                                        eprintln!(
+                                            "  \x1b[36mconditioning window:\x1b[0m \
+                                             incidence stream '{name}': condition_from \
+                                             resolves to the model origin (t_start = \
+                                             {t_start}) — scoring the FULL \
+                                             {window}-{unit} leading window against the \
+                                             first datum, no warm-up discarded (the \
+                                             gh#134 wide window, opted into explicitly).",
+                                            name = s.name,
+                                            window = fmt_span(anomaly.first_window),
+                                            unit = cadence_word(&model.time_unit),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // No conditioning for this stream. The W329 detector
+                        // decides whether that is fine (window ≈ one cadence) or
+                        // the gh#134 wrong-number (anomalously wide window on an
+                        // incidence stream → hard error). Run against THIS
+                        // stream's own times (per-stream modal gap). A prevalence
+                        // stream is exempt from the hard error but still
+                        // soft-warns (free-running drift the first datum
+                        // corrects).
+                        let obs_times: Vec<f64> = s.data.iter().map(|o| o.time).collect();
+                        if let Some(anomaly) =
+                            crate::util::check_first_interval_window(t_start, &obs_times)
+                        {
+                            match kind {
+                                TemporalKind::Interval => {
+                                    // The first incidence bin would accumulate the
+                                    // whole leading span and score it against one
+                                    // datum. Name the per-stream fix EXACTLY.
+                                    return Err(format!(
+                                        "incidence stream '{name}' has a \
+                                         {window}-{unit} first window against a \
+                                         ~{cadence}-{unit} cadence; the first \
+                                         datum cannot constrain that whole span. \
+                                         State the conditioning window, e.g. \
+                                         `condition_from.{label} = \"first_obs - 1 week\"` \
+                                         (or a longer warm-up to discard).",
+                                        name = s.name,
+                                        window = fmt_span(anomaly.first_window),
+                                        cadence = fmt_span(anomaly.modal_gap),
+                                        unit = cadence_word(&model.time_unit),
+                                    ));
+                                }
+                                TemporalKind::Instant => {
+                                    eprintln!("{}", anomaly.warn_message());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fold the per-stream boundaries into the canonical union grid (the
+            // times every algorithm's substep walk reads). Sorted-unique so a
+            // boundary shared by streams on the same source appears once.
+            if !union_inserts.is_empty() {
+                let mut times: Vec<f64> = observations.iter().map(|o| o.time).collect();
+                times.extend(union_inserts);
+                times.sort_by(|a, b| a.partial_cmp(b).expect("times are finite"));
+                times.dedup();
+                observations = times.into_iter()
+                    .map(|time| Observation { time, value: 0.0 })
+                    .collect();
             }
         }
 
@@ -423,7 +646,25 @@ impl FitRunConfig {
             // compute-blowup safety.
             pf_wallclock_disabled: true,
         };
-        // IC-free precondition: at least one estimated param must be
+        // IC-free precondition (data): y₁ must actually be observed. ic_free
+        // conditions the initial state on the first observation (it still
+        // reweights/resamples at obs_idx 0, dropping only that term from the
+        // accumulated loglik). If y₁ is missing — a hole (`NA`) in every stream
+        // at the first observation index — there is nothing to condition on, so
+        // ic_free would silently degenerate to *no* initial-state conditioning
+        // (a weaker estimand than requested). Checked before the ivp
+        // precondition: a missing y₁ makes ic_free impossible regardless of ivp.
+        if ic_free
+            && !streams.is_empty()
+            && streams.iter().all(|s| s.cells.first().is_some_and(|c| c.is_none()))
+        {
+            return Err(
+                "ic_free = true conditions the initial state on the first \
+                 observation y₁, but y₁ is missing (`NA` / a hole) in every data \
+                 stream — there is nothing to condition on. Provide the first \
+                 observation, or disable ic_free.".into());
+        }
+        // IC-free precondition (config): at least one estimated param must be
         // marked ivp. Without per-particle spread at t=0, the first
         // reweight can't discriminate and ic-free degenerates to
         // silently dropping y₁. Error at config build so the mistake
@@ -459,30 +700,42 @@ impl FitRunConfig {
         })
     }
 
+    /// Build the inference process. The integrator `dt` is supplied per call to
+    /// `step`/`density` (and per rung by the gh#52 Richardson dt-check via the
+    /// SMCConfig), so the process itself is dt-agnostic — there is no stored
+    /// `fire_steps` to resolve at a particular dt any more (effect firing is
+    /// cursor-keyed from the timeline; see `effects::split_due_batch`).
     pub fn build_process(&self) -> sim::inference::ChainBinomialProcess {
-        self.build_process_with_dt(self.if2_config.dt)
-    }
-    /// Build a Process with an explicit `dt` override — used by the
-    /// gh#52 Richardson dt-check, where each ladder rung evaluates
-    /// `loglik(θ̂; dt)` at a different dt and therefore needs a
-    /// process whose internal `fire_steps` is resolved at the rung's
-    /// dt, not the fit's. gh#53.
-    pub fn build_process_with_dt(&self, dt: f64) -> sim::inference::ChainBinomialProcess {
-        sim::inference::ChainBinomialProcess::new(self.compiled.clone(), dt)
+        sim::inference::ChainBinomialProcess::new(self.compiled.clone())
     }
     pub fn build_obs_model(&self) -> sim::inference::MultiStreamObsModel {
-        sim::inference::MultiStreamObsModel::new(
-            self.streams.iter().map(|s| sim::inference::multi_stream_obs::StreamSpec {
+        let specs: Vec<sim::inference::multi_stream_obs::StreamSpec> = self.streams.iter()
+            .map(|s| sim::inference::multi_stream_obs::StreamSpec {
                 projection: s.projection.clone(),
                 ir_model: s.obs_model_ir.clone(),
-                observations: s.data.iter().map(|o| o.value).collect(),
-                obs_times: self.observations.iter().map(|o| o.time).collect(),
-            }).collect(),
-            self.compiled.clone(),
-        ).unwrap_or_else(|e| {
-            eprintln!("error: observation model construction failed: {:?}", e);
+                // Authoritative per-grid-time cells (holes = `None`). A hole
+                // contributes no likelihood term but its obs time stays in the
+                // grid, so the per-obs-index incidence reset still fires at it.
+                observations: s.cells.clone(),
+                // Multi-cadence (§3.3): feed each stream its OWN schedule, NOT
+                // the union (`self.observations`). `bind` re-merges these to the
+                // union and records per-stream `at_union` membership; `s.cells`
+                // is already this stream's own cells (cells.len() == this
+                // stream's obs_times.len()). The union `bind` produces equals
+                // `self.observations` (both sorted-unique over the same
+                // per-stream times).
+                obs_times: s.data.iter().map(|o| o.time).collect(),
+                aux: s.aux.clone(),
+            }).collect();
+        let (bound, _report) = sim::inference::BoundObs::bind(specs).unwrap_or_else(|report| {
+            eprintln!("error: observation data invalid:\n{}", report.render());
             std::process::exit(1);
-        })
+        });
+        sim::inference::MultiStreamObsModel::new(bound, self.compiled.clone())
+            .unwrap_or_else(|e| {
+                eprintln!("error: observation model construction failed: {:?}", e);
+                std::process::exit(1);
+            })
     }
     pub fn smc_config(&self) -> sim::inference::traits::SMCConfig {
         sim::inference::traits::SMCConfig {
@@ -563,6 +816,10 @@ pub fn compute_ode_loglik(
         .map(|s| s.flows.counts.len())
         .unwrap_or(0);
     let mut cum_flows: Vec<u64> = vec![0; n_transitions];
+    // Phase 2a: per-Interval-stream persistent bin, folded once per obs interval
+    // and reset per-stream — ODE-inference is the seventh reset site and scores
+    // through the SAME seam as the particle filters.
+    let mut acc: Vec<u64> = vec![0; obs_model.n_interval_streams()];
     let mut next_obs_idx = 0;
     let n_obs = obs_times.len();
     let mut total_ll = 0.0;
@@ -582,8 +839,11 @@ pub fn compute_ode_loglik(
         while next_obs_idx < n_obs
             && (snap.t - obs_times[next_obs_idx]).abs() < 1e-9
         {
+            // FOLD (Phase 2a): close this interval's per-transition `cum_flows`
+            // into the per-stream `acc` BEFORE scoring; score reads `acc`.
+            obs_model.fold_into_acc(&cum_flows, &mut acc);
             let ll = obs_model.log_likelihood_from_flows_and_counts(
-                &cum_flows,
+                &acc,
                 &snap.int_state.counts,
                 next_obs_idx,
                 params,
@@ -592,9 +852,11 @@ pub fn compute_ode_loglik(
                 return Ok(f64::NEG_INFINITY);
             }
             total_ll += ll;
-            // Reset cumulative for the next obs interval. After reset,
-            // subsequent snapshots' flows accumulate fresh.
+            // Reset for the next obs interval. `cum_flows` blanket-zeroed
+            // (unchanged); the per-stream `acc` bins per-stream — only Interval
+            // streams scheduled at THIS union index zero.
             cum_flows.fill(0);
+            obs_model.reset_due_acc(next_obs_idx, &mut acc);
             next_obs_idx += 1;
         }
 
@@ -794,7 +1056,7 @@ pub fn run_quick_pfilter_with_dt(
     // gh#53: Process must be built with the same dt the SMCConfig
     // will use, so its internal fire_steps resolves correctly for
     // dt-override calls (gh#52 Richardson ladder).
-    let process = config.build_process_with_dt(dt);
+    let process = config.build_process();
     let obs_model = config.build_obs_model();
     let smc_config = sim::inference::traits::SMCConfig {
         n_particles,
@@ -830,7 +1092,7 @@ pub fn run_quick_pfilter_with_dt_typed(
     seed: u64,
 ) -> Result<f64, sim::error::SimError> {
     let dt = dt_override.unwrap_or(config.if2_config.dt);
-    let process = config.build_process_with_dt(dt);
+    let process = config.build_process();
     let obs_model = config.build_obs_model();
     let smc_config = sim::inference::traits::SMCConfig {
         n_particles,
@@ -1138,29 +1400,276 @@ pub fn auto_rw_sd_from_value(_current_value: f64, lower: f64, upper: f64, transf
 }
 
 /// Load observations from TSV, validating time alignment with dt.
+///
+/// Sparse/holes: the value column may contain the missing-value token `NA`,
+/// loaded as a HOLE — its time stays in the grid (so the incidence accumulator
+/// still resets at its index) but it carries no value. Returns both the
+/// authoritative per-grid-time cells (`None` = hole) and a dense placeholder
+/// view of `Observation`s (a hole shows as value 0) for the diagnostics and
+/// time-axis callers, where a hole's value is not load-bearing. The cells are
+/// threaded into the obs model so the already hole-correct scoring seam handles
+/// missing values; the placeholder view is never scored.
 fn load_observations(
     path: &str,
-    column: &str,
+    obs_model: &ir::observation::ObservationModel,
+    siblings: &[&ir::observation::ObservationModel],
     dt: f64,
     opts: &crate::caltime_load::TimeOpts,
-) -> Result<Vec<Observation>, String> {
-    let observations = crate::pfilter::load_data_tsv_column(path, column, opts)?;
-    // Validate time alignment
-    for obs in &observations {
-        let remainder = obs.time % dt;
+) -> Result<
+    (Vec<Observation>, Vec<Option<sim::inference::ObsCell>>, Vec<Vec<(String, f64)>>),
+    String,
+> {
+    // DISPATCH: a stratified (long-form) stream — its `columns { }` declares at
+    // least one `: dim` column — loads via the long-form router (routes file
+    // rows to the matching stratum leaf BY NAME, builds the partial-coverage
+    // union axis). An unstratified stream keeps the existing wide/by-name path.
+    let (times, cells, mut aux) = if crate::pfilter::is_long_form_stream(obs_model) {
+        crate::pfilter::load_long_form_stream(path, obs_model, siblings, opts)?
+    } else {
+        // Bind the file columns BY NAME: the declared `Time`-role column is the
+        // time axis (the by-name-time flip — no positional "column 0 is time"),
+        // and `scored` is the value column.
+        let time_col = crate::pfilter::obs_time_column(obs_model)?;
+        let value_col = &obs_model.scored;
+        let (times, cells) =
+            crate::pfilter::load_data_tsv_column_cells(path, time_col, value_col, opts)?;
+        // Per-observation auxiliary data (binomial `n = tested`, person-time
+        // offset; §3, §6.1). A row where the scored value OR any referenced aux
+        // is `NA` is a hole (present-together-or-hole).
+        let aux_cols = crate::pfilter::stream_aux_columns(obs_model);
+        let (aux, force_hole) =
+            crate::pfilter::load_stream_aux(path, &aux_cols, cells.len())?;
+        let mut cells = cells;
+        for r in 0..cells.len() {
+            if force_hole[r] {
+                cells[r] = None;
+            }
+        }
+        (times, cells, aux)
+    };
+    for r in 0..cells.len() {
+        if cells[r].is_none() {
+            aux[r].clear();
+        }
+    }
+    // Validate time alignment (holes keep their time, so this is unaffected by
+    // missing values).
+    for &time in &times {
+        let remainder = time % dt;
         let aligned = remainder.abs() < 1e-9 || (dt - remainder.abs()).abs() < 1e-9;
         if !aligned {
             return Err(format!(
                 "observation at t={} is not a multiple of dt={}.\n\
                  The chain-binomial state only exists at step boundaries.\n\
                  Adjust observation times or dt to align.",
-                obs.time, dt
+                time, dt
             ));
         }
     }
-    Ok(observations.into_iter().map(|o| Observation { time: o.time, value: o.value }).collect())
+    // Dense placeholder view (holes → 0.0) for diagnostics/time.
+    let observations: Vec<Observation> = times.iter().zip(cells.iter())
+        .map(|(&time, cell)| Observation {
+            time,
+            value: match cell {
+                Some(sim::inference::ObsCell::Scalar(v)) => *v,
+                None => 0.0,
+            },
+        })
+        .collect();
+    Ok((observations, cells, aux))
 }
 
+
+/// Resolve a single conditioning spec string to a concrete `cond_from` in model
+/// time, then validate it against this stream's conditioning window
+/// `[t_start, first_obs_s)`. The per-stream selection (which spec applies to
+/// which stream) happens at the call site via
+/// [`crate::fit::config_v2::ConditionFrom::resolve_for`]; this resolves the one
+/// spec it is handed.
+///
+/// Returns:
+/// - `Ok(None)`  — no conditioning (the value resolved to `t_start`, the
+///   no-op case). The caller inserts NO leading hole and the stream is
+///   bit-identical to an unconditioned one.
+/// - `Ok(Some(c))` — insert a leading reset-only hole at model time `c`,
+///   with `t_start < c < first_obs_s`.
+/// - `Err(_)`    — a located error: `c < t_start`, `c >= first_obs_s`, an
+///   unparseable form, a date with no model origin, or an off-grid `c`.
+///
+/// Accepted forms:
+/// - a bare model-time number (`"14"`) — used verbatim;
+/// - `"date(\"YYYY-MM-DD\")"` / `"YYYY-MM-DD"` — absolute calendar date,
+///   resolved via `origin` + `time_unit` (`date_to_internal`);
+/// - `"first_obs - <N> <unit>"` — `first_obs_time − N·unit`.
+///
+/// `dt`-grid alignment is checked here so a mis-specified boundary fails at
+/// build time rather than tripping the chain-binomial step-boundary invariant
+/// downstream.
+pub fn resolve_condition_from(
+    spec: &str,
+    first_obs_time: f64,
+    t_start: f64,
+    origin: Option<&str>,
+    time_unit: &str,
+    dt: f64,
+) -> Result<Option<f64>, String> {
+    let cond_from = parse_condition_spec(spec, first_obs_time, origin, time_unit)?;
+
+    // No-op case: cond_from == t_start ⇒ no conditioning, no hole. Treat a
+    // float-noise-equal value as exactly t_start so the bit-identical
+    // guarantee survives a date that rounds onto the origin.
+    if (cond_from - t_start).abs() < 1e-9 {
+        return Ok(None);
+    }
+
+    if cond_from < t_start {
+        return Err(format!(
+            "condition_from resolves to t = {cond_from}, which is before the \
+             model start t_start = {t_start}. The conditioning window must lie \
+             within [t_start, first_obs); pick a boundary at or after t_start."
+        ));
+    }
+    if cond_from >= first_obs_time - 1e-9 {
+        return Err(format!(
+            "condition_from resolves to t = {cond_from}, which is at or after \
+             the first observation (t = {first_obs_time}) — nothing to \
+             condition on. The conditioning window must lie strictly before \
+             the first observation: t_start ≤ condition_from < first_obs."
+        ));
+    }
+
+    // Must land on the dt grid (the chain-binomial state only exists at step
+    // boundaries; the inserted hole becomes an obs-grid time scored/reset
+    // there). Same alignment rule the real observations are held to.
+    let remainder = (cond_from - t_start).rem_euclid(dt);
+    let aligned = remainder.abs() < 1e-9 || (dt - remainder).abs() < 1e-9;
+    if !aligned {
+        return Err(format!(
+            "condition_from resolves to t = {cond_from}, which is not on the \
+             dt = {dt} grid relative to t_start = {t_start}. The conditioning \
+             boundary must align to a step boundary; adjust condition_from or dt."
+        ));
+    }
+
+    Ok(Some(cond_from))
+}
+
+/// Parse a string-form [`ConditionFrom::Spec`] to model time.
+fn parse_condition_spec(
+    raw: &str,
+    first_obs_time: f64,
+    origin: Option<&str>,
+    time_unit: &str,
+) -> Result<f64, String> {
+    let s = raw.trim();
+
+    // Bare model-time number: "14" / "14.0" → used verbatim as `cond_from`.
+    // (The CLI and the `[condition_from]` table both carry strings now, so an
+    // absolute model-time boundary arrives as a numeric string.)
+    if let Ok(v) = s.parse::<f64>() {
+        return Ok(v);
+    }
+
+    // Relative form: "first_obs - <N> <unit>".
+    if let Some(rest) = s.strip_prefix("first_obs") {
+        let rest = rest.trim();
+        let after = rest.strip_prefix('-').ok_or_else(|| format!(
+            "condition_from = \"{raw}\": the relative form must subtract from \
+             first_obs, e.g. \"first_obs - 1 week\" (only `-` is supported)."
+        ))?;
+        let mut it = after.split_whitespace();
+        let n_tok = it.next().ok_or_else(|| format!(
+            "condition_from = \"{raw}\": expected \"first_obs - <N> <unit>\", \
+             e.g. \"first_obs - 1 week\"."
+        ))?;
+        let unit_tok = it.next().ok_or_else(|| format!(
+            "condition_from = \"{raw}\": missing unit; expected \
+             \"first_obs - <N> <unit>\", e.g. \"first_obs - 7 days\"."
+        ))?;
+        if it.next().is_some() {
+            return Err(format!(
+                "condition_from = \"{raw}\": trailing tokens after the unit; \
+                 expected exactly \"first_obs - <N> <unit>\"."
+            ));
+        }
+        let n: f64 = n_tok.parse().map_err(|_| format!(
+            "condition_from = \"{raw}\": '{n_tok}' is not a number."
+        ))?;
+        if n < 0.0 {
+            return Err(format!(
+                "condition_from = \"{raw}\": N must be non-negative (the form \
+                 already subtracts); got {n}."
+            ));
+        }
+        // Convert N <unit> into model-time units: N · days_per_unit(unit) /
+        // days_per_unit(model_time_unit). When the spec unit equals the model
+        // time unit this is just N.
+        let unit = canonical_duration_unit(unit_tok);
+        let span_days = n * ir::caltime::days_per_unit(&unit)
+            .map_err(|_| format!(
+                "condition_from = \"{raw}\": unknown unit '{unit_tok}'. \
+                 Use days / weeks / months / years."
+            ))?;
+        let model_unit_days = ir::caltime::days_per_unit(time_unit)
+            .map_err(|e| format!("condition_from: model time_unit: {e}"))?;
+        let offset = span_days / model_unit_days;
+        return Ok(first_obs_time - offset);
+    }
+
+    // Absolute date form: date("YYYY-MM-DD") or a bare YYYY-MM-DD.
+    let date_str = if let Some(inner) = s.strip_prefix("date(") {
+        inner.strip_suffix(')')
+            .map(|x| x.trim().trim_matches('"').to_string())
+            .ok_or_else(|| format!(
+                "condition_from = \"{raw}\": malformed date(...) — expected \
+                 date(\"YYYY-MM-DD\")."
+            ))?
+    } else {
+        s.to_string()
+    };
+
+    let origin = origin.ok_or_else(|| format!(
+        "condition_from = \"{raw}\" is a calendar date, but the model declares \
+         no `origin = date(\"…\")`. Either add an origin to the model or use a \
+         numeric model-time value for condition_from."
+    ))?;
+    ir::caltime::date_to_internal(origin, &date_str, time_unit).map_err(|e| format!(
+        "condition_from = \"{raw}\": cannot resolve date '{date_str}' against \
+         origin '{origin}' (time_unit = {time_unit}): {e:?}"
+    ))
+}
+
+/// Normalize a user-written duration unit token to the canonical
+/// [`ir::caltime::days_per_unit`] spelling, accepting common singular/plural
+/// abbreviations so `"1 week"` and `"7 days"` both work.
+fn canonical_duration_unit(tok: &str) -> String {
+    match tok.trim().to_lowercase().as_str() {
+        "day" | "days" | "d" => "days",
+        "week" | "weeks" | "w" => "weeks",
+        "month" | "months" | "mo" => "months",
+        "year" | "years" | "yr" | "y" => "years",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Format a model-time span for a diagnostic: drop the trailing `.0` on a whole
+/// number (`351.0` → `"351"`, `13.5` → `"13.5"`) so the W329 per-stream message
+/// reads cleanly.
+fn fmt_span(x: f64) -> String {
+    if (x - x.round()).abs() < 1e-9 {
+        format!("{}", x.round() as i64)
+    } else {
+        format!("{x}")
+    }
+}
+
+/// Singularize the model `time_unit` for the noun in the W329 per-stream
+/// message (`"days"` → `"day"`). A unit that does not end in `s` is returned
+/// unchanged.
+fn cadence_word(time_unit: &str) -> &str {
+    time_unit.strip_suffix('s').unwrap_or(time_unit)
+}
 
 /// Run one IF2 chain (called from thread::scope).
 fn run_one_chain(
@@ -3136,6 +3645,27 @@ dt = 1.0
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// ic_free=true WITH ivp but the FIRST observation is a hole (`NA`) →
+    /// build errors: there is no y₁ to condition on, so ic_free would silently
+    /// degenerate to no initial-state conditioning. The ivp precondition is
+    /// satisfied here, so only the missing-y₁ guard can fire — isolating it.
+    #[test]
+    fn ic_free_with_missing_first_obs_is_rejected() {
+        let dir = ic_free_test_dir("first_na");
+        let fit = ic_free_fixture(&dir, true, true); // ic_free + ivp (passes ivp gate)
+        // Overwrite the data so the FIRST observation (t=7) is a hole. build()
+        // loads the data fresh, so it sees this holed series.
+        std::fs::write(dir.join("obs.tsv"),
+            "time\tweekly_cases\n7\tNA\n14\t2\n21\t3\n28\t4\n35\t5\n").unwrap();
+        let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+            Ok(_) => panic!("ic_free=true + a missing first observation must error"),
+            Err(e) => e,
+        };
+        assert!(err.contains("nothing to condition on"),
+            "error must name the missing-y₁ cause, not the ivp precondition: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// ic_free absent (default false) → build succeeds regardless of
     /// ivp presence, and the SMCConfig view reports ic_free=false.
     /// Regression guard: the new flag must default to OFF so no
@@ -3814,5 +4344,828 @@ dt = 1.0
         assert!(d.rhat.is_nan() && d.ess_total.is_nan() && d.ess_per_chain.is_empty(),
             "single chain → all NaN/empty; got ({}, {}, {:?})",
             d.rhat, d.ess_total, d.ess_per_chain);
+    }
+
+    // ── ODE incidence across a HOLE: the bin reset must still fire ──────────
+    //
+    // `compute_ode_loglik` walks ODE snapshots, accumulates `cum_flows`, and
+    // resets at each obs time. A HOLE keeps its time in the grid, so the reset
+    // SHOULD fire across it (fixed-bin / pomp `accumvars` semantics): a missing
+    // week still closes its weekly incidence bin — it must NOT merge two weeks
+    // of incidence into the next observed bin. This mirrors the stochastic
+    // `sparse_holes_reset.rs` test for the ODE-MLE loglik path.
+    //
+    // Probe: a DETERMINISTIC inflow `--> R @ K`, observed as `incidence` with a
+    // Normal likelihood `mean = projected`, on a weekly grid 7/14/21/28 with a
+    // HOLE at t=14. With K=10/day the per-week tally is 70. We probe the t=21
+    // bin (the week AFTER the hole) by sweeping its datum and locating the
+    // likelihood peak (the data value the model's projection most prefers):
+    //   * reset fired at the hole  → projected@21 = 70  (one week)  → peak at 70
+    //   * reset SKIPPED (merge)     → projected@21 = 140 (two weeks) → peak at 140
+    // The Normal observation likelihood is the He-et-al-2010 *discretized* PMF
+    // (a ±0.5 continuity correction, NOT the continuous PDF), so we assert the
+    // peak LOCATION (70, not 140) rather than a closed-form gap. ll(70) beating
+    // both ll(71) and ll(140) pins projected@21 = one week ⇒ the reset fired.
+    #[test]
+    fn ode_incidence_reset_fires_across_hole() {
+        use std::collections::HashMap;
+        use ir::{
+            expr::{ConstExpr, Expr, ProjectedExpr},
+            model::{
+                Compartment, CompartmentKind, InitialConditions, OutputConfig,
+                OutputSchedule, RegularOutputSchedule, SimulationConfig,
+            },
+            observation::{
+                Likelihood, ObservationModel as IrObs, ObservationSchedule,
+                NormalLikelihood, Projection,
+            },
+            parameter::{ParamValue, Parameter},
+            transition::{DrawMethod, StoichiometryEntry, Transition},
+            Model,
+        };
+        use sim::inference::{
+            BoundObs, MultiStreamObsModel, ObsCell,
+            multi_stream_obs::{StreamProjection, StreamSpec},
+        };
+
+        let k = 10.0; // deterministic inflow per day → 70/week at the weekly grid
+        let weekly = 7.0 * k; // 70
+        let sd = 5.0; // tight: a 70-unit residual (the merge error) is 14 sd → huge
+
+        // Daily output schedule so a snapshot lands on every obs time
+        // (compute_ode_loglik requires a snapshot at each obs time).
+        let m = Model {
+            name: "ode_hole_reset".into(),
+            version: "0.3".into(),
+            time_unit: "days".into(),
+            description: None,
+            origin: None, origin_rata_die: None,
+            compartments: vec![
+                Compartment { name: "R".into(), kind: CompartmentKind::Integer },
+            ],
+            transitions: vec![
+                Transition {
+                    name: "inflow".into(),
+                    stoichiometry: vec![StoichiometryEntry("R".into(), 1)],
+                    rate: Expr::Const(ConstExpr { value: k }),
+                    metadata: None,
+                    draw_method: DrawMethod::Deterministic,
+                    rate_grad: Default::default(),
+                    lineage: None,
+                },
+            ],
+            ode_equations: vec![],
+            time_functions: vec![],
+            tables: vec![],
+            interventions: vec![],
+            observations: vec![
+                IrObs {
+                    name: "cases".into(),
+                    source: "cases".into(),
+                    columns: vec![
+                        ir::observation::ObsColumn { name: "time".into(), role: ir::observation::ColumnRole::Time },
+                        ir::observation::ObsColumn { name: "cases".into(), role: ir::observation::ColumnRole::Value(ir::parameter::ParamKind::Count) },
+                    ],
+                    scored: "cases".into(),
+                    emit_schedule: Some(ObservationSchedule::AtTimes(vec![])),
+                    stratum: vec![],
+                    projection: Projection::CumulativeFlow("inflow".into()),
+                    likelihood: Likelihood::Normal(NormalLikelihood {
+                        mean: Expr::Projected(ProjectedExpr { projected: () }),
+                        sd: Expr::Const(ConstExpr { value: sd }),
+                    }),
+                },
+            ],
+            bindings: vec![],
+            parameters: vec![
+                Parameter { name: "dummy".into(), value: ParamValue::Fixed { value: 0.0 }, param_kind: None, param_dim: None },
+            ],
+            initial_conditions: InitialConditions::Explicit({
+                let mut h = HashMap::new();
+                h.insert("R".into(), 0.0); h
+            }),
+            output: OutputConfig {
+                // Daily snapshots 0..=28 so 7/14/21/28 each get one.
+                times: OutputSchedule::Regular(RegularOutputSchedule {
+                    start: 0.0, step: 1.0, end: 28.0,
+                }),
+                format: "tsv".into(), trajectory: true, observations: false,
+            },
+            simulation: SimulationConfig {
+                t_start: 0.0, t_end: 28.0, time_semantics: "continuous".into(),
+                dt: Some(1.0), rng_seed: Some(1),
+            },
+            presets: vec![],
+            model_structure: None, balance: None, identity_tracked_compartments: vec![],
+        };
+        let compiled = Arc::new(CompiledModel::new(m).unwrap());
+        let params = compiled.default_params.clone();
+        let dt = 1.0;
+
+        let times = vec![7.0, 14.0, 21.0, 28.0];
+        let inflow_idx = compiled.model.transitions.iter()
+            .position(|t| t.name == "inflow").unwrap();
+
+        // Build an obs model with a hole at t=14 and the t=21 datum set to
+        // `data21`. Returns the ODE loglik.
+        let score = |data21: f64| -> f64 {
+            let cells = vec![
+                Some(ObsCell::Scalar(weekly)), // t=7
+                None,                          // t=14 HOLE
+                Some(ObsCell::Scalar(data21)), // t=21 (the probe)
+                Some(ObsCell::Scalar(weekly)), // t=28
+            ];
+            let spec = StreamSpec::dense(
+                StreamProjection::FlowSum(vec![inflow_idx]),
+                compiled.model.observations[0].clone(),
+                cells,
+                times.clone(),
+            );
+            let obs_model = MultiStreamObsModel::new(
+                BoundObs::bind(vec![spec]).unwrap().0, compiled.clone()).unwrap();
+            super::compute_ode_loglik(&compiled, &obs_model, &times, dt, &params).unwrap()
+        };
+
+        let ll_one_week  = score(weekly);        // data@21 = 70  (reset fired)
+        let ll_near_one  = score(weekly + 1.0);  // data@21 = 71  (just off peak)
+        let ll_two_weeks = score(2.0 * weekly);  // data@21 = 140 (merge)
+
+        assert!(ll_one_week.is_finite() && ll_two_weeks.is_finite()
+                && ll_near_one.is_finite(),
+            "ODE loglik across a hole must be finite: one_week={ll_one_week}, \
+             near={ll_near_one}, two_weeks={ll_two_weeks}");
+
+        // Peak LOCATION: the t=21 datum the projection most prefers is the
+        // projected value itself. If the reset fired at the hole, projected = 70
+        // (one week) — so ll(70) is the maximum and beats BOTH a neighbour (71)
+        // and the merge value (140). If the reset had been (wrongly) skipped,
+        // projected = 140 and ll(140) would be the maximum instead.
+        assert!(ll_one_week > ll_near_one,
+            "ll(70) must beat ll(71): the t=21 likelihood peak sits at the \
+             projected value; projected = one week = {weekly}. Got ll(70)={ll_one_week} \
+             vs ll(71)={ll_near_one}.");
+        assert!(ll_one_week > ll_two_weeks,
+            "post-hole bin must tally ONE week of incidence ({weekly}), not two \
+             ({}). ll(70) must beat ll(140) — got ll(70)={ll_one_week} vs \
+             ll(140)={ll_two_weeks}. ll(140) ≥ ll(70) would mean the hole \
+             suppressed the incidence-bin reset (merged two weeks into one bin).",
+            2.0 * weekly);
+        // The merge value is far in the tail of the one-week-centred density:
+        // the gap must be large (not a numerical wobble). With sd = {sd} the
+        // residual at 140 is 70 = 14·sd — many nats below the peak.
+        assert!(ll_one_week - ll_two_weeks > 10.0,
+            "the merge datum (140) must score MUCH worse than one week (70) — a \
+             large gap is only possible if projected ≈ 70. Got gap = {}",
+            ll_one_week - ll_two_weeks);
+    }
+
+    // ── gh#134: burn-in / conditioning window (`condition_from`) ─────────
+    //
+    // Two layers of tests:
+    //   (1) `resolve_condition_from` — pure resolution + validation of the
+    //       surface forms (absolute number, date, relative offset) and the
+    //       window-bounds errors. No model load.
+    //   (2) `FitRunConfig::build` end-to-end — the leading reset-only hole is
+    //       prepended to the shared obs grid + every stream's cells (unset is
+    //       bit-identical), and `condition_from` + `ic_free` errors loudly.
+
+    mod condition_from_resolve {
+        use crate::fit::runner::resolve_condition_from;
+
+        // first_obs = 7, t_start = 0, unit = days, dt = 1. `resolve_condition_from`
+        // now takes a single spec string (the per-stream selection happens at the
+        // call site).
+
+        #[test]
+        fn absolute_number_interior_resolves_verbatim() {
+            // c = 3 ∈ (0, 7) → Some(3.0).
+            let c = resolve_condition_from("3", 7.0, 0.0, None, "days", 1.0).unwrap();
+            assert_eq!(c, Some(3.0));
+            // A non-integer numeric string parses too.
+            let c = resolve_condition_from("3.0", 7.0, 0.0, None, "days", 1.0).unwrap();
+            assert_eq!(c, Some(3.0));
+        }
+
+        #[test]
+        fn relative_first_obs_minus_one_week() {
+            // first_obs - 1 week = 7 - 7 = 0 = t_start → NO conditioning (None).
+            let c = resolve_condition_from(
+                "first_obs - 1 week", 7.0, 0.0, None, "days", 1.0).unwrap();
+            assert_eq!(c, None, "first_obs - 1 week == t_start ⇒ no-op (None)");
+
+            // first_obs - 4 days = 7 - 4 = 3 ∈ (0,7) → Some(3.0).
+            let c = resolve_condition_from(
+                "first_obs - 4 days", 7.0, 0.0, None, "days", 1.0).unwrap();
+            assert_eq!(c, Some(3.0));
+        }
+
+        #[test]
+        fn relative_unit_conversion_into_model_units() {
+            // Model time_unit = weeks; first_obs = 5 (weeks); "first_obs - 7 days"
+            // = 5 weeks − (7 days / 7 days-per-week) = 5 − 1 = 4 weeks.
+            let c = resolve_condition_from(
+                "first_obs - 7 days", 5.0, 0.0, None, "weeks", 1.0).unwrap();
+            assert_eq!(c, Some(4.0));
+        }
+
+        #[test]
+        fn absolute_date_resolves_via_origin() {
+            // origin 2020-01-01, unit days. date("2020-01-04") → t = 3.
+            let c = resolve_condition_from(
+                "date(\"2020-01-04\")", 7.0, 0.0, Some("2020-01-01"), "days", 1.0).unwrap();
+            assert_eq!(c, Some(3.0));
+
+            // Bare ISO date is also accepted.
+            let c2 = resolve_condition_from(
+                "2020-01-04", 7.0, 0.0, Some("2020-01-01"), "days", 1.0).unwrap();
+            assert_eq!(c2, Some(3.0));
+        }
+
+        #[test]
+        fn date_without_origin_errors() {
+            let err = resolve_condition_from(
+                "2020-01-04", 7.0, 0.0, None, "days", 1.0).unwrap_err();
+            assert!(err.contains("origin"), "must name the missing origin: {err}");
+        }
+
+        #[test]
+        fn equal_to_t_start_is_noop() {
+            let c = resolve_condition_from("0", 7.0, 0.0, None, "days", 1.0).unwrap();
+            assert_eq!(c, None, "cond_from == t_start ⇒ no conditioning (None)");
+        }
+
+        #[test]
+        fn before_t_start_errors() {
+            let err = resolve_condition_from("-2", 7.0, 0.0, None, "days", 1.0).unwrap_err();
+            assert!(err.contains("before the model start") || err.contains("t_start"),
+                "must flag cond_from < t_start: {err}");
+        }
+
+        #[test]
+        fn at_or_after_first_obs_errors() {
+            // Exactly at first_obs.
+            let err = resolve_condition_from("7", 7.0, 0.0, None, "days", 1.0).unwrap_err();
+            assert!(err.contains("nothing to condition on") || err.contains("first observation"),
+                "cond_from == first_obs must error: {err}");
+            // After first_obs.
+            let err2 = resolve_condition_from("9", 7.0, 0.0, None, "days", 1.0).unwrap_err();
+            assert!(err2.contains("nothing to condition on") || err2.contains("first observation"),
+                "cond_from > first_obs must error: {err2}");
+        }
+
+        #[test]
+        fn off_grid_errors() {
+            // 3.5 is not a multiple of dt = 1 relative to t_start = 0.
+            let err = resolve_condition_from("3.5", 7.0, 0.0, None, "days", 1.0).unwrap_err();
+            assert!(err.contains("grid"), "off-grid cond_from must error: {err}");
+        }
+    }
+
+    /// `ConditionFrom` surface parsing + per-stream resolution (multi-cadence
+    /// Phase 3): the `All("...")` form, the `[condition_from]` table with
+    /// `default` + shadows, an unknown-label shadow (error), and a `default`-named
+    /// stream (error).
+    mod condition_from_parsing {
+        use crate::fit::config_v2::ConditionFrom;
+
+        /// Parse a top-level `condition_from` value out of a tiny TOML doc.
+        fn parse(toml_src: &str) -> ConditionFrom {
+            #[derive(serde::Deserialize)]
+            struct Doc {
+                condition_from: ConditionFrom,
+            }
+            let d: Doc = toml::from_str(toml_src).expect("must parse");
+            d.condition_from
+        }
+
+        #[test]
+        fn all_form_is_the_default_for_every_stream() {
+            // A bare string deserializes to `All` and applies to every label.
+            let c = parse("condition_from = \"first_obs - 1 week\"\n");
+            assert_eq!(c, ConditionFrom::All("first_obs - 1 week".into()));
+            assert_eq!(c.resolve_for("es"), Some("first_obs - 1 week"));
+            assert_eq!(c.resolve_for("afp"), Some("first_obs - 1 week"));
+            assert_eq!(c.resolve_for("anything"), Some("first_obs - 1 week"));
+        }
+
+        #[test]
+        fn per_stream_default_and_shadows() {
+            // A `[condition_from]` table deserializes to `PerStream`. `default` is
+            // the all-streams default; other keys shadow individual streams.
+            let c = parse(
+                "[condition_from]\n\
+                 default = \"first_obs - 1 week\"\n\
+                 es      = \"first_obs - 2 weeks\"\n",
+            );
+            // `es` gets its shadow; an unshadowed stream falls to `default`.
+            assert_eq!(c.resolve_for("es"), Some("first_obs - 2 weeks"));
+            assert_eq!(c.resolve_for("afp"), Some("first_obs - 1 week"));
+        }
+
+        #[test]
+        fn per_stream_without_default_resolves_to_none_for_unshadowed() {
+            // No `default` → an unshadowed stream resolves to NO conditioning.
+            let c = parse(
+                "[condition_from]\n\
+                 es = \"first_obs - 2 weeks\"\n",
+            );
+            assert_eq!(c.resolve_for("es"), Some("first_obs - 2 weeks"));
+            assert_eq!(c.resolve_for("afp"), None,
+                "no shadow + no default ⇒ no conditioning for that stream");
+        }
+
+        #[test]
+        fn unknown_shadow_label_is_rejected() {
+            // `ees` is a typo: not one of the valid labels {afp, es}.
+            let c = parse(
+                "[condition_from]\n\
+                 ees = \"first_obs - 2 weeks\"\n",
+            );
+            let valid = vec!["afp".to_string(), "es".to_string()];
+            let err = c.validate_labels(&valid).unwrap_err();
+            assert!(err.contains("'ees'"), "must name the bad label: {err}");
+            assert!(err.contains("afp") && err.contains("es"),
+                "must list the valid labels: {err}");
+        }
+
+        #[test]
+        fn stream_named_default_collides_with_reserved_key() {
+            // A real stream labelled `default` is indistinguishable from the
+            // reserved all-streams-default key → hard error.
+            let c = parse("[condition_from]\nes = \"first_obs - 2 weeks\"\n");
+            let valid = vec!["default".to_string(), "es".to_string()];
+            let err = c.validate_labels(&valid).unwrap_err();
+            assert!(err.contains("default") && err.contains("collides"),
+                "must flag the reserved-key collision: {err}");
+        }
+
+        #[test]
+        fn all_form_has_no_labels_to_validate() {
+            // `All(_)` carries no per-stream keys, so validation always passes.
+            let c = ConditionFrom::All("first_obs - 1 week".into());
+            assert!(c.validate_labels(&["afp".to_string()]).is_ok());
+            // And `default` as a stream label is fine under `All` (no table).
+            assert!(c.validate_labels(&["default".to_string()]).is_ok());
+        }
+    }
+
+    mod condition_from_build {
+        use crate::fit::config_v2::FitConfigV2;
+        use crate::fit::runner::FitRunConfig;
+
+        /// Minimal v2 fit.toml against the seir_observations golden IR, with an
+        /// optional top-level `condition_from` line and toggleable `ic_free`.
+        /// seir: time_unit=days, t_start=0, weekly_cases at t=7,14,…; dt=1.
+        fn fixture(
+            dir: &std::path::Path,
+            condition_from: Option<&str>,
+            ic_free: bool,
+            ivp: bool,
+        ) -> FitConfigV2 {
+            // Default: weekly obs from t=7 — first window is one cadence, so the
+            // W329 first-window guard never fires.
+            fixture_with_obs(dir, condition_from, ic_free, ivp,
+                "time\tweekly_cases\n7\t1\n14\t2\n21\t3\n28\t4\n35\t5\n")
+        }
+
+        /// Like [`fixture`] but with caller-supplied observation TSV — lets a
+        /// test set a wide leading gap (first_obs ≫ t_start) to exercise the
+        /// W329 first-window guard (§6.8).
+        fn fixture_with_obs(
+            dir: &std::path::Path,
+            condition_from: Option<&str>,
+            ic_free: bool,
+            ivp: bool,
+            obs_tsv: &str,
+        ) -> FitConfigV2 {
+            let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+            let ir_path = format!(
+                "{}/../../../ocaml/golden/seir_observations.ir.json", manifest);
+            let data_path = dir.join("obs.tsv");
+            std::fs::write(&data_path, obs_tsv).unwrap();
+            let cond_line = condition_from
+                .map(|c| format!("condition_from = {c}\n"))
+                .unwrap_or_default();
+            let ivp_line = if ivp { "ivp    = true\n" } else { "" };
+            let fit_toml_path = dir.join("fit.toml");
+            let toml_src = format!(r#"
+output_dir = "{}"
+ic_free = {ic_free}
+{cond_line}
+[model]
+camdl = "{ir_path}"
+
+[data.observations]
+weekly_cases = "{}"
+
+[estimate.I0]
+bounds = [1, 1000]
+start  = 5
+{ivp_line}
+[fixed]
+sigma    = 0.25
+gamma    = 0.3
+rho      = 0.5
+k        = 10.0
+p_detect = 0.5
+N0       = 1000
+beta     = 0.1
+
+[stages.scout]
+algorithm  = "if2"
+backend    = "chain_binomial"
+chains     = 1
+particles  = 100
+iterations = 1
+cooling    = 0.5
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+"#, dir.display(), data_path.display());
+            std::fs::write(&fit_toml_path, toml_src).unwrap();
+            FitConfigV2::load(&fit_toml_path.to_string_lossy()).expect("fit.toml parse")
+        }
+
+        fn test_dir(tag: &str) -> std::path::PathBuf {
+            let d = std::env::temp_dir().join(format!(
+                "camdl_condfrom_{}_{}_{}", tag, std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        /// (a) A `condition_from` interior to (t_start, first_obs) prepends a
+        /// LEADING reset-only hole to the shared obs grid: observations[0] is
+        /// cond_from with a `None` cell in every stream, and the first REAL obs
+        /// (t=7) shifts to index 1 — so the first scored bin is (cond_from, 7].
+        #[test]
+        fn interior_condition_from_inserts_leading_hole() {
+            let dir = test_dir("insert");
+            let fit = fixture(&dir, Some("\"3.0\""), false, false);
+            let config = FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("interior condition_from must build");
+
+            // Canonical times: leading hole at 3.0, then the original grid.
+            assert_eq!(config.observations[0].time, 3.0,
+                "leading hole must be prepended at cond_from = 3.0");
+            assert_eq!(config.observations[1].time, 7.0,
+                "the first REAL observation must shift to index 1");
+            assert_eq!(config.observations.len(), 6, "5 real obs + 1 leading hole");
+
+            // Every stream: a None cell at index 0; the original first value at 1.
+            for s in &config.streams {
+                assert!(s.cells[0].is_none(),
+                    "stream '{}' cell 0 must be a hole (None) at cond_from", s.name);
+                assert!(s.cells[1].is_some(),
+                    "stream '{}' cell 1 must be the first real observation", s.name);
+                assert_eq!(s.data[0].time, 3.0, "stream data time 0 = cond_from");
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// (b) `condition_from` UNSET: no grid change — observations start at the
+        /// real first obs (t=7), no leading hole, no `None` at index 0. This is
+        /// the bit-identical default.
+        #[test]
+        fn unset_condition_from_is_unchanged() {
+            let dir = test_dir("unset");
+            let fit = fixture(&dir, None, false, false);
+            assert!(fit.condition_from.is_none(), "fixture without the key parses to None");
+            let config = FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("unset condition_from must build");
+            assert_eq!(config.observations[0].time, 7.0,
+                "unset condition_from must NOT insert a leading hole");
+            assert_eq!(config.observations.len(), 5, "5 real obs, no hole");
+            for s in &config.streams {
+                assert!(s.cells[0].is_some(),
+                    "unset: stream '{}' cell 0 must be the real first obs, not a hole", s.name);
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// (b, cont.) The no-op boundary `condition_from == t_start` resolves to
+        /// None and inserts nothing — bit-identical to unset.
+        #[test]
+        fn condition_from_at_t_start_inserts_nothing() {
+            let dir = test_dir("at_tstart");
+            let fit = fixture(&dir, Some("\"0.0\""), false, false);
+            let config = FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("condition_from == t_start must build (no-op)");
+            assert_eq!(config.observations[0].time, 7.0,
+                "condition_from == t_start must insert no hole");
+            assert_eq!(config.observations.len(), 5);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// (c) Relative form `"first_obs - 4 days"` resolves to cond_from = 3.0
+        /// and inserts the same leading hole as the absolute form.
+        #[test]
+        fn relative_form_builds_and_inserts() {
+            let dir = test_dir("relative");
+            let fit = fixture(&dir, Some("\"first_obs - 4 days\""), false, false);
+            let config = FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("relative condition_from must build");
+            assert_eq!(config.observations[0].time, 3.0,
+                "first_obs(7) - 4 days = 3.0 leading hole");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// (d) Validation: cond_from before t_start errors at build.
+        #[test]
+        fn before_t_start_errors_at_build() {
+            let dir = test_dir("before");
+            let fit = fixture(&dir, Some("\"-2.0\""), false, false);
+            let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+                Ok(_) => panic!("condition_from < t_start must error"),
+                Err(e) => e,
+            };
+            assert!(err.contains("before the model start") || err.contains("t_start"),
+                "must flag cond_from < t_start: {err}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// (d) Validation: cond_from at/after the first obs errors at build.
+        #[test]
+        fn at_or_after_first_obs_errors_at_build() {
+            let dir = test_dir("after");
+            let fit = fixture(&dir, Some("\"7.0\""), false, false); // == first obs
+            let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+                Ok(_) => panic!("condition_from >= first_obs must error"),
+                Err(e) => e,
+            };
+            assert!(err.contains("nothing to condition on") || err.contains("first observation"),
+                "must flag cond_from >= first_obs: {err}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// (e) `condition_from` + `ic_free` together error loudly. The leading
+        /// hole at obs-index 0 means y₁ is a hole in every stream, tripping the
+        /// existing "nothing to condition on" ic_free guard — the desired
+        /// orthogonal-mechanisms behaviour (no silent-wrong, no ic_free no-op).
+        #[test]
+        fn condition_from_with_ic_free_errors_loudly() {
+            let dir = test_dir("with_icfree");
+            // ic_free + ivp (so the ivp precondition passes and only the
+            // missing-y₁ guard can fire) + an interior condition_from.
+            let fit = fixture(&dir, Some("\"3.0\""), true, true);
+            let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+                Ok(_) => panic!("condition_from + ic_free must error"),
+                Err(e) => e,
+            };
+            assert!(err.contains("nothing to condition on"),
+                "condition_from + ic_free must trip the missing-y₁ guard: {err}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// W329 escalation (§6.8): a wide leading gap before the first datum on
+        /// an INCIDENCE stream (`weekly_cases` = `cumulative_flow infection`)
+        /// with no `condition_from` is the gh#134 wrong-number — the first bin
+        /// would accumulate the whole gap. The fit must be REJECTED, naming the
+        /// fix.
+        #[test]
+        fn wide_incidence_gap_without_condition_from_is_rejected() {
+            let dir = test_dir("widegap_reject");
+            // first obs at t=70 vs t_start=0 → 70-day first window = 10× the
+            // 7-day weekly cadence (> K=5). All obs ≤ t_end (365).
+            let wide = "time\tweekly_cases\n70\t1\n77\t2\n84\t3\n91\t4\n98\t5\n";
+            let fit = fixture_with_obs(&dir, None, false, false, wide);
+            let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+                Ok(_) => panic!("wide incidence gap + no condition_from must error"),
+                Err(e) => e,
+            };
+            assert!(err.contains("condition_from"),
+                "the error must name condition_from as the fix: {err}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// The same wide gap with `condition_from` set suppresses the guard — the
+        /// modeler engaged with the boundary, and the leading hole makes the
+        /// first scored bin one cadence. The fit builds.
+        #[test]
+        fn wide_incidence_gap_with_condition_from_builds() {
+            let dir = test_dir("widegap_ok");
+            let wide = "time\tweekly_cases\n70\t1\n77\t2\n84\t3\n91\t4\n98\t5\n";
+            // 63 = 70 − 7 (one cadence before first_obs), interior to (0, 70).
+            let fit = fixture_with_obs(&dir, Some("\"63.0\""), false, false, wide);
+            FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("wide gap + condition_from must build");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// Test 7 (the headline): PER-STREAM conditioning on a TWO-stream model
+    /// (multi-cadence Phase 3). The `surveillance_likelihoods` golden declares
+    /// two incidence streams on distinct sources — `cases` and `deaths`. We bind
+    /// `cases` as a LATE STARTER (first obs at t=308, vs t_start=0, a ~308-day
+    /// first window against a 7-day weekly cadence) and `deaths` on the normal
+    /// weekly cadence from t=7.
+    ///
+    /// The per-stream split is the point: `deaths` (window ≈ one cadence) needs
+    /// NO conditioning and never errors, while `cases` (anomalously wide window)
+    /// resolves to no conditioning by default and HARD-ERRORS, naming
+    /// `condition_from.cases`. With `condition_from.cases` set, `cases`'s first
+    /// scored bin shifts from the whole (0, 308] span to one cadence
+    /// (308 − 7 = 301, 308].
+    mod condition_from_per_stream {
+        use crate::fit::config_v2::FitConfigV2;
+        use crate::fit::runner::FitRunConfig;
+
+        fn test_dir(tag: &str) -> std::path::PathBuf {
+            let d = std::env::temp_dir().join(format!(
+                "camdl_condfrom_ps_{}_{}_{}", tag, std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .unwrap().as_nanos()));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        /// Build a two-stream fit.toml against the `surveillance_likelihoods`
+        /// golden IR, binding only `cases` (late-starting) + `deaths` (normal
+        /// cadence) and leaving the `[condition_from]` body to the caller.
+        /// `cond_block` is spliced verbatim (e.g. an empty string for "no
+        /// conditioning", or `"[condition_from]\ncases = \"first_obs - 1 week\"\n"`).
+        fn fixture(dir: &std::path::Path, cond_block: &str) -> FitConfigV2 {
+            let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+            let ir_path = format!(
+                "{}/../../../ocaml/golden/surveillance_likelihoods.ir.json", manifest);
+
+            // `cases` LATE STARTER: 5 weekly obs from t=308 (< t_end ≈ 365). The
+            // 308-day first window is ~44× the 7-day weekly cadence (> K=5) → the
+            // W329 detector flags it for the incidence (cumulative_flow) `cases`
+            // stream.
+            let cases_path = dir.join("cases.tsv");
+            std::fs::write(&cases_path,
+                "time\tcases\n308\t1200\n315\t1300\n322\t1250\n329\t1100\n336\t1000\n").unwrap();
+            // `deaths` NORMAL cadence: 5 weekly obs from t=7 (one cadence) → no
+            // anomaly → never errors.
+            let deaths_path = dir.join("deaths.tsv");
+            std::fs::write(&deaths_path,
+                "time\tdeaths\n7\t2\n14\t3\n21\t4\n28\t3\n35\t2\n").unwrap();
+
+            let fit_toml_path = dir.join("fit.toml");
+            let toml_src = format!(r#"
+output_dir = "{out}"
+{cond_block}
+[model]
+camdl = "{ir_path}"
+
+[data.observations]
+cases  = "{cases}"
+deaths = "{deaths}"
+
+[estimate.I0]
+bounds = [1, 1000]
+start  = 100
+
+[fixed]
+beta      = 0.45
+sigma     = 0.2
+gamma     = 0.1
+mu_d      = 0.002
+rho       = 0.2
+sigma_rel = 0.3
+kappa     = 40.0
+n_sero    = 1000
+N0        = 1000000
+
+[stages.scout]
+algorithm  = "if2"
+backend    = "chain_binomial"
+chains     = 1
+particles  = 100
+iterations = 1
+cooling    = 0.5
+
+[config]
+backend = "chain_binomial"
+dt = 1.0
+"#,
+                out = dir.display(),
+                ir_path = ir_path,
+                cases = cases_path.display(),
+                deaths = deaths_path.display());
+            std::fs::write(&fit_toml_path, toml_src).unwrap();
+            FitConfigV2::load(&fit_toml_path.to_string_lossy()).expect("fit.toml parse")
+        }
+
+        /// Pull a stream's resolved cells/times out of a built config by label
+        /// (IR `source`).
+        fn stream<'a>(config: &'a FitRunConfig, label: &str) -> &'a crate::fit::runner::ObsStream {
+            config.streams.iter()
+                .find(|s| s.obs_model_ir.source == label)
+                .unwrap_or_else(|| panic!("stream '{label}' not bound"))
+        }
+
+        /// Test 7(a) — RED-side: the late-starting incidence stream `cases`,
+        /// with NO `condition_from`, HARD-ERRORS naming `condition_from.cases`.
+        /// The sibling `deaths` (normal cadence) does NOT need conditioning and
+        /// is not the cause — proving the check is per-stream.
+        #[test]
+        fn late_starter_without_conditioning_hard_errors_naming_the_stream() {
+            let dir = test_dir("err");
+            let fit = fixture(&dir, ""); // no [condition_from]
+            let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+                Ok(_) => panic!("late-starting incidence stream + no condition_from \
+                                 must hard-error"),
+                Err(e) => e,
+            };
+            // The W329 per-stream message: names the stream, the window vs
+            // cadence, and the per-stream fix `condition_from.<label>`.
+            assert!(err.contains("incidence stream 'cases'"),
+                "must name the offending stream: {err}");
+            assert!(err.contains("308-day first window"),
+                "must state the wide first window: {err}");
+            assert!(err.contains("~7-day cadence"),
+                "must state the modal cadence: {err}");
+            assert!(err.contains("condition_from.cases"),
+                "must name the per-stream fix `condition_from.<label>`: {err}");
+            // It must NOT blame `deaths` (the well-behaved sibling).
+            assert!(!err.contains("'deaths'"),
+                "the normal-cadence sibling must not be implicated: {err}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// Test 7(b) — GREEN-side: with `condition_from.cases = "first_obs - 1
+        /// week"` the fit BUILDS, and `cases`'s first scored bin is moved from
+        /// the whole (0, 308] span to ONE cadence (301, 308]. We assert the
+        /// mechanism directly: a leading reset-only HOLE (a `None` cell) is
+        /// prepended to `cases` at t=301, the first REAL `cases` obs shifts to
+        /// index 1 (t=308), the canonical union now carries t=301, and `deaths`
+        /// is UNTOUCHED (no leading hole — it needed no conditioning).
+        #[test]
+        fn late_starter_with_conditioning_builds_and_first_bin_is_one_cadence() {
+            let dir = test_dir("ok");
+            let fit = fixture(&dir,
+                "[condition_from]\ncases = \"first_obs - 1 week\"\n");
+            let config = FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("late starter WITH per-stream condition_from must build");
+
+            // `cases`: leading reset-only hole at t = 308 − 7 = 301, then the
+            // first real obs at 308. The first scored bin is (301, 308] — one
+            // cadence — not the whole (0, 308] span.
+            let cases = stream(&config, "cases");
+            assert_eq!(cases.data[0].time, 301.0,
+                "cases: leading hole must sit at first_obs(308) − 1 week = 301");
+            assert!(cases.cells[0].is_none(),
+                "cases: cell 0 must be a hole (None) — reset, no likelihood term");
+            assert_eq!(cases.data[1].time, 308.0,
+                "cases: the first REAL obs must shift to index 1");
+            assert!(cases.cells[1].is_some(),
+                "cases: cell 1 must be the first scored observation");
+
+            // `deaths`: no conditioning resolved → NO leading hole; cell 0 stays
+            // the real first obs at t=7. (Per-stream: the spec only named `cases`,
+            // and there is no `default`.)
+            let deaths = stream(&config, "deaths");
+            assert_eq!(deaths.data[0].time, 7.0,
+                "deaths: must be untouched (no leading hole)");
+            assert!(deaths.cells[0].is_some(),
+                "deaths: cell 0 must be the real first obs, not a hole");
+
+            // The canonical union grid carries the inserted boundary t=301.
+            assert!(config.observations.iter().any(|o| (o.time - 301.0).abs() < 1e-9),
+                "the union grid must include the per-stream conditioning boundary 301");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// An unknown shadow label is rejected at build (typo-safety), naming the
+        /// valid labels. `cases` is real; `caes` is a typo.
+        #[test]
+        fn unknown_shadow_label_rejected_at_build() {
+            let dir = test_dir("typo");
+            let fit = fixture(&dir,
+                "[condition_from]\ncaes = \"first_obs - 1 week\"\n");
+            let err = match FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false) {
+                Ok(_) => panic!("an unknown shadow label must error at build"),
+                Err(e) => e,
+            };
+            assert!(err.contains("'caes'") && err.contains("not an observation stream"),
+                "must flag the typo'd label: {err}");
+            assert!(err.contains("cases") && err.contains("deaths"),
+                "must list the valid labels: {err}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// A `default` spec covers `cases` (the only stream that needs it), so a
+        /// bare `[condition_from] default = ...` (no per-stream key) also clears
+        /// the wide-window error — `default` is the all-streams default.
+        #[test]
+        fn default_key_conditions_the_late_starter() {
+            let dir = test_dir("default");
+            let fit = fixture(&dir,
+                "[condition_from]\ndefault = \"first_obs - 1 week\"\n");
+            let config = FitRunConfig::build(&fit, None, 1, 100, 1, 0.5, 50, 1, false)
+                .expect("a `default` condition_from must cover the late starter");
+            // `cases` gets the leading hole via `default`; `deaths`'s window is
+            // one cadence so its resolved boundary (first_obs − 1 week = 0 =
+            // t_start) is a no-op (no hole).
+            let cases = stream(&config, "cases");
+            assert_eq!(cases.data[0].time, 301.0, "cases conditioned via `default`");
+            let deaths = stream(&config, "deaths");
+            assert_eq!(deaths.data[0].time, 7.0,
+                "deaths: first_obs(7) − 1 week = 0 = t_start ⇒ no-op, no hole");
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

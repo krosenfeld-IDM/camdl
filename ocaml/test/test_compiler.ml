@@ -197,7 +197,7 @@ let rec max_reduce_terms (e : Ir.expr) : int =
     List.fold_left (fun acc i -> max acc (max_reduce_terms i)) 0 idxs
   | UncheckedDim { inner; _ } -> max_reduce_terms inner
   | Const _ | Param _ | Pop _ | PopSum _ | Time | Dt | TimeFunc _
-  | BindingRef _ | Projected -> 0
+  | BindingRef _ | Projected | ObsColumnRef _ -> 0
 
 let max_foi_reduce_terms (m : Ir.model) : int =
   List.fold_left (fun acc (t : Ir.transition) -> max acc (max_reduce_terms t.rate))
@@ -702,10 +702,11 @@ let test_obs_output_start_divergence () =
     init { S = N0 - I0  I = I0 }
     simulate { from = 10 'days  to = 120 'days }
     observations {
-      cases : {
-        projected  = incidence(recovery)
-        every      = 1 'days
-        likelihood = poisson(rate = rho * projected)
+      cases {
+        columns       { time : time, cases : count }
+        projected     = incidence(recovery)
+        emit_schedule = every 1 'days
+        cases         ~ poisson(rate = rho * projected)
       }
     }
     output { trajectories { every = 1 'days } }
@@ -719,12 +720,63 @@ let test_obs_output_start_divergence () =
      | _ -> Alcotest.fail "expected OutRegular output schedule");
     (match m.Ir.observations with
      | om :: _ ->
-       (match om.Ir.schedule with
-        | Ir.ObsRegular r ->
+       (match om.Ir.emit_schedule with
+        | Some (Ir.ObsRegular r) ->
           Alcotest.(check (float 1e-9))
             "obs.start = t_start = 10 (NOT min(0,t_start))" 10.0 r.Ir.start
-        | _ -> Alcotest.fail "expected ObsRegular obs schedule")
+        | _ -> Alcotest.fail "expected ObsRegular emit_schedule")
      | [] -> Alcotest.fail "expected an observation model")
+
+(* ── §4.2 — stratified observation header emits a `stratum` selector ──────────
+   A `cases[p in patch]` observation expands to one IR leaf per patch level
+   (`cases_urban`, `cases_rural`). Each leaf must carry a structured
+   `stratum = [("patch", <level>)]` selector (the by-name routing key the Rust
+   long-form loader uses), and it must round-trip through serde. ───────────── *)
+let test_stratified_observation_emits_stratum () =
+  let src = {|
+    time_unit = 'days
+    dimensions { patch = [urban, rural] }
+    compartments { S, I, R }
+    stratify(by = patch)
+    parameters { beta : rate  gamma : rate  rho : probability }
+    let N[p in patch] = S[p] + I[p] + R[p]
+    transitions {
+      infection[p in patch] : S[p] --> I[p]  @ beta * S[p] * I[p] / N[p]
+      recovery[p in patch]  : I[p] --> R[p]  @ gamma * I[p]
+    }
+    init { S[urban] = 990  I[urban] = 10  S[rural] = 999  I[rural] = 1 }
+    simulate { from = 0 'days  to = 100 'days }
+    observations {
+      cases[p in patch] {
+        columns       { time : time, patch : dim, cases : count }
+        projected     = incidence(infection[p])
+        emit_schedule = every 7 'days
+        cases         ~ poisson(rate = rho * projected)
+      }
+    }
+  |} in
+  let m = compile_expect_ok src in
+  let find name =
+    List.find (fun (o : Ir.observation_model) -> o.Ir.name = name) m.Ir.observations in
+  let check_leaf name level =
+    let o = find name in
+    Alcotest.(check (list (pair string string)))
+      (Printf.sprintf "%s stratum = [(patch, %s)]" name level)
+      [("patch", level)] o.Ir.stratum
+  in
+  check_leaf "cases_urban" "urban";
+  check_leaf "cases_rural" "rural";
+  (* Round-trip through serde: the `stratum` field survives serialise +
+     deserialise (and is OMITTED when empty — an unstratified golden is
+     byte-identical, asserted by the golden gate). *)
+  let json = Serde.model_to_string m in
+  let m2 = match Serde.model_of_string json with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "round-trip parse failed: %s" e in
+  let o2 = List.find
+    (fun (o : Ir.observation_model) -> o.Ir.name = "cases_urban") m2.Ir.observations in
+  Alcotest.(check (list (pair string string)))
+    "round-tripped stratum" [("patch", "urban")] o2.Ir.stratum
 
 (* ── BUG-2: Parameterised table values ───────────────────────────────────────
    Compile a model with a table that references a parameter. The compiled
@@ -1258,7 +1310,7 @@ let test_table_cell_type_ir_round_trips_through_serde () =
 
 (** Walk an Ir.expr and collect all Pop compartment names. *)
 let rec collect_pops = function
-  | Ir.Const _ | Ir.Param _ | Ir.Time | Ir.Dt | Ir.Projected -> []
+  | Ir.Const _ | Ir.Param _ | Ir.Time | Ir.Dt | Ir.Projected | Ir.ObsColumnRef _ -> []
   | Ir.Pop name -> [name]
   | Ir.PopSum names -> names
   | Ir.BinOp b -> collect_pops b.left @ collect_pops b.right
@@ -1361,10 +1413,11 @@ let test_incidence_positional_and_named_produce_equal_projections () =
     init { S_north = 100  I_north = 1 }
     simulate { from = 0 'days  to = 10 'days }
     observations {
-      north_cases : {
+      north_cases {
+        columns       { time : time, north_cases : count }
         projected  = incidence(recovery[north])
-        every      = 1 'days
-        likelihood = poisson(rate = rho * projected)
+        emit_schedule = every 1 'days
+        north_cases ~ poisson(rate = rho * projected)
       }
     }
   |} in
@@ -1382,10 +1435,11 @@ let test_incidence_positional_and_named_produce_equal_projections () =
     init { S_north = 100  I_north = 1 }
     simulate { from = 0 'days  to = 10 'days }
     observations {
-      north_cases : {
+      north_cases {
+        columns       { time : time, north_cases : count }
         projected  = incidence(recovery[patch = north])
-        every      = 1 'days
-        likelihood = poisson(rate = rho * projected)
+        emit_schedule = every 1 'days
+        north_cases ~ poisson(rate = rho * projected)
       }
     }
   |} in
@@ -2122,7 +2176,7 @@ let test_l401_no_fire_when_dt_used () =
       | Ir.Reduce terms -> List.exists contains_dt terms
       | Ir.BindingRef _ -> false
       | Ir.Const _ | Ir.Param _ | Ir.Pop _ | Ir.PopSum _
-      | Ir.Time | Ir.Projected | Ir.TimeFunc _ -> false
+      | Ir.Time | Ir.Projected | Ir.ObsColumnRef _ | Ir.TimeFunc _ -> false
     in
     let any_tr_uses_dt = List.exists (fun (t : Ir.transition) ->
       contains_dt t.rate
@@ -3616,10 +3670,11 @@ let test_prevalence_on_stratified_compartment () =
       recovery : I --> R @ gamma * I
     }
     observations {
-      in_latent : {
+      in_latent {
+        columns       { time : time, in_latent : count }
         projected  = prevalence(E)
-        every      = 1 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 1 'days
+        in_latent ~ neg_binomial(mean = projected, r = k)
       }
     }
     init { S = 990  E[e1] = 5  I = 5 }
@@ -3662,10 +3717,11 @@ let test_projected_bare_stratified_compartment () =
       recovery : I --> R @ gamma * I
     }
     observations {
-      latent_total : {
+      latent_total {
+        columns       { time : time, latent_total : count }
         projected  = E
-        every      = 1 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 1 'days
+        latent_total ~ neg_binomial(mean = projected, r = k)
       }
     }
     init { S = 990  E[e1] = 5  I = 5 }
@@ -3705,10 +3761,11 @@ let test_prevalence_fully_indexed_stratified () =
       recovery : I --> R @ gamma * I
     }
     observations {
-      first_latent : {
+      first_latent {
+        columns       { time : time, first_latent : count }
         projected  = prevalence(E[e1])
-        every      = 1 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 1 'days
+        first_latent ~ neg_binomial(mean = projected, r = k)
       }
     }
     init { S = 990  E[e1] = 5  I = 5 }
@@ -3738,10 +3795,11 @@ let test_prevalence_unstratified () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      prev : {
+      prev {
+        columns       { time : time, prev : count }
         projected  = prevalence(I)
-        every      = 1 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 1 'days
+        prev ~ neg_binomial(mean = projected, r = k)
       }
     }
     init { S = 999  I = 1 }
@@ -3786,13 +3844,36 @@ let stratified_age_seir_with_obs obs_block =
     simulate { from = 0 'days  to = 50 'days }
   |} obs_block
 
-let test_incidence_on_stratified_transition_sums_strata () =
+(* Cross-strata aggregation gate (2026-06-10 observation data-entry §5.2): a
+   bare un-indexed `incidence(infection)` on a stratified model is now a HARD
+   ERROR (E280). It would silently sum all strata and apply reporting uniformly;
+   the modeller must state the aggregation explicitly. *)
+let test_incidence_unindexed_cross_strata_is_rejected () =
   let src = stratified_age_seir_with_obs {|
     observations {
-      weekly_cases : {
+      weekly_cases {
+        columns       { time : time, weekly_cases : count }
         projected  = incidence(infection)
-        every      = 7 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 7 'days
+        weekly_cases ~ neg_binomial(mean = projected, r = k)
+      }
+    }
+  |} in
+  compile_expect_error_code ~code:"E280" ~contains:"sum" src
+
+(* The explicit uniform-reporting form the gate directs the modeller to:
+   `rho * sum(a in age, incidence(infection[a]))` — here without the rho factor
+   for the projection check — compiles and expands to the IDENTICAL
+   CumulativeFlowSum the bare form used to produce. The reporting choice is now
+   stated, not silent. *)
+let test_incidence_explicit_sum_compiles_to_flow_sum () =
+  let src = stratified_age_seir_with_obs {|
+    observations {
+      weekly_cases {
+        columns       { time : time, weekly_cases : count }
+        projected  = sum(a in age, incidence(infection[a]))
+        emit_schedule = every 7 'days
+        weekly_cases ~ neg_binomial(mean = projected, r = k)
       }
     }
   |} in
@@ -3802,7 +3883,7 @@ let test_incidence_on_stratified_transition_sums_strata () =
     (match obs.projection with
      | Ir.CumulativeFlowSum names ->
        Alcotest.(check (list string))
-         "incidence(infection) expands to the per-stratum flow sum"
+         "explicit sum(a in age, incidence(infection[a])) expands to the per-stratum flow sum"
          ["infection_child"; "infection_adult"] names
      | Ir.CumulativeFlow name ->
        Alcotest.failf
@@ -3815,10 +3896,11 @@ let test_incidence_on_stratified_transition_sums_strata () =
 let test_incidence_positional_indexed_pins_one_stratum () =
   let src = stratified_age_seir_with_obs {|
     observations {
-      child_cases : {
+      child_cases {
+        columns       { time : time, child_cases : count }
         projected  = incidence(infection[child])
-        every      = 7 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 7 'days
+        child_cases ~ neg_binomial(mean = projected, r = k)
       }
     }
   |} in
@@ -3835,10 +3917,11 @@ let test_incidence_positional_indexed_pins_one_stratum () =
 let test_incidence_named_indexed_pins_one_stratum () =
   let src = stratified_age_seir_with_obs {|
     observations {
-      adult_cases : {
+      adult_cases {
+        columns       { time : time, adult_cases : count }
         projected  = incidence(infection[age = adult])
-        every      = 7 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 7 'days
+        adult_cases ~ neg_binomial(mean = projected, r = k)
       }
     }
   |} in
@@ -3862,10 +3945,11 @@ let test_incidence_unstratified () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      cases : {
+      cases {
+        columns       { time : time, cases : count }
         projected  = incidence(infection)
-        every      = 1 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 1 'days
+        cases ~ neg_binomial(mean = projected, r = k)
       }
     }
     init { S = 999  I = 1 }
@@ -3886,10 +3970,11 @@ let test_let_bound_projection_inlines () =
   let src = stratified_age_seir_with_obs {|
     let I_total = I[child] + I[adult]
     observations {
-      prevalence_total : {
+      prevalence_total {
+        columns       { time : time, prevalence_total : count }
         projected  = I_total
-        every      = 7 'days
-        likelihood = neg_binomial(mean = projected, r = k)
+        emit_schedule = every 7 'days
+        prevalence_total ~ neg_binomial(mean = projected, r = k)
       }
     }
   |} in
@@ -3937,10 +4022,11 @@ let test_poisson_rate_kwarg_parses () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      in_bed : {
+      in_bed {
+        columns       { time : time, in_bed : count }
         projected = prevalence(I)
-        every = 1 'days
-        likelihood = poisson(rate = projected)
+        emit_schedule = every 1 'days
+        in_bed ~ poisson(rate = projected)
       }
     }
     init { S = 999  I = 1 }
@@ -3964,10 +4050,11 @@ let test_poisson_positional_errors () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      in_bed : {
+      in_bed {
+        columns       { time : time, in_bed : count }
         projected = prevalence(I)
-        every = 1 'days
-        likelihood = poisson(projected)
+        emit_schedule = every 1 'days
+        in_bed ~ poisson(projected)
       }
     }
     init { S = 999  I = 1 }
@@ -3988,16 +4075,72 @@ let test_likelihood_unknown_kwarg_errors () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      in_bed : {
+      in_bed {
+        columns       { time : time, in_bed : count }
         projected = prevalence(I)
-        every = 1 'days
-        likelihood = poisson(lambda = projected)
+        emit_schedule = every 1 'days
+        in_bed ~ poisson(lambda = projected)
       }
     }
     init { S = 999  I = 1 }
     simulate { from = 0 'days  to = 14 'days }
   |} in
   compile_expect_error_code ~code:"E251" ~contains:"lambda" src
+
+(* ── Stage 2: survey denominators (per-obs aux) + dimcheck-n ─────────────── *)
+
+(* A survey-positivity stream: `positive ~ binomial(n = tested, p = ...)`.
+   `tested` is a declared aux value column referenced on the `~` RHS — it
+   resolves to an `ObsColumnRef` leaf (NOT a parameter/compartment), and the
+   model compiles. This is the headline Stage-2 surface. *)
+let survey_positivity_model lik =
+  Printf.sprintf {|
+    time_unit = 'days
+    compartments { S, I, R }
+    let N = S + I + R
+    parameters {
+      beta  : rate in [0.001, 5.0]
+      gamma : rate in [0.01, 1.0]
+    }
+    transitions {
+      infection : S --> I @ beta * S * I / N
+      recovery  : I --> R @ gamma * I
+    }
+    observations {
+      survey {
+        columns   { time : time, pos : count, tested : count }
+        projected = prevalence(I)
+        %s
+      }
+    }
+    init { S = 999  I = 1 }
+    simulate { from = 0 'days  to = 14 'days }
+  |} lik
+
+let test_survey_denominator_resolves_to_obs_column_ref () =
+  let src = survey_positivity_model
+    "pos ~ binomial(n = tested, p = projected / N)" in
+  let m = compile_expect_ok src in
+  match (List.hd m.observations).likelihood with
+  | Ir.Binomial { n = Ir.ObsColumnRef "tested"; _ } -> ()
+  | Ir.Binomial { n; _ } ->
+    Alcotest.failf "expected binomial n = ObsColumnRef \"tested\"; got %s"
+      (Pp_expr.to_string n)
+  | _ -> Alcotest.fail "expected a Binomial likelihood"
+
+(* NOTE on dimcheck-n (§3.1): `test_compiler.ml` runs with dimcheck DISABLED
+   globally (`Compiler.no_dim_check := true`, top of file), so the E304 checks
+   on the binomial `n` and Poisson `rate` are exercised in `test_dimcheck.ml`
+   (which runs dimcheck), not here. The parse/resolution surface (an aux column
+   resolving to `ObsColumnRef`) is covered above. *)
+
+(* A dead aux column — declared but never referenced on the `~` RHS — is the
+   existing E277 dead-column error, unchanged by Stage 2. *)
+let test_unreferenced_aux_column_is_dead () =
+  let src = survey_positivity_model
+    "pos ~ binomial(n = 1000, p = projected / N)" in
+  (* `tested` is declared but `n = 1000` (a constant), so `tested` is dead. *)
+  compile_expect_error_code ~code:"E277" ~contains:"tested" src
 
 (* ── Multi-source transitions (Wave 1 / #1) ──────────────────────────────── *)
 
@@ -4363,10 +4506,11 @@ let test_projected_bare_sum_emits_derived_expr () =
       recover_s : I_s --> R   @ gamma * I_s
     }
     observations {
-      prev : {
+      prev {
+        columns       { time : time, prev : count }
         projected = I_m + I_s
-        every     = 1 'weeks
-        likelihood = poisson(rate = projected)
+        emit_schedule = every 1 'weeks
+        prev ~ poisson(rate = projected)
       }
     }
     init { S = 999  I_m = 1 }
@@ -4402,10 +4546,11 @@ let test_projected_proportion_compiles () =
       recover_s : I_s --> R   @ gamma * I_s
     }
     observations {
-      slide : {
+      slide {
+        columns       { time : time, slide : count }
         projected = (I_m + I_s) / (S + I_m + I_s + R)
-        every     = 1 'weeks
-        likelihood = diagnostic_test(
+        emit_schedule = every 1 'weeks
+        slide ~ diagnostic_test(
           base = binomial(n = N_tested, p = projected),
           sens = rho_sens, spec = rho_spec
         )
@@ -4717,10 +4862,11 @@ let test_diagnostic_test_parses () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      slide_positivity : {
+      slide_positivity {
+        columns       { time : time, slide_positivity : count }
         projected = prevalence(I)
-        every = 1 'weeks
-        likelihood = diagnostic_test(
+        emit_schedule = every 1 'weeks
+        slide_positivity ~ diagnostic_test(
           base = binomial(n = N_tested, p = projected),
           sens = rho_sens,
           spec = rho_spec
@@ -4754,10 +4900,11 @@ let test_diagnostic_test_equivalence () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      slide_positivity : {
+      slide_positivity {
+        columns       { time : time, slide_positivity : count }
         projected = prevalence(I)
-        every = 1 'weeks
-        likelihood = diagnostic_test(
+        emit_schedule = every 1 'weeks
+        slide_positivity ~ diagnostic_test(
           base = binomial(n = N_tested, p = projected),
           sens = rho_sens,
           spec = rho_spec
@@ -4782,10 +4929,11 @@ let test_diagnostic_test_equivalence () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      slide_positivity : {
+      slide_positivity {
+        columns       { time : time, slide_positivity : count }
         projected = prevalence(I)
-        every = 1 'weeks
-        likelihood = binomial(
+        emit_schedule = every 1 'weeks
+        slide_positivity ~ binomial(
           n = N_tested,
           p = rho_sens * projected + (1 - rho_spec) * (1 - projected)
         )
@@ -4819,10 +4967,11 @@ let test_diagnostic_test_bernoulli () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      any_positive : {
+      any_positive {
+        columns       { time : time, any_positive : count }
         projected = prevalence(I)
-        every = 1 'days
-        likelihood = diagnostic_test(
+        emit_schedule = every 1 'days
+        any_positive ~ diagnostic_test(
           base = bernoulli(p = projected),
           sens = rho_sens,
           spec = rho_spec
@@ -4847,10 +4996,11 @@ let test_diagnostic_test_bad_base () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      cases : {
+      cases {
+        columns       { time : time, cases : count }
         projected = prevalence(I)
-        every = 1 'weeks
-        likelihood = diagnostic_test(
+        emit_schedule = every 1 'weeks
+        cases ~ diagnostic_test(
           base = poisson(rate = projected),
           sens = rho_sens,
           spec = rho_spec
@@ -4872,10 +5022,11 @@ let test_diagnostic_test_missing_kwargs () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      cases : {
+      cases {
+        columns       { time : time, cases : count }
         projected = prevalence(I)
-        every = 1 'weeks
-        likelihood = diagnostic_test(
+        emit_schedule = every 1 'weeks
+        cases ~ diagnostic_test(
           base = binomial(n = N_tested, p = projected),
           sens = rho_sens
         )
@@ -6139,10 +6290,11 @@ let outcome_model_ok = {|
       recovery    : I --> R  @ gamma * I
     }
     observations {
-      weekly_cases : {
+      weekly_cases {
+        columns       { time : time, weekly_cases : count }
         projected  = incidence(infection)
-        every      = 7 'days
-        likelihood = neg_binomial(mean = rho * projected, r = k)
+        emit_schedule = every 7 'days
+        weekly_cases ~ neg_binomial(mean = rho * projected, r = k)
       }
     }
     init { S = 100  I = 1 }
@@ -6166,10 +6318,11 @@ let outcome_model_late_err = {|
       recovery    : I --> R  @ gamma * I
     }
     observations {
-      weekly_cases : {
+      weekly_cases {
+        columns       { time : time, weekly_cases : count }
         projected  = incidence(infektion)
-        every      = 7 'days
-        likelihood = neg_binomial(mean = rho * projected, r = k)
+        emit_schedule = every 7 'days
+        weekly_cases ~ neg_binomial(mean = rho * projected, r = k)
       }
     }
     init { S = 100  I = 1 }
@@ -6240,10 +6393,11 @@ let test_validate_reference_error_has_location () =
       recovery  : I --> R @ gamma * I
     }
     observations {
-      cases : {
+      cases {
+        columns       { time : time, cases : count }
         projected  = incidence(recoveryX)
-        every      = 1 'days
-        likelihood = poisson(rate = rho * projected)
+        emit_schedule = every 1 'days
+        cases ~ poisson(rate = rho * projected)
       }
     }
     init { S = 100  I = 1 }
@@ -6594,6 +6748,8 @@ let () =
       Alcotest.test_case "every and at conflict → error" `Quick test_output_every_and_at_conflict;
       Alcotest.test_case "obs.start=t_start vs output.start=0 (A.2 lowering divergence guard)"
         `Quick test_obs_output_start_divergence;
+      Alcotest.test_case "stratified obs header emits (dim,level) stratum + serde round-trip"
+        `Quick test_stratified_observation_emits_stratum;
     ];
     "parameterised_tables", [
       Alcotest.test_case "param survives as Ir.Param" `Quick test_parameterised_table;
@@ -6799,7 +6955,8 @@ let () =
       Alcotest.test_case "bare E in projected sums Erlang substages"     `Quick test_projected_bare_stratified_compartment;
       Alcotest.test_case "prevalence(E[e1]) picks single stratum"        `Quick test_prevalence_fully_indexed_stratified;
       Alcotest.test_case "prevalence(I) unstratified is unchanged"       `Quick test_prevalence_unstratified;
-      Alcotest.test_case "incidence(infection) sums age strata"          `Quick test_incidence_on_stratified_transition_sums_strata;
+      Alcotest.test_case "E280: bare incidence(infection) on stratified model rejected" `Quick test_incidence_unindexed_cross_strata_is_rejected;
+      Alcotest.test_case "explicit sum(a in age, incidence(infection[a])) → flow sum" `Quick test_incidence_explicit_sum_compiles_to_flow_sum;
       Alcotest.test_case "incidence(infection[child]) picks one stratum" `Quick test_incidence_positional_indexed_pins_one_stratum;
       Alcotest.test_case "incidence(infection[age=adult]) named index"   `Quick test_incidence_named_indexed_pins_one_stratum;
       Alcotest.test_case "incidence(infection) unstratified unchanged"   `Quick test_incidence_unstratified;
@@ -6809,6 +6966,10 @@ let () =
       Alcotest.test_case "poisson(rate = projected) parses"              `Quick test_poisson_rate_kwarg_parses;
       Alcotest.test_case "E250 positional arg in likelihood"             `Quick test_poisson_positional_errors;
       Alcotest.test_case "E251 unknown kwarg in likelihood"              `Quick test_likelihood_unknown_kwarg_errors;
+    ];
+    "survey_denominators", [
+      Alcotest.test_case "binomial(n = tested) → ObsColumnRef leaf"       `Quick test_survey_denominator_resolves_to_obs_column_ref;
+      Alcotest.test_case "E277: declared-but-unreferenced aux column is dead" `Quick test_unreferenced_aux_column_is_dead;
     ];
     "unchecked_dim_escape", [
       Alcotest.test_case "parses with all three kwargs"               `Quick test_unchecked_dim_parses;

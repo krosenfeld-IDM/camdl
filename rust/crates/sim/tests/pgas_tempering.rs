@@ -20,7 +20,9 @@ use sim::{
         if2::{EstimatedParam, Transform},
         pgas::{PGASConfig, run_pgas},
         pmmh::Prior,
+        BoundObs,
         MultiStreamObsModel,
+        dense_cells,
         multi_stream_obs::StreamSpec,
     },
 };
@@ -112,11 +114,18 @@ fn mu_param() -> EstimatedParam {
 fn obs_model(compiled: &Arc<CompiledModel>) -> MultiStreamObsModel {
     let obs = observations();
     MultiStreamObsModel::new(
-        vec![StreamSpec {
+        BoundObs::bind(vec![StreamSpec {
             projection: sim::inference::multi_stream_obs::StreamProjection::FlowSum(vec![0]),
             ir_model: ir::observation::ObservationModel {
                 name: "cases".into(),
-                schedule: ir::observation::ObservationSchedule::AtTimes(vec![]),
+                source: "cases".into(),
+                columns: vec![
+                    ir::observation::ObsColumn { name: "time".into(), role: ir::observation::ColumnRole::Time },
+                    ir::observation::ObsColumn { name: "cases".into(), role: ir::observation::ColumnRole::Value(ir::parameter::ParamKind::Count) },
+                ],
+                scored: "cases".into(),
+                emit_schedule: Some(ir::observation::ObservationSchedule::AtTimes(vec![])),
+                stratum: vec![],
                 projection: ir::observation::Projection::CumulativeFlow("death".into()),
                 likelihood: ir::observation::Likelihood::Poisson(ir::observation::PoissonLikelihood {
                     // rate = projected + 0.1 (floor to avoid Poisson(0) → -inf)
@@ -129,9 +138,10 @@ fn obs_model(compiled: &Arc<CompiledModel>) -> MultiStreamObsModel {
                     }),
                 }),
             },
-            observations: obs.iter().map(|o| o.value).collect(),
+            observations: dense_cells(obs.iter().map(|o| o.value).collect()),
             obs_times: obs.iter().map(|o| o.time).collect(),
-        }],
+            aux: vec![],
+        }]).unwrap().0,
         compiled.clone(),
     ).unwrap()
 }

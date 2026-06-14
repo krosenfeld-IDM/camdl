@@ -31,7 +31,9 @@ use ir::{
 use sim::{
     compiled_model::CompiledModel,
     inference::{
+        BoundObs,
         ParticleState,
+        dense_cells,
         traits::ObservationModel,
         multi_stream_obs::{MultiStreamObsModel, StreamSpec, StreamProjection},
     },
@@ -77,7 +79,14 @@ fn model() -> Arc<CompiledModel> {
         observations: vec![
             IrObs {
                 name: "cases".into(),
-                schedule: ObservationSchedule::AtTimes(vec![]),
+                source: "cases".into(),
+                columns: vec![
+                    ir::observation::ObsColumn { name: "time".into(), role: ir::observation::ColumnRole::Time },
+                    ir::observation::ObsColumn { name: "cases".into(), role: ir::observation::ColumnRole::Value(ir::parameter::ParamKind::Count) },
+                ],
+                scored: "cases".into(),
+                emit_schedule: Some(ObservationSchedule::AtTimes(vec![])),
+                stratum: vec![],
                 projection: Projection::CurrentPop("I".into()),
                 likelihood: Likelihood::NegBinomial(NegBinomialLikelihood {
                     // mean = rho * I  (Pop ref → reads counts)
@@ -123,10 +132,12 @@ fn pf_and_pgas_likelihood_paths_agree() {
     let spec = StreamSpec {
         ir_model: compiled.model.observations[0].clone(),
         projection: StreamProjection::IntCompSum(vec![i_idx]), // prevalence of I
-        observations: vec![12.0, 30.0],
+        observations: dense_cells(vec![12.0, 30.0]),
         obs_times: vec![1.0, 5.0],
+        aux: vec![],
     };
-    let obs_model = MultiStreamObsModel::new(vec![spec], compiled.clone()).unwrap();
+    let obs_model = MultiStreamObsModel::new(
+        BoundObs::bind(vec![spec]).unwrap().0, compiled.clone()).unwrap();
 
     // Non-zero in BOTH fields so the identity exercises the full
     // ParticleState, not a degenerate all-zero case.
@@ -134,14 +145,21 @@ fn pf_and_pgas_likelihood_paths_agree() {
     let flows  = vec![7u64];            // a non-empty flow vector (recovery)
     let params = compiled.default_params.clone();
 
-    let state = ParticleState { counts: counts.clone(), flow_accumulators: flows.clone() };
+    // Prevalence stream (`IntCompSum` over I) ⇒ no `Interval` slot, so `acc` is
+    // empty; both paths score from `counts`. `flow_accumulators` is kept
+    // populated to prove neither path reads it for a prevalence projection.
+    let state = ParticleState {
+        counts: counts.clone(),
+        flow_accumulators: flows.clone(),
+        acc: vec![],
+    };
 
     for obs_idx in 0..2 {
-        // PF/IF2/PMMH path (trait):
+        // PF/IF2/PMMH path (trait), reads `state.acc`:
         let via_state = obs_model.log_likelihood(&state, obs_idx, &params);
-        // PGAS path (flat arrays):
+        // PGAS path (flat arrays), takes the per-stream `acc` (empty here):
         let via_flat =
-            obs_model.log_likelihood_from_flows_and_counts(&flows, &counts, obs_idx, &params);
+            obs_model.log_likelihood_from_flows_and_counts(&[], &counts, obs_idx, &params);
 
         assert!(via_state.is_finite(),
             "obs {obs_idx}: trait path must be finite, got {via_state}");

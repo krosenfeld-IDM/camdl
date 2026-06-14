@@ -19,6 +19,8 @@
 use std::sync::Arc;
 use sim::compiled_model::CompiledModel;
 use sim::inference::if2::{EstimatedParam, Transform};
+use sim::inference::BoundObs;
+use sim::inference::dense_cells;
 use sim::inference::multi_stream_obs::{MultiStreamObsModel, StreamSpec, StreamProjection};
 use sim::inference::particle_filter::Observation;
 use sim::inference::pgas::{run_pgas, simulate_reference, PGASConfig};
@@ -91,11 +93,18 @@ fn smoke_pgas_nuts_estimates_sigma_se() {
     // Build a NegBin obs model with FIXED rho=1 and k=10. Only σ_se is
     // estimated.
     let obs_model_ = MultiStreamObsModel::new(
-        vec![StreamSpec {
+        BoundObs::bind(vec![StreamSpec {
             projection: StreamProjection::FlowSum(vec![0]),
             ir_model: ir::observation::ObservationModel {
                 name: "weekly_cases".into(),
-                schedule: ir::observation::ObservationSchedule::AtTimes(vec![]),
+                source: "weekly_cases".into(),
+                columns: vec![
+                    ir::observation::ObsColumn { name: "time".into(), role: ir::observation::ColumnRole::Time },
+                    ir::observation::ObsColumn { name: "weekly_cases".into(), role: ir::observation::ColumnRole::Value(ir::parameter::ParamKind::Count) },
+                ],
+                scored: "weekly_cases".into(),
+                emit_schedule: Some(ir::observation::ObservationSchedule::AtTimes(vec![])),
+                stratum: vec![],
                 projection: ir::observation::Projection::CumulativeFlow("infection".into()),
                 likelihood: ir::observation::Likelihood::NegBinomial(
                     ir::observation::NegBinomialLikelihood {
@@ -111,9 +120,10 @@ fn smoke_pgas_nuts_estimates_sigma_se() {
                         dispersion: ir::expr::Expr::Const(ir::expr::ConstExpr { value: 10.0 }),
                     }),
             },
-            observations: obs.iter().map(|o| o.value).collect(),
+            observations: dense_cells(obs.iter().map(|o| o.value).collect()),
             obs_times: obs.iter().map(|o| o.time).collect(),
-        }],
+            aux: vec![],
+        }]).unwrap().0,
         compiled.clone(),
     ).unwrap();
 
@@ -224,7 +234,7 @@ fn smoke_pgas_nuts_estimates_rho() {
 
     // Re-use the original observation block (NegBinomial with rho * incidence).
     let obs_model_ = MultiStreamObsModel::new(
-        vec![StreamSpec {
+        BoundObs::bind(vec![StreamSpec {
             projection: StreamProjection::FlowSum(
                 compiled.model.transitions.iter().enumerate()
                     .filter(|(_, t)| t.name == "infection")
@@ -232,9 +242,10 @@ fn smoke_pgas_nuts_estimates_rho() {
                     .collect(),
             ),
             ir_model: compiled.model.observations[0].clone(),
-            observations: obs.iter().map(|o| o.value).collect(),
+            observations: dense_cells(obs.iter().map(|o| o.value).collect()),
             obs_times: obs.iter().map(|o| o.time).collect(),
-        }],
+            aux: vec![],
+        }]).unwrap().0,
         compiled.clone(),
     ).unwrap();
 

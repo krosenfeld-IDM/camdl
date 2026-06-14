@@ -114,6 +114,7 @@ let rec expr_to_json (e : expr) : Yojson.Safe.t =
   | Time         -> obj [("time", null)]
   | Dt           -> obj [("dt", null)]
   | Projected    -> obj [("projected", null)]
+  | ObsColumnRef c -> obj [("obs_column_ref", str c)]
   | BinOp b      ->
     obj [("bin_op", obj [
       ("op",    str (bin_op_str b.op));
@@ -172,6 +173,7 @@ let rec expr_of_json (j : Yojson.Safe.t) : expr =
     | ["time"]         -> Time
     | ["dt"]           -> Dt
     | ["projected"]    -> Projected
+    | ["obs_column_ref"] -> ObsColumnRef (as_string (List.assoc "obs_column_ref" kvs))
     | ["bin_op"]       ->
       let b = List.assoc "bin_op" kvs in
       BinOp {
@@ -709,19 +711,77 @@ let obs_schedule_of_json j =
   )
   | _ -> fail "observation_schedule must be a single-key object"
 
-let observation_model_to_json (om : observation_model) : Yojson.Safe.t =
+let obs_column_role_to_json (r : obs_column_role) : Yojson.Safe.t =
+  match r with
+  | RoleTime    -> `String "time"
+  | RoleDim d   -> obj [("dim", str d)]
+  | RoleValue k -> obj [("value", str (param_kind_name k))]
+
+let obs_column_role_of_json j =
+  match j with
+  | `String "time" -> RoleTime
+  | `Assoc _ -> (
+    match member_opt "dim" j, member_opt "value" j with
+    | Some d, None -> RoleDim (as_string d)
+    | None, Some v ->
+      (match param_kind_of_name (as_string v) with
+       | Some k -> RoleValue k
+       | None   -> fail "unknown column value type '%s'" (as_string v))
+    | _ -> fail "column role object must be {dim:…} or {value:…}")
+  | _ -> fail "column role must be \"time\" or {dim:…}/{value:…}"
+
+let obs_column_to_json (c : obs_column) : Yojson.Safe.t =
   obj [
-    ("name",        str om.name);
-    ("schedule",    obs_schedule_to_json om.schedule);
-    ("projection",  projection_to_json om.projection);
-    ("likelihood",  likelihood_to_json om.likelihood);
+    ("name", str c.col_name);
+    ("role", obs_column_role_to_json c.col_role);
   ]
 
+let obs_column_of_json j =
+  { col_name = as_string (member "name" j);
+    col_role = obs_column_role_of_json (member "role" j); }
+
+let stratum_key_to_json ((d, l) : string * string) : Yojson.Safe.t =
+  obj [("dim", str d); ("level", str l)]
+
+let stratum_key_of_json j =
+  (as_string (member "dim" j), as_string (member "level" j))
+
+let observation_model_to_json (om : observation_model) : Yojson.Safe.t =
+  let base = [
+    ("name",          str om.name);
+    ("source",        str om.obs_source);
+    ("columns",       arr (List.map obs_column_to_json om.columns));
+    ("scored",        str om.scored);
+  ] in
+  let sched = match om.emit_schedule with
+    | None   -> []
+    | Some s -> [("emit_schedule", obs_schedule_to_json s)]
+  in
+  (* Omit the `stratum` key when empty (unstratified stream) — mirrors the
+     Rust `skip_serializing_if = "Vec::is_empty"`, so existing goldens for
+     un-indexed observations are byte-identical. *)
+  let stratum = match om.stratum with
+    | [] -> []
+    | ss -> [("stratum", arr (List.map stratum_key_to_json ss))]
+  in
+  obj (base @ sched @ stratum @ [
+    ("projection",  projection_to_json om.projection);
+    ("likelihood",  likelihood_to_json om.likelihood);
+  ])
+
 let observation_model_of_json j =
-  { name        = as_string (member "name"        j);
-    schedule    = obs_schedule_of_json (member "schedule"   j);
-    projection  = projection_of_json  (member "projection" j);
-    likelihood  = likelihood_of_json  (member "likelihood" j);
+  { name          = as_string (member "name"   j);
+    obs_source    = as_string (member "source" j);
+    columns       = List.map obs_column_of_json (as_list (member "columns" j));
+    scored        = as_string (member "scored" j);
+    emit_schedule = (match member_opt "emit_schedule" j with
+                     | Some `Null | None -> None
+                     | Some s -> Some (obs_schedule_of_json s));
+    stratum       = (match member_opt "stratum" j with
+                     | Some `Null | None -> []
+                     | Some s -> List.map stratum_key_of_json (as_list s));
+    projection    = projection_of_json  (member "projection" j);
+    likelihood    = likelihood_of_json  (member "likelihood" j);
   }
 
 (* ── Parameters ──────────────────────────────────────────────────────────── *)

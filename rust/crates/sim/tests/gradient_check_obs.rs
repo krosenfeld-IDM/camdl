@@ -21,7 +21,7 @@ use std::sync::Arc;
 use sim::compiled_model::CompiledModel;
 use sim::inference::pgas::{IVPMapping, simulate_reference, complete_data_loglik, build_obs_at_substep};
 use sim::inference::pgas_grad::complete_data_loglik_grad;
-use sim::inference::MultiStreamObsModel;
+use sim::inference::{BoundObs, MultiStreamObsModel, dense_cells};
 use sim::inference::multi_stream_obs::{StreamProjection, StreamSpec, eval_stream_projection};
 use sim::inference::particle_filter::Observation;
 use sim::rng::StatefulRng;
@@ -45,11 +45,12 @@ fn build_obs_model(
         StreamSpec {
             projection,
             ir_model: om.clone(),
-            observations: per_stream_data[si].clone(),
+            observations: dense_cells(per_stream_data[si].clone()),
             obs_times: obs_times.to_vec(),
+            aux: vec![],
         }
     }).collect();
-    MultiStreamObsModel::new(specs, compiled).unwrap()
+    MultiStreamObsModel::new(BoundObs::bind(specs).unwrap().0, compiled).unwrap()
 }
 
 fn set_param_defaults(model: &mut ir::Model, defaults: &[(&str, f64)]) {
@@ -247,7 +248,7 @@ fn obs_sd_for_likelihood(
     use sim::resolved_expr::{ResolvedLikelihood, eval_resolved};
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0,
-        projected: Some(proj), int_float_override: None,
+        projected: Some(proj), aux: None, int_float_override: None,
     };
     match lh {
         ResolvedLikelihood::NegBinomial { mean, dispersion } => {
@@ -294,7 +295,7 @@ fn obs_mean_for_likelihood(
     use sim::resolved_expr::{ResolvedLikelihood, eval_resolved};
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0,
-        projected: Some(proj), int_float_override: None,
+        projected: Some(proj), aux: None, int_float_override: None,
     };
     match lh {
         ResolvedLikelihood::NegBinomial { mean, .. } => eval_resolved(mean, &ctx(projected)),

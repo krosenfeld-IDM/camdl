@@ -34,7 +34,7 @@ use sim::{
     inference::{
         if2::{run_if2, IF2Config, Observation},
         pmmh::{run_pmmh, PMMHConfig, Prior},
-        ChainBinomialProcess, MultiStreamObsModel,
+        BoundObs, ChainBinomialProcess, MultiStreamObsModel,
         multi_stream_obs::StreamSpec,
     },
 };
@@ -487,16 +487,24 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
     };
 
     let mut per_stream_obs: Vec<Vec<Observation>> = Vec::with_capacity(bound_streams.len());
-    let mut canonical_times: Option<Vec<f64>> = None;
-    let n_streams = bound_streams.len();
     for (sname, spath) in &bound_streams {
         let path_str = spath.to_string_lossy().into_owned();
-        let result = if n_streams == 1 {
-            crate::pfilter::load_data_tsv_column(&path_str, sname, &time_opts)
-                .or_else(|_| crate::pfilter::load_data_tsv_pub(&path_str, &time_opts))
-        } else {
-            crate::pfilter::load_data_tsv_column(&path_str, sname, &time_opts)
-        };
+        // Strict by-name binding — no positional fallback (G1). The declared
+        // `time` column is the axis (by-name-time flip) and `scored` is the
+        // value; both must match the file header exactly (a typo'd/wrong-cased
+        // header is a located error, not a silent positional bind).
+        let obs_block = model.observations.iter()
+            .find(|o| &o.name == sname)
+            .unwrap_or_else(|| {
+                eprintln!("error: no observation block named '{}'", sname);
+                std::process::exit(1);
+            });
+        let time_col = crate::pfilter::obs_time_column(obs_block).unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+        let result = crate::pfilter::load_data_tsv_column(
+            &path_str, time_col, &obs_block.scored, &time_opts);
         let stream_obs: Vec<Observation> = match result {
             Ok(v) => v.into_iter().map(|o| Observation { time: o.time, value: o.value }).collect(),
             Err(e) => {
@@ -505,29 +513,23 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 std::process::exit(1);
             }
         };
-        let times: Vec<f64> = stream_obs.iter().map(|o| o.time).collect();
-        match &canonical_times {
-            None => canonical_times = Some(times),
-            Some(ct) => {
-                if ct.len() != times.len()
-                    || ct.iter().zip(&times).any(|(a, b)| (a - b).abs() > 1e-9)
-                {
-                    eprintln!(
-                        "error: observation times for stream '{}' differ from \
-                         the first resolved stream. All streams in a profile \
-                         must share identical observation times.",
-                        sname,
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
         per_stream_obs.push(stream_obs);
     }
 
-    // First stream's obs vector is the canonical schedule; downstream
-    // code reads it for `obs_times` only.
-    let observations: Vec<Observation> = per_stream_obs[0].clone();
+    // Canonical schedule: the sorted-unique UNION of every stream's observation
+    // times (multi-cadence, proposal 2026-06-10 §3.3). Downstream code reads it
+    // for `obs_times` (the substep grid + the ODE-MLE / PMMH consumers); `bind`
+    // re-merges each stream's own schedule to this union and records per-stream
+    // `at_union` membership. The old "must share identical observation times"
+    // guard was the no-silent-gaps stance for machinery that did not yet exist.
+    let observations: Vec<Observation> = {
+        let mut times: Vec<f64> = per_stream_obs.iter()
+            .flat_map(|obs| obs.iter().map(|o| o.time))
+            .collect();
+        times.sort_by(|a, b| a.partial_cmp(b).expect("observation times are finite"));
+        times.dedup();
+        times.into_iter().map(|time| Observation { time, value: 0.0 }).collect()
+    };
     let observations = Arc::new(observations);
 
     let flow_indices = crate::util::resolve_flow_indices(&model, flow_name.as_deref())
@@ -744,7 +746,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 ).map(Arc::new),
         };
 
-    let process = Arc::new(ChainBinomialProcess::new(compiled.clone(), dt));
+    let process = Arc::new(ChainBinomialProcess::new(compiled.clone()));
     // Build one StreamSpec per resolved IR observation. For
     // single-stream profiles `--flow <name>` overrides the IR
     // projection (forces incidence over the named transition family);
@@ -786,14 +788,25 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     &obs.projection, &compiled, &obs.name,
                 ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); })
             };
-            stream_specs.push(StreamSpec {
+            // profile is dense + aux-free in v1 (survey denominators are a
+            // `camdl fit` / `pfilter` feature; profile rejects NA upstream).
+            // Multi-cadence (§3.3): feed each stream its OWN schedule (from
+            // `stream_obs`), NOT the union `obs_times_vec`. `bind` re-merges to
+            // the union and records per-stream `at_union` membership; the dense
+            // cells have len == this stream's own obs_times.len().
+            stream_specs.push(StreamSpec::dense(
                 projection,
-                ir_model: (*obs).clone(),
-                observations: stream_obs.iter().map(|o| o.value).collect(),
-                obs_times: obs_times_vec.clone(),
-            });
+                (*obs).clone(),
+                sim::inference::dense_cells(
+                    stream_obs.iter().map(|o| o.value).collect()),
+                stream_obs.iter().map(|o| o.time).collect(),
+            ));
         }
-        Arc::new(MultiStreamObsModel::new(stream_specs, compiled.clone())
+        let (bound, _report) = BoundObs::bind(stream_specs).unwrap_or_else(|report| {
+            eprintln!("error: observation data invalid:\n{}", report.render());
+            std::process::exit(1);
+        });
+        Arc::new(MultiStreamObsModel::new(bound, compiled.clone())
             .unwrap_or_else(|e| {
                 eprintln!("error: observation model construction failed: {:?}", e);
                 std::process::exit(1);
@@ -1364,9 +1377,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                 // PF process kernel + obs model for this cell. PMMH on
                 // profile is chain_binomial-only (rejected upstream for
                 // --backend ode), so wire ChainBinomialProcess directly.
-                let pf_process = ChainBinomialProcess::new(
-                    compiled.clone(), pmmh_config.dt,
-                );
+                let pf_process = ChainBinomialProcess::new(compiled.clone());
                 let pf_obs_model = Arc::clone(&obs_model_obj);
                 let smc_cfg = sim::inference::traits::SMCConfig {
                     n_particles: pmmh_config.n_particles,
@@ -1393,9 +1404,7 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
                     &[f64],
                     &sim::inference::correlated_pf::PFRandomState,
                 ) -> f64>> = if pmmh_config.rho.is_some() {
-                    let pf_process2 = ChainBinomialProcess::new(
-                        compiled.clone(), pmmh_config.dt,
-                    );
+                    let pf_process2 = ChainBinomialProcess::new(compiled.clone());
                     let pf_obs_model2 = Arc::clone(&obs_model_obj);
                     let smc_cfg2 = smc_cfg.clone();
                     let cell_seed = job_seed;

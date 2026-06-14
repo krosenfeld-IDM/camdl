@@ -15,6 +15,7 @@ use sim::{
         particle_filter::Observation,
         traits::SMCConfig,
         ChainBinomialProcess,
+        BoundObs,
         MultiStreamObsModel,
         multi_stream_obs::StreamSpec,
     },
@@ -135,56 +136,135 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         format: a.inference.time_format,
     };
 
-    // Build per-stream Observation vectors. For each bound stream
-    // try the column-named loader first (multi-stream wide TSV),
-    // fall back to the 2-col TSV loader when there's a single
-    // stream (preserves the legacy single-stream `time,value`
-    // schema). For multi-stream, every column must be named.
+    // Build per-stream Observation vectors. Every stream binds its value
+    // column by NAME — the data column header must match the model's
+    // `observe` name exactly. There is no positional fallback: a typo'd
+    // or wrong-cased header is a located error, not a silent bind to the
+    // positionally-first value column (G1). A single-stream `time\tcases`
+    // file still loads because `cases` matches the header by name.
+    //
+    // Sparse/holes: the value column may contain the missing-value token
+    // `NA`, which loads as a HOLE — its time stays in the observation grid
+    // (so the incidence accumulator still resets there) but it carries no
+    // value (no likelihood term). `per_stream_cells` is the authoritative
+    // per-grid-time cell vector threaded into the obs model; `per_stream_obs`
+    // is a dense placeholder view (holes → 0.0) consumed only by the
+    // diagnostic/time paths (schedule validation, origin checks, trace
+    // timestamps) where a hole's value is not load-bearing.
     let n_streams = bound_streams.len();
     let mut per_stream_obs: Vec<Vec<Observation>> = Vec::with_capacity(n_streams);
+    let mut per_stream_cells: Vec<Vec<Option<sim::inference::ObsCell>>> =
+        Vec::with_capacity(n_streams);
+    // Per-observation auxiliary data (binomial `n = tested`, person-time offset)
+    // bound by name alongside the scored value (§3, §6.1).
+    let mut per_stream_aux: Vec<Vec<Vec<(String, f64)>>> = Vec::with_capacity(n_streams);
     for (sname, spath) in &bound_streams {
         let path_str = spath.to_string_lossy().into_owned();
-        let result = if n_streams == 1 {
-            load_data_tsv_column(&path_str, sname, &time_opts)
-                .or_else(|_| load_data_tsv(&path_str, &time_opts))
+        // Bind columns BY NAME from the stream's `columns { }`: the declared
+        // `time` column is the axis (by-name-time flip), `scored` is the value.
+        let obs_block = model.observations.iter()
+            .find(|o| &o.name == sname)
+            .unwrap_or_else(|| {
+                eprintln!("error: no observation block named '{}'", sname);
+                std::process::exit(1);
+            });
+        // DISPATCH: a stratified (long-form) stream — its `columns { }` declares
+        // at least one `: dim` column — loads via the long-form router, which
+        // routes file rows to the matching stratum leaf BY NAME and builds the
+        // partial-coverage union axis. An unstratified stream keeps the existing
+        // wide/by-name path UNCHANGED (one value column per file).
+        let (times, cells, aux) = if is_long_form_stream(obs_block) {
+            let siblings: Vec<&ir::observation::ObservationModel> = model.observations.iter()
+                .filter(|o| o.source == obs_block.source)
+                .collect();
+            load_long_form_stream(&path_str, obs_block, &siblings, &time_opts)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: cannot load long-form data for stream '{}' from {}: {}",
+                        sname, path_str, e);
+                    std::process::exit(1);
+                })
         } else {
-            load_data_tsv_column(&path_str, sname, &time_opts)
+            let time_col = obs_time_column(obs_block).unwrap_or_else(|e| {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            });
+            let (times, mut cells) =
+                load_data_tsv_column_cells(&path_str, time_col, &obs_block.scored, &time_opts)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: cannot load data column '{}' from {}: {}",
+                            sname, path_str, e);
+                        std::process::exit(1);
+                    });
+            // Load the stream's aux columns (Stage 2). A row where the scored
+            // value OR any referenced aux is `NA` is a hole (present-together-
+            // or-hole) — clear the aux for a hole.
+            let aux_cols = stream_aux_columns(obs_block);
+            let (mut aux, force_hole) =
+                load_stream_aux(&path_str, &aux_cols, cells.len())
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: cannot load aux data for stream '{}' from {}: {}",
+                            sname, path_str, e);
+                        std::process::exit(1);
+                    });
+            for r in 0..cells.len() {
+                if force_hole[r] {
+                    cells[r] = None;
+                }
+                if cells[r].is_none() {
+                    aux[r].clear();
+                }
+            }
+            (times, cells, aux)
         };
-        match result {
-            Ok(obs) => per_stream_obs.push(obs),
-            Err(e) => {
-                eprintln!("error: cannot load data column '{}' from {}: {}",
-                    sname, path_str, e);
-                std::process::exit(1);
-            }
-        }
+        // Dense placeholder view (holes → 0.0) for diagnostics/time.
+        let obs: Vec<Observation> = times.iter().zip(cells.iter())
+            .map(|(&time, cell)| Observation {
+                time,
+                value: match cell {
+                    Some(sim::inference::ObsCell::Scalar(v)) => *v,
+                    None => 0.0,
+                },
+            }).collect();
+        per_stream_obs.push(obs);
+        per_stream_cells.push(cells);
+        per_stream_aux.push(aux);
     }
 
-    // Validate every stream shares the same obs_times schedule.
-    {
-        let first_times: Vec<f64> = per_stream_obs[0].iter().map(|o| o.time).collect();
-        for (i, obs) in per_stream_obs.iter().enumerate().skip(1) {
-            let times: Vec<f64> = obs.iter().map(|o| o.time).collect();
-            if times.len() != first_times.len()
-                || times.iter().zip(&first_times).any(|(a, b)| (a - b).abs() > 1e-9)
-            {
-                eprintln!(
-                    "error: observation times for stream '{}' differ from \
-                     stream '{}'. All streams must share identical observation \
-                     times.",
-                    bound_streams[i].0, bound_streams[0].0);
-                std::process::exit(1);
-            }
-        }
+    // Holes (missing observations via `NA`) are correct for the filter
+    // log-likelihood — a hole contributes no term but still resets the bin
+    // (the authoritative `per_stream_cells` carry `None`). But the prequential
+    // and `--trace` outputs read the dense placeholder view, where a hole shows
+    // as 0: prequential would score elpd/CRPS/PIT against a fictitious observed
+    // 0, and the trace's `observed` column would report 0 at a missing week.
+    // Rather than emit a silently-wrong diagnostic, reject the combination until
+    // those paths thread holes through (follow-up). The plain filter loglik is
+    // unaffected.
+    let has_holes = per_stream_cells.iter().any(|cells| cells.iter().any(|c| c.is_none()));
+    if let Err(e) = check_holes_output_compat(
+        has_holes, save_prequential.is_some(), trace_path.is_some(),
+    ) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
     }
 
-    // Canonical observations: first stream's vector. Downstream
-    // single-stream code paths (trace, prequential, save_filtering,
-    // save_paths, save_final_state) consume `obs.time` and
-    // `obs.value`; for multi-stream the `.value` is the first
-    // stream's, which is fine for trace timestamps and the
-    // single-loglik scalar output (which sums across streams).
-    let observations = per_stream_obs[0].clone();
+    // Canonical observations: the sorted-unique UNION of every stream's
+    // observation times (multi-cadence, proposal 2026-06-10 §3.3). `bind`
+    // re-merges each stream's own schedule to this union and records per-stream
+    // `at_union` membership; the per-stream incidence reset (Phase 2a) fires
+    // only where a stream is scheduled. Downstream single-stream code paths
+    // (trace, prequential, save_filtering, save_paths, save_final_state) consume
+    // `obs.time` (the union grid) and `obs.value` (a never-scored placeholder
+    // 0.0 — the per-stream scored values live in `per_stream_cells`). The old
+    // "must share identical observation times" guard was the no-silent-gaps
+    // stance for machinery that did not yet exist; it now exists.
+    let observations: Vec<Observation> = {
+        let mut times: Vec<f64> = per_stream_obs.iter()
+            .flat_map(|obs| obs.iter().map(|o| o.time))
+            .collect();
+        times.sort_by(|a, b| a.partial_cmp(b).expect("observation times are finite"));
+        times.dedup();
+        times.into_iter().map(|time| Observation { time, value: 0.0 }).collect()
+    };
 
     eprintln!("pfilter: {} observations × {} streams, {} particles, dt={}, seed={}",
         observations.len(), n_streams, n_particles, dt, seed);
@@ -282,6 +362,13 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
     let t_start = compiled.model.simulation.t_start;
     for (stream_obs, ir_obs) in per_stream_obs.iter().zip(bound_ir.iter()) {
         let times: Vec<f64> = stream_obs.iter().map(|o| o.time).collect();
+        // F4: an observation strictly before the model origin can never be
+        // propagated to — its window yields zero substeps yet it is still
+        // scored (a silent wrong answer). Reject loudly before the filter runs.
+        if let Err(e) = crate::util::check_obs_before_origin(&ir_obs.name, t_start, &times) {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
         let first_value = stream_obs.first().map(|o| o.value).unwrap_or(0.0);
         let incidence_override = ir::observation::Projection::CumulativeFlow(String::new());
         let effective_projection = if flow_name.is_some() {
@@ -299,17 +386,36 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
 
     // Build process + observation model via traits
     let compiled = std::sync::Arc::new(compiled);
-    let process = ChainBinomialProcess::new(compiled.clone(), dt);
+    let process = ChainBinomialProcess::new(compiled.clone());
 
-    let obs_times: Vec<f64> = observations.iter().map(|o| o.time).collect();
+    // Authoritative per-stream cells (holes = `None`) thread into the obs
+    // model; `per_stream_obs` is only the dense placeholder view for
+    // diagnostics. A hole contributes no likelihood term but still resets the
+    // incidence accumulator at its grid index (the filter loop reset is
+    // per-obs-index, not gated on value presence).
+    //
+    // Multi-cadence (§3.3): each stream feeds `bind` its OWN schedule (derived
+    // from `per_stream_obs`, the per-stream time vector), NOT the union
+    // `obs_times`. `bind` re-merges them to the union and records per-stream
+    // `at_union` membership. `cells.len()` == this stream's own obs_times.len().
+    let per_stream_times: Vec<Vec<f64>> = per_stream_obs.iter()
+        .map(|obs| obs.iter().map(|o| o.time).collect())
+        .collect();
     let stream_specs: Vec<StreamSpec> = bound_ir.iter().zip(projections.into_iter())
-        .zip(per_stream_obs.iter()).map(|((o, projection), stream_obs)| StreamSpec {
+        .zip(per_stream_cells.into_iter()).zip(per_stream_aux.into_iter())
+        .zip(per_stream_times.into_iter())
+        .map(|((((o, projection), cells), aux), stream_times)| StreamSpec {
             projection,
             ir_model: o.clone(),
-            observations: stream_obs.iter().map(|x| x.value).collect(),
-            obs_times: obs_times.clone(),
+            observations: cells,
+            obs_times: stream_times,
+            aux,
         }).collect();
-    let obs_model = MultiStreamObsModel::new(stream_specs, compiled.clone())
+    let (bound, _report) = BoundObs::bind(stream_specs).unwrap_or_else(|report| {
+        eprintln!("error: observation data invalid:\n{}", report.render());
+        std::process::exit(1);
+    });
+    let obs_model = MultiStreamObsModel::new(bound, compiled.clone())
         .unwrap_or_else(|e| {
             eprintln!("error: observation model construction failed: {:?}", e);
             std::process::exit(1);
@@ -621,6 +727,37 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
 
 use crate::caltime_load::{check_substeps_and_grid, convert_time_column, TimeFormat, TimeOpts};
 
+/// Reject output modes that would silently mis-handle a hole (a missing `NA`
+/// observation). A hole is correct for the filter log-likelihood — it
+/// contributes no term but still resets the incidence bin — but `--save-prequential`
+/// and `--trace` read the dense placeholder view where a hole shows as `0`, so
+/// they would score / report a fictitious observed zero at a missing week.
+/// Hard-error rather than emit a silently-wrong diagnostic; full hole support
+/// for these paths is a follow-up. (The plain filter loglik is unaffected.)
+fn check_holes_output_compat(
+    has_holes: bool,
+    save_prequential: bool,
+    trace: bool,
+) -> Result<(), String> {
+    if !has_holes {
+        return Ok(());
+    }
+    if save_prequential {
+        return Err("--save-prequential is not yet supported with missing observations \
+            (NA holes): the prequential scores (elpd / CRPS / PIT) would treat a hole \
+            as an observed 0. The filter log-likelihood handles holes correctly; rerun \
+            without --save-prequential."
+            .to_string());
+    }
+    if trace {
+        return Err("--trace is not yet supported with missing observations (NA holes): \
+            the trace's `observed` column would report 0 at a missing week. The filter \
+            log-likelihood handles holes correctly; rerun without --trace."
+            .to_string());
+    }
+    Ok(())
+}
+
 /// gh#90: fit-toml fallback for `camdl pfilter --fit fit.toml` (no CLI
 /// `--data` flags). Reads `[data]` from the toml and returns a list of
 /// (stream_name, path) bindings — same shape `resolve_data_specs`
@@ -647,86 +784,488 @@ pub fn load_data_observations_from_fit_toml(
     Ok(entries)
 }
 
-/// Load observation data from a TSV file (first value column), routing the
-/// time column through the calendar-time boundary translator (numeric or
-/// dated, per `opts`). The `_pub` suffix is historical (cross-module reuse).
-pub fn load_data_tsv_pub(path: &str, opts: &TimeOpts) -> Result<Vec<Observation>, String> {
-    load_data_tsv(path, opts)
+/// Parse the raw rows of one named TSV column into per-row cells. A cell is
+/// `None` for a HOLE (the missing-value token `NA`) and `Some(v)` for an
+/// observed finite value. The TIME of a hole row is retained (the row is
+/// kept) so the observation grid is unchanged — only the value is absent.
+///
+/// `NaN`/`inf` are rejected as garbage (a hole is `NA`, not a non-finite
+/// number). Strict by-name column binding, no positional fallback (G1).
+///
+/// Shared core of [`load_data_tsv_column`] (which rejects holes for the dense
+/// callers) and [`load_data_tsv_column_cells`] (the sparse/holes pfilter path).
+fn parse_column_cells<'a>(
+    content: &'a str,
+    path: &str,
+    time_column: &str,
+    column: &str,
+) -> Result<(Vec<&'a str>, Vec<Option<f64>>, Vec<usize>), String> {
+    let mut lines = content.lines();
+    let header = lines.next().ok_or("empty data file")?;
+    let cols: Vec<&str> = header.split('\t').collect();
+
+    // Find the TIME column index BY NAME (the by-name-time flip — no
+    // positional "column 0 is time" fallback; 2026-06-10 §6.2). A file whose
+    // headers do not match the declared `time` column is a located error.
+    let time_idx = cols.iter().position(|&c| c == time_column)
+        .ok_or_else(|| format!(
+            "time column '{time_column}' not found in data file '{path}'. \
+             Headers present: [{}]. Fix: rename the data column to \
+             '{time_column}' (it must match the declared `time : time` column \
+             name, case-sensitive).",
+            cols.join(", ")))?;
+
+    // Find the VALUE column index for the requested stream. Binding is
+    // strict by name — there is NO positional fallback. A typo'd,
+    // wrong-cased, or renamed header is a located error, not a silent
+    // bind to whatever column happens to be positionally first (G1: a
+    // wrong-answer-with-exit-0). The data column header must match the
+    // declared `scored` column exactly.
+    let col_idx = cols.iter().position(|&c| c == column)
+        .ok_or_else(|| {
+            let available = cols.iter().filter(|&&c| c != time_column)
+                .copied().collect::<Vec<_>>();
+            let available = if available.is_empty() {
+                "(no value columns — only a time column)".to_string()
+            } else {
+                available.join(", ")
+            };
+            format!(
+                "observation column '{column}' not found in data file '{path}'. \
+                 Value column headers present: [{available}]. \
+                 Fix: rename the data column to '{column}' (it must match the \
+                 declared `scored` column exactly, case-sensitive), or rename the \
+                 model's `columns {{ }}` to match the data header."
+            )
+        })?;
+
+    let max_idx = time_idx.max(col_idx);
+
+    // Two-pass: collect raw time cells + cells, then convert the whole
+    // time column at once (whole-column detection — proposal §6.3).
+    let mut time_cells: Vec<&str> = Vec::new();
+    let mut rows: Vec<usize> = Vec::new();
+    let mut cells: Vec<Option<f64>> = Vec::new();
+    for (line_num, line) in lines.enumerate() {
+        if line.trim().is_empty() { continue; }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() <= max_idx {
+            return Err(format!("line {}: expected {}+ columns, got {}",
+                line_num + 2, max_idx + 1, fields.len()));
+        }
+        let raw = fields[col_idx].trim();
+        // TODO: make the missing-value token (`NA`) a user option (CLI flag /
+        // config) — hard-coded for now.
+        let cell = if raw == "NA" {
+            None // hole: time retained, value absent → no likelihood term
+        } else {
+            let value: f64 = raw.parse()
+                .map_err(|_| format!("line {}: cannot parse value '{}' in column '{}'",
+                    line_num + 2, fields[col_idx], column))?;
+            if !value.is_finite() {
+                return Err(format!(
+                    "line {} (t='{}'): non-finite observation value '{}' in column '{}' \
+                     — NaN and infinities are not valid observations (a missing value \
+                     is the token `NA`). Fix or remove the row.",
+                    line_num + 2, fields[time_idx].trim(), fields[col_idx].trim(), column));
+            }
+            Some(value)
+        };
+        time_cells.push(fields[time_idx]);
+        rows.push(line_num + 2);
+        cells.push(cell);
+    }
+
+    Ok((time_cells, cells, rows))
 }
 
-/// Load observations from a specific column in a TSV file.
-/// The column name must match a header field. First column is always time.
+/// The declared `Time`-role column name for an observation stream — the fit
+/// time source (the by-name-time flip; 2026-06-10 §2.5/§6.2). A stream's
+/// `columns { }` must declare exactly one `: time` column (the OCaml expander
+/// enforces this at compile); this surfaces a clear error if a malformed IR
+/// (no time column) somehow reaches the loader.
+pub fn obs_time_column(obs: &ir::observation::ObservationModel) -> Result<&str, String> {
+    obs.columns.iter()
+        .find(|c| c.role == ir::observation::ColumnRole::Time)
+        .map(|c| c.name.as_str())
+        .ok_or_else(|| format!(
+            "observation stream '{}' declares no `: time` column in `columns {{ }}` \
+             — cannot determine the time axis to bind.",
+            obs.name))
+}
+
+/// Load observations from a TSV by NAME: both `time_column` (the time axis)
+/// and `column` (the value) must match header fields exactly — no positional
+/// fallback for either (the by-name-time flip; 2026-06-10 §6.2).
+///
+/// DENSE path: a hole (`NA`) is an error here — callers on this path
+/// (survey, profile, fit) do not yet support holes. The sparse/holes pfilter
+/// path uses [`load_data_tsv_column_cells`].
 pub fn load_data_tsv_column(
     path: &str,
+    time_column: &str,
     column: &str,
     opts: &TimeOpts,
 ) -> Result<Vec<Observation>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("{}: {}", path, e))?;
-    let mut lines = content.lines();
-    let header = lines.next().ok_or("empty data file")?;
-    let cols: Vec<&str> = header.split('\t').collect();
-
-    // Find the column index for the requested stream name
-    let col_idx = cols.iter().position(|&c| c == column)
-        .or({
-            // Fallback: if only 2 columns (time + value), use column 1
-            if cols.len() == 2 { Some(1) } else { None }
-        })
-        .ok_or_else(|| format!(
-            "column '{}' not found in data file '{}'. Available columns: {:?}",
-            column, path, &cols[1..]))?;
-
-    // Two-pass: collect raw time cells + values, then convert the whole
-    // time column at once (whole-column detection — proposal §6.3).
-    let mut time_cells: Vec<&str> = Vec::new();
-    let mut rows: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
-    for (line_num, line) in lines.enumerate() {
-        if line.trim().is_empty() { continue; }
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() <= col_idx {
-            return Err(format!("line {}: expected {}+ columns, got {}",
-                line_num + 2, col_idx + 1, fields.len()));
+    let (time_cells, cells, rows) = parse_column_cells(&content, path, time_column, column)?;
+    // Reject holes on the dense path with a located message.
+    let mut values: Vec<f64> = Vec::with_capacity(cells.len());
+    for (i, c) in cells.iter().enumerate() {
+        match c {
+            Some(v) => values.push(*v),
+            None => return Err(format!(
+                "line {} (t='{}'): missing value `NA` in column '{}' is not supported \
+                 on this path. Holes (NA) are only handled by `camdl pfilter`.",
+                rows[i], time_cells[i].trim(), column)),
         }
-        let value: f64 = fields[col_idx].trim().parse()
-            .map_err(|_| format!("line {}: cannot parse value '{}' in column '{}'",
-                line_num + 2, fields[col_idx], column))?;
-        time_cells.push(fields[0]);
-        rows.push(line_num + 2);
-        values.push(value);
     }
-
     finalize_observations(time_cells, values, rows, opts)
 }
 
-fn load_data_tsv(path: &str, opts: &TimeOpts) -> Result<Vec<Observation>, String> {
+/// Sparse/holes-aware load of one named TSV column for `camdl pfilter`.
+/// Returns the converted observation `times` and the per-row cell vector,
+/// where `None` is a hole (the `NA` token): its time stays in the grid (so
+/// the incidence accumulator still resets there) but it carries no value (no
+/// likelihood term). Same time-conversion + grid/ordering checks as
+/// [`load_data_tsv_column`]; only the value column may contain `NA`.
+pub fn load_data_tsv_column_cells(
+    path: &str,
+    time_column: &str,
+    column: &str,
+    opts: &TimeOpts,
+) -> Result<(Vec<f64>, Vec<Option<sim::inference::ObsCell>>), String> {
+    use sim::inference::ObsCell;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("{}: {}", path, e))?;
+    let (time_cells, cells, rows) = parse_column_cells(&content, path, time_column, column)?;
+
+    // Convert the time column + run the distinct-substep/off-grid/ordering
+    // checks via the same back-half used by the dense path — but on the time
+    // axis only, since holes have no value. We materialize a value vector
+    // where holes use a placeholder (0.0) purely to reuse `finalize_observations`
+    // for time conversion + grid checks; the placeholder is then discarded and
+    // the authoritative cells are returned.
+    let placeholder_values: Vec<f64> = cells.iter().map(|c| c.unwrap_or(0.0)).collect();
+    let observations = finalize_observations(time_cells, placeholder_values, rows, opts)?;
+
+    let times: Vec<f64> = observations.iter().map(|o| o.time).collect();
+    let obs_cells: Vec<Option<ObsCell>> = cells.iter()
+        .map(|c| c.map(ObsCell::Scalar))
+        .collect();
+    Ok((times, obs_cells))
+}
+
+/// Is this stream's data in LONG (stratified) form? True iff its declared
+/// `columns { }` contains at least one `: dim` column — the dispatch axis
+/// between the wide/by-name loader (one value column per file) and the
+/// long-form loader (one row per `(time, level, value)`, routed by name to
+/// the matching stratum leaf; 2026-06-10 observation data-entry §4.2).
+pub fn is_long_form_stream(obs: &ir::observation::ObservationModel) -> bool {
+    obs.columns.iter()
+        .any(|c| matches!(c.role, ir::observation::ColumnRole::Dim(_)))
+}
+
+/// The declared `: dim` column names of a stream, in declaration order. Empty
+/// for an unstratified stream.
+fn dim_column_names(obs: &ir::observation::ObservationModel) -> Vec<&str> {
+    obs.columns.iter()
+        .filter_map(|c| match &c.role {
+            ir::observation::ColumnRole::Dim(d) => Some(d.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Load ONE leaf of a stratified observation family from a LONG-FORM file
+/// (§4.2). The file carries a `time` column, one or more `: dim` columns, the
+/// scored value column, and any aux columns; each row is `(time, {dim→level},
+/// value, aux…)`. This loader:
+///
+/// - builds the UNION time axis across every row in the file (all strata
+///   share it — the normal partial-coverage serosurvey shape);
+/// - routes each row to the leaf whose `stratum` matches the row's
+///   `{dim→level}` BY NAME (order-independent (dim,level) set match);
+/// - for THIS `obs_block`, emits one cell per union time: `Some(Scalar(v))`
+///   when a matching row carries a finite value, `None` for a hole — both a
+///   `NA` value in a present row AND a union time where the leaf has no row
+///   (partial coverage). A hole carries no likelihood term and no false zero.
+///
+/// `siblings` is every observation block sharing this leaf's `source` (the
+/// whole stratified family, including `obs_block`); their strata define the
+/// valid level set per dim. A row whose level for some dim is absent from
+/// every sibling's stratum is a hard error (E281) — never silently remapped.
+///
+/// Returns `(union_times, cells, aux)` in the SAME shape the wide cells loader
+/// produces, so nothing downstream of the loader changes.
+#[allow(clippy::type_complexity)]
+pub fn load_long_form_stream(
+    path: &str,
+    obs_block: &ir::observation::ObservationModel,
+    siblings: &[&ir::observation::ObservationModel],
+    opts: &TimeOpts,
+) -> Result<
+    (Vec<f64>, Vec<Option<sim::inference::ObsCell>>, Vec<Vec<(String, f64)>>),
+    String,
+> {
+    use sim::inference::ObsCell;
+    use std::collections::BTreeMap;
+
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("{}: {}", path, e))?;
     let mut lines = content.lines();
     let header = lines.next().ok_or("empty data file")?;
     let cols: Vec<&str> = header.split('\t').collect();
-    if cols.len() < 2 {
-        return Err(format!("data file needs at least 2 columns (time, value), got {}", cols.len()));
+
+    let col_idx = |name: &str, what: &str| -> Result<usize, String> {
+        cols.iter().position(|&c| c == name).ok_or_else(|| format!(
+            "{what} column '{name}' not found in data file '{path}'. \
+             Headers present: [{}]. Fix: rename the data column to '{name}' \
+             (it must match the declared `columns {{ }}` name, case-sensitive).",
+            cols.join(", ")))
+    };
+
+    let time_col = obs_time_column(obs_block)?;
+    let time_idx = col_idx(time_col, "time")?;
+    let value_idx = col_idx(&obs_block.scored, "observation value")?;
+
+    let dim_names = dim_column_names(obs_block);
+    let dim_idxs: Vec<(String, usize)> = dim_names.iter()
+        .map(|d| Ok::<_, String>(((*d).to_string(), col_idx(d, "dimension")?)))
+        .collect::<Result<_, _>>()?;
+
+    let aux_cols = stream_aux_columns(obs_block);
+    let aux_idxs: Vec<(String, usize)> = aux_cols.iter()
+        .map(|c| Ok::<_, String>((c.clone(), col_idx(c, "aux")?)))
+        .collect::<Result<_, _>>()?;
+
+    // Valid level set per dim = the UNION of all sibling leaves' strata for
+    // that dim. The IR is self-contained: a level the model iterates over is
+    // exactly a level some sibling leaf observes. (Sorted for a stable error.)
+    let mut valid_levels: BTreeMap<&str, std::collections::BTreeSet<String>> =
+        BTreeMap::new();
+    for sib in siblings {
+        for sk in &sib.stratum {
+            valid_levels.entry(sk.dim.as_str()).or_default().insert(sk.level.clone());
+        }
     }
 
-    let mut time_cells: Vec<&str> = Vec::new();
-    let mut rows: Vec<usize> = Vec::new();
-    let mut values: Vec<f64> = Vec::new();
+    // This leaf's stratum as a `{dim→level}` map for the routing match.
+    let leaf_key: BTreeMap<&str, &str> = obs_block.stratum.iter()
+        .map(|sk| (sk.dim.as_str(), sk.level.as_str()))
+        .collect();
+
+    // Pass 1: parse every row of the file. Collect (raw_time, file_row,
+    // {dim→level}, scored cell, aux cells). Validate levels against the model
+    // (E281) here so an unknown level fails regardless of which leaf owns it.
+    struct Row<'a> {
+        raw_time: &'a str,
+        file_row: usize,
+        key:      BTreeMap<&'a str, String>,
+        value:    Option<f64>,
+        aux:      Vec<(String, Option<f64>)>,
+    }
+    let max_idx = [time_idx, value_idx].into_iter()
+        .chain(dim_idxs.iter().map(|(_, i)| *i))
+        .chain(aux_idxs.iter().map(|(_, i)| *i))
+        .max().unwrap();
+
+    let parse_cell = |raw: &str, what: &str, file_row: usize| -> Result<Option<f64>, String> {
+        let raw = raw.trim();
+        if raw == "NA" { return Ok(None); }
+        let v: f64 = raw.parse().map_err(|_| format!(
+            "line {file_row}: cannot parse {what} value '{raw}'"))?;
+        if !v.is_finite() {
+            return Err(format!(
+                "line {file_row}: non-finite {what} value '{raw}' — NaN and \
+                 infinities are not valid observations (a missing value is the \
+                 token `NA`). Fix or remove the row."));
+        }
+        Ok(Some(v))
+    };
+
+    let mut rows: Vec<Row> = Vec::new();
     for (line_num, line) in lines.enumerate() {
         if line.trim().is_empty() { continue; }
+        let file_row = line_num + 2;
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 2 {
-            return Err(format!("line {}: expected 2+ columns, got {}", line_num + 2, fields.len()));
+        if fields.len() <= max_idx {
+            return Err(format!("line {}: expected {}+ columns, got {}",
+                file_row, max_idx + 1, fields.len()));
         }
-        let value: f64 = fields[1].trim().parse()
-            .map_err(|_| format!("line {}: cannot parse value '{}'", line_num + 2, fields[1]))?;
-        time_cells.push(fields[0]);
-        rows.push(line_num + 2);
-        values.push(value);
+        // Dim levels — validate each against the model's level set (E281).
+        let mut key: BTreeMap<&str, String> = BTreeMap::new();
+        for (dim, idx) in &dim_idxs {
+            let level = fields[*idx].trim().to_string();
+            let known = valid_levels.get(dim.as_str())
+                .is_some_and(|set| set.contains(&level));
+            if !known {
+                let levels = valid_levels.get(dim.as_str())
+                    .map(|s| s.iter().cloned().collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "[E281] line {file_row} in '{path}': unknown level '{level}' \
+                     in column '{dim}'; model '{dim}' levels are [{levels}]. \
+                     A `: dim` column's values match the model dimension's levels \
+                     BY NAME — re-bin the data upstream (or aggregate, §5); never \
+                     silently remapped."));
+            }
+            key.insert(dim.as_str(), level);
+        }
+        let value = parse_cell(fields[value_idx], "observation", file_row)?;
+        let mut aux = Vec::with_capacity(aux_idxs.len());
+        for (name, idx) in &aux_idxs {
+            aux.push((name.clone(), parse_cell(fields[*idx], "aux", file_row)?));
+        }
+        rows.push(Row {
+            raw_time: fields[time_idx],
+            file_row,
+            key,
+            value,
+            aux,
+        });
     }
 
-    finalize_observations(time_cells, values, rows, opts)
+    // Per-leaf OWN time axis: only the rows whose `{dim→level}` equals THIS
+    // leaf's stratum (set match), in file order. Each leaf reports its OWN
+    // schedule to `bind` (exactly like an unstratified separate stream), which
+    // merges the family onto the union axis and marks the times where this leaf
+    // has NO row as NOT-SCHEDULED (`at_union = None`). That distinction is
+    // load-bearing for INCIDENCE: a leaf's accumulator resets only at ITS OWN
+    // observations, never at a sibling stratum's time. Routing every leaf onto a
+    // shared union with holes at sibling-only times instead would make each leaf
+    // "scheduled" everywhere and reset incidence bins on the union cadence —
+    // silently truncating a ragged-per-stratum incidence stream (PR#218 #1).
+    //
+    // An explicit `NA` row (value or aux missing) that BELONGS to the leaf stays
+    // a HOLE on the leaf's own axis (scheduled, no term, still resets for
+    // incidence) — the "we sampled, got nothing usable" case, distinct from an
+    // absent row ("we don't sample on this cadence", not-scheduled).
+    let mut own_raw: Vec<&str> = Vec::new();
+    let mut own_file_rows: Vec<usize> = Vec::new();
+    let mut cells: Vec<Option<ObsCell>> = Vec::new();
+    let mut aux: Vec<Vec<(String, f64)>> = Vec::new();
+    for r in &rows {
+        let belongs = leaf_key.len() == r.key.len()
+            && leaf_key.iter().all(|(&d, &lv)| r.key.get(d).map(String::as_str) == Some(lv));
+        if !belongs { continue; }
+        // Two rows of the SAME leaf at the SAME time is a data error (ambiguous
+        // cell). `own_raw` is short (this leaf's rows), so a linear scan is fine.
+        if own_raw.contains(&r.raw_time) {
+            return Err(format!(
+                "line {} in '{}': duplicate row for stratum {:?} at the same time \
+                 — each (time, stratum) cell must be unique.",
+                r.file_row, path,
+                leaf_key.iter().map(|(d, l)| format!("{d}={l}")).collect::<Vec<_>>()));
+        }
+        own_raw.push(r.raw_time);
+        own_file_rows.push(r.file_row);
+        // present-together-or-hole: a `NA` scored value OR any `NA` aux ⇒ hole.
+        let any_aux_na = r.aux.iter().any(|(_, v)| v.is_none());
+        match (r.value, any_aux_na) {
+            (Some(v), false) => {
+                cells.push(Some(ObsCell::Scalar(v)));
+                aux.push(r.aux.iter()
+                    .map(|(name, v)| (name.clone(), v.expect("checked no NA")))
+                    .collect());
+            }
+            _ => {
+                cells.push(None); // hole: value or aux absent
+                aux.push(Vec::new());
+            }
+        }
+    }
+
+    // Convert + validate THIS leaf's own times (per-leaf dated/numeric detection
+    // + substep/off-grid/ordering checks, with the leaf's REAL file-row line
+    // numbers in any diagnostic — not synthetic union positions).
+    let placeholder = vec![0.0_f64; own_raw.len()];
+    let own_obs = finalize_observations(own_raw, placeholder, own_file_rows, opts)?;
+    let own_times: Vec<f64> = own_obs.iter().map(|o| o.time).collect();
+
+    Ok((own_times, cells, aux))
+}
+
+/// The aux column names a stream's likelihood references (`Expr::ObsColumnRef`):
+/// a binomial denominator `n = tested`, a person-time offset, a reporting
+/// fraction. Returns them in declaration-stable order (de-duplicated).
+pub fn stream_aux_columns(obs: &ir::observation::ObservationModel) -> Vec<String> {
+    fn walk(e: &ir::expr::Expr, out: &mut Vec<String>) {
+        use ir::expr::Expr;
+        match e {
+            Expr::ObsColumnRef(w) => {
+                if !out.iter().any(|n| n == &w.obs_column_ref) {
+                    out.push(w.obs_column_ref.clone());
+                }
+            }
+            Expr::BinOp(w) => { walk(&w.bin_op.left, out); walk(&w.bin_op.right, out); }
+            Expr::UnOp(w) => walk(&w.un_op.arg, out),
+            Expr::Cond(w) => { walk(&w.cond.pred, out); walk(&w.cond.then, out); walk(&w.cond.else_, out); }
+            Expr::TableLookup(w) => { for ix in &w.table_lookup.indices { walk(ix, out); } }
+            Expr::UncheckedDim(w) => walk(&w.unchecked_dim.inner, out),
+            Expr::Reduce(w) => { for t in &w.reduce { walk(t, out); } }
+            _ => {}
+        }
+    }
+    use ir::observation::Likelihood as L;
+    let args: Vec<&ir::expr::Expr> = match &obs.likelihood {
+        L::Poisson(p) => vec![&p.rate],
+        L::NegBinomial(nb) => vec![&nb.mean, &nb.dispersion],
+        L::Normal(n) => vec![&n.mean, &n.sd],
+        L::Binomial(b) => vec![&b.n, &b.p],
+        L::BetaBinomial(bb) => vec![&bb.n, &bb.alpha, &bb.beta],
+        L::Bernoulli(b) => vec![&b.p],
+    };
+    let mut out = Vec::new();
+    for e in args { walk(e, &mut out); }
+    out
+}
+
+/// Load the per-observation auxiliary data for one stream (§3, §6.1): one
+/// `Option<f64>` per aux column per row (`None` for `NA`). Row count matches
+/// the scored column's. Returns, per row, the name→value list of PRESENT aux
+/// values, plus a per-row `force_hole` flag set when any referenced aux is
+/// missing (`NA`) — the scored cell then becomes a hole (present-together-or-
+/// hole; `binomial(n = NA)` is unconstructible). An aux column declared but
+/// whose header is absent is a located error (strict by-name, no fallback).
+pub fn load_stream_aux(
+    path: &str,
+    aux_cols: &[String],
+    n_rows_expected: usize,
+) -> Result<(Vec<Vec<(String, f64)>>, Vec<bool>), String> {
+    if aux_cols.is_empty() {
+        return Ok((vec![Vec::new(); n_rows_expected], vec![false; n_rows_expected]));
+    }
+    let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
+    // Parse each aux column independently (reusing the strict by-name +
+    // NA-hole parser via a synthetic "time" pin — we only need the value cells,
+    // so pass the aux column itself as the time column to satisfy the parser's
+    // header check, then discard the time side).
+    let mut per_col: Vec<Vec<Option<f64>>> = Vec::with_capacity(aux_cols.len());
+    for col in aux_cols {
+        // The parser requires a time column; reuse the aux column as both —
+        // we only consume the value cells.
+        let (_t, cells, _rows) = parse_column_cells(&content, path, col, col)?;
+        if cells.len() != n_rows_expected {
+            return Err(format!(
+                "aux column '{}' in '{}' has {} data rows but the scored column has {} \
+                 — every column of a stream's file must have the same rows",
+                col, path, cells.len(), n_rows_expected));
+        }
+        per_col.push(cells);
+    }
+    let mut aux = vec![Vec::new(); n_rows_expected];
+    let mut force_hole = vec![false; n_rows_expected];
+    for (ci, col) in aux_cols.iter().enumerate() {
+        for r in 0..n_rows_expected {
+            match per_col[ci][r] {
+                Some(v) => aux[r].push((col.clone(), v)),
+                None => force_hole[r] = true, // present-together-or-hole
+            }
+        }
+    }
+    Ok((aux, force_hole))
 }
 
 /// Shared back-half: convert the raw time column, run the distinct-substep +
@@ -938,6 +1477,23 @@ fn write_filtering_tsv(
 mod tests {
     use super::*;
 
+    // ── holes × output-mode compatibility guard ─────────────────────────
+    #[test]
+    fn holes_reject_prequential_and_trace_but_allow_plain_filter() {
+        // No holes: every output mode is fine.
+        assert!(check_holes_output_compat(false, true, true).is_ok());
+        // Holes + plain filter (no prequential/trace): fine — the loglik handles holes.
+        assert!(check_holes_output_compat(true, false, false).is_ok());
+        // Holes + prequential: rejected (would score a hole as observed 0).
+        let e = check_holes_output_compat(true, true, false).unwrap_err();
+        assert!(e.contains("--save-prequential") && e.contains("hole"),
+            "prequential rejection must name the flag + the cause: {e}");
+        // Holes + trace: rejected (observed column would report 0 at a hole).
+        let e = check_holes_output_compat(true, false, true).unwrap_err();
+        assert!(e.contains("--trace") && e.contains("hole"),
+            "trace rejection must name the flag + the cause: {e}");
+    }
+
     fn write_temp_tsv(name: &str, content: &str) -> String {
         let path = std::env::temp_dir().join(format!("camdl_test_{}.tsv", name));
         std::fs::write(&path, content).unwrap();
@@ -957,7 +1513,7 @@ mod tests {
     #[test]
     fn load_data_rejects_out_of_order() {
         let path = write_temp_tsv("out_of_order", "time\tcases\n7\t10\n14\t20\n10\t15\n21\t30\n");
-        let result = load_data_tsv(&path, &numeric_opts());
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
         assert!(result.is_err(), "should reject out-of-order times");
         let err = result.err().unwrap();
         assert!(err.contains("not in chronological order"), "error message: {}", err);
@@ -969,7 +1525,7 @@ mod tests {
     fn load_data_accepts_equal_times() {
         // Equal times are valid (multi-stream observations at same time point)
         let path = write_temp_tsv("equal_times", "time\tcases\n7\t10\n7\t5\n14\t20\n");
-        let result = load_data_tsv(&path, &numeric_opts());
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
         assert!(result.is_ok(), "equal times should be accepted: {:?}", result.err());
         let obs = result.unwrap();
         assert_eq!(obs.len(), 3);
@@ -979,9 +1535,123 @@ mod tests {
     #[test]
     fn load_data_accepts_sorted() {
         let path = write_temp_tsv("sorted", "time\tcases\n7\t10\n14\t20\n21\t30\n");
-        let result = load_data_tsv(&path, &numeric_opts());
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 3);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── G1: by-name binding is strict — no positional fallback ──────────
+    //
+    // A stream requested by name against a file whose column does not match
+    // (typo / wrong case / renamed header) must ERROR with a located
+    // message, never silently bind a value column by position. Pre-fix, the
+    // inner 2-column fallback (`if cols.len() == 2 { Some(1) }`) made a
+    // mis-cased single-value file load against column 1 — a wrong answer
+    // with exit 0.
+
+    #[test]
+    fn load_data_tsv_column_rejects_miscased_name_in_2col_file() {
+        // Header column is `Cases` (capital C); model asks for `cases`.
+        // Pre-fix: 2-column fallback binds column 1 and loads. Post-fix:
+        // located error naming the requested column + available headers.
+        let path = write_temp_tsv("miscased_2col", "time\tCases\n7\t10\n14\t20\n");
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
+        assert!(result.is_err(),
+            "a mis-cased column name must NOT silently bind by position; got Ok({:?})",
+            result.as_ref().ok());
+        let err = result.err().unwrap();
+        assert!(err.contains("cases"),
+            "error must name the requested stream/column 'cases': {}", err);
+        assert!(err.contains("Cases"),
+            "error must list the headers actually present (incl. 'Cases'): {}", err);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn load_data_tsv_column_rejects_renamed_name_in_wide_file() {
+        // Multi-column file, requested name absent. (This path already
+        // errored pre-fix, but pin the located-message quality.)
+        let path = write_temp_tsv("renamed_wide",
+            "time\tcase_count\tdeaths\n7\t10\t1\n14\t20\t2\n");
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
+        assert!(result.is_err(), "absent column name must error");
+        let err = result.err().unwrap();
+        assert!(err.contains("cases"), "error must name requested column: {}", err);
+        assert!(err.contains("case_count") && err.contains("deaths"),
+            "error must list available headers: {}", err);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── G1/NaN: non-finite observation values are rejected at load ──────
+    //
+    // `"NaN".parse::<f64>()` returns `Ok(NaN)` and `"inf"`/`"Infinity"`
+    // return `Ok(±inf)`. Pre-fix these flowed straight into the likelihood.
+    // Post-fix: located error (file path implied by caller, column, row).
+
+    #[test]
+    fn load_data_tsv_column_rejects_nan_value() {
+        let path = write_temp_tsv("nan_value", "time\tcases\n7\t10\n14\tNaN\n21\t30\n");
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
+        assert!(result.is_err(),
+            "a NaN observation value must be rejected at load; got Ok({:?})",
+            result.as_ref().ok());
+        let err = result.err().unwrap();
+        assert!(err.contains("cases"), "error must name the column: {}", err);
+        assert!(err.contains('3') || err.contains("14"),
+            "error must locate the offending row/time (line 3, t=14): {}", err);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn load_data_tsv_column_rejects_inf_value() {
+        let path = write_temp_tsv("inf_value", "time\tcases\n7\t10\n14\tinf\n21\t30\n");
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
+        assert!(result.is_err(),
+            "an infinite observation value must be rejected at load; got Ok({:?})",
+            result.as_ref().ok());
+        let err = result.err().unwrap();
+        assert!(err.contains("cases"), "error must name the column: {}", err);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── Negative control: well-formed input is unchanged ────────────────
+    //
+    // Guards against a vacuous test: a matching column name loads the
+    // SAME values as the 2-column loader on the equivalent file, and the
+    // by-name path binds the requested column (not column 1) in a wide
+    // file. This is the happy path that must remain byte-identical.
+
+    #[test]
+    fn load_data_tsv_column_happy_path_loads_named_column() {
+        // Wide file: `cases` is column 2 (not column 1). By-name binding
+        // must pick column 2's values, not deaths in column 1.
+        let path = write_temp_tsv("happy_wide",
+            "time\tdeaths\tcases\n7\t1\t10\n14\t2\t20\n21\t3\t30\n");
+        let obs = load_data_tsv_column(&path, "time", "cases", &numeric_opts())
+            .expect("well-formed named column must load");
+        assert_eq!(obs.len(), 3);
+        assert_eq!(obs[0].value, 10.0);
+        assert_eq!(obs[1].value, 20.0);
+        assert_eq!(obs[2].value, 30.0);
+        assert_eq!(obs[0].time, 7.0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn load_data_tsv_column_happy_path_2col_named_file() {
+        // The happy single-stream case: a `time\tcases` file binds the
+        // `cases` column *because it is named* `cases` (which happens to
+        // be column 1), not by position. Values must round-trip exactly —
+        // this is the legacy single-stream schema, unchanged by the
+        // fallback deletion.
+        let path = write_temp_tsv("happy_2col", "time\tcases\n7\t10\n14\t20\n21\t30\n");
+        let obs = load_data_tsv_column(&path, "time", "cases", &numeric_opts())
+            .expect("named single-stream load");
+        assert_eq!(obs.len(), 3);
+        assert_eq!(obs[0], Observation { time: 7.0, value: 10.0 });
+        assert_eq!(obs[1], Observation { time: 14.0, value: 20.0 });
+        assert_eq!(obs[2], Observation { time: 21.0, value: 30.0 });
         std::fs::remove_file(&path).ok();
     }
 
@@ -996,10 +1666,193 @@ mod tests {
         let numeric = write_temp_tsv("dated_num", "time\tcases\n0\t10\n7\t20\n14\t30\n");
         let mut o = numeric_opts();
         o.origin = Some("2020-03-01");
-        let from_dates = load_data_tsv(&dated, &o).unwrap();
-        let from_nums = load_data_tsv(&numeric, &numeric_opts()).unwrap();
+        let from_dates = load_data_tsv_column(&dated, "time", "cases", &o).unwrap();
+        let from_nums = load_data_tsv_column(&numeric, "time", "cases", &numeric_opts()).unwrap();
         assert_eq!(from_dates, from_nums);
         std::fs::remove_file(&dated).ok();
         std::fs::remove_file(&numeric).ok();
+    }
+
+    // ── Sparse/holes: `NA` loads as a hole on the cells path ────────────
+    //
+    // The missing-value token `NA` becomes a hole (`None`) whose TIME stays
+    // in the grid (the row is kept). NaN/inf are still rejected as garbage.
+    // The dense `load_data_tsv_column` rejects `NA` (holes are pfilter-only).
+
+    #[test]
+    fn cells_loader_treats_na_as_a_hole_with_time_retained() {
+        use sim::inference::ObsCell;
+        // Three weekly rows; the middle one is NA (a hole).
+        let path = write_temp_tsv("na_hole", "time\tcases\n7\t10\n14\tNA\n21\t30\n");
+        let (times, cells) = load_data_tsv_column_cells(&path, "time", "cases", &numeric_opts())
+            .expect("NA must load as a hole, not error");
+
+        // All three grid times are retained — the hole's time stays.
+        assert_eq!(times, vec![7.0, 14.0, 21.0],
+            "the hole row's TIME must stay in the grid; got {:?}", times);
+        // The middle cell is a hole; the others are observed scalars.
+        assert_eq!(cells[0], Some(ObsCell::Scalar(10.0)));
+        assert_eq!(cells[1], None, "the NA cell must be a hole (None)");
+        assert_eq!(cells[2], Some(ObsCell::Scalar(30.0)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cells_loader_still_rejects_nan_and_inf() {
+        // A hole is `NA`, not a non-finite number — those remain garbage.
+        for (name, body) in [
+            ("cells_nan", "time\tcases\n7\t10\n14\tNaN\n21\t30\n"),
+            ("cells_inf", "time\tcases\n7\t10\n14\tinf\n21\t30\n"),
+        ] {
+            let path = write_temp_tsv(name, body);
+            let result = load_data_tsv_column_cells(&path, "time", "cases", &numeric_opts());
+            assert!(result.is_err(),
+                "non-finite values must still be rejected on the cells path ({name})");
+            let err = result.err().unwrap();
+            assert!(err.contains("cases"), "error must name the column: {}", err);
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    #[test]
+    fn dense_loader_rejects_na_token() {
+        // The dense path (survey/profile/fit) does not support holes yet — an
+        // `NA` there is a located error, not a silent placeholder.
+        let path = write_temp_tsv("dense_na", "time\tcases\n7\t10\n14\tNA\n21\t30\n");
+        let result = load_data_tsv_column(&path, "time", "cases", &numeric_opts());
+        assert!(result.is_err(), "dense loader must reject NA");
+        let err = result.err().unwrap();
+        assert!(err.contains("NA") && err.contains("cases"),
+            "error must name the NA token and the column: {}", err);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── §4.2 long-form by-name level matching ───────────────────────────
+    //
+    // Build one expanded leaf of a stratified `cases[p in patch]` family.
+    // `level` is this leaf's patch level; the sibling list defines the valid
+    // level set (the model's `patch` levels).
+    fn long_form_leaf(level: &str) -> ir::observation::ObservationModel {
+        use ir::observation::{
+            ColumnRole, Likelihood, ObsColumn, ObservationModel, PoissonLikelihood,
+            Projection, StratumKey,
+        };
+        use ir::parameter::ParamKind;
+        ObservationModel {
+            name:   format!("cases_{level}"),
+            source: "cases".into(),
+            columns: vec![
+                ObsColumn { name: "time".into(),  role: ColumnRole::Time },
+                ObsColumn { name: "patch".into(), role: ColumnRole::Dim("patch".into()) },
+                ObsColumn { name: "cases".into(), role: ColumnRole::Value(ParamKind::Count) },
+            ],
+            scored: "cases".into(),
+            emit_schedule: None,
+            stratum: vec![StratumKey { dim: "patch".into(), level: level.into() }],
+            projection: Projection::CumulativeFlow(format!("infection_{level}")),
+            likelihood: Likelihood::Poisson(PoissonLikelihood {
+                rate: ir::expr::Expr::Projected(ir::expr::ProjectedExpr { projected: () }),
+            }),
+        }
+    }
+
+    #[test]
+    fn long_form_routes_rows_to_strata_by_name() {
+        use sim::inference::ObsCell;
+        // A 2-level patch family; long-form file with interleaved rows. Each
+        // leaf must carry only its own stratum's values, by name (NOT by
+        // position — the rows alternate p1/p2).
+        let p1 = long_form_leaf("p1");
+        let p2 = long_form_leaf("p2");
+        let siblings: Vec<&ir::observation::ObservationModel> = vec![&p1, &p2];
+        let path = write_temp_tsv("lf_route",
+            "time\tpatch\tcases\n7\tp1\t10\n7\tp2\t99\n14\tp1\t20\n14\tp2\t88\n");
+
+        let (t1, c1, _a1) = load_long_form_stream(&path, &p1, &siblings, &numeric_opts())
+            .expect("p1 leaf loads");
+        let (t2, c2, _a2) = load_long_form_stream(&path, &p2, &siblings, &numeric_opts())
+            .expect("p2 leaf loads");
+
+        assert_eq!(t1, vec![7.0, 14.0], "union time axis");
+        assert_eq!(t2, vec![7.0, 14.0], "union time axis shared across leaves");
+        // p1 gets 10, 20 — NOT 99, 88 (the sibling's column).
+        assert_eq!(c1, vec![Some(ObsCell::Scalar(10.0)), Some(ObsCell::Scalar(20.0))],
+            "p1 leaf must carry p1's rows, routed by name");
+        assert_eq!(c2, vec![Some(ObsCell::Scalar(99.0)), Some(ObsCell::Scalar(88.0))],
+            "p2 leaf must carry p2's rows, routed by name");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn long_form_unknown_level_is_rejected() {
+        // A row carries patch=p3, which is absent from every leaf's stratum
+        // (the model only has p1, p2). E281, located, listing the valid levels.
+        let p1 = long_form_leaf("p1");
+        let p2 = long_form_leaf("p2");
+        let siblings: Vec<&ir::observation::ObservationModel> = vec![&p1, &p2];
+        let path = write_temp_tsv("lf_unknown",
+            "time\tpatch\tcases\n7\tp1\t10\n7\tp3\t5\n");
+
+        let result = load_long_form_stream(&path, &p1, &siblings, &numeric_opts());
+        assert!(result.is_err(), "an unknown level must be a hard error");
+        let err = result.err().unwrap();
+        assert!(err.contains("E281"), "must be E281: {err}");
+        assert!(err.contains("p3"), "must name the offending level p3: {err}");
+        assert!(err.contains("patch"), "must name the dim column: {err}");
+        assert!(err.contains("p1") && err.contains("p2"),
+            "must list the valid level set [p1, p2]: {err}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn long_form_absent_row_is_not_scheduled() {
+        use sim::inference::ObsCell;
+        // p1 has rows at {7,14,21}; p2 only at {7,21} (NO row at 14). p2 is not
+        // OBSERVED at 14 — that is a SIBLING's time. Each leaf reports its OWN
+        // schedule, so 14 is absent from p2's axis: `bind` marks it not-scheduled
+        // for p2 (no score AND no reset). Routing p2 onto the full union with a
+        // hole at 14 instead would reset p2's incidence accumulator at a sibling's
+        // cadence — the ragged-cadence bin truncation this fixes (PR#218 review #1).
+        let p1 = long_form_leaf("p1");
+        let p2 = long_form_leaf("p2");
+        let siblings: Vec<&ir::observation::ObservationModel> = vec![&p1, &p2];
+        let path = write_temp_tsv("lf_absent",
+            "time\tpatch\tcases\n\
+             7\tp1\t10\n7\tp2\t1\n\
+             14\tp1\t20\n\
+             21\tp1\t30\n21\tp2\t3\n");
+
+        let (t2, c2, _a2) = load_long_form_stream(&path, &p2, &siblings, &numeric_opts())
+            .expect("p2 leaf loads");
+        assert_eq!(t2, vec![7.0, 21.0],
+            "p2's OWN schedule is {{7,21}} — 14 is a sibling's time, not p2's");
+        assert_eq!(c2, vec![Some(ObsCell::Scalar(1.0)), Some(ObsCell::Scalar(3.0))]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn long_form_explicit_na_row_is_a_hole() {
+        use sim::inference::ObsCell;
+        // p2 HAS a row at 14 with value NA → 14 IS p2's own scheduled time, scored
+        // as a hole (None — no term, NOT a false zero) and, for incidence,
+        // resetting the bin there. The explicit-NA hole is the bookkeeping
+        // distinction from an ABSENT row (not-scheduled, above): "we sampled and
+        // got nothing usable" vs "we don't sample on this cadence".
+        let p1 = long_form_leaf("p1");
+        let p2 = long_form_leaf("p2");
+        let siblings: Vec<&ir::observation::ObservationModel> = vec![&p1, &p2];
+        let path = write_temp_tsv("lf_na_hole",
+            "time\tpatch\tcases\n\
+             7\tp1\t10\n7\tp2\t1\n\
+             14\tp1\t20\n14\tp2\tNA\n\
+             21\tp1\t30\n21\tp2\t3\n");
+
+        let (t2, c2, _a2) = load_long_form_stream(&path, &p2, &siblings, &numeric_opts())
+            .expect("p2 leaf loads");
+        assert_eq!(t2, vec![7.0, 14.0, 21.0], "explicit NA row keeps 14 in p2's schedule");
+        assert_eq!(c2, vec![Some(ObsCell::Scalar(1.0)), None, Some(ObsCell::Scalar(3.0))]);
+        assert_ne!(c2[1], Some(ObsCell::Scalar(0.0)),
+            "a coverage hole must be None, never an observed 0");
+        std::fs::remove_file(&path).ok();
     }
 }

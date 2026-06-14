@@ -167,7 +167,7 @@ fn pathological_sir_model() -> (CompiledModel, Vec<f64>) {
 fn bootstrap_filter_bails_on_ess_collapse() {
     let (compiled, params) = pathological_sir_model();
     let compiled = Arc::new(compiled);
-    let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+    let process = ChainBinomialProcess::new(compiled.clone());
 
     // 50 daily observations of "I = 0" against a model whose I count
     // hits hundreds by day 5. Every particle is astronomically
@@ -239,7 +239,7 @@ fn bootstrap_filter_bails_on_ess_collapse() {
 fn if2_bails_on_ess_collapse() {
     let (compiled, params) = pathological_sir_model();
     let compiled = Arc::new(compiled);
-    let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+    let process = ChainBinomialProcess::new(compiled.clone());
 
     // Same pathology: huge R₀ vs flat-zero observations.
     let obs_times: Vec<f64> = (1..=50).map(|k| k as f64).collect();
@@ -442,7 +442,7 @@ fn if2_theta_hat_is_identical_across_thread_counts() {
     // scopes the pool for the closure, and the filter's `par_iter` picks it
     // up — so this genuinely exercises 1-way vs 8-way parallelism.
     let run = |threads: usize| -> (Vec<f64>, Vec<(Vec<f64>, f64)>) {
-        let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+        let process = ChainBinomialProcess::new(compiled.clone());
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
         let res = pool.install(|| {
             run_if2(&process, &obs_model_for(&observations, &obs_times), &params, &if2_params, &config, 7)
@@ -515,7 +515,8 @@ impl ProcessModel for CountingProcess {
     fn n_transitions(&self) -> usize { self.n_tr }
 
     fn initial_state(&self, _params: &[f64]) -> Result<ParticleState, SimError> {
-        Ok(ParticleState::new(self.n_int, self.n_tr))
+        // Mock process: `acc` sized 0 (the filter resizes from the obs model).
+        Ok(ParticleState::new(self.n_int, self.n_tr, 0))
     }
 
     fn step(
@@ -526,6 +527,7 @@ impl ProcessModel for CountingProcess {
         _dt: f64,
         _rng: &mut StatefulRng,
         _scratch: &mut (),
+        _due_interventions: &[usize],
     ) -> Result<(), SimError> {
         let n = self.steps.fetch_add(1, Ordering::Relaxed);
         if n >= self.cap {

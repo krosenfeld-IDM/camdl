@@ -16,36 +16,21 @@ use super::types::ParticleState;
 /// Wraps a `CompiledModel` and delegates to `step_one` for simulation.
 /// Implements `ProcessModel` (for PF, IF2, PMMH) and `DensityProcess`
 /// (for PGAS). The only process backend that supports PGAS.
+///
+/// Holds no `dt`: the integrator step arrives per call (`step`/`density` take
+/// `dt`), and effect firing is decided CURSOR-keyed by the driver from the
+/// timeline — there is no per-process `fire_steps`/`round(t/dt)` view to resolve
+/// at a stored `dt` any more (that round-key path was the gh#216 events bug;
+/// see `effects::split_due_batch`).
 pub struct ChainBinomialProcess {
     pub compiled: Arc<CompiledModel>,
-    /// Integrator step for this process. gh#53 — the CompiledModel
-    /// stores dt-invariant `fire_times`; the per-run `fire_steps`
-    /// view depends on the runtime dt and must be resolved with that
-    /// value, not the compile-time `model.simulation.dt`. Resolution
-    /// now happens per-step inside `step` (was pre-resolved at
-    /// construction; broken for parametric event schedules per gh#69).
-    pub(crate) dt: f64,
 }
 
 impl ChainBinomialProcess {
-    /// Construct a process for a model with integrator step `dt`.
-    /// `dt` is required because `fire_steps` (the runtime view of
-    /// the model's intervention schedule) must be resolved with it
-    /// (see gh#53). Reusing the same process across runs at
-    /// different dts is unsupported — build a fresh process per
-    /// dt; the gh#52 Richardson ladder already does this via
-    /// `run_quick_pfilter_with_dt`'s per-rung config rebuild.
-    pub fn new(compiled: Arc<CompiledModel>, dt: f64) -> Self {
-        // fire_steps used to be pre-resolved here against default
-        // params. That was incorrect for models with parametric event
-        // schedules (`events { ... at [param] }`, gh#69): different
-        // particles / different PMMH proposals carry different values
-        // for `param`, so each `step` call needs fire_steps resolved
-        // against THIS call's `params`. The pre-resolved value is
-        // dropped; `step` re-resolves per call (linear walk over the
-        // intervention list — negligible compared to a chain-binomial
-        // step's propensity eval + multinomial draws).
-        ChainBinomialProcess { compiled, dt }
+    /// Construct a process for `compiled`. The integrator step is supplied per
+    /// call (`step`/`density` take `dt`); the process stores none.
+    pub fn new(compiled: Arc<CompiledModel>) -> Self {
+        ChainBinomialProcess { compiled }
     }
 }
 
@@ -63,8 +48,13 @@ impl ProcessModel for ChainBinomialProcess {
 
     fn initial_state(&self, params: &[f64]) -> Result<ParticleState, SimError> {
         let (init_int, _) = self.compiled.initial_state(params)?;
+        // `acc` sized 0 here: the process does not know `n_interval_streams`
+        // (the obs model owns it). The filter copies only `init.counts` into the
+        // swarm and allocates each swarm state's `acc` sized from
+        // `obs_model.n_interval_streams()`, so this init state's `acc` is never
+        // read.
         let mut state = ParticleState::new(
-            self.n_compartments(), self.n_transitions(),
+            self.n_compartments(), self.n_transitions(), 0,
         );
         state.counts.copy_from_slice(&init_int.counts);
         Ok(state)
@@ -78,17 +68,16 @@ impl ProcessModel for ChainBinomialProcess {
         dt: f64,
         rng: &mut StatefulRng,
         scratch: &mut StepScratch,
+        due_effects: &[usize],
     ) -> Result<(), SimError> {
-        // Re-resolve fire_steps per call from the caller's params.
-        // For models without parametric event schedules, this is a
-        // pure function of `dt` (and identical across calls); for
-        // models WITH parametric schedules (gh#69), each particle /
-        // PMMH proposal carries its own value of the schedule
-        // parameter and gets its own fire_steps. Cost: linear walk
-        // over the intervention list (typically O(few)) — small
-        // compared to a chain-binomial step's per-transition
-        // propensity eval and multinomial draws.
-        let fire_steps = self.compiled.resolve_fire_steps(self.dt, params);
+        // The driver decided due-ness CURSOR-keyed from the timeline (events AND
+        // scheduled interventions are both registered on `effect_times` via
+        // `timeline_effects`, so the integrator landed on each effect time and the
+        // cursor reports the firing batch here — empty off a boundary). Split it
+        // by kind into the lifecycle halves: events at PROPOSE (fused with the
+        // kernel draw), interventions at INTERVENE. step_one applies what we put
+        // here; it no longer decides. No `round(t/dt)` for events (gh#216).
+        crate::effects::split_due_batch(&self.compiled, due_effects, &mut scratch.effect_batch);
         // KNOWN LIMITATION (docs/dev/incidents/2026-06-07-chain-binomial-
         // stale-real-state.md, §inference scope): inference particles
         // (`ParticleState`) track integer counts only — there is no real
@@ -101,20 +90,22 @@ impl ProcessModel for ChainBinomialProcess {
         // (the particle state must carry and RK4-advance the real reservoir).
         let mut real = crate::state::RealState::new(self.compiled.real_local_to_global.len());
         // `dt` is the realized substep the filter handed us (clipped under Exact
-        // to land on an off-grid observation); `self.dt` is the nominal model grid
-        // the `fire_steps` were built on, so it keys the event/intervention firing.
+        // to land on an off-grid observation).
         step_one(
             &self.compiled,
             &mut state.counts,
             &mut state.flow_accumulators,
             &mut real,
-            params, t, dt, self.dt, rng, scratch,
-            &fire_steps,
+            params, t, dt, rng, scratch,
         )
     }
 
     fn new_scratch(&self) -> StepScratch {
         StepScratch::new(&self.compiled)
+    }
+
+    fn try_compiled_model(&self) -> Option<&CompiledModel> {
+        Some(&self.compiled)
     }
 }
 

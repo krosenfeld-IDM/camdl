@@ -217,9 +217,12 @@ pub fn bootstrap_filter_correlated(
 
     let n_int = model.int_local_to_global.len();
     let n_tr = model.model.transitions.len();
+    // Per-Interval-stream `acc` bins (multi-cadence Phase 2a), sized from the
+    // obs model (the process does not know `n_interval_streams`).
+    let n_acc = obs_model.n_interval_streams();
 
     let (init_int, _init_real) = model.initial_state(params)?;
-    let mut swarm = ParticleSwarm::new(n_particles, n_int, n_tr);
+    let mut swarm = ParticleSwarm::new(n_particles, n_int, n_tr, n_acc);
     for p in &mut swarm.states {
         p.counts.copy_from_slice(&init_int.counts);
     }
@@ -230,7 +233,7 @@ pub fn bootstrap_filter_correlated(
         .collect();
 
     let mut states_buf: Vec<ParticleState> = (0..n_particles)
-        .map(|_| ParticleState::new(n_int, n_tr))
+        .map(|_| ParticleState::new(n_int, n_tr, n_acc))
         .collect();
 
     let mut scratches: Vec<StepScratch> = (0..n_particles)
@@ -246,6 +249,19 @@ pub fn bootstrap_filter_correlated(
     // Substeps per window the pre-drawn-noise arrays are sized for. CPM requires
     // (near-)uniform observation spacing because that block size is fixed.
     let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+
+    // gh#216: scheduled interventions fire CURSOR-keyed off the timeline's effect
+    // boundaries (registered as `effect_times` below), so an off-grid observation
+    // re-tiling the Exact substep grid no longer moves the firing instant. The two
+    // unsupported Exact cases are refused loudly (parametric `at [<param>]`; a
+    // scheduled fire time off the dt grid — which would also add a substep and
+    // break the CPM fixed-`steps_per_obs` noise indexing); events are out of scope.
+    crate::intervention::guard_attimesexpr_exact(model, StepPolicy::Exact)?;
+    crate::intervention::guard_exact_offgrid_effect_time(
+        model, params, config.t_start, dt, StepPolicy::Exact,
+    )?;
+    let scheduled = crate::intervention::timeline_effects(model, params);
+
     let steps_per_obs = cpm_steps_per_obs(&obs_times, config.t_start, dt);
 
     // Validate the obs grid against the pre-drawn-noise indexing. A leading
@@ -264,8 +280,10 @@ pub fn bootstrap_filter_correlated(
     // and the pre-drawn-noise indexing (noise_idx = i*steps_per_obs + substep)
     // is unaffected. Substep TIME stays accumulated (s*dt deferred, task #14).
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
-    let schedule =
-        Schedule::new(dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), Vec::new()).with_obs(obs_times);
+    let schedule = Schedule::new(
+        dt, sched_t_end, dt, StepPolicy::Exact, Vec::new(), scheduled.times.clone(),
+    )
+    .with_obs(obs_times);
 
     // Gamma shape/scale for the overdispersed transition (precompute).
     //
@@ -329,7 +347,7 @@ pub fn bootstrap_filter_correlated(
         let real_s = crate::state::RealState::new(model.real_local_to_global.len());
         let ctx = crate::propensity::EvalCtx {
             model, int_s: &int_s, real_s: &real_s, params,
-            t: 0.0, dt: config.dt, projected: None, int_float_override: None,
+            t: 0.0, dt: config.dt, projected: None, aux: None, int_float_override: None,
         };
         let mut first_sq: Option<f64> = None;
         for re in model.resolved.overdispersion.iter().flatten() {
@@ -358,7 +376,7 @@ pub fn bootstrap_filter_correlated(
                 let real_s = crate::state::RealState::new(model.real_local_to_global.len());
                 let ctx = crate::propensity::EvalCtx {
                     model, int_s: &int_s, real_s: &real_s, params,
-                    t: 0.0, dt, projected: None, int_float_override: None,
+                    t: 0.0, dt, projected: None, aux: None, int_float_override: None,
                 };
                 crate::resolved_expr::eval_resolved(re, &ctx)
             })
@@ -370,9 +388,14 @@ pub fn bootstrap_filter_correlated(
 
     for obs_idx in 0..n_obs {
         // The substep walk terminates at this obs via Schedule::substeps (cursor
-        // points at obs_idx); no explicit obs_time needed.
+        // points at obs_idx); no explicit obs_time needed. The effect cursor is
+        // positioned at the first scheduled-effect boundary not yet fired by `t`.
         let t_start = t;
-        let cur = Cursor { obs_idx, ..Default::default() };
+        let cur = Cursor {
+            obs_idx,
+            effect_idx: schedule.effect_idx_at(t_start),
+            ..Default::default()
+        };
 
         // Propagate particles with pre-drawn correlated noise (parallel)
         let gamma_row = &randoms.gamma_noise[obs_idx];
@@ -386,7 +409,7 @@ pub fn bootstrap_filter_correlated(
                 // Shared inner-substep walk (Schedule::substeps); the CPM body
                 // injects the pre-drawn correlated noise keyed on the within-window
                 // substep index before each kernel step.
-                for (substep, (t_local, step_dt)) in schedule.substeps(cur, t_start).enumerate() {
+                for (substep, (t_local, step_dt, fired)) in schedule.substeps(cur, t_start).enumerate() {
                     // Inject pre-drawn Gamma multiplier.
                     //
                     // After the uniform-window gate above, every window has exactly
@@ -443,10 +466,17 @@ pub fn bootstrap_filter_correlated(
                         scratch.binomial_z_values.push(binom_row[binom_idx]);
                     }
 
-                    // Re-resolve per-particle: parametric event
-                    // schedules (gh#69) carry params; each particle
-                    // can have a different schedule.
-                    let fire_steps = process.compiled.resolve_fire_steps(process.dt, params);
+                    // gh#216: every effect (events + scheduled interventions) is
+                    // cursor-keyed from the timeline's effect boundary (`fired`),
+                    // registered on `effect_times` via `timeline_effects`. Split
+                    // the boundary's batch by kind into the lifecycle halves;
+                    // empty off a boundary. step_one applies what we put here.
+                    scratch.effect_batch.clear();
+                    if let Some(idx) = fired {
+                        crate::effects::split_due_batch(
+                            model, &scheduled.batches[idx], &mut scratch.effect_batch,
+                        );
+                    }
                     // KNOWN LIMITATION (docs/dev/incidents/2026-06-07-chain-
                     // binomial-stale-real-state.md, §inference scope): the
                     // correlated PF tracks integer counts only — no real
@@ -455,14 +485,11 @@ pub fn bootstrap_filter_correlated(
                     // models (n_real == 0) this is empty and byte-identical.
                     let mut real = crate::state::RealState::new(
                         process.compiled.real_local_to_global.len());
-                    // `step_dt` is the realized substep (clipped under Exact);
-                    // `process.dt` is the nominal grid the `fire_steps` were built
-                    // on → it keys the event/intervention firing.
+                    // `step_dt` is the realized substep (clipped under Exact).
                     crate::chain_binomial::step_one(
                         model, &mut state.counts, &mut state.flow_accumulators,
                         &mut real,
-                        params, t_local, step_dt, process.dt, rng, scratch,
-                        &fire_steps,
+                        params, t_local, step_dt, rng, scratch,
                     )?;
                 }
                 Ok(())
@@ -470,6 +497,14 @@ pub fn bootstrap_filter_correlated(
             .collect();
         for r in errors { r?; }
         t = schedule.window_end(cur, t);
+
+        // FOLD (multi-cadence Phase 2a): close this interval's flow into each
+        // Interval stream's persistent `acc` bin, once per observation, serial,
+        // BEFORE scoring. `flow_accumulators` left untouched — the resampling
+        // sort key below still reads it bit-identically.
+        for state in &mut swarm.states {
+            obs_model.fold_into_acc(&state.flow_accumulators, &mut state.acc);
+        }
 
         // Compute log-weights
         for (i, state) in swarm.states.iter().enumerate() {
@@ -513,12 +548,17 @@ pub fn bootstrap_filter_correlated(
             let orig_idx = sort_order[sorted_idx];
             states_buf[i].counts.copy_from_slice(&swarm.states[orig_idx].counts);
             states_buf[i].flow_accumulators.copy_from_slice(&swarm.states[orig_idx].flow_accumulators);
+            // Phase 2a: the per-stream `acc` bins travel with the particle.
+            states_buf[i].acc.copy_from_slice(&swarm.states[orig_idx].acc);
         }
         std::mem::swap(&mut swarm.states, &mut states_buf);
 
-        // Reset flow accumulators
+        // Reset. `flow_accumulators` blanket (unchanged — the sort key above
+        // reads it); the per-stream `acc` bins per-stream — only Interval
+        // streams scheduled at THIS union index zero (Phase 2a).
         for state in &mut swarm.states {
             state.reset_flows();
+            obs_model.reset_due_acc(obs_idx, &mut state.acc);
         }
         for lw in &mut swarm.log_weights { *lw = 0.0; }
     }

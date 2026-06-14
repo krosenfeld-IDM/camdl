@@ -232,15 +232,37 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
     let n_int = process.n_compartments();
     let n_tr = process.n_transitions();
     let n_obs = obs_model.n_observations();
+    // Per-Interval-stream `acc` bins (multi-cadence Phase 2a), sized from the
+    // obs model (the process does not know `n_interval_streams`).
+    let n_acc = obs_model.n_interval_streams();
 
     // Merged timeline spine: the EXACT policy clips each substep to the next
     // observation boundary (same idiom as the bootstrap PF). Constant across IF2
     // iterations, so built once; reproduces dt.min(obs_time - t) exactly. Substep
     // TIME stays accumulated (s*dt deferred, task #14).
     let obs_times: Vec<f64> = (0..n_obs).map(|i| obs_model.obs_time(i)).collect();
+
+    // gh#216: scheduled interventions fire CURSOR-keyed off the timeline's effect
+    // boundaries, so an off-grid observation re-tiling the Exact substep grid no
+    // longer moves the firing instant. Built ONCE here (constant across IF2
+    // iterations: a parametric `at [<param>]` schedule — whose fire times would be
+    // per-particle and per-iteration — is refused by `guard_attimesexpr_exact`, so
+    // every scheduled fire time is `base_params`-independent). An off-grid
+    // scheduled fire time and always-active events are the other unsupported Exact
+    // cases (refused / out of scope). See particle_filter.rs for the same pattern.
+    let scheduled = if let Some(model) = process.try_compiled_model() {
+        crate::intervention::guard_attimesexpr_exact(model, StepPolicy::Exact)?;
+        crate::intervention::guard_exact_offgrid_effect_time(
+            model, base_params, config.t_start, config.dt, StepPolicy::Exact,
+        )?;
+        crate::intervention::timeline_effects(model, base_params)
+    } else {
+        crate::intervention::TimelineEffects::default()
+    };
+
     let sched_t_end = obs_times.last().copied().unwrap_or(config.t_start);
     let schedule = Schedule::new(
-        config.dt, sched_t_end, config.dt, StepPolicy::Exact, Vec::new(), Vec::new(),
+        config.dt, sched_t_end, config.dt, StepPolicy::Exact, Vec::new(), scheduled.times.clone(),
     )
     .with_obs(obs_times);
 
@@ -298,7 +320,7 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
     // Pre-allocate particle state, params, RNGs, and scratch buffers once.
     // Re-initialized from current_params at the start of each iteration.
     let mut states: Vec<ParticleState> = (0..n)
-        .map(|_| ParticleState::new(n_int, n_tr))
+        .map(|_| ParticleState::new(n_int, n_tr, n_acc))
         .collect();
     let mut particle_params: Vec<Vec<f64>> = vec![vec![0.0; base_params.len()]; n];
     let mut scratches: Vec<P::Scratch> = (0..n)
@@ -306,7 +328,7 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
         .collect();
     // Double-buffers for resampling (avoids clone allocation)
     let mut states_buf: Vec<ParticleState> = (0..n)
-        .map(|_| ParticleState::new(n_int, n_tr))
+        .map(|_| ParticleState::new(n_int, n_tr, n_acc))
         .collect();
     let mut params_buf: Vec<Vec<f64>> = vec![vec![0.0; base_params.len()]; n];
 
@@ -317,6 +339,10 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
         for s in &mut states {
             s.counts.copy_from_slice(&init_state.counts);
             s.reset_flows();
+            // Per-ITERATION re-seed (NOT a per-observation reset): zero BOTH the
+            // per-transition tally and the per-stream `acc` bins blanket, so no
+            // stale incidence carries across IF2 iterations (Phase 2a).
+            for a in &mut s.acc { *a = 0; }
         }
 
         // Re-initialize per-particle parameter vectors from current estimate
@@ -399,7 +425,11 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
             let obs_time = obs_model.obs_time(obs_idx);
             let t_start = t;
             let dt = config.dt;
-            let cur = Cursor { obs_idx, ..Default::default() };
+            let cur = Cursor {
+                obs_idx,
+                effect_idx: schedule.effect_idx_at(t_start),
+                ..Default::default()
+            };
 
             // gh#147 (M3.1). Deterministic compute-budget guard, PRE-window
             // (same closed-form scalar cost + placement as bootstrap_filter):
@@ -417,14 +447,27 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
                 .map(|(((state, pp), rng), scratch)| {
                     // Shared inner-substep walk (Schedule::substeps); IF2's body is
                     // just the kernel step with the per-particle perturbed params.
-                    for (t_local, step_dt) in schedule.substeps(cur, t_start) {
-                        process.step(state, pp, t_local, step_dt, rng, scratch)?;
+                    // `fired` lands the cursor-keyed scheduled-intervention batch.
+                    for (t_local, step_dt, fired) in schedule.substeps(cur, t_start) {
+                        let due_iv: &[usize] = match fired {
+                            Some(idx) => &scheduled.batches[idx],
+                            None => &[],
+                        };
+                        process.step(state, pp, t_local, step_dt, rng, scratch, due_iv)?;
                     }
                     Ok(())
                 })
                 .collect();
             for r in errors { r?; }
             t = schedule.window_end(cur, t);
+
+            // FOLD (multi-cadence Phase 2a): close this interval's flow into
+            // each Interval stream's persistent `acc` bin, once per observation,
+            // serial, BEFORE scoring. `flow_accumulators` left untouched
+            // (blanket-zeroed only at the per-obs reset below).
+            for s in &mut states {
+                obs_model.fold_into_acc(&s.flow_accumulators, &mut s.acc);
+            }
 
             // Perturb parameters at observation time (per-step cooling).
             // IVP params and simplex members are skipped — IVP perturbed at t=0 only,
@@ -550,13 +593,20 @@ pub fn run_if2_with_progress<P: ProcessModel<State = ParticleState>>(
             for (i, &src) in indices.iter().enumerate() {
                 states_buf[i].counts.copy_from_slice(&states[src].counts);
                 states_buf[i].flow_accumulators.copy_from_slice(&states[src].flow_accumulators);
+                // Phase 2a: the per-stream `acc` bins travel with the particle.
+                states_buf[i].acc.copy_from_slice(&states[src].acc);
                 params_buf[i].copy_from_slice(&particle_params[src]);
             }
             std::mem::swap(&mut states, &mut states_buf);
             std::mem::swap(&mut particle_params, &mut params_buf);
 
-            // Reset
-            for s in &mut states { s.reset_flows(); }
+            // Reset. `flow_accumulators` blanket (unchanged); the per-stream
+            // `acc` bins per-stream — only Interval streams scheduled at THIS
+            // union index zero (Phase 2a).
+            for s in &mut states {
+                s.reset_flows();
+                obs_model.reset_due_acc(obs_idx, &mut s.acc);
+            }
             log_weights.fill(0.0);
         }
 

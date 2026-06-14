@@ -115,6 +115,54 @@ pub struct FitConfigV2 {
     #[serde(default)]
     pub ic_free: Option<bool>,
 
+    /// Burn-in / conditioning window (gh#134). The model is simulated
+    /// faithfully over the leading span `[t_start, cond_from)` — full process
+    /// noise, interventions, forcings — but **nothing there is scored**, and
+    /// the incidence accumulator is reset at `cond_from`, so the first scored
+    /// incidence bin is `(cond_from, first_obs]` rather than the whole
+    /// `[t_start, first_obs]` gap. Mechanically this inserts `cond_from` as a
+    /// leading reset-only HOLE on the observation grid (reset, no likelihood
+    /// term — the same machinery sparse-obs `NA` cells use), so PF / IF2 /
+    /// PGAS / PMMH all get it through the shared `BoundObs`/obs grid.
+    ///
+    /// Per-stream and explicit (multi-cadence Phase 3). The conditioning window
+    /// is resolved **per incidence stream** keyed on its observation-block label
+    /// (the `[data.observations]` key / IR `source`). Two surface forms (see
+    /// [`ConditionFrom`]):
+    ///
+    /// - `condition_from = "first_obs - 1 week"` — a single spec applied as the
+    ///   default for **every** stream;
+    /// - `[condition_from]` — a table whose optional `default` key is the
+    ///   all-streams default and whose other keys *shadow* individual streams by
+    ///   label (`es = "first_obs - 2 weeks"`).
+    ///
+    /// A stream with no shadow and no `default` resolves to NO conditioning. The
+    /// wide-first-window detector (`W329`,
+    /// `crate::util::check_first_interval_window`) is the enforcer: a
+    /// late-starting incidence stream that resolves to no conditioning
+    /// HARD-ERRORS, naming `condition_from.<label>` as the fix.
+    /// There is no automatic / inferred boundary — the boundary comes only from
+    /// an explicit spec.
+    ///
+    /// Each per-stream value accepts:
+    /// - absolute model-time number string (`"14"`),
+    /// - absolute `date("…")` / bare ISO date (`"date(\"2020-02-01\")"`),
+    ///   resolved via the model origin + `time_unit`,
+    /// - relative `"first_obs - <N> <unit>"` (`"first_obs - 1 week"`),
+    ///   resolved as `first_obs_s − N·unit` against THAT stream's first obs.
+    ///
+    /// Validation (in `FitRunConfig::build`): each resolved `cond_from_s ∈
+    /// [t_start, first_obs_s)`. `cond_from_s == t_start` (or no spec) is a no-op
+    /// (bit-identical — no hole inserted). Orthogonal to `ic_free`; setting BOTH
+    /// errors loudly (the inserted leading hole trips the existing "nothing to
+    /// condition on" guard).
+    ///
+    /// `skip_serializing_if None` keeps it OUT of the fit identity hash when
+    /// unset, so existing fits' `run_id`s are unchanged. A *set* value re-keys
+    /// the fit (a different conditioning window is a different fit / estimand).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition_from: Option<ConditionFrom>,
+
     /// Optional lineage metadata (not used by the runner).
     #[serde(default)]
     pub provenance: Option<FitProvenance>,
@@ -129,6 +177,110 @@ pub struct FitConfigV2 {
     /// identity-bearing source path (the fit content hash hashes its bytes).
     #[serde(skip)]
     pub compiled_ir: Option<String>,
+}
+
+/// The user-facing `condition_from` value before resolution to model time.
+///
+/// Per-stream and explicit (multi-cadence Phase 3). Two surface forms,
+/// dispatched on the TOML value type (a string vs a table):
+///
+/// - [`ConditionFrom::All`] — `condition_from = "first_obs - 1 week"`. One spec
+///   used as the default for **every** stream; no per-stream shadows.
+/// - [`ConditionFrom::PerStream`] — `[condition_from]`. A table mapping a
+///   reserved `default` key (the all-streams default, optional) and/or
+///   observation-block labels (per-stream shadows) to spec strings. A stream
+///   resolves to its shadow if present, else `default`, else NO conditioning.
+///
+/// Each spec string accepts the same three forms (resolved per stream by
+/// [`crate::fit::runner::resolve_condition_from`]): a bare model-time number
+/// (`"14"`), an absolute calendar date (`date("YYYY-MM-DD")` or a bare
+/// `"YYYY-MM-DD"`, resolved via the model origin + `time_unit`), or a relative
+/// offset off that stream's first observation (`"first_obs - <N> <unit>"`).
+///
+/// `#[serde(untagged)]`: a TOML string deserializes to `All`, a TOML table to
+/// `PerStream`. The `BTreeMap` keeps the table key order stable, so the
+/// round-trip through the fit-identity hash is deterministic.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ConditionFrom {
+    /// `condition_from = "<spec>"` — one spec, the default for every stream.
+    All(String),
+    /// `[condition_from]` — `default = "<spec>"` (all-streams default, optional)
+    /// plus zero or more `<label> = "<spec>"` per-stream shadows. The `default`
+    /// key is reserved; a stream literally named `default` collides (a hard
+    /// error in [`ConditionFrom::resolve_for`]'s caller).
+    PerStream(std::collections::BTreeMap<String, String>),
+}
+
+/// The reserved key in a `[condition_from]` table that names the all-streams
+/// default (vs a per-stream shadow). A stream whose observation-block label is
+/// literally this string collides with the reserved key.
+pub const CONDITION_FROM_DEFAULT_KEY: &str = "default";
+
+impl ConditionFrom {
+    /// Resolve the conditioning spec string for the stream labelled `label`
+    /// (its observation-block label / IR `source`). Returns the per-stream
+    /// shadow if present, else the all-streams default, else `None` (no
+    /// conditioning for this stream). Resolution to a concrete model-time
+    /// boundary (and `[t_start, first_obs_s)` validation) is the caller's job
+    /// via [`crate::fit::runner::resolve_condition_from`].
+    pub fn resolve_for(&self, label: &str) -> Option<&str> {
+        match self {
+            ConditionFrom::All(spec) => Some(spec.as_str()),
+            ConditionFrom::PerStream(map) => map
+                .get(label)
+                .or_else(|| map.get(CONDITION_FROM_DEFAULT_KEY))
+                .map(String::as_str),
+        }
+    }
+
+    /// Validate the `[condition_from]` shadow labels against the set of real
+    /// observation-stream labels (`valid_labels`, the distinct IR `source`s of
+    /// the bound streams). Two hard errors (located, naming the valid labels):
+    ///
+    /// 1. an unknown shadow label (a typo'd stream name) — listing the valid
+    ///    labels so the user can correct it;
+    /// 2. a stream literally named `default`, which collides with the reserved
+    ///    all-streams-default key.
+    ///
+    /// `All(_)` has no labels to validate, so it always passes. Returns `Ok(())`
+    /// for the no-op cases.
+    pub fn validate_labels(&self, valid_labels: &[String]) -> Result<(), String> {
+        let map = match self {
+            ConditionFrom::All(_) => return Ok(()),
+            ConditionFrom::PerStream(map) => map,
+        };
+        // (2) A stream named `default` is indistinguishable from the reserved
+        //     all-streams-default key — refuse rather than silently shadow.
+        if valid_labels.iter().any(|l| l == CONDITION_FROM_DEFAULT_KEY) {
+            return Err(format!(
+                "[condition_from]: an observation stream is labelled \
+                 '{CONDITION_FROM_DEFAULT_KEY}', which collides with the \
+                 reserved all-streams-default key. Rename the stream's \
+                 observation-block label (its `[data.observations]` key) so it \
+                 is not '{CONDITION_FROM_DEFAULT_KEY}'."
+            ));
+        }
+        // (1) Every shadow key must name a real stream (or be `default`).
+        for key in map.keys() {
+            if key == CONDITION_FROM_DEFAULT_KEY {
+                continue;
+            }
+            if !valid_labels.iter().any(|l| l == key) {
+                let mut labels: Vec<&str> = valid_labels.iter().map(String::as_str).collect();
+                labels.sort_unstable();
+                return Err(format!(
+                    "[condition_from]: '{key}' is not an observation stream. \
+                     `condition_from.<label>` shadows a stream by its \
+                     observation-block label; valid labels are: {} (or \
+                     '{CONDITION_FROM_DEFAULT_KEY}' for the all-streams \
+                     default).",
+                    labels.join(", ")
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1963,6 +2115,41 @@ impl FitConfigV2 {
             }
         }
 
+        // ic_free / conditioning support gate (F1). `ic_free = true` is
+        // honored only by the cells that actually drop y₁ from the
+        // accumulated loglik (if2, pfilter, plain pmmh). PGAS, the ODE-MLE
+        // optimizers, and correlated PMMH score every obs unconditionally —
+        // running ic_free on them would silently compute the UNCONDITIONAL
+        // likelihood while the banner claims conditioning. Reject loudly.
+        if self.ic_free.unwrap_or(false) {
+            for (stage_name, stage) in &self.stages {
+                let correlated =
+                    matches!(stage, Stage::PMMH { rho: Some(_), .. });
+                if let Err(msg) =
+                    super::methods::validate_ic_free(stage.method_name(), correlated)
+                {
+                    return Err(format!("stage '{}': {}", stage_name, msg));
+                }
+            }
+            // condition_from + ic_free are mutually exclusive. The conditioning
+            // warm-up REPLACES the first observation with a reset-only leading
+            // hole, leaving ic_free nothing real to condition the initial state
+            // on. This must be rejected EXPLICITLY here: the runtime "nothing to
+            // condition on" guard fires only when EVERY stream's first cell is a
+            // hole (`.all()`), which a PER-STREAM `condition_from` (holing one
+            // stream of several) does not satisfy — so relying on that guard lets
+            // a multi-stream config slip through and silently condition on the
+            // warm-up boundary instead of a real y₁.
+            if self.condition_from.is_some() {
+                return Err(
+                    "condition_from and ic_free cannot be combined: the \
+                     conditioning warm-up replaces the first observation with a \
+                     reset-only boundary (a leading hole), leaving ic_free nothing \
+                     real to condition the initial state on. Use one or the other."
+                        .into());
+            }
+        }
+
         // IF2 stages require at least one iteration — zero iterations would
         // leave `iterations` empty and cause `last().unwrap()` to panic in
         // `run_if2`. Catch it here so the user gets a config error, not a crash.
@@ -3223,6 +3410,44 @@ cooling = 0.9
     }
 
     #[test]
+    fn condition_from_with_ic_free_is_rejected() {
+        // condition_from inserts a leading reset-only hole that REPLACES y₁;
+        // ic_free needs a real y₁ to condition the initial state on. Setting
+        // both must be rejected EXPLICITLY at config-load — not left to the
+        // runtime "nothing to condition on" guard, which fires only when EVERY
+        // stream's first cell is a hole (`.all()`) and so misses a PER-STREAM
+        // `condition_from` that holes only one stream.
+        let cfg = parse(r#"
+ic_free = true
+condition_from = "first_obs - 1 week"
+
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+weekly_cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0], ivp = true }
+
+[fixed]
+N0 = 1000
+
+[stages.scout]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 4
+particles = 500
+iterations = 30
+cooling = 0.9
+        "#).unwrap();
+
+        let err = cfg.validate(&["beta".into(), "N0".into()]).unwrap_err();
+        assert!(err.contains("condition_from") && err.contains("ic_free"),
+            "error should name both condition_from and ic_free: {}", err);
+    }
+
+    #[test]
     fn data_with_neither_file_nor_observations_rejected() {
         // Empty [data] block (no file, no observations) → DataSpec::validate fails.
         let cfg = parse(r#"
@@ -4436,6 +4661,127 @@ cases = "data/cases.tsv"
         let err = config.validate(&["beta".into(), "gamma".into(), "N0".into(), "I0".into()])
             .unwrap_err();
         assert!(err.contains("duplicate"), "must reject duplicate fit seeds: {}", err);
+    }
+
+    // ── ic_free / conditioning support gate (F1) ───────────────────────────
+    //
+    // `ic_free = true` is honored only by IF2, the bootstrap PF, and plain
+    // (uncorrelated) PMMH. PGAS, the ODE-MLE optimizers, and correlated PMMH
+    // score every obs unconditionally — running ic_free on them silently
+    // computes the unconditional likelihood. validate() must hard-error those
+    // cells; the honoring cells must still pass.
+
+    /// Model params for the ic_free fixtures (sir with beta/gamma/N0/I0).
+    fn ic_free_model_params() -> Vec<String> {
+        vec!["beta".into(), "gamma".into(), "N0".into(), "I0".into()]
+    }
+
+    #[test]
+    fn ic_free_with_if2_stage_still_validates() {
+        // Regression: IF2 honors conditioning — ic_free=true must NOT be
+        // rejected by the gate (it would break ic_free_true_with_ivp_succeeds).
+        let src = format!(
+            "ic_free = true\n{}\n[data.observations]\ncases = \"data/cases.tsv\"\n",
+            minimal_fit_stages()
+        );
+        let config = parse(&src).unwrap();
+        config
+            .validate(&ic_free_model_params())
+            .expect("ic_free=true on an IF2 stage must validate (IF2 honors conditioning)");
+    }
+
+    #[test]
+    fn ic_free_with_pgas_stage_is_rejected() {
+        let src = r#"ic_free = true
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000
+I0 = 5
+gamma = 0.1
+
+[stages.bayes]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 2
+particles = 500
+sweeps = 100
+"#;
+        let config = parse(src).unwrap();
+        let err = config
+            .validate(&ic_free_model_params())
+            .expect_err("ic_free=true on a PGAS stage must be rejected (PGAS ignores conditioning)");
+        assert!(err.contains("ic_free"), "error must name ic_free: {err}");
+        assert!(err.contains("pgas"), "error must name the offending stage's algorithm: {err}");
+    }
+
+    #[test]
+    fn ic_free_with_ode_mle_stage_is_rejected() {
+        let src = r#"ic_free = true
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000
+I0 = 5
+gamma = 0.1
+
+[stages.mle]
+algorithm = "nl-sbplx"
+backend = "ode"
+chains = 1
+"#;
+        let config = parse(src).unwrap();
+        let err = config
+            .validate(&ic_free_model_params())
+            .expect_err("ic_free=true on an ODE-MLE stage must be rejected (compute_ode_loglik ignores conditioning)");
+        assert!(err.contains("ic_free"), "error must name ic_free: {err}");
+        assert!(err.contains("nl-sbplx"), "error must name the offending algorithm: {err}");
+    }
+
+    #[test]
+    fn ic_free_with_correlated_pmmh_stage_is_rejected() {
+        let src = r#"ic_free = true
+[model]
+camdl = "models/sir.camdl"
+
+[data.observations]
+cases = "data/cases.tsv"
+
+[estimate]
+beta = { bounds = [0.01, 2.0] }
+
+[fixed]
+N0 = 1000
+I0 = 5
+gamma = 0.1
+
+[stages.bayes]
+algorithm = "pmmh"
+backend = "chain_binomial"
+chains = 1
+particles = 500
+iterations = 100
+rho = 0.99
+"#;
+        let config = parse(src).unwrap();
+        let err = config
+            .validate(&ic_free_model_params())
+            .expect_err("ic_free=true on a correlated PMMH stage must be rejected");
+        assert!(err.contains("ic_free"), "error must name ic_free: {err}");
     }
 
     // ── per_fit_prefix layout ──────────────────────────────────────────────

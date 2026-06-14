@@ -1,15 +1,13 @@
 # The conditioning boundary `t_cond`: decoupling burn-in from the start of filtering
 
-Status: **PINNED / deferred** — do not implement yet.
+Status: **SUPERSEDED (archived 2026-06-09)** by the time-interval model —
+`2026-06-09-time-interval-model.md` (which carries this inference math forward
+as the conditioning window's mechanism). Start from
+`2026-06-09-time-and-observation-overview.md`. Retained for history only — do
+not implement from this. (Inbound references — the W329 message,
+`warning-catalog.md` — still point here until the implementation repoints them.)
 
 Date: 2026-05-30
-
-**Pinned by decision (2026-05-30):** split out of
-[`2026-05-30-unified-observation-data.md`](2026-05-30-unified-observation-data.md)
-so the observation-data surface (joining, heterogeneous streams, missing data,
-`data.<col>` surveys) can land first. Revisit `t_cond` only after those ship.
-The warm-up design below still has an open correctness crux (§3) that must be
-nailed before any code.
 
 **This is inference math** (`particle_filter.rs` / `pgas.rs` / `if2.rs`
 filter-start logic + an IR/config field). Per CLAUDE.md it is high-risk

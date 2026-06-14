@@ -138,7 +138,9 @@ fn generate_data(compiled: &CompiledModel, params: &[f64]) -> (Vec<f64>, Vec<f64
     let mut rng = StatefulRng::new(42);
     let n_int = compiled.int_local_to_global.len();
     let n_tr = compiled.model.transitions.len();
-    let mut state = ParticleState::new(n_int, n_tr);
+    // Manual forward driver: reads `flow_accumulators` directly (the
+    // per-transition tally, lifecycle unchanged). No per-stream `acc` here → 0.
+    let mut state = ParticleState::new(n_int, n_tr, 0);
     let (init, _) = compiled.initial_state(params).unwrap();
     state.counts.copy_from_slice(&init.counts);
 
@@ -149,7 +151,9 @@ fn generate_data(compiled: &CompiledModel, params: &[f64]) -> (Vec<f64>, Vec<f64
     let mut t = 0.0;
     while t < 77.0 {
         for _ in 0..7 {
-            step_one(compiled, &mut state.counts, &mut state.flow_accumulators, &mut real, params, t, 1.0, 1.0, &mut rng, &mut scratch, &compiled.resolve_fire_steps(1.0, params)).unwrap();
+            let fire_steps = compiled.resolve_fire_steps(1.0, params);
+            sim::effects::due_effects(compiled, &fire_steps, t + 1.0, 1.0, &mut scratch.effect_batch);
+            step_one(compiled, &mut state.counts, &mut state.flow_accumulators, &mut real, params, t, 1.0, &mut rng, &mut scratch).unwrap();
             t += 1.0;
         }
         // Project: recovery flow (index 1)
@@ -167,7 +171,7 @@ fn test_if2_converges_from_dispersed_start() {
     let (obs_times, obs_values) = generate_data(&compiled, &true_params);
 
     let compiled = Arc::new(compiled);
-    let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+    let process = ChainBinomialProcess::new(compiled.clone());
     let obs_model = NegBinFlowObs {
         observations: obs_values,
         obs_times,
@@ -241,7 +245,7 @@ fn test_if2_respects_bounds() {
     let (obs_times, obs_values) = generate_data(&compiled, &true_params);
 
     let compiled = Arc::new(compiled);
-    let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+    let process = ChainBinomialProcess::new(compiled.clone());
     let obs_model = NegBinFlowObs {
         observations: obs_values,
         obs_times,
@@ -294,7 +298,7 @@ fn test_if2_no_cooling_explores() {
     let (obs_times, obs_values) = generate_data(&compiled, &true_params);
 
     let compiled = Arc::new(compiled);
-    let process = ChainBinomialProcess::new(compiled.clone(), 1.0);
+    let process = ChainBinomialProcess::new(compiled.clone());
     let obs_model = NegBinFlowObs {
         observations: obs_values,
         obs_times,

@@ -204,7 +204,7 @@ fn resolve_one(
 ) -> Result<(), SimError> {
     let ctx = EvalCtx {
         model, int_s: snap.int, real_s: snap.real, params, t, dt,
-        projected: None, int_float_override: None,
+        projected: None, aux: None, int_float_override: None,
     };
     let v = eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx);
     let v = crate::intervention::finite_action_value(v, iv_name, action, t)?;
@@ -276,6 +276,37 @@ pub fn due_effects(
     }
 }
 
+/// Split a flat list of due effect indices — the batch the timeline cursor
+/// reports at one effect boundary (`timeline_effects().batches[effect_idx]`) —
+/// into the lifecycle-stage halves of an [`EffectBatch`]: always-active EVENTS
+/// fire at PROPOSE (`event_idx`, fused with the kernel draw against the
+/// start-of-step snapshot); scheduled interventions fire at INTERVENE
+/// (`intervention_idx`, applied on the post-advance state). Indices are into
+/// `model.model.interventions`, declaration order preserved.
+///
+/// This is the ONE place the kind→stage routing lives for every Exact-INFERENCE
+/// caller (bootstrap PF / IF2 / correlated PF / PGAS producer). It replaces the
+/// former `due_events` `round(t_end/grid_dt)` event path: once events are
+/// registered on the timeline (`timeline_effects` no longer excludes them), the
+/// integrator LANDS on each event time and the cursor reports it in the batch, so
+/// firing is cursor-keyed for every kind — no `round()` on an off-grid,
+/// obs-anchored substep end (gh#216, the events arm). The Snap-forward backends
+/// keep their on-grid `round(t/dt)` key via [`due_effects`].
+pub fn split_due_batch(
+    model: &CompiledModel,
+    due: &[usize],
+    out: &mut crate::schedule::EffectBatch,
+) {
+    out.clear();
+    for &iv_idx in due {
+        if model.model.interventions[iv_idx].kind.is_event() {
+            out.event_idx.push(iv_idx);
+        } else {
+            out.intervention_idx.push(iv_idx);
+        }
+    }
+}
+
 /// Resolve a known batch of always-active events into typed deltas. The EVENT
 /// path's apply half: every action of each event in `event_idx` resolves against
 /// the frozen pre-advance snapshot at the boundary `t_end` (so events fuse with
@@ -335,7 +366,7 @@ fn eval_amount_f64(
     let rs = RealState::from_vec(real_f64.to_vec());
     let ctx = EvalCtx {
         model, int_s: &placeholder, real_s: &rs, params, t, dt,
-        projected: None, int_float_override: Some(int_f64),
+        projected: None, aux: None, int_float_override: Some(int_f64),
     };
     eval_resolved(&model.resolved.intervention_exprs[iv_idx][action_idx], &ctx)
 }
@@ -1065,6 +1096,30 @@ mod tests {
         due_effects(&m, &fire, 1.0, 1.0, &mut batch);
         assert_eq!(batch.event_idx.as_slice(), &[0], "always_active event → event_idx");
         assert_eq!(batch.intervention_idx.as_slice(), &[1], "scheduled → intervention_idx");
+    }
+
+    #[test]
+    fn split_due_batch_routes_by_kind_and_clears_on_reuse() {
+        // The shared seam every Exact-inference caller routes through (gh#216
+        // events arm): a flat due list — the timeline cursor's per-boundary batch
+        // — splits into the lifecycle halves by KIND, events at PROPOSE
+        // (event_idx) / scheduled interventions at INTERVENE (intervention_idx).
+        // iv 0 is the always-active event, iv 1 the scheduled intervention.
+        let m = model_event_and_intervention();
+        let mut batch = crate::schedule::EffectBatch::default();
+
+        split_due_batch(&m, &[0, 1], &mut batch);
+        assert_eq!(batch.event_idx.as_slice(), &[0], "always-active event → event_idx");
+        assert_eq!(batch.intervention_idx.as_slice(), &[1], "scheduled → intervention_idx");
+
+        // Reused per substep on the hot path: a second call CLEARS first, so a
+        // stale half can't leak into the next boundary.
+        split_due_batch(&m, &[1], &mut batch);
+        assert!(batch.event_idx.is_empty(), "clear() reset the event half");
+        assert_eq!(batch.intervention_idx.as_slice(), &[1]);
+
+        split_due_batch(&m, &[], &mut batch);
+        assert!(batch.is_empty(), "empty due list → empty batch");
     }
 
     #[test]

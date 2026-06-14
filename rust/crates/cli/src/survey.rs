@@ -35,7 +35,7 @@ use sim::{
     compiled_model::CompiledModel,
     inference::{
         particle_filter::{bootstrap_filter, Observation, PFilterResult},
-        ChainBinomialProcess, MultiStreamObsModel,
+        BoundObs, ChainBinomialProcess, MultiStreamObsModel,
         multi_stream_obs::StreamSpec,
         traits::{ObservationModel, SMCConfig},
         types::{log_sum_exp, EstimatedParam, ParticleState},
@@ -379,7 +379,7 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
     // user-tunable dt knob). gh#53: process must be built at the same
     // dt so its internal fire_steps resolves correctly.
     let smc_dt = 1.0_f64;
-    let process = Arc::new(ChainBinomialProcess::new(resolved.compiled.clone(), smc_dt));
+    let process = Arc::new(ChainBinomialProcess::new(resolved.compiled.clone()));
     let t_start = resolved.compiled.model.simulation.t_start;
 
     // Concrete `Arc<MultiStreamObsModel>`: trait-typed obs models could
@@ -397,14 +397,21 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
             let projection = sim::inference::multi_stream_obs::StreamProjection::from_ir(
                 &obs.projection, &resolved.compiled, &obs.name,
             ).unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
-            stream_specs.push(StreamSpec {
+            // survey is dense + aux-free in v1 (survey denominators bind in the
+            // fit / pfilter loaders; survey rejects NA upstream).
+            stream_specs.push(StreamSpec::dense(
                 projection,
-                ir_model: obs.clone(),
-                observations: stream_obs.iter().map(|o| o.value).collect(),
-                obs_times: obs_times.clone(),
-            });
+                obs.clone(),
+                sim::inference::dense_cells(
+                    stream_obs.iter().map(|o| o.value).collect()),
+                obs_times.clone(),
+            ));
         }
-        Arc::new(MultiStreamObsModel::new(stream_specs, resolved.compiled.clone())
+        let (bound, _report) = BoundObs::bind(stream_specs).unwrap_or_else(|report| {
+            eprintln!("error: observation data invalid:\n{}", report.render());
+            std::process::exit(1);
+        });
+        Arc::new(MultiStreamObsModel::new(bound, resolved.compiled.clone())
             .unwrap_or_else(|e| {
                 eprintln!("error: observation model construction failed: {:?}", e);
                 std::process::exit(1);
@@ -743,7 +750,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
                 .find(|o| o.name == **stream_name).cloned()
                 .ok_or_else(|| format!(
                     "no observation block named '{}' in model", stream_name))?;
-            let observations = load_observations_from_tsv(data_path, stream_name, &time_opts)?;
+            let observations = load_observations_from_tsv(data_path, &obs_model_ir, &time_opts)?;
             let times: Vec<f64> = observations.iter().map(|o| o.time).collect();
             match &canonical_times {
                 None => canonical_times = Some(times),
@@ -878,7 +885,7 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
             format: crate::caltime_load::TimeFormat::Auto,
         };
         for obs in sorted_obs {
-            let observations = load_observations_from_tsv(&data_path, &obs.name, &time_opts)?;
+            let observations = load_observations_from_tsv(&data_path, obs, &time_opts)?;
             let times: Vec<f64> = observations.iter().map(|o| o.time).collect();
             match &canonical_times {
                 None => canonical_times = Some(times),
@@ -913,19 +920,17 @@ fn resolve_survey_inputs(a: &crate::args::SurveyArgs)
     }
 }
 
-/// Load (time, value) pairs from a TSV column. Mirrors profile's
-/// load helper: by-name lookup with fallback to column 1 for 2-column
-/// TSVs.
+/// Load (time, value) pairs from a TSV by NAME — the declared `time` column is
+/// the axis (by-name-time flip), and `scored` is the value column. Both must
+/// match the file header exactly. There is no positional fallback (G1): a
+/// typo'd/wrong-cased header is a located error, not a silent bind.
 fn load_observations_from_tsv(
     path: &str,
-    column: &str,
+    obs: &ir::observation::ObservationModel,
     opts: &crate::caltime_load::TimeOpts,
 ) -> Result<Vec<Observation>, String> {
-    let by_name = crate::pfilter::load_data_tsv_column(path, column, opts);
-    let raw = match by_name {
-        Ok(v) => v,
-        Err(_) => crate::pfilter::load_data_tsv_pub(path, opts)?,
-    };
+    let time_col = crate::pfilter::obs_time_column(obs)?;
+    let raw = crate::pfilter::load_data_tsv_column(path, time_col, &obs.scored, opts)?;
     Ok(raw.into_iter().map(|o| Observation { time: o.time, value: o.value }).collect())
 }
 

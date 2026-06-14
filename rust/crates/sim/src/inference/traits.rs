@@ -61,6 +61,17 @@ pub trait ProcessModel: Send + Sync {
     ///
     /// This is the hot path — called n_particles × n_substeps × n_obs times.
     /// Must not allocate. Uses scratch buffers for temporaries.
+    ///
+    /// `due_effects` lists EVERY effect — always-active events AND scheduled
+    /// interventions — that fires at the END of this substep (`t + dt`), decided
+    /// CURSOR-keyed by the driver from the timeline's effect boundaries
+    /// (`timeline_effects().batches[effect_idx]`). It is empty on every
+    /// off-boundary substep. The process splits it by kind via
+    /// [`crate::effects::split_due_batch`]: events at PROPOSE (fused with the
+    /// kernel draw), interventions at INTERVENE (post-advance). Events are no
+    /// longer keyed on `round(t/dt)` internally — the integrator lands on each
+    /// event time, so off-grid observation anchoring can't shift the firing
+    /// instant (gh#216, the events arm).
     fn step(
         &self,
         state: &mut Self::State,
@@ -69,10 +80,26 @@ pub trait ProcessModel: Send + Sync {
         dt: f64,
         rng: &mut StatefulRng,
         scratch: &mut Self::Scratch,
+        due_effects: &[usize],
     ) -> Result<(), SimError>;
 
     /// Allocate a fresh scratch buffer sized for this model.
     fn new_scratch(&self) -> Self::Scratch;
+
+    /// The underlying `CompiledModel`, when this process wraps one.
+    ///
+    /// Default `None` so non-model process mocks (e.g. the watchdog's
+    /// `CountingProcess`) need not synthesize one. The production
+    /// `ChainBinomialProcess` returns `Some`, which lets the generic PF/IF2
+    /// drivers reach the model for setup-time guards (gh#216: refuse Exact +
+    /// off-grid observations for a scheduled-intervention-bearing model). Named
+    /// distinctly from
+    /// `DensityProcess::compiled_model` (PGAS-only, infallible `&CompiledModel`)
+    /// to avoid a two-trait method-name collision; this is the optional,
+    /// `ProcessModel`-level hook.
+    fn try_compiled_model(&self) -> Option<&crate::compiled_model::CompiledModel> {
+        None
+    }
 }
 
 /// Observation model: maps latent state to data likelihood.
@@ -125,6 +152,36 @@ pub trait ObservationModel<S>: Send + Sync {
     fn stream_names(&self) -> Vec<String> {
         (0..self.n_streams()).map(|i| format!("stream_{}", i)).collect()
     }
+
+    // ── Multi-cadence per-stream incidence bins (Phase 2a, "Option Z") ───────
+    //
+    // An `Interval` (incidence) stream is scored against the flow accumulated
+    // since ITS OWN last observation. With streams on different cadences the
+    // single global per-transition accumulator cannot be blanket-reset at every
+    // observation (an ES-only union time would wrongly zero AFP's monthly bin).
+    // So each Interval stream carries its own persistent bin in
+    // `ParticleState.acc`, folded once per interval and reset per-stream.
+    //
+    // Default impls keep `NullObsModel` and non-incidence mocks no-ops:
+    // `n_interval_streams() == 0` ⇒ `acc` is empty ⇒ fold/reset are vacuous.
+
+    /// Number of `Interval` (incidence) streams — the length each particle's
+    /// `acc` bin vector must have. `0` for models with no incidence stream.
+    fn n_interval_streams(&self) -> usize { 0 }
+
+    /// Fold this interval's per-transition `flow_accumulators` into the
+    /// per-stream `acc`: for each Interval stream `k`,
+    /// `acc[k] += Σ_{i ∈ flow_indices(k)} flow_accumulators[i]`. Called once per
+    /// observation interval, after the substeps and BEFORE scoring. Does NOT
+    /// zero `flow_accumulators`.
+    fn fold_into_acc(&self, _flow_accumulators: &[u64], _acc: &mut [u64]) {}
+
+    /// Reset (zero) the per-stream `acc` bins for exactly the Interval streams
+    /// SCHEDULED at union index `union_idx` (`at_union[union_idx].is_some()`).
+    /// A stream not scheduled here (a sibling's cadence) keeps accumulating
+    /// toward its own next observation. Called after scoring + resampling, in
+    /// lockstep with the blanket `reset_flows()` of `flow_accumulators`.
+    fn reset_due_acc(&self, _union_idx: usize, _acc: &mut [u64]) {}
 }
 
 /// Extension of ProcessModel for algorithms that need transition density

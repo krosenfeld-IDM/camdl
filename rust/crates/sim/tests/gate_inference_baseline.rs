@@ -43,6 +43,8 @@ use ir::{
 use sim::{
     compiled_model::CompiledModel,
     inference::{
+        BoundObs,
+        dense_cells,
         multi_stream_obs::{MultiStreamObsModel, StreamProjection, StreamSpec},
         particle_filter::bootstrap_filter,
         traits::SMCConfig,
@@ -114,7 +116,14 @@ fn build_sir(obs_times: Vec<f64>) -> (MultiStreamObsModel, Arc<CompiledModel>, V
         interventions: vec![],
         observations: vec![IrObs {
             name: "weekly_cases".into(),
-            schedule: ObservationSchedule::AtTimes(vec![]),
+            source: "weekly_cases".into(),
+            columns: vec![
+                ir::observation::ObsColumn { name: "time".into(), role: ir::observation::ColumnRole::Time },
+                ir::observation::ObsColumn { name: "weekly_cases".into(), role: ir::observation::ColumnRole::Value(ir::parameter::ParamKind::Count) },
+            ],
+            scored: "weekly_cases".into(),
+            emit_schedule: Some(ObservationSchedule::AtTimes(vec![])),
+            stratum: vec![],
             projection: Projection::CumulativeFlow("infection".into()),
             likelihood: Likelihood::NegBinomial(NegBinomialLikelihood {
                 mean: mul(p("rho"), Expr::Projected(ProjectedExpr { projected: () })),
@@ -154,10 +163,12 @@ fn build_sir(obs_times: Vec<f64>) -> (MultiStreamObsModel, Arc<CompiledModel>, V
         ir_model: compiled.model.observations[0].clone(),
         projection: StreamProjection::FlowSum(vec![inf]),
         // seed-1 synthetic weekly reported cases (see the sir case README).
-        observations: vec![16.0, 166.0, 626.0, 1303.0, 1260.0, 1023.0, 327.0, 91.0, 58.0, 6.0, 2.0],
+        observations: dense_cells(vec![16.0, 166.0, 626.0, 1303.0, 1260.0, 1023.0, 327.0, 91.0, 58.0, 6.0, 2.0]),
         obs_times,
+        aux: vec![],
     };
-    let obs_model = MultiStreamObsModel::new(vec![spec], compiled.clone()).unwrap();
+    let obs_model = MultiStreamObsModel::new(
+        BoundObs::bind(vec![spec]).unwrap().0, compiled.clone()).unwrap();
     let params = compiled.default_params.clone();
     (obs_model, compiled, params)
 }
@@ -190,7 +201,7 @@ const BASELINES: &[(&str, f64)] = &[
 
 fn run(builder: RefBuilder) -> f64 {
     let (obs_model, compiled, params) = builder();
-    let process = ChainBinomialProcess::new(compiled, DT);
+    let process = ChainBinomialProcess::new(compiled);
     let config = SMCConfig {
         n_particles: N_PARTICLES,
         dt: DT,
