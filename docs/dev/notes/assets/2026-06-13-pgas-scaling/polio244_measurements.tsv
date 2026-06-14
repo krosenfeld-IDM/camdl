@@ -1,0 +1,21 @@
+metric	value	notes
+compartments	4392	6/cell (S,I0..I3,R) × 244 patch × 3 age; Daniel ≈4393
+transitions	10980	births+infect×4+recover×4+deaths; Daniel ≈18000 (gap = no aging)
+reduce_terms_before_fold	714432	dense FOI sum terms
+reduce_terms_after_fold	35136	95% collapsed by sparse top-12 fold
+ir_bytes_grad_full	157321236	157 MB (rate_grad trees dominate)
+ir_bytes_grad_minimal	14759045	14.8 MB → grad trees ≈ 90% of IR
+compile_grad_full_s	178.56	camdlc, 12yr horizon
+compile_grad_full_rss_gb	5.13	camdlc peak RSS
+compile_grad_minimal_s	5.30	camdlc, --no-dim-check
+fwdsim_real_s	7.83	chain_binomial dt=2, 12yr, grad-full IR; Daniel ≈67s
+fwdsim_user_s	7.42	user/real=0.95 → CPU-saturated (single sim)
+fwdsim_rss_gb	2.81	grad-full loaded; Daniel ≈9.3GB (his 2-age/no-split ≈3.5GB)
+pf_64part_2yr_real_s	5.50	bootstrap PF, 64 particles, all cores, dt=1
+pf_64part_2yr_user_s	67.34	user/real=12.2 → ~12× parallel on 16 cores
+pf_64part_2yr_rss_mb	273	grad-minimal IR, tiny PF state
+faithful_compartments	2929	244×3×{S,I_v,I_c,R} + AFP; his 4393 = 6/stratum (I_v/I_c each ×2 vaccine-source)
+faithful_transitions	11713	+aging+waning+2-class+demography+age-mixing FOI; his ~18k (gap = SIA interventions + source split)
+faithful_ir_bytes_min	14195855	grad-minimal, --no-dim-check
+faithful_compile_min_s	1.63	camdlc grad-minimal
+faithful_bindings	1222	N_age/N_total/I_v_total/I_c_total per patch

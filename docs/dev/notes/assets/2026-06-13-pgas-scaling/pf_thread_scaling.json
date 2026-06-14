@@ -1,0 +1,129 @@
+{
+  "results": [
+    {
+      "command": "RAYON_NUM_THREADS=1 CAMDL_SKIP_VERSION_CHECK=1 rust/target/release/camdl pfilter /tmp/polio_244_min.ir.json --data /tmp/polio_obs_2yr.tsv --obs afp --particles 64 --dt 2 --seed 1 --no-progress",
+      "mean": 30.08279505016,
+      "stddev": 0.4319759223457616,
+      "median": 30.08279505016,
+      "user": 30.014133,
+      "system": 0.06151625999999999,
+      "min": 29.77734194616,
+      "max": 30.388248154160003,
+      "times": [
+        29.77734194616,
+        30.388248154160003
+      ],
+      "memory_usage_byte": [
+        272859136,
+        272859136
+      ],
+      "exit_codes": [
+        0,
+        0
+      ],
+      "parameters": {
+        "threads": "1"
+      }
+    },
+    {
+      "command": "RAYON_NUM_THREADS=2 CAMDL_SKIP_VERSION_CHECK=1 rust/target/release/camdl pfilter /tmp/polio_244_min.ir.json --data /tmp/polio_obs_2yr.tsv --obs afp --particles 64 --dt 2 --seed 1 --no-progress",
+      "mean": 15.053802529159999,
+      "stddev": 0.0015219893637477431,
+      "median": 15.053802529159999,
+      "user": 29.819432,
+      "system": 0.04288375999999999,
+      "min": 15.05272632016,
+      "max": 15.05487873816,
+      "times": [
+        15.05272632016,
+        15.05487873816
+      ],
+      "memory_usage_byte": [
+        276463616,
+        276463616
+      ],
+      "exit_codes": [
+        0,
+        0
+      ],
+      "parameters": {
+        "threads": "2"
+      }
+    },
+    {
+      "command": "RAYON_NUM_THREADS=4 CAMDL_SKIP_VERSION_CHECK=1 rust/target/release/camdl pfilter /tmp/polio_244_min.ir.json --data /tmp/polio_obs_2yr.tsv --obs afp --particles 64 --dt 2 --seed 1 --no-progress",
+      "mean": 7.84808496616,
+      "stddev": 0.014083829012767838,
+      "median": 7.84808496616,
+      "user": 30.540327499999997,
+      "system": 0.05859025999999999,
+      "min": 7.83812619516,
+      "max": 7.85804373716,
+      "times": [
+        7.85804373716,
+        7.83812619516
+      ],
+      "memory_usage_byte": [
+        276463616,
+        276463616
+      ],
+      "exit_codes": [
+        0,
+        0
+      ],
+      "parameters": {
+        "threads": "4"
+      }
+    },
+    {
+      "command": "RAYON_NUM_THREADS=8 CAMDL_SKIP_VERSION_CHECK=1 rust/target/release/camdl pfilter /tmp/polio_244_min.ir.json --data /tmp/polio_obs_2yr.tsv --obs afp --particles 64 --dt 2 --seed 1 --no-progress",
+      "mean": 4.00001805016,
+      "stddev": 0.021993525467120502,
+      "median": 4.00001805016,
+      "user": 30.075463999999997,
+      "system": 0.05383876,
+      "min": 3.98446627916,
+      "max": 4.01556982116,
+      "times": [
+        4.01556982116,
+        3.98446627916
+      ],
+      "memory_usage_byte": [
+        276463616,
+        278478848
+      ],
+      "exit_codes": [
+        0,
+        0
+      ],
+      "parameters": {
+        "threads": "8"
+      }
+    },
+    {
+      "command": "RAYON_NUM_THREADS=16 CAMDL_SKIP_VERSION_CHECK=1 rust/target/release/camdl pfilter /tmp/polio_244_min.ir.json --data /tmp/polio_obs_2yr.tsv --obs afp --particles 64 --dt 2 --seed 1 --no-progress",
+      "mean": 2.8249763416600002,
+      "stddev": 0.014067860420328131,
+      "median": 2.8249763416600002,
+      "user": 35.323479500000005,
+      "system": 0.15787126,
+      "min": 2.81502886216,
+      "max": 2.83492382116,
+      "times": [
+        2.83492382116,
+        2.81502886216
+      ],
+      "memory_usage_byte": [
+        278478848,
+        278478848
+      ],
+      "exit_codes": [
+        0,
+        0
+      ],
+      "parameters": {
+        "threads": "16"
+      }
+    }
+  ]
+}

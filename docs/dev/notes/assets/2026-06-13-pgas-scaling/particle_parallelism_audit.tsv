@@ -1,0 +1,5 @@
+engine	particle_propagation	evidence
+bootstrap_pf	parallel	particle_filter.rs:239 par_iter_mut
+pmmh_correlated_pf	parallel	correlated_pf.rs:381 par_iter_mut
+if2	parallel	if2.rs:413 par_iter_mut
+pgas_csmc_as	serial	pgas.rs csmc_as for j in 0..n_particles (1134,1194,1245); only betas/chains parallel
