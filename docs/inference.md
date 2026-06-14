@@ -357,6 +357,48 @@ observation is uninformative (the model already knew what to expect).
 `observed` falls between q05 and q95 about 90% of the time, the model is
 well-calibrated.
 
+### The `--pf-health` output — "do I have enough particles?"
+
+High-dimensional models (many spatial patches, fine age structure) can need far
+more particles than low-dimensional ones, because a particle filter degenerates
+as the *effective observation dimension* grows. `--pf-health` measures whether
+your particle count is adequate and estimates how many you would need.
+
+```
+camdl pfilter model.camdl --data cases.tsv --particles 5000 --pf-health health.tsv
+```
+
+It writes a per-observation TSV (`time`, `ESS`, `ESS_frac`, `tau2`) and prints a
+summary:
+
+```
+pf-health summary (156 obs, N=5000):
+  ESS fraction:           median 41.2%, worst 3.1%
+  log-weight variance τ²: median 1.80, max 9.4
+  implied N to avoid collapse exp(τ²/2): ~2 (median step), ~110 (worst step)
+```
+
+**ESS_frac** is the realized effective sample size as a fraction of N — how many
+particles are actually contributing. Persistently low fractions (a worst-step a
+few percent of N) mean the cloud is collapsing on the tightest observations.
+
+**tau2 (τ²)** is the variance of the per-particle log-weights at that
+observation — the *predictor* of how many particles you need. The ensemble size
+required to avoid weight collapse scales as **exp(τ²/2)** (Snyder, Bengtsson,
+Bickel & Anderson 2008, *Obstacles to High-Dimensional Particle Filtering*,
+Monthly Weather Review 136:4629–4640). The driver is the number of
+*independently observed* dimensions, not the raw state dimension: an aggregate
+observable keeps τ² small (a handful of particles suffice), while observing many
+strata independently makes τ² — and the required N — grow steeply.
+
+The **implied N** line is that estimate. Treat it as an order-of-magnitude
+*floor* measured at the current parameters and N — not a guarantee. (If the
+filter is already collapsed you under-see the tail, so the true requirement can
+be larger.) When the worst-step implied N exceeds what you can afford, more
+particles will not rescue a fine-resolution fit on their own; the problem is the
+observation dimension, which calls for a different method (e.g. a block/local
+particle filter) rather than brute-force N.
+
 ### CLI
 
 ```bash

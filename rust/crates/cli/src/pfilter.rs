@@ -644,6 +644,51 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         }
     }
 
+    // Particle-filter health report (ESS + Snyder τ²) — `--pf-health`.
+    if let Some(ref path) = a.pf_health {
+        let mut out: Box<dyn Write> = if path == "-" {
+            Box::new(std::io::BufWriter::new(std::io::stdout().lock()))
+        } else {
+            let f = std::fs::File::create(path).unwrap_or_else(|e| {
+                eprintln!("cannot create {}: {}", path, e);
+                std::process::exit(1);
+            });
+            Box::new(std::io::BufWriter::new(f))
+        };
+        let n = n_particles as f64;
+        writeln!(out, "time\tESS\tESS_frac\ttau2").unwrap();
+        for i in 0..result.ess_trace.len() {
+            let t = observations.get(i).map(|o| o.time).unwrap_or(i as f64);
+            writeln!(out, "{}\t{:.2}\t{:.4}\t{:.4}",
+                t, result.ess_trace[i], result.ess_trace[i] / n, result.logw_var_trace[i]).unwrap();
+        }
+        drop(out);
+        if path != "-" {
+            eprintln!("pf-health written to {}", path);
+        }
+
+        // Summary: ESS-fraction health + the Snyder implied-particle-count estimate.
+        if !result.ess_trace.is_empty() {
+            let median = |v: &[f64]| -> f64 {
+                let mut s = v.to_vec();
+                s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                s[s.len() / 2]
+            };
+            let ess_frac: Vec<f64> = result.ess_trace.iter().map(|&e| e / n).collect();
+            let min_ess_frac = ess_frac.iter().copied().fold(f64::INFINITY, f64::min);
+            let med_ess_frac = median(&ess_frac);
+            let med_tau2 = median(&result.logw_var_trace);
+            let max_tau2 = result.logw_var_trace.iter().copied().fold(0.0_f64, f64::max);
+            eprintln!("\npf-health summary ({} obs, N={}):", result.ess_trace.len(), n_particles);
+            eprintln!("  ESS fraction:           median {:.1}%, worst {:.1}%",
+                100.0 * med_ess_frac, 100.0 * min_ess_frac);
+            eprintln!("  log-weight variance τ²: median {:.2}, max {:.2}", med_tau2, max_tau2);
+            eprintln!("  implied N to avoid collapse exp(τ²/2): ~{:.0} (median step), ~{:.0} (worst step)",
+                (0.5 * med_tau2).exp(), (0.5 * max_tau2).exp());
+            eprintln!("  [Snyder et al. 2008 heuristic — an order-of-magnitude floor at THIS θ and N, not a guarantee]");
+        }
+    }
+
     // Save final particle states
     if let Some(ref path) = save_final_state {
         if let Some(ref states) = result.final_states {

@@ -13,7 +13,7 @@ use crate::chain_binomial::StepScratch;
 use crate::rng::StatefulRng;
 use crate::error::SimError;
 use crate::schedule::{Cursor, Schedule, StepPolicy};
-use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, LOG_PROB_FLOOR};
+use super::types::{ParticleState, ParticleSwarm, log_sum_exp, logw_variance, normalize_log_weights, LOG_PROB_FLOOR};
 use super::particle_filter::PFilterResult;
 use super::chain_binomial_process::ChainBinomialProcess;
 use super::traits::{ObservationModel, SMCConfig};
@@ -243,6 +243,7 @@ pub fn bootstrap_filter_correlated(
     let n_obs = obs_model.n_observations();
     let mut total_loglik = 0.0;
     let mut ess_trace = Vec::with_capacity(n_obs);
+    let mut logw_var_trace = Vec::with_capacity(n_obs);
     let mut ll_increments = Vec::with_capacity(n_obs);
     let mut t = config.t_start;
 
@@ -515,6 +516,7 @@ pub fn bootstrap_filter_correlated(
         total_loglik += ll_increment;
         ll_increments.push(ll_increment);
         ess_trace.push(swarm.ess());
+        logw_var_trace.push(logw_variance(&swarm.log_weights));
 
         // Sorted systematic resampling with correlated uniform
         // Sort particles by projected value for correlation preservation.
@@ -566,6 +568,7 @@ pub fn bootstrap_filter_correlated(
     Ok(PFilterResult {
         log_likelihood: total_loglik,
         ess_trace,
+        logw_var_trace,
         ll_increments,
         predictions: None,
         final_states: Some(swarm.states),

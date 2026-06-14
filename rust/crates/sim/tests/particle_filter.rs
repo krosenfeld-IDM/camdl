@@ -265,6 +265,23 @@ fn ic_free_drops_only_the_first_obs_from_loglik() {
 }
 
 #[test]
+fn logw_var_trace_is_populated_parallel_to_ess() {
+    // The Snyder τ² trace (`--pf-health`) is recorded in lockstep with ESS at
+    // every observation, carries finite non-negative variances, and on this
+    // informative observation is strictly positive somewhere — the particle
+    // cloud is not perfectly uniform-weighted.
+    let r = run_pf_full(500, 7, false);
+    assert_eq!(r.logw_var_trace.len(), r.ess_trace.len(),
+        "τ² trace must be parallel to the ESS trace");
+    assert!(!r.logw_var_trace.is_empty(), "must visit at least one observation");
+    for (i, &v) in r.logw_var_trace.iter().enumerate() {
+        assert!(v.is_finite() && v >= 0.0, "τ² must be finite and ≥0 at obs {}: {}", i, v);
+    }
+    assert!(r.logw_var_trace.iter().any(|&v| v > 0.0),
+        "an informative observation must produce some weight spread (τ² > 0)");
+}
+
+#[test]
 fn ic_free_disabled_matches_standard_exactly() {
     // Explicit "ic_free = false produces identical output to no flag"
     // guard — it's a bool field with a default, and the default must

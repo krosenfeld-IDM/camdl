@@ -1265,6 +1265,12 @@ pub struct PfilterArgs {
     #[arg(long)]
     pub trace: Option<String>,
 
+    /// Write a particle-filter health report: per-observation ESS and Snyder
+    /// τ² (log-weight variance), plus a printed summary with the implied
+    /// particles-to-avoid-collapse estimate exp(τ²/2). Use "-" for stdout.
+    #[arg(long)]
+    pub pf_health: Option<String>,
+
     /// Output file (default: stdout)
     #[arg(short, long)]
     pub output: Option<PathBuf>,

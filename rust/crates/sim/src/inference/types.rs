@@ -354,6 +354,26 @@ pub fn log_sum_exp(log_values: &[f64]) -> f64 {
     max + log_values.iter().map(|&lv| (lv - max).exp()).sum::<f64>().ln()
 }
 
+/// Snyder τ²: the variance of the per-particle incremental log importance
+/// weights at one assimilation step, computed over the *finite* (live)
+/// particles. Dead particles (`−∞`) are excluded — ESS already flags their
+/// collapse, and including them would make the variance infinite.
+///
+/// This is the high-dimensional-PF degeneracy predictor: the ensemble size
+/// needed to avoid weight collapse scales as `exp(τ²/2)` (Snyder, Bengtsson,
+/// Bickel & Anderson 2008, *Obstacles to High-Dimensional Particle Filtering*,
+/// MWR 136:4629–4640). Returns 0.0 if fewer than two particles carry a finite
+/// weight (no spread to measure).
+pub fn logw_variance(log_weights: &[f64]) -> f64 {
+    let finite: Vec<f64> = log_weights.iter().copied().filter(|w| w.is_finite()).collect();
+    let n = finite.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mean = finite.iter().sum::<f64>() / n as f64;
+    finite.iter().map(|&w| (w - mean) * (w - mean)).sum::<f64>() / n as f64
+}
+
 /// Normalize log-weights to a probability vector, with uniform fallback.
 ///
 /// Applies the log-sum-exp trick: subtracts the max log-weight before
@@ -450,5 +470,36 @@ mod tests {
         // attempting to compute (∞ - ∞).exp() = NaN.
         let w = normalize_log_weights(&[0.0, f64::INFINITY, -1.0]);
         for x in &w { assert!(approx_eq(*x, 1.0 / 3.0)); }
+    }
+
+    #[test]
+    fn logw_variance_uniform_is_zero() {
+        // Equal weights → no spread → τ² = 0 (a perfectly healthy filter).
+        assert!(approx_eq(logw_variance(&[3.0, 3.0, 3.0, 3.0]), 0.0));
+    }
+
+    #[test]
+    fn logw_variance_matches_population_variance() {
+        // Population variance of {0,2,4,6}: mean 3, Σ(d²)=9+1+1+9=20, /4 = 5.
+        assert!(approx_eq(logw_variance(&[0.0, 2.0, 4.0, 6.0]), 5.0));
+    }
+
+    #[test]
+    fn logw_variance_excludes_dead_particles() {
+        // −∞ (dead) particles are dropped; τ² is over the live ensemble only.
+        let with_dead = logw_variance(&[0.0, 2.0, f64::NEG_INFINITY, 4.0, 6.0]);
+        let live_only = logw_variance(&[0.0, 2.0, 4.0, 6.0]);
+        assert!(approx_eq(with_dead, live_only));
+        // Fewer than two live particles → no measurable spread.
+        assert!(approx_eq(logw_variance(&[f64::NEG_INFINITY, 1.0]), 0.0));
+    }
+
+    #[test]
+    fn logw_variance_grows_with_obs_informativeness() {
+        // The degeneracy direction Snyder predicts: a sharper (more spread)
+        // weight set has larger τ² ⇒ larger implied particle count exp(τ²/2).
+        let mild = logw_variance(&[-0.1, 0.0, 0.1]);
+        let sharp = logw_variance(&[-10.0, 0.0, 10.0]);
+        assert!(sharp > mild);
     }
 }

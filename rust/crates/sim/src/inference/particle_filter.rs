@@ -14,7 +14,7 @@ use crate::error::SimError;
 use crate::schedule::{Cursor, Schedule, StepPolicy};
 use super::degeneracy::{check_pf_degeneracy, check_iteration_budget, window_substep_cost, pf_bail_error, pf_wallclock_budget, ITER_BUDGET};
 use super::traits::{ProcessModel, ObservationModel, SMCConfig};
-use super::types::{ParticleState, ParticleSwarm, log_sum_exp, normalize_log_weights, RESAMPLE_RNG_STREAM, init_particle_rngs};
+use super::types::{ParticleState, ParticleSwarm, log_sum_exp, logw_variance, normalize_log_weights, RESAMPLE_RNG_STREAM, init_particle_rngs};
 use super::resampling::systematic_resample;
 /// Observation: one data point at a specific time.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +45,10 @@ pub struct PFilterResult {
     pub log_likelihood: f64,
     /// ESS at each observation time.
     pub ess_trace: Vec<f64>,
+    /// Snyder τ² — variance of the per-particle incremental log-weights at
+    /// each observation time. The high-dimensional degeneracy predictor: the
+    /// particle count needed to avoid collapse scales as `exp(τ²/2)`.
+    pub logw_var_trace: Vec<f64>,
     /// Log-likelihood increment at each observation time.
     pub ll_increments: Vec<f64>,
     /// One-step-ahead prediction diagnostics at each observation time.
@@ -138,6 +142,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
 
     let mut total_loglik = 0.0;
     let mut ess_trace = Vec::with_capacity(n_obs);
+    let mut logw_var_trace = Vec::with_capacity(n_obs);
     let mut ll_increments = Vec::with_capacity(n_obs);
     let has_predictions = obs_model.n_streams() > 0 && !obs_model.mean(&init, 0, params).is_empty();
     let mut predictions: Vec<PredictionDiag> = if has_predictions {
@@ -429,6 +434,9 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         }
         ll_increments.push(ll_increment);
         ess_trace.push(swarm.ess());
+        // Snyder τ²: variance of the incremental obs log-likelihoods (the live
+        // particles' log importance weights at this assimilation step).
+        logw_var_trace.push(logw_variance(&swarm.log_weights));
 
         // gh#110. Degeneracy watchdog. Check AFTER pushing the current
         // ESS — `check_pf_degeneracy` reads the K-window history off
@@ -532,6 +540,7 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         log_likelihood: total_loglik,
         predictions: if has_predictions { Some(predictions) } else { None },
         ess_trace,
+        logw_var_trace,
         ll_increments,
         final_states: Some(swarm.states),
         ancestry,
