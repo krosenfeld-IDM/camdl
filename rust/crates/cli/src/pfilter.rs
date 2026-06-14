@@ -522,21 +522,44 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         }
     };
 
+    // gh#audit-H13: --parallel / CAMDL_PARALLEL throttles the rayon thread
+    // budget for the particle filter. Build a SCOPED local pool and run the
+    // bootstrap_filter calls inside `pool.install(...)` — both the
+    // per-replicate loop (this branch) and the single run below. The earlier
+    // fix used `build_global`, but the global pool is already initialised by
+    // the time cmd_pfilter reaches here, so `build_global` returned
+    // AlreadyInitialized and the default all-core pool was used regardless of
+    // --parallel. A scoped pool is order-independent: nested rayon work
+    // (particle_filter.rs par_iter_mut) inherits the surrounding pool. A
+    // value of 0 means "use rayon's default" (all logical cores) — leave the
+    // pool unset and run on the global pool in that case.
+    let parallel = a.inference.parallel;
+    let pf_pool: Option<rayon::ThreadPool> = if parallel > 0 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(parallel)
+                .build()
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to build thread pool (--parallel {}): {}", parallel, e);
+                    std::process::exit(1);
+                }),
+        )
+    } else {
+        None
+    };
+    // Run a closure on the scoped pool if one was built, else on the global
+    // pool (parallel == 0). Keeps both bootstrap_filter call sites throttled.
+    // Generic over the closure so the borrowed captures (process/obs_model/…,
+    // all Sync) keep the closure Send for `ThreadPool::install`.
+    fn run_pooled<R: Send>(pool: &Option<rayon::ThreadPool>, f: impl FnOnce() -> R + Send) -> R {
+        match pool {
+            Some(p) => p.install(f),
+            None => f(),
+        }
+    }
+
     // ── Replicates mode: run N independent pfilters, output loglik summary ──
     if n_replicates > 1 {
-        // gh#audit-H13: --parallel / CAMDL_PARALLEL was previously declared
-        // on InferenceCore (args/mod.rs) but never read by cmd_pfilter, so
-        // `camdl pfilter --parallel 16 --replicates 100` ran single-
-        // threaded. Build a rayon pool from a.inference.parallel before
-        // the replicate loop, mirroring profile.rs:849-853 / if2.rs:369-374.
-        let parallel = a.inference.parallel;
-        if parallel > 0 {
-            // build_global is idempotent across processes; ignore the
-            // "already initialised" Err so re-entry from tests is safe.
-            let _ = rayon::ThreadPoolBuilder::new()
-                .num_threads(parallel)
-                .build_global();
-        }
         eprintln!("pfilter: {} replicates × {} particles{}",
             n_replicates, n_particles,
             if parallel > 0 { format!(" (parallel = {})", parallel) }
@@ -554,24 +577,26 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         // into `sim::bootstrap_filter` — deferred (an inference-crate change).
         let bar = crate::progress::Reporter::new().task(n_replicates as u64, "pfilter", "reps");
         let acc = std::sync::Mutex::new((0.0_f64, 0usize)); // (Σ loglik, count)
-        let logliks: Vec<f64> = (0..n_replicates).into_par_iter().map(|rep| {
-            let rep_seed = seed.wrapping_add((rep as u64).wrapping_mul(SEED_STRIDE));
-            let result = bootstrap_filter(
-                &process, &obs_model, &params, &smc_config, rep_seed,
-            ).unwrap_or_else(|e| {
-                eprintln!("pfilter replicate {} error: {:?}", rep + 1, e);
-                std::process::exit(1);
-            });
-            bar.inc(1);
-            if result.log_likelihood.is_finite() {
-                if let Ok(mut g) = acc.lock() {
-                    g.0 += result.log_likelihood;
-                    g.1 += 1;
-                    bar.set(format!("ll={:.1}", g.0 / g.1 as f64));
+        let logliks: Vec<f64> = run_pooled(&pf_pool, || {
+            (0..n_replicates).into_par_iter().map(|rep| {
+                let rep_seed = seed.wrapping_add((rep as u64).wrapping_mul(SEED_STRIDE));
+                let result = bootstrap_filter(
+                    &process, &obs_model, &params, &smc_config, rep_seed,
+                ).unwrap_or_else(|e| {
+                    eprintln!("pfilter replicate {} error: {:?}", rep + 1, e);
+                    std::process::exit(1);
+                });
+                bar.inc(1);
+                if result.log_likelihood.is_finite() {
+                    if let Ok(mut g) = acc.lock() {
+                        g.0 += result.log_likelihood;
+                        g.1 += 1;
+                        bar.set(format!("ll={:.1}", g.0 / g.1 as f64));
+                    }
                 }
-            }
-            result.log_likelihood
-        }).collect();
+                result.log_likelihood
+            }).collect()
+        });
         bar.finish();
 
         let mean_ll = logliks.iter().sum::<f64>() / n_replicates as f64;
@@ -603,11 +628,16 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
     }
 
     // ── Single pfilter run ─────────────────────────────────────────────────
-    let result = bootstrap_filter(
-        &process, &obs_model, &params, &smc_config, seed,
-    ).unwrap_or_else(|e| {
-        eprintln!("pfilter error: {:?}", e);
-        std::process::exit(1);
+    // gh#audit-H13: run on the scoped pool so --parallel throttles the
+    // particle-level parallelism inside bootstrap_filter (par_iter_mut over
+    // the swarm).
+    let result = run_pooled(&pf_pool, || {
+        bootstrap_filter(
+            &process, &obs_model, &params, &smc_config, seed,
+        ).unwrap_or_else(|e| {
+            eprintln!("pfilter error: {:?}", e);
+            std::process::exit(1);
+        })
     });
 
     // Write trace diagnostics

@@ -130,12 +130,25 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
         None => None,
     };
 
-    // Configure rayon parallelism (best-effort; if a global pool is
-    // already configured, this is a no-op).
-    if a.parallel > 0 {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(a.parallel).build_global();
-    }
+    // gh#audit-H13: --parallel / CAMDL_PARALLEL throttles the rayon thread
+    // budget. Build a SCOPED local pool and run the parallel sweep inside
+    // `pool.install(...)`. The earlier fix used `build_global`, which is
+    // order-dependent and one-shot (AlreadyInitialized is swallowed) — a
+    // scoped pool always throttles. parallel == 0 means "use rayon's default"
+    // (all logical cores): leave the pool unset and run on the global pool.
+    let survey_pool: Option<rayon::ThreadPool> = if a.parallel > 0 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(a.parallel)
+                .build()
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to build thread pool (--parallel {}): {}", a.parallel, e);
+                    std::process::exit(1);
+                }),
+        )
+    } else {
+        None
+    };
 
     let resolved = match resolve_survey_inputs(a) {
         Ok(r) => r,
@@ -423,7 +436,7 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
     // researcher metric. Honors `--progress none/plain`.
     let bar = crate::progress::Reporter::new().task(n_points as u64, "survey", "pts");
     let best = std::sync::Mutex::new(f64::NEG_INFINITY);
-    let rows: Vec<LandscapeRow> = lhs_starts.par_iter().enumerate()
+    let sweep = || lhs_starts.par_iter().enumerate()
         .map(|(point_id, draw)| {
             // Build the full parameter vector: base_params overwritten
             // at each estimated index. Fixed params are already baked
@@ -459,6 +472,10 @@ pub fn cmd_survey(a: &crate::args::SurveyArgs) {
             row
         })
         .collect();
+    let rows: Vec<LandscapeRow> = match &survey_pool {
+        Some(pool) => pool.install(sweep),
+        None => sweep(),
+    };
     bar.finish();
 
     // ── TSV writer (sorted by loglik desc) ──────────────────────────

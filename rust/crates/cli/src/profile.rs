@@ -1171,17 +1171,34 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         bar.inc(cached.len() as u64);
     }
 
-    if parallel > 0 {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(parallel)
-            .build_global();
-    }
+    // gh#audit-H13: --parallel / CAMDL_PARALLEL throttles the rayon thread
+    // budget. Build a SCOPED local pool and run the parallel job sweep inside
+    // `pool.install(...)`. The earlier fix used `build_global`, but by the
+    // time profile reaches here the global pool is already initialised, so
+    // `build_global` returns AlreadyInitialized and is ignored — the default
+    // all-core pool ran regardless of --parallel. A scoped pool is
+    // order-independent. parallel == 0 means "use rayon's default" (all
+    // logical cores): leave the pool unset and run on the global pool.
+    let prof_pool: Option<rayon::ThreadPool> = if parallel > 0 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(parallel)
+                .build()
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to build thread pool (--parallel {}): {}", parallel, e);
+                    std::process::exit(1);
+                }),
+        )
+    } else {
+        None
+    };
 
     // Throttled rollup rewrites: per-seed profile.tsv (1s throttle) and
     // (multi-seed only) the cross-seed summary.tsv (2s throttle, since
     // it reads N seeds' rollups). Last-completion-wins.
 
     // ── Run remaining jobs in parallel ──────────────────────────────
+    let run_sweep = || {
     remaining.par_iter().for_each(|&ji| {
         let (seed_idx, grid_idx, start_idx, ref resolved_pt_id, ref cas_path) = resolved_jobs[ji];
         let process = Arc::clone(&process);
@@ -1625,6 +1642,11 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
         bar.inc(1);
 
     });
+    };
+    match &prof_pool {
+        Some(pool) => pool.install(run_sweep),
+        None => run_sweep(),
+    }
 
     bar.finish();
 
