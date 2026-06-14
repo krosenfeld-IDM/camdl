@@ -121,7 +121,12 @@ cannot be throttled, and a thread-scaling sweep via `--parallel` is flat (every
 run uses all cores). Cause: the global rayon pool is already built before the
 pfilter CLI's `build_global` call (`pfilter.rs:~430`, whose `let _ = …` swallows
 the `AlreadyInitialized` error). The fit path respects `--parallel` correctly
-(table above), so this is pfilter-CLI-specific. Worth a gh issue.
+(table above), so this was pfilter-CLI-specific. **Fixed in f7bde701** — a
+scoped local rayon pool (`ThreadPoolBuilder::build()` + `pool.install(...)`,
+order-independent) in pfilter/profile/survey; verified `--parallel 1` →
+cores_eff ≈ 0.6 (was ~14), loglik byte-identical. `batch.rs` has the same
+`build_global`-after-load anti-pattern at two sites — a clean same-shape
+follow-up, left out to keep that commit scoped.
 
 ## Compute-lever A/B: both big levers are already on and both pay
 
