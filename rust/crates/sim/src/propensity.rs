@@ -1,11 +1,30 @@
+use std::cell::RefCell;
+
 use crate::{
     compiled_model::{CompiledModel, CompiledTimeFuncKind},
     error::{SimError, CollapseKind},
     eval_stats::{allow_degenerate_rates, eval_unresolved},
+    flat_eval::{self, FlatCache},
     resolved_expr::{eval_resolved, ResolvedExpr},
     state::{IntState, RealState},
 };
 use ir::expr::{BinOp, Expr, UnOp};
+
+/// Per-thread scratch + binding cache for the flat-bytecode propensity path
+/// (gh#209, opt-in `CAMDL_EVAL_FLAT`). Thread-local for the same reason the
+/// `resolved_expr` `BINDING_CACHE` is: PF/PGAS parallelise across particles, so
+/// each worker owns its own scratch buffer and cache and there is no
+/// cross-particle aliasing. Starts at `FlatCache::new(0)` + an empty `Vec`; both
+/// are sized lazily on first use against the active model's binding count.
+struct FlatState {
+    cache: FlatCache,
+    scratch: Vec<f64>,
+}
+
+thread_local! {
+    static FLAT_STATE: RefCell<FlatState> =
+        RefCell::new(FlatState { cache: FlatCache::new(0), scratch: Vec::new() });
+}
 
 /// Evaluation context: bundles all read-only simulation state for a single time step.
 /// Passed by reference to `eval_expr` and all callers, eliminating the repeated
@@ -547,6 +566,68 @@ pub fn eval_propensities(
     }
 
     let ctx = EvalCtx { model, int_s, real_s, params, t, dt, projected: None, aux: None, int_float_override: None };
+
+    // gh#209: flat-bytecode propensity path (opt-in `CAMDL_EVAL_FLAT`). Built
+    // once at construction; `Some` iff the toggle is on. The flat VM uses its
+    // own `&mut FlatCache` (NOT the resolved_expr `BINDING_CACHE`), so this path
+    // does NOT enter `CacheScope`. Per-rate error handling (NaN → table-OOB →
+    // SimError::TableLookup or NumericalCollapse; negative-rate guard) is
+    // replicated verbatim from the default path below so the two are
+    // byte-for-byte identical in every observable outcome.
+    if let Some(vm) = &model.resolved.flat_vm {
+        return FLAT_STATE.with(|st| {
+            let st = &mut *st.borrow_mut();
+            // Size the per-thread cache to this model's binding count (rebuild
+            // only if it differs — e.g. first use, or a model swap on this
+            // thread). Mirrors `CacheScope::enter`'s `val.len() != n` guard.
+            if !st.cache.is_sized(vm.n_bindings) {
+                st.cache = FlatCache::new(vm.n_bindings);
+            }
+            // Bump the generation (invalidate the prior state's cached binding
+            // values) and mark active — once per propensity-vector eval, exactly
+            // like `CacheScope::enter`.
+            st.cache.activate();
+            // Reserve scratch so the unchecked executor's raw pointer never sees
+            // a realloc mid-eval. `scratch_capacity` is the global ceiling.
+            let need = flat_eval::scratch_capacity(vm);
+            if st.scratch.capacity() < need {
+                st.scratch.reserve(need - st.scratch.len());
+            }
+            out.clear();
+            for (i, tr) in model.model.transitions.iter().enumerate() {
+                // gh#127 (#12): clear the table-OOB record before EACH rate (see
+                // the default path below for the full rationale).
+                crate::resolved_expr::clear_table_oob();
+                let p = flat_eval::eval_flat(vm, &vm.rates[i], &ctx, &mut st.scratch, &mut st.cache);
+                if p.is_nan() {
+                    if let Some((table_idx, index, len)) = crate::resolved_expr::take_table_oob() {
+                        let table_name = model.model.tables[table_idx].name.clone();
+                        return Err(SimError::TableLookup(format!(
+                            "table '{table_name}': index {index} out of bounds [0, {len}) \
+                             while evaluating rate of transition '{}' at t={t} \
+                             (the index is computed from model state/parameters; widen the \
+                             table or fix the index expression)",
+                            tr.name
+                        )));
+                    }
+                    return Err(SimError::NumericalCollapse {
+                        kind: crate::error::CollapseKind::DivByZero,
+                        t,
+                    });
+                }
+                if p < 0.0 {
+                    return Err(SimError::NegativePropensity {
+                        transition: tr.name.clone(),
+                        value: p,
+                        t,
+                    });
+                }
+                out.push(p);
+            }
+            Ok(())
+        });
+    }
+
     // Activate the per-state binding cache for this propensity vector: each
     // model binding is evaluated at most once instead of on every BindingRef
     // (the on-demand path is restored when `_cache` drops at function exit).

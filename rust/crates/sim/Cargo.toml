@@ -64,3 +64,9 @@ harness = false
 [[bench]]
 name = "eval_ab"
 harness = false
+
+# gh#209: recursive eval_resolved (tree-walk) vs eval_flat (flat bytecode VM):
+#   cargo bench -p sim --bench flat_eval -- <model.ir.json> [label]
+[[bench]]
+name = "flat_eval"
+harness = false

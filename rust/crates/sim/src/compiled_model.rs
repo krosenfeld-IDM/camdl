@@ -583,6 +583,12 @@ pub struct ResolvedModel {
     /// `None` otherwise. Evaluated once per simulation start in
     /// `CompiledModel::resolve_fire_steps` against the current `params`.
     pub intervention_at_time_exprs: Vec<Option<Vec<ResolvedExpr>>>,
+    /// gh#209: flat-bytecode VM for the propensity hot path, built once at
+    /// construction. `Some` iff `CAMDL_EVAL_FLAT` is set (see
+    /// `flat_eval::eval_flat_enabled`); `None` by default so default models pay
+    /// nothing (neither build cost nor storage) and `eval_propensities` takes
+    /// the unchanged `eval_resolved` path.
+    pub flat_vm: Option<crate::flat_eval::FlatVm>,
 }
 
 /// True if the expression tree references the runtime substep `dt`
@@ -1183,6 +1189,14 @@ impl CompiledModel {
             })
             .collect::<Result<_, SimError>>()?;
 
+        // gh#209: build the flat-bytecode VM once, only when the toggle is on,
+        // so default models pay nothing. Mirrors `cm.resolved.{rates,bindings}`.
+        let flat_vm = if crate::flat_eval::eval_flat_enabled() {
+            Some(crate::flat_eval::build(&rates, &resolved_bindings))
+        } else {
+            None
+        };
+
         let resolved = ResolvedModel {
             rates,
             bindings: resolved_bindings,
@@ -1192,6 +1206,7 @@ impl CompiledModel {
             ode_derivatives,
             intervention_exprs,
             intervention_at_time_exprs,
+            flat_vm,
         };
 
         Ok(CompiledModel {
