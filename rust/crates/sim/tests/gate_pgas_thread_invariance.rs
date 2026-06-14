@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use rayon::ThreadPoolBuilder;
 use sim::compiled_model::CompiledModel;
+use sim::inference::dense_cells;
 use sim::inference::if2::{EstimatedParam, Transform};
-use sim::inference::multi_stream_obs::{MultiStreamObsModel, StreamProjection, StreamSpec};
+use sim::inference::multi_stream_obs::{BoundObs, MultiStreamObsModel, StreamProjection, StreamSpec};
 use sim::inference::particle_filter::Observation;
 use sim::inference::pgas::{run_pgas, simulate_reference, PGASConfig, PGASResult, PGASSweep};
 use sim::inference::pmmh::Prior;
@@ -57,7 +58,17 @@ fn poisson_obs_block() -> ir::observation::ObservationModel {
     let rate = Expr::Projected(ProjectedExpr { projected: () });
     ObservationModel {
         name: "weekly_cases".into(),
-        schedule: ObservationSchedule::AtTimes(vec![]),
+        source: "weekly_cases".into(),
+        columns: vec![
+            ObsColumn { name: "time".into(), role: ColumnRole::Time },
+            ObsColumn {
+                name: "weekly_cases".into(),
+                role: ColumnRole::Value(ir::parameter::ParamKind::Count),
+            },
+        ],
+        scored: "weekly_cases".into(),
+        emit_schedule: Some(ObservationSchedule::AtTimes(vec![])),
+        stratum: vec![],
         projection: Projection::CumulativeFlow("infection".into()),
         likelihood: Likelihood::Poisson(PoissonLikelihood { rate }),
     }
@@ -96,12 +107,14 @@ fn run_once() -> PGASResult {
     }
 
     let obs_model = MultiStreamObsModel::new(
-        vec![StreamSpec {
-            projection: StreamProjection::FlowSum(vec![0]),
-            ir_model: compiled.model.observations[0].clone(),
-            observations: obs.iter().map(|o| o.value).collect(),
-            obs_times: obs.iter().map(|o| o.time).collect(),
-        }],
+        BoundObs::bind(vec![StreamSpec::dense(
+            StreamProjection::FlowSum(vec![0]),
+            compiled.model.observations[0].clone(),
+            dense_cells(obs.iter().map(|o| o.value).collect()),
+            obs.iter().map(|o| o.time).collect(),
+        )])
+        .unwrap()
+        .0,
         compiled.clone(),
     )
     .unwrap();
