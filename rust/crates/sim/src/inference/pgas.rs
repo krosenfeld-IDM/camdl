@@ -12,6 +12,7 @@
 //! ancestor sampling to maintain diversity.
 
 use serde::{Serialize, Deserialize};
+use rayon::prelude::*;
 
 use crate::chain_binomial::{StepScratch, step_one, RATE_EPSILON};
 use crate::compiled_model::CompiledModel;
@@ -1239,30 +1240,45 @@ pub fn csmc_as(
             prev_counts[j].copy_from_slice(&counts[j]);
         }
 
-        // ── 2. Propagate free particles ──
-        for j in 0..n_particles {
-            if j == j_ref { continue; }
-            // Reset substep flows
-            for f in &mut substep_flows[j] { *f = 0; }
-            scratches[j].gamma_used.clear();
+        // ── 2. Propagate free particles (parallel; gh#209) ──
+        // Each particle writes only its own slot and draws from its own RNG
+        // stream (`rngs[j]`), so concurrent execution is byte-identical to the
+        // serial loop — the same Common-Random-Numbers property PF/IF2/PMMH
+        // already rely on. The reference particle (`j_ref`) is clamped below,
+        // not propagated. Pinned by the `RAYON_NUM_THREADS` 1-vs-N invariance
+        // gate (`tests/gate_pgas_thread_invariance.rs`).
+        let prop_results: Vec<Result<(), SimError>> = counts.par_iter_mut()
+            .zip(substep_flows.par_iter_mut())
+            .zip(particle_reals.par_iter_mut())
+            .zip(rngs.par_iter_mut())
+            .zip(scratches.par_iter_mut())
+            .zip(substep_gammas.par_iter_mut())
+            .enumerate()
+            .map(|(j, (((((cnt, flows), real), rng), scratch), gammas))| {
+                if j == j_ref { return Ok(()); }
+                // Reset substep flows
+                for f in flows.iter_mut() { *f = 0; }
+                scratch.gamma_used.clear();
 
-            // Populate the due batch step_one applies (gh#216): the same firing
-            // plan the reference producer used at substep `s`, so free particles
-            // and the (clamped) reference fire identically. `t + step_dt` is the
-            // boundary; `dt` is the nominal firing-key grid.
-            fill_producer_batch(
-                model, &fire_steps, t + step_dt, dt, s, firing,
-                &mut scratches[j].effect_batch,
-            );
-            step_one(
-                model, &mut counts[j], &mut substep_flows[j],
-                &mut particle_reals[j],
-                // `step_dt` is the realized substep (clipped under Exact).
-                params, t, step_dt, &mut rngs[j], &mut scratches[j],
-            )?;
+                // Populate the due batch step_one applies (gh#216): the same firing
+                // plan the reference producer used at substep `s`, so free particles
+                // and the (clamped) reference fire identically. `t + step_dt` is the
+                // boundary; `dt` is the nominal firing-key grid.
+                fill_producer_batch(
+                    model, &fire_steps, t + step_dt, dt, s, firing,
+                    &mut scratch.effect_batch,
+                );
+                step_one(
+                    model, cnt, flows, real,
+                    // `step_dt` is the realized substep (clipped under Exact).
+                    params, t, step_dt, rng, scratch,
+                )?;
 
-            std::mem::swap(&mut substep_gammas[j], &mut scratches[j].gamma_used);
-        }
+                std::mem::swap(gammas, &mut scratch.gamma_used);
+                Ok(())
+            })
+            .collect();
+        for r in prop_results { r?; }
 
         // ── 3. Clamp reference particle ──
         let ref_rec = &reference.substeps[s];
@@ -1305,33 +1321,42 @@ pub fn csmc_as(
         // overwritten by the obs log-likelihood or reset to 0), so
         // removing it here doesn't affect subsequent steps.
         {
-            ancestor_log_w.fill(f64::NEG_INFINITY);
-            for j in 0..n_particles {
-                // gh#audit-H8. Use the pre-resample state cache, not
-                // the post-resample prev_counts. CSMC ancestor
-                // sampling is supposed to categoricalise over the
-                // pre-step particle ensemble; the post-resample
-                // prev_counts permutes that ensemble silently.
-                // Reference slot j_ref keeps its corrected
-                // counts_before via prev_counts[j_ref] above.
-                let counts_before_substep = if j == j_ref {
-                    &prev_counts[j_ref]  // already corrected to ref_rec.counts_before
-                } else {
-                    &prev_counts_for_ancestor[j]
-                };
-                let td = log_transition_density_substep(
-                    model,
-                    counts_before_substep,
-                    &ref_rec.flows,
-                    &ref_rec.gammas,
-                    params,
-                    t,
-                    step_dt,
-                )?;
-                // Post-resample slot j carries uniform weight (1/N);
-                // the categorical is driven by td alone.
-                ancestor_log_w[j] = td;
-            }
+            // Ancestor weights, in parallel (gh#209). Each slot is an
+            // independent transition-density eval over a read-only state; the
+            // categorical draw below reads `ancestor_log_w` only after this
+            // barrier, so concurrency is byte-identical to the serial loop.
+            let ad_results: Vec<Result<(), SimError>> = ancestor_log_w
+                .par_iter_mut()
+                .enumerate()
+                .map(|(j, slot)| {
+                    // gh#audit-H8. Use the pre-resample state cache, not
+                    // the post-resample prev_counts. CSMC ancestor
+                    // sampling is supposed to categoricalise over the
+                    // pre-step particle ensemble; the post-resample
+                    // prev_counts permutes that ensemble silently.
+                    // Reference slot j_ref keeps its corrected
+                    // counts_before via prev_counts[j_ref] above.
+                    let counts_before_substep = if j == j_ref {
+                        &prev_counts[j_ref]  // already corrected to ref_rec.counts_before
+                    } else {
+                        &prev_counts_for_ancestor[j]
+                    };
+                    let td = log_transition_density_substep(
+                        model,
+                        counts_before_substep,
+                        &ref_rec.flows,
+                        &ref_rec.gammas,
+                        params,
+                        t,
+                        step_dt,
+                    )?;
+                    // Post-resample slot j carries uniform weight (1/N);
+                    // the categorical is driven by td alone.
+                    *slot = td;
+                    Ok(())
+                })
+                .collect();
+            for r in ad_results { r?; }
 
             // Sample ancestor from categorical(softmax(ancestor_log_w)).
             // Degenerate case (all -inf): keep reference's own history to
@@ -1355,22 +1380,28 @@ pub fn csmc_as(
             }
         }
 
-        // ── 5. Compute weights — joint across all streams ──
+        // ── 5. Compute weights — joint across all streams (parallel; gh#209) ──
+        // Each particle's obs-likelihood is independent; we fold the per-particle
+        // cum_flows reset into the same pass. `counts` is read-only here.
         if let Some(&obs_idx) = obs_at_substep.get(&s) {
-            for j in 0..n_particles {
-                // FOLD (Phase 2a): close this interval's per-transition
-                // `cum_flows[j]` into the per-stream `acc[j]` BEFORE scoring.
-                obs_model.fold_into_acc(&cum_flows[j], &mut acc[j]);
-                log_weights[j] = obs_model.log_likelihood_from_flows_and_counts(
-                    &acc[j], &counts[j], obs_idx, params);
-            }
-            for j in 0..n_particles {
-                // `cum_flows[j]` blanket-zeroed (unchanged); the per-stream
-                // `acc[j]` bins per-stream — only Interval streams scheduled at
-                // THIS union index zero.
-                for f in &mut cum_flows[j] { *f = 0; }
-                obs_model.reset_due_acc(obs_idx, &mut acc[j]);
-            }
+            log_weights.par_iter_mut()
+                .zip(cum_flows.par_iter_mut())
+                .zip(acc.par_iter_mut())
+                .zip(counts.par_iter())
+                .for_each(|(((lw, cflows), a), cnt)| {
+                    // FOLD (Phase 2a): close this interval's per-transition
+                    // `cum_flows` into the per-stream `acc` BEFORE scoring; each
+                    // slot is particle-local, so the parallel fold/score/reset is
+                    // byte-identical to the serial loop (gh#209 CRN property).
+                    obs_model.fold_into_acc(cflows, a);
+                    *lw = obs_model.log_likelihood_from_flows_and_counts(
+                        a, cnt, obs_idx, params);
+                    // `cum_flows` blanket-zeroed; the per-stream `acc` bins
+                    // per-stream — only Interval streams scheduled at THIS union
+                    // index zero.
+                    for f in cflows.iter_mut() { *f = 0; }
+                    obs_model.reset_due_acc(obs_idx, a);
+                });
         } else {
             // Non-observation substep: uniform weights
             log_weights.fill(0.0);
