@@ -31,14 +31,51 @@ substeps; 80 particles, 10 sweeps, `--parallel 16`, M4 Max):
 | after  | **15.6s** | csmc 94% · gradient 2% · trajectory-I/O **0.15s**       |
 
 **2.57× on the whole fit.** Output bytes are identical (verified: 10 files, 723
-cols × 1456 rows, complete to t=2910). The fix is now legitimately csmc-bound,
-as a PGAS fit should be.
+cols × 1456 rows, complete to t=2910). I/O is gone; the fit is now bound by
+inference work.
 
-This scales _up_ with model size: cost is
-`substeps × (compartments +
-transitions) × sweeps`. A 244-ward national model
-(gh#207/#209) would be far worse, so the fix matters most at the scale we care
-about.
+That table is the **degenerate** profiling bench (0% acceptance — NUTS diverges
+at an infeasible start and barely runs, so "csmc 94%" overstates csmc and the
+gradient looks like 1%). The representative picture comes from a **healthy**
+fit.
+
+This I/O cost scales _up_ with model size: it is
+`substeps × (compartments + transitions) × sweeps`. A 244-ward national model
+(gh#207/#209) would be ~60M syscalls per trajectory file unbuffered, so the fix
+matters most at the scale we care about.
+
+## Post-fix breakdown of a healthy fit (where the gradient actually runs)
+
+samply of a _healthy_ fit (single-param recovery, 23% acceptance, real NUTS
+trees; 100 particles, 16 cores, 30 sweeps) — all-thread CPU self-time, leaf
+attribution via the `.syms.json` sidecar
+([`assets/2026-06-14-pgas-io/healthy-fit-leaf-selftime.tsv`](assets/2026-06-14-pgas-io/healthy-fit-leaf-selftime.tsv)):
+
+![healthy-fit breakdown](assets/2026-06-14-pgas-io/healthy-fit-breakdown.png)
+
+| bucket                                       | % all-thread CPU |
+| -------------------------------------------- | ---------------- |
+| thread park / idle (`__psynch_cvwait`)       | 35%              |
+| context-switch churn (`swtch_pri`)           | 28%              |
+| rayon work-steal / mutex                     | ~4%              |
+| **`eval_resolved`** (rate/grad evaluator)    | **13.5%**        |
+| RNG (`binomial` draws)                       | ~5%              |
+| obs-lik (`lgamma`) + `log` + densities + TLS | ~13%             |
+| trajectory I/O                               | **~0%**          |
+| gradient                                     | **~1%**          |
+
+Two facts that overturn the "gradient is the bottleneck" intuition:
+
+1. **The gradient is ~1% even in a healthy fit.** It rises in absolute calls
+   (real NUTS trees), but csmc propagates ~100 particles per sweep while the
+   gradient runs over a single trajectory — csmc compute dominates by ~100×. The
+   gradient is not a lever at any acceptance rate at this model size.
+2. **At small scale the fit is scheduler-bound, not compute-bound.** ~67% of
+   all-thread CPU is parking / context-switch / steal overhead; only ~25% is
+   real compute (and that is `eval_resolved`-dominated, matching the gh#209
+   national-scale finding). 100 particles / 16 cores ≈ 6 particles/thread — the
+   per-substep per-particle work is too small to amortize rayon fork/join across
+   the 1455 sequential substeps.
 
 ## Three plausible-but-wrong candidates ruled out first
 

@@ -1,0 +1,16 @@
+# samply all-thread leaf self-time, healthy PGAS fit (polio_metapop, 100 particles, 16 cores, 30 sweeps, burn_in=15, 23% acceptance)
+# profiling binary 23a9719f-tree (BufWriter fix in, instrumentation out); --unstable-presymbolicate sidecar
+leaf_symbol	pct_all_thread
+__psynch_cvwait	35.2
+swtch_pri	27.9
+sim::resolved_expr::eval_resolved	13.5
+sim::rng::StatefulRng::binomial	4.2
+std::thread::local::LocalKey::with	3.2
+log	2.1
+__psynch_mutexwait	1.6
+sim::inference::pgas::log_transition_density_substep	1.2
+rand_core::block::BlockRng::generate_and_set	1.0
+sim::inference::obs_loglik::lgamma	1.0
+sim::chain_binomial::step_one	1.0
+crossbeam_deque::Stealer::steal	0.8
+sim::propensity::eval_propensities	0.3
