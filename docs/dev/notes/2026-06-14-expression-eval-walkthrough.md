@@ -194,6 +194,16 @@ transitions per csmc pass. That product, not any single rate, is why
 
 ## Flattened-eval prototype (the ~2–8× lever)
 
+> **Update (measured):** this section was written before the prototype existed
+> and speculated ~2–4×. The real number is **1.27× per-eval** (a naive first
+> prototype even measured 0.94× — _slower_). See
+> [`2026-06-14-flat-bytecode-evaluator.md`](2026-06-14-flat-bytecode-evaluator.md)
+> for the measured result, why the naive version misled, and the shipped
+> `CAMDL_EVAL_FLAT` design. The reasoning below is sound on _mechanism_ but
+> over-stated the _magnitude_ — `eval_resolved` is already a fast (monomorphic,
+> pre-resolved, f64) tree-walk, so there is far less overhead to remove than the
+> dynamic-language interpreters the 2–8× folklore comes from.
+
 The remaining `eval_resolved` cost is **interpreter overhead**: walking a
 heap-scattered tree of `Box<ResolvedExpr>` node-by-node — recursion (call
 overhead + stack frames) and pointer-chasing (each `Box` is a separate
