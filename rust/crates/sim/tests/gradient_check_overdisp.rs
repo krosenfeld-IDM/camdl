@@ -325,3 +325,84 @@ fn gh76_cleanup_two_overdisp_grad_matches_fd_asymmetric_sigma() {
 fn gh76_cleanup_two_overdisp_grad_matches_fd_large_sigma() {
     run_gh76_cleanup_two_overdisp_check(1.0, 1.0, 45, 1.0);
 }
+
+// ── gh#197: the value/gradient ENERGY oracle (the "spine oracle") ───────────
+//
+// NUTS integrates with energy = `complete_data_loglik_grad(θ).0` and force =
+// its `grad`. That `.0` MUST equal `complete_data_loglik(θ).total` — the same
+// scalar computed two ways (the value-only callers vs the gradient path).
+// gh#197: the gradient path adds the gamma-multiplier density GRADIENT but omits
+// its VALUE from `.0`, so the NUTS energy is low by Σ log Γ(g; dt/σ², σ²/dt) on
+// any overdispersed model — a silently biased σ² posterior, and NUTS then
+// targets a different distribution than MH-within-Gibbs / the replica-exchange
+// swap (both score with `complete_data_loglik().total`, gamma-inclusive).
+//
+// The non-gamma terms are already identical between the two paths, so the whole
+// gap is the omitted gamma value; we assert energy == value BIT-EXACTLY. RED
+// before the fix (low by ~70 nats on these fixtures); GREEN after.
+//
+// The FD tests above do NOT catch this — they check grad == ∂(value fn), which
+// holds (the gamma gradient IS present). This is the orthogonal invariant: the
+// returned energy vs the true value.
+fn run_spine_oracle(sigma_se: f64, seed: u64, dt: f64) {
+    let mut model = load_model("../../../ocaml/golden/sir_overdispersion.ir.json");
+    set_param_defaults(&mut model, &[
+        ("beta", 0.3), ("gamma", 0.1),
+        ("sigma_se", sigma_se),
+        ("N0", 1000.0), ("I0", 10.0),
+    ]);
+    let compiled = Arc::new(CompiledModel::new(model).unwrap());
+    let (params, _names) = build_params_and_names(&compiled);
+
+    let t_end = compiled.model.simulation.t_end;
+    let mut rng = StatefulRng::new(seed);
+    let trajectory = simulate_reference(&compiled, &params, t_end, dt, &mut rng).unwrap();
+
+    let total_gammas: usize = trajectory.substeps.iter().map(|s| s.gammas.len()).sum();
+    assert!(total_gammas > 0,
+        "spine-oracle fixture must produce overdispersed gammas; got 0");
+
+    // No observations: the gamma value lives in the TRANSITION density, so the
+    // oracle exposes gh#197 with an empty obs model — the obs term is then 0 on
+    // both paths, isolating the gamma gap.
+    let observations: Vec<Observation> = vec![];
+    let obs_model = MultiStreamObsModel::empty(compiled.clone());
+
+    let n_model_params = compiled.model.parameters.len();
+    let estimated_indices: Vec<usize> = (0..compiled.param_index.len()).collect();
+    let mut model_to_estimated: Vec<Option<usize>> = vec![None; n_model_params];
+    for (e, &m) in estimated_indices.iter().enumerate() { model_to_estimated[m] = Some(e); }
+    let rate_grads = sim::inference::pgas_grad::resolve_rate_grad_for_run(
+        &compiled.resolved.rate_grads_indexed, &model_to_estimated);
+    let ivp_mappings: Vec<IVPMapping> = vec![];
+    let oas = build_obs_at_substep(
+        &observations, compiled.model.simulation.t_start, dt).unwrap();
+    let d = estimated_indices.len();
+
+    let value = complete_data_loglik(
+        &compiled, &trajectory, &params, &observations, dt,
+        &obs_model, &ivp_mappings, &oas,
+    ).unwrap().total;
+
+    let (energy, _grad) = complete_data_loglik_grad(
+        &compiled, &trajectory, &params, &observations, dt,
+        &obs_model, &ivp_mappings, d, &rate_grads, &oas, &estimated_indices,
+    ).unwrap();
+
+    assert_eq!(
+        energy.to_bits(), value.to_bits(),
+        "spine oracle (gh#197): complete_data_loglik_grad(θ).0 = {energy} must equal \
+         complete_data_loglik(θ).total = {value} f64-exact — the NUTS energy must be \
+         the true target. gap = {:.6} nats (= omitted Σ gamma log-density)",
+        value - energy,
+    );
+}
+
+#[test]
+fn spine_oracle_energy_equals_value_small_sigma() { run_spine_oracle(0.01, 42, 1.0); }
+
+#[test]
+fn spine_oracle_energy_equals_value_medium_sigma() { run_spine_oracle(0.1, 43, 1.0); }
+
+#[test]
+fn spine_oracle_energy_equals_value_large_sigma() { run_spine_oracle(1.0, 44, 1.0); }

@@ -21,7 +21,7 @@ use crate::inference::obs_loglik::{poisson_logpmf, binom_logpmf};
 use crate::inference::particle_filter::Observation;
 use crate::inference::resampling::systematic_resample;
 use crate::inference::pmmh::Prior;
-use crate::inference::types::{EstimatedParam, LOG_PROB_FLOOR, RESAMPLE_RNG_STREAM, init_particle_rngs, restore_z_values};
+use crate::inference::types::{EstimatedParam, RESAMPLE_RNG_STREAM, init_particle_rngs, restore_z_values};
 use crate::propensity::{eval_propensities, EvalCtx};
 use crate::resolved_expr::eval_resolved;
 use crate::schedule::{Cursor, Schedule, StepPolicy};
@@ -803,7 +803,7 @@ pub fn complete_data_loglik(
             // Evaluate σ² at the real start-of-step state (`counts_before`),
             // mirroring the three sibling sites: step_one (chain_binomial.rs),
             // log_transition_density_substep (above), and
-            // log_gamma_density_grad_substep (pgas_grad.rs). σ² is
+            // gamma_density_value_and_grad_substep (pgas_grad.rs). σ² is
             // state-independent today — a compile-time guard in
             // compiled_model.rs rejects any overdispersion expression that
             // references compartment state — so this state choice is currently
@@ -839,13 +839,12 @@ pub fn complete_data_loglik(
                             let g = rec.gammas[gamma_idx_local];
                             let shape = dt_s / sigma_sq;
                             let scale = sigma_sq / dt_s;
-                            // log Gamma(g; shape, scale) = (shape-1)*ln(g) - g/scale
-                            //   - shape*ln(scale) - ln(Gamma(shape))
-                            let log_gamma_density = (shape - 1.0) * g.max(LOG_PROB_FLOOR).ln()
-                                - g / scale
-                                - shape * scale.ln()
-                                - crate::inference::obs_loglik::lgamma(shape);
-                            transition_ll += log_gamma_density;
+                            // log Gamma(g; shape, scale). Shared with the gradient
+                            // path's energy via one helper so the two agree
+                            // f64-exactly (gh#197 / the spine oracle).
+                            transition_ll +=
+                                crate::inference::obs_loglik::gamma_multiplier_log_density(
+                                    shape, scale, g);
                         }
                         gamma_idx_local += 1;
                     }
@@ -1982,7 +1981,7 @@ pub fn run_pgas(
     // residual (BetaBinomial gradient). The observation-density gradient
     // now covers every likelihood arm:
     //
-    //   • σ² (overdispersion) — wired via `log_gamma_density_grad_substep`.
+    //   • σ² (overdispersion) — wired via `gamma_density_value_and_grad_substep`.
     //   • NegBinomial, Normal, Poisson, Binomial, Bernoulli, BetaBinomial
     //     obs likelihoods — wired via `eval_likelihood_resolved_grad`.
     //

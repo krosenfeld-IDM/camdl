@@ -15,7 +15,7 @@ use crate::error::SimError;
 use crate::propensity::{eval_propensities, EvalCtx};
 use crate::resolved_expr::{eval_resolved, eval_resolved_deriv, ResolvedExpr};
 use crate::state::{IntState, RealState};
-use crate::inference::obs_loglik::{binom_logpmf, digamma};
+use crate::inference::obs_loglik::{binom_logpmf, digamma, gamma_multiplier_log_density};
 use crate::inference::pgas::{PGASTrajectory, IVPMapping};
 use crate::inference::particle_filter::Observation;
 
@@ -244,7 +244,13 @@ pub fn log_transition_density_grad(
     Ok((log_p, grad))
 }
 
-/// Gradient of the gamma-multiplier density at one substep.
+/// Value AND gradient of the gamma-multiplier density at one substep.
+///
+/// Returns `(value, grad)`: the value is `Σ log Γ(g; dt/σ², σ²/dt)` over the
+/// substep's overdispersed transitions (added to the grad-path energy — gh#197),
+/// and `grad` is its derivative w.r.t. each estimated parameter. The value is
+/// computed by the shared [`gamma_multiplier_log_density`] helper the value fn
+/// also uses, so the energy matches `complete_data_loglik` f64-exactly.
 ///
 /// For each overdispersed transition with rate > RATE_EPSILON, the recorded
 /// `gammas[gamma_idx]` is the realised draw from Γ(g; dt/σ², σ²/dt). The
@@ -270,7 +276,7 @@ pub fn log_transition_density_grad(
 /// `estimated_to_model[i]` is the model-param index of the i-th estimated
 /// parameter — used to thread `eval_resolved_deriv` through the σ²
 /// resolved expression.
-fn log_gamma_density_grad_substep(
+fn gamma_density_value_and_grad_substep(
     model: &CompiledModel,
     counts_before: &[i64],
     gammas: &[f64],
@@ -278,13 +284,16 @@ fn log_gamma_density_grad_substep(
     t: f64,
     dt: f64,
     estimated_to_model: &[usize],
-) -> Result<Vec<f64>, SimError> {
+) -> Result<(f64, Vec<f64>), SimError> {
     use crate::chain_binomial::RATE_EPSILON;
 
     let d = estimated_to_model.len();
     let mut grad = vec![0.0; d];
+    // gh#197: the value half of the gamma-multiplier density. Returned alongside
+    // the gradient and added to the grad-path energy so it matches the value fn.
+    let mut value = 0.0;
     if gammas.is_empty() {
-        return Ok(grad);
+        return Ok((value, grad));
     }
 
     let n_int = model.int_local_to_global.len();
@@ -315,10 +324,19 @@ fn log_gamma_density_grad_substep(
                 let sigma_sq = eval_resolved(resolved_od, &ctx);
                 if gamma_idx_local < gammas.len() && sigma_sq > 1e-30 {
                     let g = gammas[gamma_idx_local];
-                    if g > 0.0 {
-                        let shape = dt / sigma_sq;
-                        let scale = sigma_sq / dt;
+                    let shape = dt / sigma_sq;
+                    let scale = sigma_sq / dt;
 
+                    // VALUE (gh#197): the gamma-multiplier log-density — the term
+                    // whose gradient is added below but which was previously
+                    // absent from the grad-path energy. Same helper the value fn
+                    // uses → the spine oracle holds f64-exact. Added under the
+                    // SAME condition as the value fn (not gated on g > 0.0; the
+                    // helper floors ln(g)), so the two paths bin identically.
+                    value += gamma_multiplier_log_density(shape, scale, g);
+
+                    // GRADIENT: d/dθ log Γ(g; shape, scale).
+                    if g > 0.0 {
                         let dlg_dshape = g.ln() - scale.ln() - digamma(shape);
                         let dlg_dscale = g / (scale * scale) - shape / scale;
                         let dshape_dsq = -dt / (sigma_sq * sigma_sq);
@@ -335,7 +353,7 @@ fn log_gamma_density_grad_substep(
             }
         }
     }
-    Ok(grad)
+    Ok((value, grad))
 }
 
 /// Gradient of the complete-data log-likelihood over all substeps.
@@ -433,9 +451,14 @@ pub fn complete_data_loglik_grad(
         // recorded at this substep. Non-zero whenever σ² is — or depends on —
         // an estimated parameter (typical case: a parameter like `sigma_se`
         // appears directly as the σ² of an overdispersed transition).
-        let gamma_grad = log_gamma_density_grad_substep(
+        // gh#197: the gamma-multiplier density contributes to BOTH the energy
+        // (`log_p`) and the gradient. Previously only the gradient was added, so
+        // the NUTS energy was low by Σ log Γ — biasing the σ² posterior and
+        // diverging from the value fn / MH / swap. Add both, from one helper.
+        let (gamma_val, gamma_grad) = gamma_density_value_and_grad_substep(
             model, counts_before, &rec.gammas, params, t, dt_s, estimated_to_model,
         )?;
+        log_p += gamma_val;
         for i in 0..d { grad[i] += gamma_grad[i]; }
 
         // Accumulate flows

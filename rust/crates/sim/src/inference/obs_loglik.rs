@@ -68,6 +68,29 @@ pub fn log_gamma_density(x: f64, shape: f64, scale: f64) -> f64 {
     (shape - 1.0) * x.ln() - x / scale - shape * scale.ln() - lgamma(shape)
 }
 
+/// Log-density of one overdispersion gamma multiplier `g ~ Γ(shape = dt/σ²,
+/// scale = σ²/dt)`, the form recorded per overdispersed transition in a PGAS
+/// trajectory.
+///
+/// THE single source of truth for both the PGAS value path
+/// (`pgas::complete_data_loglik`) and the gradient-path energy
+/// (`pgas_grad::complete_data_loglik_grad`'s returned `log_p`). Routing both
+/// through one function makes `complete_data_loglik_grad(θ).0 ==
+/// complete_data_loglik(θ).total` hold f64-exactly for the gamma term — the
+/// gh#197 fix, pinned by the spine oracle in `gradient_check_overdisp.rs`.
+///
+/// `g.max(LOG_PROB_FLOOR)` floors ONLY the `ln(g)` term: a gamma draw is
+/// strictly positive in practice, and the floor guards `ln(0)` for a degenerate
+/// draw without the `-∞` cliff that [`log_gamma_density`] takes (a deliberate
+/// difference — this is the overdispersion-multiplier convention, drift site #4
+/// in the value/grad density proposal, resolved to the value side's floor).
+pub(crate) fn gamma_multiplier_log_density(shape: f64, scale: f64, g: f64) -> f64 {
+    (shape - 1.0) * g.max(crate::inference::types::LOG_PROB_FLOOR).ln()
+        - g / scale
+        - shape * scale.ln()
+        - lgamma(shape)
+}
+
 /// Gradient of negbin_logpmf w.r.t. (mu, k).
 ///
 /// d/d(mu) = y/mu - (y+k)/(mu+k)
