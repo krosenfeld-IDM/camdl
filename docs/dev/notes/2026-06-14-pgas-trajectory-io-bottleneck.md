@@ -123,6 +123,34 @@ pfilter CLI's `build_global` call (`pfilter.rs:~430`, whose `let _ = …` swallo
 the `AlreadyInitialized` error). The fit path respects `--parallel` correctly
 (table above), so this is pfilter-CLI-specific. Worth a gh issue.
 
+## Compute-lever A/B: both big levers are already on and both pay
+
+pfilter, 500 particles, 3 seeds, result-cache cleared per run, interleaved per
+seed (so background load hits each condition equally):
+
+| condition                    | wall (median) | vs baseline      | loglik    |
+| ---------------------------- | ------------- | ---------------- | --------- |
+| baseline (fold on, cache on) | 6.27s         | —                | identical |
+| `CAMDL_NO_CONSTANT_FOLD`     | 9.84s         | **1.57× slower** | identical |
+| `CAMDL_NO_BINDING_CACHE`     | 7.14s         | **1.15× slower** | identical |
+
+- **Sparse-coupling fold saves ~36%** (1.57× slower without) — already on by
+  default, already load-bearing even at P=12 (the O(P²)→O(P·k) saving grows with
+  patch count). Logliks bit-identical baseline-vs-unfolded across all 3 seeds —
+  exercises the byte-identical fold gate that was previously untested.
+- **Binding cache nets +13%** (1.15× slower without) — the memoization beats its
+  thread-local access cost (the earlier worry that the ~10% TLS overhead made it
+  net-negative is refuted). Identical loglik (pure memoization).
+
+So the two biggest known compute levers are already capturing their value — no
+free toggle win. The remaining serial headroom is the binding-cache thread-local
+_access_ itself (~10% of serial compute; macOS `_tlv_get_addr` is slow): keep
+the cache but thread it by `&mut` instead of a `thread_local!`, recovering most
+of that ~10% while keeping the +13% benefit. Beyond that, `eval_resolved` (~43%
+of serial compute, post-fold) is the interpreted `ResolvedExpr` tree-walk — a
+flattened/bytecode evaluator is the documented ~2–8× lever (roadmap note
+2026-05-29), deferred not rejected.
+
 ## Three plausible-but-wrong candidates ruled out first
 
 The bottleneck was hidden behind a wrong assumption — that the NUTS **gradient**
@@ -234,3 +262,10 @@ done
 - Decide the mixing-fix lever (mass-matrix scale is where the evidence points).
 - Then re-profile: confirm csmc dominates and the gradient share rises in a
   healthy fit; revisit the parked gradient levers if so.
+- Serial-speed levers (measure each via A/B before refactoring): `eval_resolved`
+  (sparse-coupling fold), the binomial RNG draws, the binding-cache thread-local
+  access (~10% — may not net positive for forward eval; `CAMDL_NO_BINDING_CACHE`
+  A/B).
+- TODO (later): extend the `CAMDL_SERIAL` escape hatch to `bootstrap_filter`
+  (the `camdl pfilter` path) so a genuinely single-threaded pfilter is possible
+  for clean serial profiling — currently only the fit's `csmc_as` would get it.
