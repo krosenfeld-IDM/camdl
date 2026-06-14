@@ -29,6 +29,42 @@ use ir::parameter::PriorDist;
 use crate::cas;
 use crate::version;
 
+// gh#audit-H13: build a SCOPED local rayon pool from `--parallel` and run the
+// engine / design sweep inside `pool.install(...)`. The earlier code used
+// `rayon::ThreadPoolBuilder::new().num_threads(parallel).build_global()`, but by
+// the time these commands run the global pool is already initialised, so
+// `build_global` returned AlreadyInitialized (swallowed by `let _ = …`) and the
+// default all-core pool ran regardless of `--parallel`. A scoped pool is
+// order-independent: nested rayon work (the engine's `into_par_iter`, the design
+// `plans.par_iter()`) inherits the surrounding pool. A value of 0 means "use
+// rayon's default" (all logical cores) — leave the pool unset and run on the
+// global pool. Same shape as pfilter.rs / profile.rs / survey.rs (f7bde701).
+fn build_parallel_pool(parallel: usize) -> Option<rayon::ThreadPool> {
+    if parallel > 0 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(parallel)
+                .build()
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to build thread pool (--parallel {}): {}", parallel, e);
+                    std::process::exit(1);
+                }),
+        )
+    } else {
+        None
+    }
+}
+
+/// Run a closure on the scoped pool if one was built, else on the global pool
+/// (parallel == 0). Generic over the closure so borrowed captures keep it
+/// `Send` for `ThreadPool::install`.
+fn run_pooled<R: Send>(pool: &Option<rayon::ThreadPool>, f: impl FnOnce() -> R + Send) -> R {
+    match pool {
+        Some(p) => p.install(f),
+        None => f(),
+    }
+}
+
 // ─── TOML schema (v1 — see module-level doc) ─────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -624,11 +660,11 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         }
     }
 
-    if parallel > 0 {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(parallel)
-            .build_global();
-    }
+    // gh#audit-H13: scope the engine's parallelism to `--parallel`. The engine
+    // (engine.rs) does `(0..n).into_par_iter()` on the surrounding pool gated by
+    // `grid.parallel > 1`; running `run_job` inside `pool.install(...)` makes
+    // that par_iter use the scoped pool. See `build_parallel_pool`.
+    let pool = build_parallel_pool(parallel);
 
     // ── Build the SimulateJob and route through the unified engine ──────────
     //
@@ -710,7 +746,7 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         progress: cells_progress(total, "batch run"),
     };
 
-    crate::engine::run_job(&job, &mut sink).unwrap_or_else(|e| {
+    run_pooled(&pool, || crate::engine::run_job(&job, &mut sink)).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
@@ -1213,13 +1249,11 @@ fn run_design_experiment(
         let total = plans.len();
         let counter = Arc::new(AtomicUsize::new(0));
 
-        if parallel > 0 {
-            let _ = rayon::ThreadPoolBuilder::new()
-                .num_threads(parallel)
-                .build_global();
-        }
+        // gh#audit-H13: scope the design sweep to `--parallel` by running
+        // `plans.par_iter()` inside `pool.install(...)`. See `build_parallel_pool`.
+        let pool = build_parallel_pool(parallel);
 
-        {
+        run_pooled(&pool, || {
             plans.par_iter().for_each(|plan| {
                 if plan.decision == RunDecision::CacheHit {
                     counter.fetch_add(1, Ordering::Relaxed);
@@ -1279,7 +1313,7 @@ fn run_design_experiment(
                     }
                 }
             });
-        }
+        });
         eprintln!("Design '{}' complete.", design_name);
     }
 }
