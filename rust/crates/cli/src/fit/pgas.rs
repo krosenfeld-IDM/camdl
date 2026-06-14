@@ -574,7 +574,15 @@ pub fn run_stage(
                 if sweep >= burn_in && (sweep - burn_in).is_multiple_of(traj_stride) {
                     use std::io::Write;
                     let path = traj_dir.join(format!("trajectory_{:06}.tsv", sweep));
-                    if let Ok(mut f) = std::fs::File::create(&path) {
+                    if let Ok(f) = std::fs::File::create(&path) {
+                        // BufWriter is essential here: the trajectory is
+                        // ~1455 substeps × ~720 fields, and each `write!`
+                        // below is one field. Unbuffered, that is ~1M
+                        // `write()` syscalls per file — profiling showed this
+                        // dominated PGAS wall time (60% of the fit) entirely in
+                        // blocking I/O. Buffered, it collapses to a few hundred
+                        // syscalls. Flushes on drop at the end of this block.
+                        let mut f = std::io::BufWriter::new(f);
                         // Header
                         write!(f, "t").unwrap();
                         for c in &comp_names { write!(f, "\t{}", c).unwrap(); }
