@@ -77,6 +77,52 @@ Two facts that overturn the "gradient is the bottleneck" intuition:
    per-substep per-particle work is too small to amortize rayon fork/join across
    the 1455 sequential substeps.
 
+## Sweep-time scaling: parallel ceiling ≈ 10× (100 particles)
+
+Thread-scaling of the full fit (100 particles, 12 sweeps, fixed seed;
+`--parallel` is honored and numerics are bit-identical;
+[`assets/2026-06-14-pgas-io/fit-sweep-scaling.tsv`](assets/2026-06-14-pgas-io/fit-sweep-scaling.tsv)):
+
+![fit sweep-time scaling](assets/2026-06-14-pgas-io/fit-sweep-scaling.png)
+
+| cores | wall (s) | speedup | efficiency |
+| ----- | -------- | ------- | ---------- |
+| 1     | 311.3    | 1.00×   | 100%       |
+| 2     | 185.4    | 1.68×   | 84%        |
+| 4     | 94.7     | 3.29×   | 82%        |
+| 8     | 59.2     | 5.26×   | 66%        |
+| 16    | 49.6     | 6.28×   | 39%        |
+
+Near-linear to ~4 cores, knee at ~8; **16 cores buys only 1.19× over 8** for 2×
+the cores. An Amdahl fit gives a **serial fraction ≈ 10% → ceiling ≈ 10×** no
+matter how many cores — the serial floor is the per-substep resampling barrier +
+the (serial) NUTS gradient + bookkeeping, not the parallel particle propagation.
+
+Implications for driving sweep time down:
+
+- The parallelism already works; **8 cores is the sweet spot** at this particle
+  count (5.3×, 66% eff) — 16 cores wastes 60% of the fleet (matches the samply
+  ~67% overhead).
+- **Coarser-grained csmc task chunking** (particles per rayon task, not one task
+  per particle) would attack the high-core inefficiency — recover part of the
+  gap between the measured 6.3× and the ~10× Amdahl ceiling at 16 cores. Best
+  case ~8×, i.e., ~49.6 s → ~38 s (a further ~1.3×). Bounded by the 10% serial
+  floor; not transformative at this scale.
+- **Particle count is the real scaling knob.** At 100 particles, 16 cores is
+  starved (6 particles/core). At national scale (thousands of particles), the
+  parallel work fills the cores and scaling extends toward the gh#209 ~120×
+  regime _without_ chunking — so chunking matters most at small/medium particle
+  counts, and the serial floor (resampling barrier) becomes the cap at scale.
+
+Caveat / gap (verified): **standalone `camdl pfilter` silently ignores
+`--parallel`.** At 500 particles it uses ~14 cores at _both_ `--parallel 1`
+(cores_eff = 14.1) and `--parallel 16` (14.2) — so it parallelizes fine but
+cannot be throttled, and a thread-scaling sweep via `--parallel` is flat (every
+run uses all cores). Cause: the global rayon pool is already built before the
+pfilter CLI's `build_global` call (`pfilter.rs:~430`, whose `let _ = …` swallows
+the `AlreadyInitialized` error). The fit path respects `--parallel` correctly
+(table above), so this is pfilter-CLI-specific. Worth a gh issue.
+
 ## Three plausible-but-wrong candidates ruled out first
 
 The bottleneck was hidden behind a wrong assumption — that the NUTS **gradient**
