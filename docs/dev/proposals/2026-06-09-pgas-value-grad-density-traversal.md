@@ -1,11 +1,13 @@
 # RC1: one shared per-substep density skeleton in PGAS (value + grad)
 
-- **Status:** **v3** — re-validated against `main` post-#218 (2026-06-14).
-  **Phase 1 (#197) LANDED**; Phase 2 (the shared skeleton, closing #200 / #3 /
-  #4) remaining. High-risk inference math (`CLAUDE.md`):
-  `pgas.rs`/`pgas_grad.rs`/`chain_binomial.rs` — the inference owner's lane.
-- **Issues:** #197 (fixed), #200, #79; retires the #20/#76 one-off-patch cycle.
-  RC1 in `docs/dev/reviews/2026-06-08-systemic-root-causes.md`.
+- **Status:** **v3** — re-validated against `main` post-#218 (2026-06-14). All
+  four drift sites (#197, #200, #3, #4) **FIXED** by narrow mirrored patches,
+  each pinned by the spine oracle. Remaining: the structural single-skeleton
+  HARDENING refactor (gh#79) — no behavior change. High-risk inference math
+  (`CLAUDE.md`): `pgas.rs`/`pgas_grad.rs`/`chain_binomial.rs`.
+- **Issues:** #197 (fixed), #200 (fixed), #79 (the remaining refactor); retires
+  the #20/#76 one-off-patch cycle. RC1 in
+  `docs/dev/reviews/2026-06-08-systemic-root-causes.md`.
 - **Sequencing:** before #191's reservoir threading (§2.5 of
   `2026-06-09-real-compartments-inference-stack.md`) — both edit these density
   functions _and_ `step_one`.
@@ -20,36 +22,43 @@ The code drifted since v2; re-verified against `main` (post-#218):
   (40–84 nats across σ on `sir_overdispersion`), silently biasing the σ²
   posterior and diverging from MH / swap (both `complete_data_loglik().total`).
   **Phase-1 fix:** one shared
-  `obs_loglik::gamma_multiplier_log_density(shape,
-  scale, g)` helper; the
-  value fn calls it (provable no-op — value goldens unchanged) and
-  `gamma_density_value_and_grad_substep` returns `(value, grad)` with the value
-  added to `log_p`. Pinned by the **spine oracle**
+  `obs_loglik::gamma_multiplier_log_density(shape, scale, g)` helper; the value
+  fn calls it (provable no-op — value goldens unchanged) and
+  `gamma_density_value_and_grad_substep` adds each gamma value DIRECTLY into
+  `log_p` (in the value fn's left-fold order, not pre-summed — `f64` add is
+  non-associative, so a pre-summed `(g1+g2)` would differ by a ULP for
+  multi-gamma substeps) and returns the gradient. Pinned by the **spine oracle**
   (`gradient_check_overdisp.rs`:
   `complete_data_loglik_grad(θ).0 ==
   complete_data_loglik(θ).total`,
-  f64-exact, RED→GREEN). This also resolves the #4 floor (the shared helper uses
-  the value side's `g.max(LOG_PROB_FLOOR)`).
-- **#200 — LIVE (Phase 2).** The grad's _ungrouped/source-less_ loop
-  (`pgas_grad.rs`) still scores a deterministic inflow as Poisson
-  (`rate <= 0.0`, no `Deterministic`/exact-count branch); the value fn has the
-  exact-count check.
-- **#3 — half closed.** The _grouped_ loop already uses `RATE_EPSILON` on both
-  sides (IM7/IM9); only the _ungrouped_ loop still diverges (`0.0` vs
-  `RATE_EPSILON`) — folds into the #200 Phase-2 fix.
+  f64-exact, RED→GREEN) — covering BOTH single-gamma (`sir_overdispersion`) and
+  multi-gamma (`sir_two_overdispersed`, 2 gammas/substep) so the summation-order
+  path is guarded. This also resolves the #4 floor (the shared helper uses the
+  value side's `g.max(LOG_PROB_FLOOR)`).
+- **#200 — FIXED (this branch).** The grad's _ungrouped/source-less_ loop
+  (`pgas_grad.rs::log_transition_density_grad`) now mirrors the value fn: a
+  `Deterministic` transition gets the exact-count guard (no density term, no
+  gradient) instead of `poisson_logpmf`. Pinned by a programmatic
+  deterministic-inflow spine-oracle test (RED 34.8 nats → GREEN bit-exact).
+- **#3 — FIXED (this branch).** The ungrouped grad loop now skips on
+  `RATE_EPSILON` (was `0.0`), matching the value fn and `step_one`. (The grouped
+  loop was already aligned by IM7/IM9.)
 - **#4 — resolved by the Phase-1 helper** (was latent behind #197).
 
-**Phase 2 (still open):** the §3/§4 single per-substep skeleton, which closes
-#200 + #3-ungrouped _by construction_ and makes the spine oracle hold
-structurally rather than by a mirrored-patch. NOTE for the implementer: §4's
-anchors are stale — `log_gamma_density_substep` does not exist; the value
-transition density now lives in `compute_source_group_probs` +
+**All four drift sites are now closed** by narrow mirrored patches, each pinned
+by the spine oracle. **Phase 2 (still open) is now a pure HARDENING refactor**
+(gh#79): the §3/§4 single per-substep skeleton so value+grad drive two
+accumulators off ONE branch — making the oracle hold _by construction_ rather
+than by three mirrored loops that can re-drift. No behavior change (the sites
+are already closed); the win is structural. NOTE for the implementer: §4's
+anchors are stale — `log_gamma_density_substep` does not exist (the value/grad
+gamma value now share `obs_loglik::gamma_multiplier_log_density`); the value
+transition density lives in `compute_source_group_probs` +
 `exit_and_split_log_density`; and the skeleton must thread #218's per-stream
 `acc` lifecycle (`fold_into_acc` → score → `reset_due_acc`,
-`n_interval_streams`) and the realized `(rec.t0, rec.dt_substep)`. Also
-re-fixturing the FD test onto overdispersion is already done
-(`gradient_check_overdisp.rs`); the genuinely-new test was the spine oracle (now
-present).
+`n_interval_streams`) and the realized `(rec.t0, rec.dt_substep)`. The spine
+oracle (value + det-inflow cases) already exists in `gradient_check_overdisp.rs`
+as the by-construction gate.
 
 ## 1. What exists, and how it drifts
 

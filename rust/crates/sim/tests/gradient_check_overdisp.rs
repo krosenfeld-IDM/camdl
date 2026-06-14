@@ -406,3 +406,184 @@ fn spine_oracle_energy_equals_value_medium_sigma() { run_spine_oracle(0.1, 43, 1
 
 #[test]
 fn spine_oracle_energy_equals_value_large_sigma() { run_spine_oracle(1.0, 44, 1.0); }
+
+// ── gh#200 (+ gh#3-ungrouped): deterministic source-less inflow ──────────────
+//
+// A DETERMINISTIC source-less inflow (`--> S @ k`) is ungrouped (no source
+// group). The value fn exact-counts it (`flow == round(rate·dt)` → no density
+// term); the grad path scored `poisson_logpmf(flow, rate·dt)` — a spurious term
+// in the NUTS energy, and it skipped on `rate <= 0.0` not `RATE_EPSILON`. Built
+// programmatically because no golden has a deterministic-draw transition.
+//
+// The model pairs a stochastic recovery `S --> R @ γ·S` (the grouped density
+// BOTH paths compute identically — so GREEN is a non-trivial nonzero match) with
+// the deterministic birth (the divergence). Spine oracle: RED by the birth's
+// poisson term pre-fix, GREEN bit-exact after.
+#[test]
+fn spine_oracle_deterministic_inflow_not_poisson_scored() {
+    use std::collections::HashMap;
+    use ir::{
+        expr::{Expr, ParamExpr, PopExpr, BinOp, BinOpExpr, BinOpWrap},
+        model::{Compartment, CompartmentKind, InitialConditions, OutputConfig,
+                OutputSchedule, RegularOutputSchedule, SimulationConfig},
+        parameter::{ParamValue, Parameter},
+        transition::{DrawMethod, StoichiometryEntry, Transition},
+        Model,
+    };
+
+    let m = Model {
+        name: "det_inflow_spine".into(),
+        version: "0.3".into(),
+        time_unit: "days".into(),
+        description: None,
+        origin: None, origin_rata_die: None,
+        compartments: vec![
+            Compartment { name: "S".into(), kind: CompartmentKind::Integer },
+            Compartment { name: "R".into(), kind: CompartmentKind::Integer },
+        ],
+        transitions: vec![
+            // Stochastic, source-bearing → grouped. Shared density both paths compute.
+            Transition {
+                name: "recovery".into(),
+                stoichiometry: vec![
+                    StoichiometryEntry("S".into(), -1),
+                    StoichiometryEntry("R".into(), 1),
+                ],
+                rate: Expr::BinOp(BinOpWrap { bin_op: BinOpExpr {
+                    op: BinOp::Mul,
+                    left: Box::new(Expr::Param(ParamExpr { param: "gamma".into() })),
+                    right: Box::new(Expr::Pop(PopExpr { pop: "S".into() })),
+                }}),
+                metadata: None,
+                draw_method: DrawMethod::Poisson,
+                rate_grad: Default::default(), lineage: None,
+            },
+            // Deterministic, SOURCE-LESS inflow → ungrouped. The gh#200 trigger.
+            Transition {
+                name: "birth".into(),
+                stoichiometry: vec![StoichiometryEntry("S".into(), 1)],
+                rate: Expr::Param(ParamExpr { param: "k".into() }),
+                metadata: None,
+                draw_method: DrawMethod::Deterministic,
+                rate_grad: Default::default(), lineage: None,
+            },
+        ],
+        ode_equations: vec![], time_functions: vec![], tables: vec![], interventions: vec![],
+        observations: vec![],
+        bindings: vec![],
+        parameters: vec![
+            Parameter { name: "gamma".into(), value: ParamValue::Fixed { value: 0.1 }, param_kind: None, param_dim: None },
+            Parameter { name: "k".into(), value: ParamValue::Fixed { value: 5.0 }, param_kind: None, param_dim: None },
+        ],
+        initial_conditions: InitialConditions::Explicit({
+            let mut h = HashMap::new();
+            h.insert("S".into(), 1000.0); h.insert("R".into(), 0.0); h
+        }),
+        output: OutputConfig {
+            times: OutputSchedule::Regular(RegularOutputSchedule { start: 0.0, step: 1.0, end: 20.0 }),
+            format: "tsv".into(), trajectory: true, observations: false,
+        },
+        simulation: SimulationConfig {
+            t_start: 0.0, t_end: 20.0, time_semantics: "continuous".into(),
+            dt: Some(1.0), rng_seed: Some(7),
+        },
+        presets: vec![], model_structure: None, balance: None, identity_tracked_compartments: vec![],
+    };
+    let compiled = Arc::new(CompiledModel::new(m).unwrap());
+    let (params, _names) = build_params_and_names(&compiled);
+
+    let mut rng = StatefulRng::new(7);
+    let trajectory = simulate_reference(&compiled, &params, 20.0, 1.0, &mut rng).unwrap();
+
+    // Sanity: the deterministic birth actually fired (else the oracle is vacuous).
+    let birth_idx = compiled.model.transitions.iter()
+        .position(|t| t.name == "birth").unwrap();
+    let birth_flow: u64 = trajectory.substeps.iter().map(|s| s.flows[birth_idx]).sum();
+    assert!(birth_flow > 0, "deterministic birth must fire (got 0 flow)");
+
+    let observations: Vec<Observation> = vec![];
+    let obs_model = MultiStreamObsModel::empty(compiled.clone());
+    let estimated_indices: Vec<usize> = (0..compiled.param_index.len()).collect();
+    let mut model_to_estimated: Vec<Option<usize>> = vec![None; compiled.model.parameters.len()];
+    for (e, &mi) in estimated_indices.iter().enumerate() { model_to_estimated[mi] = Some(e); }
+    let rate_grads = sim::inference::pgas_grad::resolve_rate_grad_for_run(
+        &compiled.resolved.rate_grads_indexed, &model_to_estimated);
+    let ivp_mappings: Vec<IVPMapping> = vec![];
+    let oas = build_obs_at_substep(
+        &observations, compiled.model.simulation.t_start, 1.0).unwrap();
+    let d = estimated_indices.len();
+
+    let value = complete_data_loglik(
+        &compiled, &trajectory, &params, &observations, 1.0,
+        &obs_model, &ivp_mappings, &oas,
+    ).unwrap().total;
+    let (energy, _grad) = complete_data_loglik_grad(
+        &compiled, &trajectory, &params, &observations, 1.0,
+        &obs_model, &ivp_mappings, d, &rate_grads, &oas, &estimated_indices,
+    ).unwrap();
+
+    assert_eq!(
+        energy.to_bits(), value.to_bits(),
+        "spine oracle (gh#200): a deterministic source-less inflow must NOT be \
+         Poisson-scored on the grad path. energy = {energy}, value = {value}, \
+         gap = {:.6} nats (= spurious Σ poisson_logpmf of the deterministic birth)",
+        value - energy,
+    );
+}
+
+/// Multi-gamma coverage for the spine oracle. `sir_two_overdispersed` has TWO
+/// overdispersed transitions out of the same source → 2 gammas per substep. The
+/// grad path must add the gamma values in the SAME left-fold order as the value
+/// fn (`((td)+g1)+g2`); a pre-summed `(td)+(g1+g2)` differs by a ULP (f64 add is
+/// non-associative), which `to_bits()` catches. The single-overdispersed
+/// `spine_oracle_*` tests above (1 gamma/substep) cannot reach this case.
+#[test]
+fn spine_oracle_two_overdispersed_multi_gamma_bit_exact() {
+    let mut model = load_model("../../../ocaml/golden/sir_two_overdispersed.ir.json");
+    set_param_defaults(&mut model, &[
+        ("beta", 0.3), ("gamma", 0.1), ("mu", 0.05),
+        ("sigma_inf", 0.2), ("sigma_loss", 0.15), // asymmetric → two distinct gammas
+        ("N0", 1000.0), ("I0", 10.0),
+    ]);
+    let compiled = Arc::new(CompiledModel::new(model).unwrap());
+    let (params, _names) = build_params_and_names(&compiled);
+
+    let t_end = compiled.model.simulation.t_end;
+    let mut rng = StatefulRng::new(46);
+    let trajectory = simulate_reference(&compiled, &params, t_end, 1.0, &mut rng).unwrap();
+
+    // Confirm we actually hit the multi-gamma case (≥2 gammas in some substep).
+    let max_g = trajectory.substeps.iter().map(|s| s.gammas.len()).max().unwrap_or(0);
+    assert!(max_g >= 2,
+        "fixture must produce ≥2 gammas/substep to exercise the summation-order \
+         path; got max {max_g}");
+
+    let observations: Vec<Observation> = vec![];
+    let obs_model = MultiStreamObsModel::empty(compiled.clone());
+    let estimated_indices: Vec<usize> = (0..compiled.param_index.len()).collect();
+    let mut model_to_estimated: Vec<Option<usize>> = vec![None; compiled.model.parameters.len()];
+    for (e, &mi) in estimated_indices.iter().enumerate() { model_to_estimated[mi] = Some(e); }
+    let rate_grads = sim::inference::pgas_grad::resolve_rate_grad_for_run(
+        &compiled.resolved.rate_grads_indexed, &model_to_estimated);
+    let ivp_mappings: Vec<IVPMapping> = vec![];
+    let oas = build_obs_at_substep(
+        &observations, compiled.model.simulation.t_start, 1.0).unwrap();
+    let d = estimated_indices.len();
+
+    let value = complete_data_loglik(
+        &compiled, &trajectory, &params, &observations, 1.0,
+        &obs_model, &ivp_mappings, &oas,
+    ).unwrap().total;
+    let (energy, _grad) = complete_data_loglik_grad(
+        &compiled, &trajectory, &params, &observations, 1.0,
+        &obs_model, &ivp_mappings, d, &rate_grads, &oas, &estimated_indices,
+    ).unwrap();
+
+    assert_eq!(
+        energy.to_bits(), value.to_bits(),
+        "spine oracle (multi-gamma): energy = {energy}, value = {value}, \
+         gap = {:.3e} nats — a non-zero gap here means the grad pre-summed the \
+         per-substep gammas instead of left-folding them into log_p.",
+        value - energy,
+    );
+}

@@ -221,11 +221,26 @@ pub fn log_transition_density_grad(
         }
     }
 
-    // Ungrouped / inflow transitions (Poisson)
+    // Ungrouped / inflow transitions: Poisson density (or deterministic
+    // exact-count check). Mirrors the value fn's ungrouped loop in
+    // `pgas::log_transition_density_substep` so the grad-path energy matches
+    // `complete_data_loglik` (gh#200: a deterministic source-less inflow must
+    // NOT be Poisson-scored; gh#3-ungrouped: skip on RATE_EPSILON, not 0.0).
     for (tr_idx, &rate) in propensities.iter().enumerate() {
-        if handled[tr_idx] || rate <= 0.0 { continue; }
+        if handled[tr_idx] || rate <= crate::chain_binomial::RATE_EPSILON { continue; }
         let mean = rate * dt;
         let flow = flows[tr_idx] as f64;
+
+        if matches!(model.model.transitions[tr_idx].draw_method,
+                    ir::transition::DrawMethod::Deterministic) {
+            // Deterministic: the flow is a fixed function of the rate, not a
+            // Poisson draw. Exact-count guard, NO density term and NO gradient
+            // (same as the value fn). A mismatch is an impossible trajectory.
+            if flows[tr_idx] != mean.round() as u64 {
+                return Ok((f64::NEG_INFINITY, vec![0.0; d]));
+            }
+            continue;
+        }
 
         // log Poisson(k; λ) = k*ln(λ) - λ - lgamma(k+1)
         // d/dλ = k/λ - 1
@@ -244,13 +259,17 @@ pub fn log_transition_density_grad(
     Ok((log_p, grad))
 }
 
-/// Value AND gradient of the gamma-multiplier density at one substep.
+/// Adds the gamma-multiplier density VALUE to `log_p` and returns its GRADIENT.
 ///
-/// Returns `(value, grad)`: the value is `Σ log Γ(g; dt/σ², σ²/dt)` over the
-/// substep's overdispersed transitions (added to the grad-path energy — gh#197),
-/// and `grad` is its derivative w.r.t. each estimated parameter. The value is
-/// computed by the shared [`gamma_multiplier_log_density`] helper the value fn
-/// also uses, so the energy matches `complete_data_loglik` f64-exactly.
+/// For each of the substep's overdispersed transitions it adds
+/// `log Γ(g; dt/σ², σ²/dt)` directly into `*log_p` (gh#197 — the term was
+/// previously absent from the grad-path energy) and accumulates its derivative
+/// into the returned `grad`. The value goes through the shared
+/// [`gamma_multiplier_log_density`] helper the value fn also uses, AND is added
+/// in the same left-fold order (directly, not pre-summed), so the grad-path
+/// energy matches `complete_data_loglik` BIT-EXACTLY for any number of gammas
+/// per substep (a pre-summed `(g1+g2)` would differ by a ULP — f64 add is
+/// non-associative).
 ///
 /// For each overdispersed transition with rate > RATE_EPSILON, the recorded
 /// `gammas[gamma_idx]` is the realised draw from Γ(g; dt/σ², σ²/dt). The
@@ -284,16 +303,14 @@ fn gamma_density_value_and_grad_substep(
     t: f64,
     dt: f64,
     estimated_to_model: &[usize],
-) -> Result<(f64, Vec<f64>), SimError> {
+    log_p: &mut f64,
+) -> Result<Vec<f64>, SimError> {
     use crate::chain_binomial::RATE_EPSILON;
 
     let d = estimated_to_model.len();
     let mut grad = vec![0.0; d];
-    // gh#197: the value half of the gamma-multiplier density. Returned alongside
-    // the gradient and added to the grad-path energy so it matches the value fn.
-    let mut value = 0.0;
     if gammas.is_empty() {
-        return Ok((value, grad));
+        return Ok(grad);
     }
 
     let n_int = model.int_local_to_global.len();
@@ -329,11 +346,15 @@ fn gamma_density_value_and_grad_substep(
 
                     // VALUE (gh#197): the gamma-multiplier log-density — the term
                     // whose gradient is added below but which was previously
-                    // absent from the grad-path energy. Same helper the value fn
-                    // uses → the spine oracle holds f64-exact. Added under the
-                    // SAME condition as the value fn (not gated on g > 0.0; the
-                    // helper floors ln(g)), so the two paths bin identically.
-                    value += gamma_multiplier_log_density(shape, scale, g);
+                    // absent from the grad-path energy. Added DIRECTLY to `log_p`
+                    // (not pre-summed) so the fold order matches
+                    // complete_data_loglik's left-fold `((td)+g1)+g2` exactly —
+                    // f64 addition is non-associative, so a pre-summed
+                    // `(g1+g2)` would differ by a ULP for multi-gamma substeps.
+                    // Same helper + same condition as the value fn (not gated on
+                    // g > 0.0; the helper floors ln(g)) → the spine oracle holds
+                    // bit-exact for any number of gammas per substep.
+                    *log_p += gamma_multiplier_log_density(shape, scale, g);
 
                     // GRADIENT: d/dθ log Γ(g; shape, scale).
                     if g > 0.0 {
@@ -353,7 +374,7 @@ fn gamma_density_value_and_grad_substep(
             }
         }
     }
-    Ok((value, grad))
+    Ok(grad)
 }
 
 /// Gradient of the complete-data log-likelihood over all substeps.
@@ -454,11 +475,12 @@ pub fn complete_data_loglik_grad(
         // gh#197: the gamma-multiplier density contributes to BOTH the energy
         // (`log_p`) and the gradient. Previously only the gradient was added, so
         // the NUTS energy was low by Σ log Γ — biasing the σ² posterior and
-        // diverging from the value fn / MH / swap. Add both, from one helper.
-        let (gamma_val, gamma_grad) = gamma_density_value_and_grad_substep(
+        // diverging from the value fn / MH / swap. The helper adds the value
+        // straight into `log_p` (in the value fn's fold order) and returns grad.
+        let gamma_grad = gamma_density_value_and_grad_substep(
             model, counts_before, &rec.gammas, params, t, dt_s, estimated_to_model,
+            &mut log_p,
         )?;
-        log_p += gamma_val;
         for i in 0..d { grad[i] += gamma_grad[i]; }
 
         // Accumulate flows
