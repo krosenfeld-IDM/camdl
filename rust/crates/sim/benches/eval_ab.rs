@@ -26,7 +26,7 @@ use sim::resolved_expr::eval_resolved;
 fn count_nodes(e: &Expr, nodes: &mut u64, probes: &mut u64) {
     *nodes += 1;
     match e {
-        Expr::Param(_) | Expr::Pop(_) => *probes += 1,
+        Expr::Param(_) | Expr::Pop(_) | Expr::ObsColumnRef(_) => *probes += 1,
         Expr::PopSum(ps) => *probes += ps.pop_sum.len() as u64,
         Expr::TimeFunc(_) | Expr::BindingRef(_) => *probes += 1,
         Expr::TableLookup(w) => {

@@ -584,8 +584,9 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
             // compile time by the dim-checker.
             eval_resolved(inner, ctx)
         }
-        // Left-fold (sum() folds from 0.0) → bit-identical to the OCaml
-        // `((t0+t1)+…)` Add-chain (0.0 + t0 == t0). NaN propagates naturally.
+        // Left-fold (sum() seeds -0.0) → bit-identical to the OCaml
+        // `((t0+t1)+…)` Add-chain (-0.0 + t0 == t0). Empty Reduce → -0.0.
+        // NaN propagates naturally.
         ResolvedExpr::Reduce(terms) => terms.iter().map(|t| eval_resolved(t, ctx)).sum(),
         // On-demand: evaluate the binding's body. Topologically ordered (a binding
         // only references earlier ones), so this recursion terminates.

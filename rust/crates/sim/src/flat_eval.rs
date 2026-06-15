@@ -452,7 +452,11 @@ unsafe fn run(
             }
             Op::IntPopSum(idx) => {
                 let set = prog.isets.get_unchecked(*idx as usize);
-                let mut s = 0.0;
+                // Seed -0.0 to mirror `Iterator::sum::<f64>()` in
+                // eval_resolved (std folds from -0.0, so empty → -0.0 and a
+                // lone element keeps its sign-of-zero). Byte-identity matters
+                // for the CAMDL_EVAL_FLAT oracle.
+                let mut s = -0.0;
                 for &i in set {
                     s += int_val(ctx, i as usize);
                 }
@@ -460,14 +464,19 @@ unsafe fn run(
             }
             Op::MixedPopSum(idx) => {
                 let set = prog.msets.get_unchecked(*idx as usize);
-                let mut s = 0.0;
+                // Mirror eval_resolved exactly: two separate partial sums
+                // (each seeded -0.0) added as `int_sum + real_sum`. A single
+                // continuous fold would regroup the terms and diverge by ULPs
+                // (f64 add is non-associative) once both sides are non-empty.
+                let mut int_s = -0.0;
                 for &i in &set.int_indices {
-                    s += int_val(ctx, i as usize);
+                    int_s += int_val(ctx, i as usize);
                 }
+                let mut real_s = -0.0;
                 for &i in &set.real_indices {
-                    s += *ctx.real_s.values.get_unchecked(i as usize);
+                    real_s += *ctx.real_s.values.get_unchecked(i as usize);
                 }
-                push!(s);
+                push!(int_s + real_s);
             }
             Op::Add => {
                 let b = *buf.add(sp - 1);
@@ -511,7 +520,9 @@ unsafe fn run(
             Op::SumN(nn) => {
                 let cnt = *nn as usize;
                 let at = sp - cnt;
-                let mut s = 0.0f64;
+                // Mirror Reduce's `Iterator::sum::<f64>()` (seeds -0.0); an
+                // empty Reduce must yield -0.0, not +0.0, for byte-identity.
+                let mut s = -0.0f64;
                 for k in 0..cnt {
                     s += *buf.add(at + k);
                 }

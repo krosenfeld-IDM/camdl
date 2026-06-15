@@ -81,14 +81,13 @@ fn bench_step_one(c: &mut Criterion) {
         let Some((model, params)) = try_load(p, a, coup) else { continue };
         let n_tr = model.model.transitions.len();
         let (init_int, init_real) = model.initial_state(&params).unwrap();
-        let fire_steps = model.resolve_fire_steps(1.0, &params);
         let mut scratch = StepScratch::new(&model);
         g.bench_function(BenchmarkId::from_parameter(label(p, a, coup)), |b| {
             b.iter_batched(
                 || (init_int.counts.clone(), vec![0u64; n_tr], init_real.clone(), StatefulRng::new(42)),
                 |(mut counts, mut flows, mut real, mut rng)| {
-                    step_one(&model, &mut counts, &mut flows, &mut real, &params, 0.0, 1.0, 1.0,
-                             &mut rng, &mut scratch, &fire_steps).unwrap();
+                    step_one(&model, &mut counts, &mut flows, &mut real, &params, 0.0, 1.0,
+                             &mut rng, &mut scratch).unwrap();
                 },
                 criterion::BatchSize::SmallInput,
             );

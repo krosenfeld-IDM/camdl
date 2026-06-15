@@ -581,7 +581,9 @@ pub fn run_stage(
                         // `write()` syscalls per file — profiling showed this
                         // dominated PGAS wall time (60% of the fit) entirely in
                         // blocking I/O. Buffered, it collapses to a few hundred
-                        // syscalls. Flushes on drop at the end of this block.
+                        // syscalls. Explicitly flushed below so a write error on
+                        // the final buffer drain surfaces instead of being
+                        // swallowed by BufWriter's drop.
                         let mut f = std::io::BufWriter::new(f);
                         // Header
                         write!(f, "t").unwrap();
@@ -596,6 +598,7 @@ pub fn run_stage(
                             for &fl in &rec.flows { write!(f, "\t{}", fl).unwrap(); }
                             writeln!(f).unwrap();
                         }
+                        f.flush().unwrap();
                     }
                 }
 
@@ -913,6 +916,10 @@ pub fn run_stage(
                 n_draws += 1;
             }
         }
+        // Explicit flush: BufWriter swallows write errors on drop, which would
+        // silently truncate draws.tsv if the disk filled during the final drain.
+        f.flush()
+            .map_err(|e| format!("cannot write {}: {}", draws_path.display(), e))?;
         drop(f);
         eprintln!("  draws.tsv: {} posterior samples (all {} params)", n_draws, all_names.len());
     }

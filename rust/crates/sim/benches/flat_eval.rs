@@ -105,6 +105,7 @@ fn main() {
         t,
         dt: 1.0,
         projected: None,
+        aux: None,
         int_float_override: None,
     };
 
@@ -143,7 +144,7 @@ fn main() {
             let ctx = EvalCtx {
                 model: &cm, int_s: &int_s, real_s: &real_s,
                 params: black_box(params.as_slice()), t: black_box(0.0), dt: 1.0,
-                projected: None, int_float_override: None,
+                projected: None, aux: None, int_float_override: None,
             };
             for i in 0..n_tr {
                 acc += eval_resolved(&rates[i], &ctx);
@@ -161,7 +162,7 @@ fn main() {
             let ctx = EvalCtx {
                 model: &cm, int_s: &int_s, real_s: &real_s,
                 params: black_box(params.as_slice()), t: black_box(0.0), dt: 1.0,
-                projected: None, int_float_override: None,
+                projected: None, aux: None, int_float_override: None,
             };
             for i in 0..n_tr {
                 acc += eval_flat(vm, &vm.rates[i], &ctx, &mut scratch, &mut cache);
@@ -212,7 +213,7 @@ fn main() {
         hist.superinstr, hist.bin_other, hist.int_pop_sum, hist.mixed_pop_sum,
         hist.time_func, hist.projected, hist.binding, hist.delegate, hist.other,
     );
-    eprintln!("  bit-exact (577 rates): {}", if mm == 0 { "YES" } else { "NO!" });
+    eprintln!("  bit-exact ({n_tr} rates): {}", if mm == 0 { "YES" } else { "NO!" });
     eprintln!();
     eprintln!("  AGGREGATE (median of {TRIALS}, full {n_tr}-rate sweep):");
     eprintln!("    eval_resolved (tree)           : {t_med:.3} ns/eval   (baseline)");
