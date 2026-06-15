@@ -422,6 +422,18 @@ fn stage_settings_map(stage: &Stage) -> BTreeMap<String, serde_json::Value> {
             m.insert("burn_in".into(), serde_json::json!(burn_in));
             m.insert("thin".into(), serde_json::json!(thin));
         }
+        Stage::Mh {
+            chains,
+            iterations,
+            burn_in,
+            thin,
+            ..
+        } => {
+            m.insert("chains".into(), serde_json::json!(chains));
+            m.insert("iterations".into(), serde_json::json!(iterations));
+            m.insert("burn_in".into(), serde_json::json!(burn_in));
+            m.insert("thin".into(), serde_json::json!(thin));
+        }
         Stage::PFilter {
             particles,
             replicates,

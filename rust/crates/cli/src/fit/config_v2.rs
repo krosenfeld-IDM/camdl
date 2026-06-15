@@ -1154,6 +1154,55 @@ pub enum Stage {
         rho: Option<f64>,
     },
 
+    /// Metropolis-Hastings on the deterministic ODE marginal likelihood
+    /// (`p(y|θ, ODE_skeleton)` via `compute_ode_loglik`). Reuses the PMMH
+    /// chain/adaptive-proposal/diagnostics machinery, swapping the
+    /// particle-filter likelihood for the deterministic ODE evaluation —
+    /// so it carries neither `particles` (no PF) nor `rho` (no correlated
+    /// pseudo-marginal noise to re-use). Bayesian posteriors on ODE /
+    /// equilibrium models without gradients.
+    #[serde(rename = "mh")]
+    Mh {
+        backend: crate::run_meta::Backend,
+        chains: usize,
+        iterations: usize,
+        /// Toml-side spelling renamed from `starts_from` to `init_mle`
+        /// per proposal 2026-05-25-cli-init-and-params-ux §"fit.toml schema".
+        #[serde(default, rename = "init_mle")]
+        starts_from: StartsFrom,
+        /// Per-chain init draws. See `Stage::IF2` for the full enum
+        /// description. Default `lhs`. Mh also supports `survey_top_k`
+        /// (sibling fields `survey_path` / `survey_top_k_n`).
+        ///
+        /// Toml-side spelling renamed from `init_method` to `init` per
+        /// proposal 2026-05-25-cli-init-and-params-ux.
+        #[serde(default, rename = "init")]
+        init_method: super::init::InitMethod,
+        /// Survey CAS directory for `init = "survey_top_k"`.
+        /// See `Stage::IF2::survey_path`.
+        #[serde(default)]
+        survey_path: Option<std::path::PathBuf>,
+        /// Top-K count for `init = "survey_top_k"`. See
+        /// `Stage::IF2::survey_top_k_n`.
+        #[serde(default)]
+        survey_top_k_n: Option<usize>,
+        #[serde(default)]
+        burn_in: Option<usize>,
+        #[serde(default)]
+        thin: Option<usize>,
+
+        /// Enable adaptive Metropolis (Haario et al. 2001) — proposal
+        /// SDs adapt to past acceptance. Set false to lock the
+        /// proposal during a refine run. Default: true.
+        #[serde(default = "default_pmmh_adapt")]
+        adapt: bool,
+        /// MCMC step at which adaptation begins. Earlier values risk
+        /// adapting on burn-in noise; later values delay convergence.
+        /// Default: 300.
+        #[serde(default = "default_pmmh_adapt_start")]
+        adapt_start: usize,
+    },
+
     #[serde(rename = "pfilter")]
     PFilter {
         backend: crate::run_meta::Backend,
@@ -1264,6 +1313,7 @@ impl Stage {
             Stage::IF2 { starts_from, .. }
             | Stage::PGAS { starts_from, .. }
             | Stage::PMMH { starts_from, .. }
+            | Stage::Mh { starts_from, .. }
             | Stage::PFilter { starts_from, .. } => starts_from,
             Stage::NlSbplx(c) | Stage::NlBobyqa(c) => &c.starts_from,
         }
@@ -1279,6 +1329,7 @@ impl Stage {
             Stage::IF2      { .. } => MethodKind::If2,
             Stage::PGAS     { .. } => MethodKind::Pgas,
             Stage::PMMH     { .. } => MethodKind::Pmmh,
+            Stage::Mh       { .. } => MethodKind::Mh,
             Stage::PFilter  { .. } => MethodKind::Pfilter,
             Stage::NlSbplx  { .. } => MethodKind::NlSbplx,
             Stage::NlBobyqa { .. } => MethodKind::NlBobyqa,
@@ -1294,13 +1345,14 @@ impl Stage {
             Stage::IF2      { backend, .. }
             | Stage::PGAS    { backend, .. }
             | Stage::PMMH    { backend, .. }
+            | Stage::Mh      { backend, .. }
             | Stage::PFilter { backend, .. } => *backend,
             Stage::NlSbplx(c) | Stage::NlBobyqa(c) => c.backend,
         }
     }
 
     pub fn requires_priors(&self) -> bool {
-        matches!(self, Stage::PGAS { .. } | Stage::PMMH { .. })
+        matches!(self, Stage::PGAS { .. } | Stage::PMMH { .. } | Stage::Mh { .. })
     }
 
     pub fn chains(&self) -> usize {
@@ -1308,6 +1360,7 @@ impl Stage {
             Stage::IF2 { chains, .. } => *chains,
             Stage::PGAS { chains, .. } => *chains,
             Stage::PMMH { chains, .. } => *chains,
+            Stage::Mh { chains, .. } => *chains,
             Stage::PFilter { .. } => 1,
             Stage::NlSbplx(c) | Stage::NlBobyqa(c) => c.chains,
         }
@@ -1320,7 +1373,8 @@ impl Stage {
         match self {
             Stage::IF2 { init_method, .. }
             | Stage::PGAS { init_method, .. }
-            | Stage::PMMH { init_method, .. } => init_method.clone(),
+            | Stage::PMMH { init_method, .. }
+            | Stage::Mh { init_method, .. } => init_method.clone(),
             Stage::PFilter { .. } | Stage::NlSbplx(_) | Stage::NlBobyqa(_) => {
                 super::init::InitMethod::default()
             }
@@ -1338,6 +1392,7 @@ impl Stage {
             Stage::IF2 { iterations, .. } => *iterations as u64,
             Stage::PGAS { sweeps, .. } => *sweeps as u64,
             Stage::PMMH { iterations, .. } => *iterations as u64,
+            Stage::Mh { iterations, .. } => *iterations as u64,
             Stage::PFilter { .. } | Stage::NlSbplx(_) | Stage::NlBobyqa(_) => 0,
         }
     }
@@ -1435,6 +1490,29 @@ impl Stage {
                 "adapt_start": adapt_start,
                 "rho": rho,
             }),
+            // Mh (deterministic ODE marginal-likelihood MH): omit ONLY
+            // `iterations` (extension dimension). No `particles` / `rho`
+            // (deterministic path has neither). All other fields — adapt /
+            // adapt_start AND the init selectors — are identity-defining,
+            // for the same reason as PMMH.
+            Stage::Mh {
+                backend, chains, starts_from, burn_in, thin,
+                adapt, adapt_start,
+                init_method, survey_path, survey_top_k_n,
+                ..
+            } => json!({
+                "algorithm": "mh",
+                "backend": backend,
+                "chains": chains,
+                "starts_from": starts_from,
+                "init_method": init_method,
+                "survey_path": survey_path,
+                "survey_top_k_n": survey_top_k_n,
+                "burn_in": burn_in,
+                "thin": thin,
+                "adapt": adapt,
+                "adapt_start": adapt_start,
+            }),
             // No extension dimension: hash the full stage. NLopt stages
             // also have no extension dimension — every knob (chains,
             // tolerance, max_evals, init_method, gate) is identity-
@@ -1458,7 +1536,8 @@ impl Stage {
         let (init, path) = match self {
             Stage::IF2 { init_method, survey_path, .. }
             | Stage::PGAS { init_method, survey_path, .. }
-            | Stage::PMMH { init_method, survey_path, .. } => (init_method, survey_path),
+            | Stage::PMMH { init_method, survey_path, .. }
+            | Stage::Mh { init_method, survey_path, .. } => (init_method, survey_path),
             _ => return None,
         };
         match init {
@@ -1971,7 +2050,7 @@ impl FitConfigV2 {
     pub fn single_init_multichain_warning(&self) -> Option<String> {
         use super::init::InitMethod;
         let offenders: Vec<String> = self.stages.iter()
-            .filter(|(_, s)| matches!(s, Stage::PGAS { .. } | Stage::PMMH { .. }))
+            .filter(|(_, s)| matches!(s, Stage::PGAS { .. } | Stage::PMMH { .. } | Stage::Mh { .. }))
             .filter(|(_, s)| s.chains() > 1
                 && matches!(s.init_method(), InitMethod::Single))
             .map(|(name, s)| format!("'{}' ({}, chains = {})",

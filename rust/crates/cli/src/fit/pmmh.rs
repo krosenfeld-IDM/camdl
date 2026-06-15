@@ -79,8 +79,32 @@ impl PmmhStageOpts {
                     survey_top_k_n: *survey_top_k_n,
                 })
             }
+            // Deterministic-ODE MH reuses the PMMH machinery via `run_stage`'s
+            // `is_ode_mh` seam. It carries neither `particles` (no PF) nor
+            // `rho` (no correlated pseudo-marginal noise), so `n_particles` is
+            // 0 (unused on the deterministic path) and `rho` is None.
+            super::config_v2::Stage::Mh {
+                chains, iterations, burn_in, thin,
+                adapt, adapt_start, init_method,
+                survey_path, survey_top_k_n,
+                ..
+            } => {
+                Ok(PmmhStageOpts {
+                    n_chains: *chains,
+                    n_particles: 0,
+                    n_steps: *iterations,
+                    burn_in: burn_in.unwrap_or(DEFAULT_BURN_IN),
+                    thin: thin.unwrap_or(DEFAULT_THIN),
+                    adapt: *adapt,
+                    adapt_start: *adapt_start,
+                    rho: None,
+                    init_method: init_method.clone(),
+                    survey_path: survey_path.clone(),
+                    survey_top_k_n: *survey_top_k_n,
+                })
+            }
             other => Err(format!(
-                "PmmhStageOpts::from_stage: expected Stage::PMMH, got {}",
+                "PmmhStageOpts::from_stage: expected Stage::PMMH or Stage::Mh, got {}",
                 other.method_name())),
         }
     }
@@ -113,7 +137,16 @@ pub fn run_stage(
     let thin = pmmh_opts.thin;
     let adapt = pmmh_opts.adapt;
     let adapt_start = pmmh_opts.adapt_start;
-    let rho: Option<f64> = pmmh_opts.rho;
+
+    // Deterministic-ODE Metropolis-Hastings: the stage is `Stage::Mh`. The MH
+    // chain/adaptive-proposal/diagnostics machinery below is shared with PMMH;
+    // the ONLY difference is the per-step likelihood evaluation — the
+    // deterministic `compute_ode_loglik` instead of the bootstrap particle
+    // filter. With no PF there is no correlated pseudo-marginal noise, so `rho`
+    // is forced to None (skips the CPM obs-grid preflight and the correlated
+    // evaluator) and the PF-variance preflight is skipped entirely.
+    let is_ode_mh = matches!(stage, super::config_v2::Stage::Mh { .. });
+    let rho: Option<f64> = if is_ode_mh { None } else { pmmh_opts.rho };
 
     // Load prior state if --starts-from provided
     let prior_state = starts_from.map(FitState::load).transpose()?;
@@ -130,12 +163,30 @@ pub fn run_stage(
 
     let dt = config.if2_config.dt;
 
+    // Deterministic-ODE MH eval inputs, built once and shared (read-only)
+    // across all chains. `obs_model` goes behind an `Arc` so each chain's
+    // per-step closure can borrow it cheaply for the parallel chain loop. Only
+    // populated on the `is_ode_mh` path; PMMH leaves these unused.
+    let ode_obs_model: Option<std::sync::Arc<sim::inference::MultiStreamObsModel>> =
+        if is_ode_mh {
+            Some(std::sync::Arc::new(config.build_obs_model()))
+        } else {
+            None
+        };
+    let ode_obs_times: Vec<f64> = if is_ode_mh {
+        config.observations.iter().map(|o| o.time).collect()
+    } else {
+        Vec::new()
+    };
+    let ode_dt: f64 = if is_ode_mh { runner::ode_step_dt(&config) } else { dt };
+
     // gh#193 preflight: correlated PMMH (CPM, rho > 0) pre-draws a fixed-size
     // noise block per observation window and so requires a (near-)uniform obs
     // grid. The check is θ-independent (obs grid only) — run it ONCE here and
     // surface the actionable message, instead of letting every per-step PF eval
     // swallow the filter Err into -inf (a silent all-(-inf) chain). A leading
     // window coinciding with t_start is fine; see validate_cpm_obs_grid.
+    // Skipped for ODE-MH (rho is forced None: there is no correlated PF).
     if rho.is_some() {
         let obs_times: Vec<f64> = config.observations.iter().map(|o| o.time).collect();
         sim::inference::correlated_pf::validate_cpm_obs_grid(
@@ -146,8 +197,12 @@ pub fn run_stage(
     // Build proposal SDs
     let proposal_sd = build_proposal_sd(&config, starts_from)?;
 
-    // Preflight: PF variance check
-    eprintln!("\npfilter variance check ({} particles, 20 replicates)...", n_particles);
+    // Preflight: PF variance check (skipped for ODE-MH — deterministic, no PF).
+    if is_ode_mh {
+        eprintln!("\nODE marginal-likelihood check at base θ (deterministic)...");
+    } else {
+        eprintln!("\npfilter variance check ({} particles, 20 replicates)...", n_particles);
+    }
     let base = prior_state.as_ref().map(|s| {
         let mut p = config.base_params.clone();
         for spec in &config.estimated_params {
@@ -247,23 +302,44 @@ pub fn run_stage(
         .unwrap_or_else(|| vec![base.clone(); n_chains])
     };
 
-    let logliks: Vec<f64> = (0..20)
-        .map(|i| runner::run_quick_pfilter(&config, &base, n_particles, seed + i))
-        .collect::<Result<Vec<f64>, _>>()
-        .map_err(|e| format!("pmmh: structural error during PF-variance check at base θ: {}", e))?;
-    let ll_mean = logliks.iter().sum::<f64>() / logliks.len() as f64;
-    let ll_var = logliks.iter().map(|&l| (l - ll_mean).powi(2)).sum::<f64>() / (logliks.len() - 1) as f64;
-    let ll_sd = ll_var.sqrt();
-
-    eprintln!("  log L̂ mean = {:.1}, sd = {:.2}", ll_mean, ll_sd);
-    if ll_sd > 5.0 {
-        eprintln!("  \x1b[33m⚠ PF variance high (sd={:.1} > 5). Consider doubling particles to {}.\x1b[0m",
-            ll_sd, n_particles * 2);
-    } else if ll_sd < 0.5 && n_particles > 200 {
-        eprintln!("  \x1b[32m✓ PF variance low (sd={:.2}). Could halve particles to {} for 2× speed.\x1b[0m",
-            ll_sd, n_particles / 2);
+    let ll_mean: f64;
+    if is_ode_mh {
+        // Deterministic ODE marginal likelihood: a single eval at base θ — no
+        // replicates, no variance (the ODE skeleton is deterministic). A
+        // structural failure aborts (gh#224); a ruled-out θ (−∞) is reported as
+        // the initial loglik for the FitState, exactly as PMMH reports its mean.
+        let obs_model = ode_obs_model.as_ref()
+            .expect("ode_obs_model built on the is_ode_mh path");
+        ll_mean = match runner::compute_ode_loglik(
+            &config.compiled, obs_model, &ode_obs_times, ode_dt, &base,
+        ) {
+            Ok(ll) => ll,
+            Err(e) if e.is_structural() =>
+                return Err(format!(
+                    "mh: structural error during ODE loglik check at base θ: {}", e)),
+            Err(_) => f64::NEG_INFINITY,
+        };
+        eprintln!("  ODE log L = {:.1} (deterministic; no PF variance)", ll_mean);
     } else {
-        eprintln!("  \x1b[32m✓ PF variance OK (target: 1-3)\x1b[0m");
+        let logliks: Vec<f64> = (0..20)
+            .map(|i| runner::run_quick_pfilter(&config, &base, n_particles, seed + i))
+            .collect::<Result<Vec<f64>, _>>()
+            .map_err(|e| format!("pmmh: structural error during PF-variance check at base θ: {}", e))?;
+        let mean = logliks.iter().sum::<f64>() / logliks.len() as f64;
+        let ll_var = logliks.iter().map(|&l| (l - mean).powi(2)).sum::<f64>() / (logliks.len() - 1) as f64;
+        let ll_sd = ll_var.sqrt();
+        ll_mean = mean;
+
+        eprintln!("  log L̂ mean = {:.1}, sd = {:.2}", ll_mean, ll_sd);
+        if ll_sd > 5.0 {
+            eprintln!("  \x1b[33m⚠ PF variance high (sd={:.1} > 5). Consider doubling particles to {}.\x1b[0m",
+                ll_sd, n_particles * 2);
+        } else if ll_sd < 0.5 && n_particles > 200 {
+            eprintln!("  \x1b[32m✓ PF variance low (sd={:.2}). Could halve particles to {} for 2× speed.\x1b[0m",
+                ll_sd, n_particles / 2);
+        } else {
+            eprintln!("  \x1b[32m✓ PF variance OK (target: 1-3)\x1b[0m");
+        }
     }
 
     if check_variance {
@@ -500,7 +576,30 @@ pub fn run_stage(
             // PF call and (if the chain had already diverged into
             // a degenerate region during sampling) spuriously
             // mark a working chain as bad.
-            if resume_states[chain_id].is_none() {
+            if resume_states[chain_id].is_none() && is_ode_mh {
+                // ODE-MH init-eval guard: no PF, so the PFDegenerate /
+                // PFWallclockTimeout skip arms do not apply. Evaluate the
+                // deterministic loglik once at the chain's start; a structural
+                // error aborts the whole fit (gh#224, same hard path as PMMH's
+                // structural arm), and any other outcome (Ok, including −∞)
+                // proceeds — MH's accept/reject handles an uninformative init.
+                let obs_model = ode_obs_model.as_ref()
+                    .expect("ode_obs_model built on the is_ode_mh path");
+                match runner::compute_ode_loglik(
+                    &config.compiled, obs_model, &ode_obs_times, ode_dt,
+                    &chain_starts[chain_id],
+                ) {
+                    Err(e) if e.is_structural() => {
+                        return Err(format!(
+                            "chain {} init-eval failed with structural error: {}",
+                            chain_id + 1, e));
+                    }
+                    _ => {
+                        // Ok(finite | −∞) or a recoverable Err (ruled-out θ) —
+                        // MH proceeds via the standard accept/reject path.
+                    }
+                }
+            } else if resume_states[chain_id].is_none() {
                 match runner::run_quick_pfilter_with_dt(
                     &config, &chain_starts[chain_id],
                     n_particles, None, chain_seed,
@@ -569,12 +668,33 @@ pub fn run_stage(
                 n_source_groups: config.compiled.source_groups.len(),
             };
 
-            // Build the loglik evaluator closure for this chain. It already
-            // returns the inference convention (Ok(−∞) = θ ruled out, Err =
-            // structural — gh#224) via `run_quick_pfilter`.
-            let eval_loglik = |params: &[f64], pf_seed: u64| -> Result<f64, sim::error::SimError> {
-                runner::run_quick_pfilter(&config, params, n_particles, pf_seed)
-            };
+            // Build the loglik evaluator closure for this chain. Both branches
+            // return the inference convention (Ok(−∞) = θ ruled out, Err =
+            // structural — gh#224). For ODE-MH this is the deterministic
+            // `compute_ode_loglik` (the seed is unused — the ODE skeleton is
+            // deterministic); otherwise the bootstrap-PF `run_quick_pfilter`.
+            // Boxed (lifetime-bounded, `+ '_`) so the two closure types unify
+            // into one binding while still borrowing local state — the PF
+            // branch borrows `&config` exactly as the prior non-boxed closure
+            // did, so the PMMH path is unchanged.
+            let eval_loglik: Box<dyn Fn(&[f64], u64) -> Result<f64, sim::error::SimError> + '_> =
+                if is_ode_mh {
+                    Box::new(|params: &[f64], _seed: u64| -> Result<f64, sim::error::SimError> {
+                        let obs_model = ode_obs_model.as_ref()
+                            .expect("ode_obs_model built on the is_ode_mh path");
+                        match runner::compute_ode_loglik(
+                            &config.compiled, obs_model, &ode_obs_times, ode_dt, params,
+                        ) {
+                            Ok(ll) => Ok(ll),
+                            Err(e) if e.is_structural() => Err(e),
+                            Err(_) => Ok(f64::NEG_INFINITY),
+                        }
+                    })
+                } else {
+                    Box::new(|params: &[f64], pf_seed: u64| -> Result<f64, sim::error::SimError> {
+                        runner::run_quick_pfilter(&config, params, n_particles, pf_seed)
+                    })
+                };
 
             // Correlated PF evaluator (when rho is set)
             let process = config.build_process();
@@ -657,7 +777,7 @@ pub fn run_stage(
             let result = run_pmmh(
                 &config.estimated_params, &priors, &chain_starts[chain_id],
                 &config.param_names,
-                &pmmh_config, &config.observations, &eval_loglik, eval_corr_ref, chain_seed,
+                &pmmh_config, &config.observations, eval_loglik.as_ref(), eval_corr_ref, chain_seed,
                 Some(&progress_cb), resume_states[chain_id].clone(), config_hash.clone(),
             ).map_err(|e| format!("chain {} failed with structural error: {}", chain_id + 1, e))?;
 

@@ -133,6 +133,15 @@ pub const METHODS: &[InferenceMethod] = &[
              parameter-bound boundaries where Sbplx succeeds. Prefer \
              nl-sbplx unless you've confirmed the boundary is interior.",
     },
+    InferenceMethod {
+        algorithm: "mh",
+        backend: "ode",
+        category: MethodCategory::Inference,
+        status: MethodStatus::Beta,
+        one_liner: "Metropolis-Hastings on the deterministic ODE marginal likelihood.",
+        use_for: "Bayesian posteriors on ODE/equilibrium models without gradients.",
+        status_note: "",
+    },
 ];
 
 /// Look up a method by (algorithm, backend). Returns `None` if the pair
@@ -480,11 +489,11 @@ pub fn validate_ic_free(algorithm: &str, correlated: bool) -> Result<(), String>
              `ic_free = true` from the fit."
                 .into(),
         ),
-        "nl-sbplx" | "nl-bobyqa" => Err(format!(
+        "nl-sbplx" | "nl-bobyqa" | "mh" => Err(format!(
             "ic_free = true is not supported with the `{algorithm}` algorithm \
-             (ODE-MLE). The deterministic likelihood (compute_ode_loglik) sums \
-             over every observation time with no first-observation skip, so it \
-             would silently compute the UNCONDITIONAL likelihood while \
+             (ODE backend). The deterministic likelihood (compute_ode_loglik) \
+             sums over every observation time with no first-observation skip, so \
+             it would silently compute the UNCONDITIONAL likelihood while \
              reporting that it conditioned on y₁.\n\n  \
              ic_free is honored by: if2, pfilter, and plain pmmh (no rho).\n  \
              Use one of those for IC-free inference, or remove \
