@@ -80,6 +80,20 @@ fn harness_bin() -> PathBuf {
 /// path is handed to the harness via the `CAMDL` env var, matching the
 /// `CAMDL=${CAMDL:-camdl}` convention in `tests/test_ocaml_to_rust.sh`.
 fn camdl_bin() -> PathBuf {
+    // Explicit override. `make test-rust` points `CAMDL` at the freshly-built
+    // release binary (`build-rust` always rebuilds it) so the heavy pfilter
+    // cases — 2000 particles × 10 replicates over 1096 weeks, twice — run in
+    // release, not the ~10-30× slower debug build cargo would otherwise pick as
+    // the harness sibling. Interactive `cargo test` with no override falls
+    // through to the always-fresh debug sibling below.
+    if let Ok(p) = std::env::var("CAMDL") {
+        if !p.is_empty() {
+            let pb = PathBuf::from(&p);
+            if pb.exists() {
+                return pb;
+            }
+        }
+    }
     // Sibling of the harness binary, same profile directory.
     let harness = harness_bin();
     if let Some(dir) = harness.parent() {
