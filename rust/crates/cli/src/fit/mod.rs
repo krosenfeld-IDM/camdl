@@ -1359,6 +1359,47 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     stage_best_chain = Some(fs.best_chain);
                 }
             }
+            Stage::Mh { .. } => {
+                // Deterministic-ODE Metropolis-Hastings. Routes through the
+                // shared PMMH machinery (chains, adaptive proposal, priors,
+                // MAP, R̂/ESS, trace output); `pmmh::run_stage` swaps the PF
+                // likelihood for `compute_ode_loglik` when the stage is the Mh
+                // variant. `PmmhStageOpts::from_stage` parses the Mh fields
+                // with `n_particles = 0` / `rho = None` (the deterministic path
+                // uses neither).
+                let mut pmmh_opts = pmmh::PmmhStageOpts::from_stage(stage)
+                    .unwrap_or_else(|e| { eprintln!("error: {}", e); std::process::exit(1); });
+                if a.no_adapt { pmmh_opts.adapt = false; }
+                if let Some(s) = a.adapt_start { pmmh_opts.adapt_start = s; }
+                if let Some(m) = cli_init_method.clone() { pmmh_opts.init_method = m; }
+                // gh#51 v2: CLI survey-path / survey-top-k flags override the
+                // stage-config values. Same priority chain as PMMH.
+                if let Some(ref p) = cli_survey_path {
+                    pmmh_opts.survey_path = Some(p.clone());
+                }
+                if let Some(k) = cli_survey_top_k {
+                    pmmh_opts.survey_top_k_n = Some(k);
+                }
+
+                pmmh::run_stage(
+                    &sweep_config,
+                    stage_name,
+                    stage,
+                    &stage_dir,
+                    pmmh_opts,
+                    seed, force,
+                    /* check_variance */ false,
+                    a.resume.is_some(),
+                    effective_starts.as_deref(),
+                ).unwrap_or_else(|e| {
+                    eprintln!("error running mh stage '{}': {}", stage_name, e);
+                    std::process::exit(1);
+                });
+                if let Ok(fs) = state::FitState::load(&stage_dir.to_string_lossy()) {
+                    stage_best_loglik = Some(fs.best_loglik);
+                    stage_best_chain = Some(fs.best_chain);
+                }
+            }
             Stage::NlSbplx(_) | Stage::NlBobyqa(_) => {
                 #[cfg(feature = "ode")]
                 {
@@ -1557,6 +1598,8 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                 serde_json::json!({ "algorithm": algo_tag, "backend": backend_tag, "chains": chains, "particles": particles, "sweeps": sweeps }),
             Stage::PMMH { chains, particles, iterations, .. } =>
                 serde_json::json!({ "algorithm": algo_tag, "backend": backend_tag, "chains": chains, "particles": particles, "iterations": iterations }),
+            Stage::Mh { chains, iterations, .. } =>
+                serde_json::json!({ "algorithm": algo_tag, "backend": backend_tag, "chains": chains, "iterations": iterations }),
             Stage::PFilter { particles, replicates, .. } =>
                 serde_json::json!({ "algorithm": algo_tag, "backend": backend_tag, "particles": particles, "replicates": replicates }),
             Stage::NlSbplx(c) | Stage::NlBobyqa(c) =>
