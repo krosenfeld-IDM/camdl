@@ -11,7 +11,7 @@ use crate::{
     resolved_expr::eval_resolved,
     schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
-    state::{FlowVec, IntState, RealState, Snapshot, Trajectory},
+    state::{Flows, FlowVec, IntState, RealState, Snapshot, Trajectory},
 };
 
 pub struct ChainBinomialSim;
@@ -204,7 +204,7 @@ pub fn run_chain_binomial_with_observer(
 
     if schedule.output_due_at(&cursor, t) {
         traj.push(Snapshot {
-            t, int_state: int_s.clone(), real_state: real_s.clone(), flows: current_flows.clone(),
+            t, int_state: int_s.clone(), real_state: real_s.clone(), flows: Flows::Int(current_flows.counts.clone()),
         });
         current_flows.reset();
         cursor.pass_output();
@@ -282,7 +282,7 @@ pub fn run_chain_binomial_with_observer(
                 t: ot,
                 int_state: int_s.clone(),
                 real_state: real_s.clone(),
-                flows: current_flows.clone(),
+                flows: Flows::Int(current_flows.counts.clone()),
             });
             current_flows.reset();
         });
@@ -293,7 +293,7 @@ pub fn run_chain_binomial_with_observer(
             t: ot,
             int_state: int_s.clone(),
             real_state: real_s.clone(),
-            flows: current_flows.clone(),
+            flows: Flows::Int(current_flows.counts.clone()),
         });
         current_flows.reset();
     });

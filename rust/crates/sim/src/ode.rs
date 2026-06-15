@@ -8,7 +8,7 @@ use crate::{
     resolved_expr::eval_resolved,
     schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
-    state::{FlowVec, IntState, RealState, Snapshot, Trajectory},
+    state::{Flows, IntState, RealState, Snapshot, Trajectory},
 };
 
 pub struct OdeSim;
@@ -200,14 +200,15 @@ pub fn run_ode(
     let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
     let mut traj = Trajectory::new();
-    // Accumulated continuous flows (rate × dt); rounded to u64 at each snapshot.
+    // Accumulated continuous flows (rate × dt). The ODE flow is genuinely
+    // real-valued; it is recorded as `Flows::Real` WITHOUT rounding, so a
+    // sub-unit flow (a slow transition such as TB reactivation) survives into
+    // the likelihood instead of quantizing to 0 → `-∞`.
     let mut flow_acc: Vec<f64> = vec![0.0; n_transitions];
     let mut t = cfg.t_start;
 
     // Record initial snapshot
-    let snapshot_flows = |flow_acc: &[f64]| {
-        FlowVec::from_vec(flow_acc.iter().map(|&x| x.round() as u64).collect())
-    };
+    let snapshot_flows = |flow_acc: &[f64]| Flows::Real(flow_acc.to_vec());
 
     if schedule.output_due_at(&cursor, t) {
         let (is, rs) = to_states(&int_vals, &real_vals);

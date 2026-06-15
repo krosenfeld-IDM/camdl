@@ -69,19 +69,20 @@ fn ode_flow_uses_realized_substep_dt_not_grid_dt() {
 
     let (int0, real0) = compiled.initial_state(&params).expect("initial state");
 
-    // Oracle built from `eval_propensities` itself (no hardcoded beta/tau),
-    // rounded exactly as ode.rs `snapshot_flows` does (`x.round() as u64`).
-    let flow = |dt_arg: f64| -> u64 {
+    // Oracle built from `eval_propensities` itself (no hardcoded beta/tau).
+    // The ODE backend records the continuous flow `rate · dt` WITHOUT rounding,
+    // so the oracle is the raw real product.
+    let flow = |dt_arg: f64| -> f64 {
         let mut p = Vec::new();
         eval_propensities(&compiled, &int0, &real0, &params, t_start, dt_arg, &mut p)
             .expect("eval propensities");
-        (p[infection] * dt_actual).round() as u64
+        p[infection] * dt_actual
     };
     let flow_realized = flow(dt_actual); // correct: Expr::Dt sees the realized 1.0
     let flow_grid = flow(cfg_dt); //        bug: Expr::Dt sees the nominal 3.0
-    assert_ne!(
-        flow_realized, flow_grid,
-        "vacuous test: realized-dt and grid-dt flows must differ after rounding \
+    assert!(
+        (flow_realized - flow_grid).abs() > 1e-9,
+        "vacuous test: realized-dt and grid-dt flows must differ \
          (realized={flow_realized}, grid={flow_grid})"
     );
 
@@ -91,12 +92,64 @@ fn ode_flow_uses_realized_substep_dt_not_grid_dt() {
     let snap = traj.snapshots.iter()
         .find(|s| (s.t - 1.0).abs() < 1e-9)
         .expect("a snapshot at the t=1 output boundary");
-    let got = snap.flows.counts[infection];
+    let got = snap.flows.as_real()[infection];
 
-    assert_eq!(
-        got, flow_realized,
+    assert!(
+        (got - flow_realized).abs() < 1e-9,
         "ODE flow accumulation must evaluate the dt-referencing rate at the \
          realized substep dt ({dt_actual}), not the nominal grid dt ({cfg_dt}): \
          got {got}, realized-dt oracle {flow_realized}, grid-dt (buggy) {flow_grid}"
+    );
+}
+
+/// Phase 0 (proposal 2026-06-15-ode-gradient-inference): the ODE backend records
+/// continuous flow `rate · dt` WITHOUT rounding. A sub-unit per-window flow — a
+/// slow transition such as TB reactivation — must survive into the trajectory.
+/// The previous `x.round() as u64` snapshot quantization zeroed it, which
+/// collapsed `compute_ode_loglik` to `-∞` across the entire slow-rate regime
+/// (the exact regime of a TB latency fit).
+#[test]
+fn ode_subunit_flow_is_not_rounded_to_zero() {
+    let (compiled, mut params) = load_dt_rate();
+    let infection = 0usize;
+    assert_eq!(compiled.model.transitions[infection].name, "infection");
+    let pidx = |name: &str| {
+        compiled.model.parameters.iter().position(|p| p.name == name)
+            .unwrap_or_else(|| panic!("param {name} not found"))
+    };
+    // Tiny hazard → a sub-unit infection flow over one output window.
+    params[pidx("beta")] = 1e-3;
+    params[pidx("tau")] = 1.0;
+
+    let t_start = compiled.model.simulation.t_start;
+    let (int0, real0) = compiled.initial_state(&params).expect("initial state");
+
+    // Oracle: the continuous flow over the first unit window — a single substep
+    // from the exactly-known initial state with dt = 1.
+    let dt = 1.0;
+    let mut p = Vec::new();
+    eval_propensities(&compiled, &int0, &real0, &params, t_start, dt, &mut p)
+        .expect("eval propensities");
+    let oracle = p[infection] * dt;
+    assert!(
+        oracle > 0.0 && oracle < 0.5,
+        "test setup: expected a sub-unit infection flow, got {oracle}"
+    );
+    assert_eq!(
+        oracle.round(), 0.0,
+        "test setup: the pre-fix `round()` must map this flow to 0 (oracle={oracle})"
+    );
+
+    let cfg = SimConfig::Ode(OdeConfig { t_start, t_end: 2.0, dt: 1.0 });
+    let traj = OdeSim.run(&compiled, &params, SEED, &cfg).expect("ode run");
+    let snap = traj.snapshots.iter()
+        .find(|s| (s.t - 1.0).abs() < 1e-9)
+        .expect("a snapshot at the t=1 output boundary");
+    let got = snap.flows.as_real()[infection];
+
+    assert!(
+        (got - oracle).abs() < 1e-12 && got > 0.0,
+        "sub-unit ODE flow must be preserved unrounded: got {got}, oracle {oracle} \
+         (the pre-fix `round()` would report 0.0 → likelihood -∞)"
     );
 }

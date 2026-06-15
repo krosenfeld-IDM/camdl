@@ -168,7 +168,7 @@ fn make_data_idx(compiled: &CompiledModel, params: &[f64], rho: f64, k: f64, inf
     let mut obs = Vec::new();
     for snap in &traj.snapshots {
         if snap.t == 0.0 { continue; } // first boundary has no incidence window
-        let incidence = snap.flows.counts[inf_idx] as f64;
+        let incidence = snap.flows.as_int()[inf_idx] as f64;
         let mu = rho * incidence;
         // NB2(mu, k) = Poisson(mu · G), G ~ Gamma(k, 1/k) (mean 1, var 1/k).
         let g = obs_rng.gamma_multiplier(1.0 / k, 1.0);

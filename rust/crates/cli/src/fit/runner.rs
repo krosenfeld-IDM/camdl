@@ -813,13 +813,17 @@ pub fn compute_ode_loglik(
     let n_transitions = traj
         .snapshots
         .first()
-        .map(|s| s.flows.counts.len())
+        .map(|s| s.flows.len())
         .unwrap_or(0);
-    let mut cum_flows: Vec<u64> = vec![0; n_transitions];
+    // The ODE backend records real-valued flow (continuous `rate·dt`, never
+    // rounded), so the running accumulators are `f64`: a sub-unit flow (a slow
+    // transition such as TB reactivation) must survive into the likelihood
+    // rather than quantize to 0 → `-∞`.
+    let mut cum_flows: Vec<f64> = vec![0.0; n_transitions];
     // Phase 2a: per-Interval-stream persistent bin, folded once per obs interval
     // and reset per-stream — ODE-inference is the seventh reset site and scores
-    // through the SAME seam as the particle filters.
-    let mut acc: Vec<u64> = vec![0; obs_model.n_interval_streams()];
+    // through the SAME seam as the particle filters (the `_real` siblings).
+    let mut acc: Vec<f64> = vec![0.0; obs_model.n_interval_streams()];
     let mut next_obs_idx = 0;
     let n_obs = obs_times.len();
     let mut total_ll = 0.0;
@@ -828,7 +832,7 @@ pub fn compute_ode_loglik(
         // The simulator emits a snapshot at t_start with zero flow; from
         // index 1 onward the flow vector is the per-interval accumulation.
         if snap_idx > 0 {
-            for (i, &f) in snap.flows.counts.iter().enumerate() {
+            for (i, &f) in snap.flows.as_real().iter().enumerate() {
                 cum_flows[i] += f;
             }
         }
@@ -841,8 +845,8 @@ pub fn compute_ode_loglik(
         {
             // FOLD (Phase 2a): close this interval's per-transition `cum_flows`
             // into the per-stream `acc` BEFORE scoring; score reads `acc`.
-            obs_model.fold_into_acc(&cum_flows, &mut acc);
-            let ll = obs_model.log_likelihood_from_flows_and_counts(
+            obs_model.fold_into_acc_real(&cum_flows, &mut acc);
+            let ll = obs_model.log_likelihood_from_flows_and_counts_real(
                 &acc,
                 &snap.int_state.counts,
                 next_obs_idx,
@@ -855,8 +859,8 @@ pub fn compute_ode_loglik(
             // Reset for the next obs interval. `cum_flows` blanket-zeroed
             // (unchanged); the per-stream `acc` bins per-stream — only Interval
             // streams scheduled at THIS union index zero.
-            cum_flows.fill(0);
-            obs_model.reset_due_acc(next_obs_idx, &mut acc);
+            cum_flows.fill(0.0);
+            obs_model.reset_due_acc_real(next_obs_idx, &mut acc);
             next_obs_idx += 1;
         }
 

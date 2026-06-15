@@ -85,7 +85,7 @@ fn assert_traj_eq(a: &Trajectory, b: &Trajectory, ctx: &str) {
         let rb: Vec<u64> = sb.real_state.values.iter().map(|v| v.to_bits()).collect();
         assert_eq!(ra, rb, "{ctx}: real compartments differ at snapshot {i} (t={})", sa.t);
         assert_eq!(
-            sa.flows.counts, sb.flows.counts,
+            sa.flows.as_int(), sb.flows.as_int(),
             "{ctx}: flows differ at snapshot {i} (t={})",
             sa.t
         );

@@ -2363,7 +2363,10 @@ fn write_traj_to(
         for &c in &snap.int_state.counts  { write!(w, "\t{}", c)?; }
         for &v in &snap.real_state.values { write!(w, "\t{:.4}", v)?; }
         if emit_flows {
-            for &fl in &snap.flows.counts { write!(w, "\t{}", fl)?; }
+            match &snap.flows {
+                sim::Flows::Int(fs)  => for &fl in fs { write!(w, "\t{}", fl)?; },
+                sim::Flows::Real(fs) => for &fl in fs { write!(w, "\t{:.4}", fl)?; },
+            }
         }
         writeln!(w)?;
     }
