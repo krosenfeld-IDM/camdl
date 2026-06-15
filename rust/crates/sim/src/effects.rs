@@ -98,6 +98,49 @@ pub enum EffectKind {
     Event,
 }
 
+/// gh#217: which read-state an always-active EVENT action resolves against
+/// within a chain_binomial substep. The two phases let `step_one` apply inflow
+/// and draining event actions against different states without re-resolving the
+/// whole batch twice:
+///
+///   - [`EventPhase::Snapshot`] selects INFLOW-only actions (`Add`): resolved
+///     against the start-of-step snapshot and fused into the atomic transition
+///     apply. Byte-identical to the pre-gh#217 behaviour.
+///   - [`EventPhase::Residual`] selects DRAINING / assignment actions
+///     (`FractionTransfer`, `AbsoluteTransfer`, `Set`): resolved against the
+///     POST-TRANSITION residual state, so a draining transfer moves a fraction
+///     of what survived the interval — matching ODE / Gillespie.
+///
+/// Action variant → phase is a pure classification; see [`action_phase`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EventPhase {
+    /// Inflow `Add` only, resolved against the start-of-step snapshot.
+    Snapshot,
+    /// `FractionTransfer` / `AbsoluteTransfer` / `Set`, resolved against the
+    /// post-transition residual.
+    Residual,
+}
+
+/// Classify one event action by the read-state it must resolve against (gh#217).
+///
+/// `Add` is an INFLOW construct (cannot over-draw) → [`EventPhase::Snapshot`].
+/// `FractionTransfer` / `AbsoluteTransfer` drain their `from` side and `Set`
+/// overwrites the post-dynamics value → [`EventPhase::Residual`].
+///
+/// NOTE (follow-up, out of scope for gh#217): a NEGATIVE-amount `Add` used as a
+/// drain is classified `Snapshot` here like any other `Add`. Such an `Add` is
+/// rejected today as a config bug (`InterventionAddNegative`), so it cannot
+/// silently over-draw; if negative `Add`-as-drain is ever supported it must move
+/// to `Residual`.
+fn action_phase(action: &Action) -> EventPhase {
+    match action {
+        Action::Add(_) => EventPhase::Snapshot,
+        Action::FractionTransfer(_) | Action::AbsoluteTransfer(_) | Action::Set(_) => {
+            EventPhase::Residual
+        }
+    }
+}
+
 impl EffectKind {
     fn label(self) -> &'static str {
         match self {
@@ -212,9 +255,16 @@ fn resolve_one(
     resolve_action(model, action, v, snap, t, out)
 }
 
-/// Resolve every action of one intervention/event against the SAME `snap`,
-/// appending the typed deltas to `out` (the parallel idiom — every action sees
-/// the same frozen snapshot, used by the event path). PURE.
+/// Resolve the actions of one intervention/event matching `phase` against the
+/// SAME `snap`, appending the typed deltas to `out` (the parallel idiom — every
+/// resolved action sees the same `snap`). PURE.
+///
+/// gh#217: `phase` filters by action read-state. The EVENT path resolves
+/// `Snapshot` (inflow `Add`) against the start-of-step snapshot and `Residual`
+/// (draining transfer / `Set`) against the post-transition residual in two
+/// passes with different `snap`. `Some(p)` resolves only actions whose
+/// [`action_phase`] is `p`; `None` resolves every action (the intervention path,
+/// which has no two-phase split — interventions apply post-advance regardless).
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_intervention(
     model: &CompiledModel,
@@ -225,9 +275,15 @@ pub fn resolve_intervention(
     t: f64,
     dt: f64,
     kind: EffectKind,
+    phase: Option<EventPhase>,
     out: &mut EffectDeltas,
 ) -> Result<(), SimError> {
     for (action_idx, action) in iv.actions.iter().enumerate() {
+        if let Some(p) = phase {
+            if action_phase(action) != p {
+                continue;
+            }
+        }
         resolve_one(model, iv_idx, action_idx, &iv.name, action, snap, params, t, dt, kind, out)?;
     }
     Ok(())
@@ -307,12 +363,18 @@ pub fn split_due_batch(
     }
 }
 
-/// Resolve a known batch of always-active events into typed deltas. The EVENT
-/// path's apply half: every action of each event in `event_idx` resolves against
-/// the frozen pre-advance snapshot at the boundary `t_end` (so events fuse with
-/// the kernel draw). PURE — the caller fuses `out.int` into the draw and applies
+/// Resolve a known batch of always-active events into typed deltas, for the
+/// actions matching `phase`. The EVENT path's apply half: each event in
+/// `event_idx` resolves its `phase` actions against `read` at the boundary
+/// `t_end`. PURE — the caller fuses `out.int` into the draw and applies
 /// `out.real` to the real reservoir. Replaces the historical int-only
 /// `inject_event_deltas` (which silently dropped real-targeted events).
+///
+/// gh#217: events are resolved in two phases by [`EventPhase`]. `step_one`
+/// passes `read = start-of-step snapshot, phase = Snapshot` for inflow `Add`
+/// (fused with the kernel draw) and `read = post-transition residual, phase =
+/// Residual` for draining transfers / `Set` (applied after the draw). Passing
+/// the read-state and the matching phase together is the caller's contract.
 ///
 /// `event_idx` (from [`due_effects`]) lists exactly the firing always-active
 /// interventions in declaration order — this function does NOT re-check
@@ -324,17 +386,18 @@ pub fn split_due_batch(
 pub fn resolve_event_batch(
     model: &CompiledModel,
     event_idx: &[usize],
-    snapshot: &IntState,
-    real_snapshot: &RealState,
+    read_int: &IntState,
+    read_real: &RealState,
     params: &[f64],
     t_end: f64,
     dt: f64,
+    phase: EventPhase,
     out: &mut EffectDeltas,
 ) -> Result<(), SimError> {
-    let snap = StateRef { int: snapshot, real: real_snapshot };
+    let snap = StateRef { int: read_int, real: read_real };
     for &iv_idx in event_idx {
         let iv = &model.model.interventions[iv_idx];
-        resolve_intervention(model, iv_idx, iv, snap, params, t_end, dt, EffectKind::Event, out)?;
+        resolve_intervention(model, iv_idx, iv, snap, params, t_end, dt, EffectKind::Event, Some(phase), out)?;
     }
     Ok(())
 }
@@ -704,7 +767,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         resolve_intervention(model, 0, &model.model.interventions[0], snap(&int_s, &real_s),
-                             &model.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap();
+                             &model.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap();
         out
     }
 
@@ -730,7 +793,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
-                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap_err();
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap_err();
         assert!(matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionAddNegative, .. }));
     }
 
@@ -760,7 +823,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
-                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap_err();
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap_err();
         match err {
             SimError::NegativeCount { compartment, attempted_value, cause, .. } => {
                 assert_eq!(compartment, "W");
@@ -817,7 +880,7 @@ mod tests {
         let (int_s, real_s) = states();
         let mut out = EffectDeltas::default();
         let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
-                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, &mut out).unwrap_err();
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap_err();
         assert!(matches!(err, SimError::Validation(_)));
     }
 

@@ -503,15 +503,23 @@ pub fn step_one(
     // `grid_dt`-keyed events. Consumed by PROPOSE (event_idx) here and INTERVENE
     // (intervention_idx) below — `step_one` never re-derives due-ness.
 
-    // PROPOSE (stage 1): always_active event deltas from the start-of-step
+    // PROPOSE (stage 1): INFLOW event deltas (`Add`) from the start-of-step
     // snapshot (`scratch.int_s`/`scratch.real_s`, captured at the top of this
     // function before any draws). The integer deltas are fused into ADVANCE —
     // applied atomically with the transition deltas below; the real deltas apply
     // to the snapshot reservoir, which is written back to `real` at the end.
+    //
+    // gh#217: only the SNAPSHOT phase (inflow `Add`) fires here. Draining
+    // transfers and `Set` (the RESIDUAL phase) are resolved AFTER the atomic
+    // apply, against the post-transition residual — see below. This keeps the
+    // inflow path byte-identical (cohort births fuse with the draw) while a
+    // draining event on a transition's source reads what SURVIVED the interval
+    // (matching ODE/Gillespie), instead of subtracting the full snapshot a second
+    // time and overshooting to a negative count.
     scratch.event_deltas.clear();
     crate::effects::resolve_event_batch(
         model, &scratch.effect_batch.event_idx, &scratch.int_s, &scratch.real_s,
-        params, t + dt, dt, &mut scratch.event_deltas,
+        params, t + dt, dt, crate::effects::EventPhase::Snapshot, &mut scratch.event_deltas,
     )?;
     for d in &scratch.event_deltas.int {
         scratch.pending_deltas.push((d.idx, d.delta));
@@ -520,9 +528,31 @@ pub fn step_one(
         scratch.real_s.values[d.idx] += d.delta;
     }
 
-    // Apply all deltas atomically (transitions + events)
+    // ADVANCE: apply all snapshot-phase deltas atomically (transitions + inflow
+    // events). `counts` now holds the POST-TRANSITION residual state.
     for &(local, delta) in &scratch.pending_deltas {
         counts[local] += delta;
+    }
+
+    // RESIDUAL phase (gh#217): draining transfers (`from` side) and `Set` resolve
+    // against the post-transition residual `counts` / `scratch.real_s`, then apply
+    // to them. `fraction` × residual `from`; `count`.min(residual `from`); `Set`
+    // overwrites the post-dynamics value. `scratch.int_s` is repurposed here as
+    // the residual int read-state (it held the start-of-step snapshot, now stale);
+    // `apply_post_advance` below re-syncs it to `counts` before INTERVENE.
+    if !scratch.effect_batch.event_idx.is_empty() {
+        scratch.int_s.counts.copy_from_slice(counts);
+        scratch.event_deltas.clear();
+        crate::effects::resolve_event_batch(
+            model, &scratch.effect_batch.event_idx, &scratch.int_s, &scratch.real_s,
+            params, t + dt, dt, crate::effects::EventPhase::Residual, &mut scratch.event_deltas,
+        )?;
+        for d in &scratch.event_deltas.int {
+            counts[d.idx] += d.delta;
+        }
+        for d in &scratch.event_deltas.real {
+            scratch.real_s.values[d.idx] += d.delta;
+        }
     }
 
     // Per-substep trace (CAMDL_TRACE_STEPS=1)

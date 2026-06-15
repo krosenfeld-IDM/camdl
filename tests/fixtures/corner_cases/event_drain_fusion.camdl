@@ -1,27 +1,24 @@
-# Corner case: EVENT READ-SOURCE FUSION (cycle 2a).
+# Corner case: DRAINING-EVENT RESIDUAL READ (gh#217).
 #
-# The strong fixture that PROVES the within-substep event delta is computed from
-# the START-OF-STEP SNAPSHOT, not the post-transition state. A live transition
-# DRAINS A every substep, while an always-active event ALSO reads A (a
-# value-dependent fraction transfer A --> C). Because the event delta is
-# floor(A * f), it DIFFERS depending on whether A is read pre- or post-drain:
+# A live transition DRAINS A every substep while an always-active DRAINING event
+# (a value-dependent fraction transfer A --> C) ALSO reads A. The event delta is
+# floor(residual_A * f), so it DIFFERS depending on whether the event reads A
+# before or after the substep's drain:
 #
 #   drain : A --> B @ k * A            (nonzero per-capita rate: A leaks to B)
 #   leak  : transfer(fraction = f, from = A, to = C)   every substep
 #
-# Canonical lifecycle (chain_binomial, the reference): the event reads the
-# start-of-step snapshot A (pre-drain), the transition drains A, and both deltas
-# are FUSED and applied atomically. Pre-fix tau_leap computed the event delta
-# from the POST-drain A — the read-source bug. After the fusion fix, tau reads
-# the snapshot too.
+# Semantics (all backends agree): a DRAINING event reads the POST-TRANSITION
+# RESIDUAL A — what survived the substep's drain — and moves a fraction of that.
+# This matches continuous-time ground truth: the drain hazard acts OVER the
+# interval, the transfer is a point operation AT the boundary on the survivors.
+# ode (RK4) and gillespie (SSA) already read live/post-advance state;
+# chain_binomial joins them (gh#217 — it previously fused the draining transfer
+# against the start-of-step snapshot, which double-counted the drained
+# individuals and could overshoot to a negative count when f -> 1).
 #
-# KEY ASSERTION (cross_backend_lifecycle_agreement.rs): chain_binomial and
-# tau_leap share the IDENTICAL Euler-multinomial kernel, so at the SAME dt and
-# seed they draw the SAME transition flow. The ONLY remaining difference is the
-# event read-source. Therefore:
-#   - AFTER the fusion fix: chain trajectory == tau trajectory, BYTE-IDENTICAL.
-#   - BEFORE the fix:       tau reads post-drain A => tau != chain.
-# That byte-equality (RED before, GREEN after) is the proof the fusion landed.
+# INFLOW events (`add`) keep the start-of-step snapshot, fused atomically with
+# the transition draw — only DRAINING actions read the residual.
 #
 # ode (RK4) and gillespie (SSA) have different kernels, so they do NOT byte-match
 # chain here; they get their own pinned baselines in gate_corner_case_baseline.
@@ -39,12 +36,10 @@ transitions {
 }
 
 events {
-  # Start at t=1 (not t=0): the very first substep is the clean coincident case
-  # (transition drain + event read of the SAME pre-drain A). Starting at t=0
-  # would make the backends disagree on event CADENCE at the boundary (tau lands
-  # an extra zero-length substep on the t=0 effect; chain's step_one keys events
-  # to the END of each step and never fires at t=0) — a cadence difference
-  # unrelated to the read-source this fixture isolates.
+  # Start at t=1 (not t=0): chain_binomial's step_one keys events to the END of
+  # each step and never fires at t=0, so starting the leak at t=1 lines the event
+  # cadence up across backends — keeping this fixture about the read-source
+  # (residual vs snapshot) rather than a boundary-cadence difference.
   leak : transfer(fraction = f, from = A, to = C) {
     every = 1 'days
     from  = 1

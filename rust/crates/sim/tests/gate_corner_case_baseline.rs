@@ -83,14 +83,18 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("coincident_obs_intervention", "gillespie", 0xc95855be016faa2e),
     ("coincident_obs_intervention", "chain_binomial", 0x268779bebe644754),
     ("coincident_obs_intervention", "ode", 0x8e4f3e32f11b6c80), // ODE de-quant (exact fraction-transfer)
-    // event_drain_fusion (cycle 2a): a live transition DRAINS A every substep
-    // while an always_active value-dependent event (transfer fraction=f of A)
-    // ALSO reads A. The event delta floor(A*f) is read from the START-OF-STEP
-    // SNAPSHOT (pre-drain A), fused atomically with the transition delta. ode
-    // (RK4) and gillespie (SSA) have distinct kernels and get their own pinned
-    // baselines.
+    // event_drain_fusion: a live transition DRAINS A every substep while an
+    // always_active value-dependent event (transfer fraction=f of A) ALSO reads
+    // A. gh#217: the draining event reads the POST-TRANSITION RESIDUAL A (what
+    // survived the substep's drain), then applies floor(residual*f) — matching
+    // ode (RK4) and gillespie (SSA), which already read live/post-advance state.
+    // The chain_binomial baseline moved here when the residual semantics landed;
+    // gillespie/ode are unchanged (they already read residual). The inflow `Add`
+    // path stays snapshot-fused (byte-identical). Proof of the fix: A drains to 0
+    // and A+B+C conserves to 500 on chain_binomial, agreeing with ode's split
+    // (chain [0,310,190] ≈ ode [0,318,182]).
     ("event_drain_fusion", "gillespie", 0xa793914cfeab7c40),
-    ("event_drain_fusion", "chain_binomial", 0x9f09ba4bd868112c),
+    ("event_drain_fusion", "chain_binomial", 0xd6ab8f44a5c6dc43),
     // ode moved with the effect-purity seam's ODE de-quantization: a
     // fraction_transfer on integer compartments now applies the exact fraction
     // of the f64 integrator state (src*frac) instead of floor(round(src)*frac).

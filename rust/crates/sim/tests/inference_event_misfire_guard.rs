@@ -37,7 +37,7 @@ use ir::{
 };
 use sim::{
     compiled_model::CompiledModel,
-    effects::{due_effects, resolve_event_batch, EffectDeltas},
+    effects::{due_effects, resolve_event_batch, EffectDeltas, EventPhase},
     schedule::EffectBatch,
     inference::{
         obs_loglik::poisson_logpmf,
@@ -210,8 +210,10 @@ fn resolve_events_keys_firing_on_grid_dt_not_clipped_dt() {
     assert_eq!(batch.event_idx.as_slice(), &[0],
         "event must be due on the clipped substep keyed on grid_dt");
     let mut out = EffectDeltas::default();
+    // gh#217: `add(N, 1)` is an inflow → the SNAPSHOT phase. This guard is about
+    // firing-key timing (grid_dt vs dt_actual), independent of the phase split.
     resolve_event_batch(&compiled, &batch.event_idx, &snap_int, &snap_real, &params,
-                        t_end, dt_actual, &mut out).unwrap();
+                        t_end, dt_actual, EventPhase::Snapshot, &mut out).unwrap();
     assert_eq!(out.int.len(), 1, "event must fire on the clipped substep keyed on grid_dt");
     assert_eq!(out.int[0].idx, 0, "the firing targets N (local int 0)");
     assert_eq!(out.int[0].delta, 1, "add(N, 1) → +1");

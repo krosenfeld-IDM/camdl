@@ -173,11 +173,22 @@ pub fn apply_events_at(
     // substep coincides with it on this at-boundary event path, so it is both
     // `dt_actual` and `grid_dt`. `due_effects` keys the firing on `dt` (grid),
     // then `resolve_event_batch` resolves the events against the current state.
+    //
+    // gh#217: gillespie has no transition step AT a boundary, so the start-of-step
+    // snapshot, the post-transition residual, and the live state are one and the
+    // same `int_s`/`real_s`. Resolving both event phases against that single state
+    // keeps gillespie byte-identical to its pre-gh#217 behaviour (the co-drain fix
+    // is purely a chain_binomial concern — ODE/Gillespie already read live state).
     let mut batch = crate::schedule::EffectBatch::default();
     crate::effects::due_effects(model, fire_steps, t_event, dt, &mut batch);
     let mut ev = crate::effects::EffectDeltas::default();
     crate::effects::resolve_event_batch(
-        model, &batch.event_idx, int_s, real_s, params, t_event, dt, &mut ev,
+        model, &batch.event_idx, int_s, real_s, params, t_event, dt,
+        crate::effects::EventPhase::Snapshot, &mut ev,
+    )?;
+    crate::effects::resolve_event_batch(
+        model, &batch.event_idx, int_s, real_s, params, t_event, dt,
+        crate::effects::EventPhase::Residual, &mut ev,
     )?;
     let fired = !ev.is_empty();
     for d in &ev.int {
