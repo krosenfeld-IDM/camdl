@@ -80,8 +80,21 @@ fn trajectory_hash(traj: &sim::state::Trajectory) -> u64 {
         for &v in &snap.real_state.values {
             mix(&v.to_bits().to_le_bytes());
         }
-        for &f in snap.flows.as_int() {
-            mix(&f.to_le_bytes());
+        match &snap.flows {
+            sim::state::Flows::Int(fs) => {
+                for &f in fs {
+                    mix(&f.to_le_bytes());
+                }
+            }
+            // ODE flow is real-valued (rounding it re-introduces the sub-unit
+            // bug); hash the f64 bits. Int hashing is byte-identical to the
+            // pre-`Flows` `snap.flows.counts`, so gillespie/chain_binomial
+            // baselines are unchanged; only the `ode` baselines move.
+            sim::state::Flows::Real(fs) => {
+                for &f in fs {
+                    mix(&f.to_bits().to_le_bytes());
+                }
+            }
         }
     }
     h
@@ -120,7 +133,7 @@ const BASELINES: &[(&str, &str, u64)] = &[
     // patch). Single-axis goldens reassociate identically; this one doesn't.
     ("seir_cross_dim", "gillespie", 0x238f6ca444053ff0),
     ("seir_cross_dim", "chain_binomial", 0x1385ec55aeecbc76),
-    ("seir_cross_dim", "ode", 0xbb8d6802f3159bc8),
+    ("seir_cross_dim", "ode", 0x78339447769f21eb),
     ("seir_defines_adj", "gillespie", 0x6f777f70cb7742ca),
     ("seir_defines_adj", "chain_binomial", 0xa443c47393008cf7),
     ("seir_defines_patch", "gillespie", 0xa7c867674ed33cf9),
@@ -177,40 +190,40 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("sirv_anchored_calendar", "chain_binomial", 0x557cef37b9b035b1),
     // ODE backend (deterministic; added per the four-backend landing
     // condition). Captured against the post-Fix-B compiler/runtime.
-    ("bimolecular", "ode", 0x9b78f38544509e31),
-    ("branching_si_symp_asym", "ode", 0x49c0178b07ff5a11),
-    ("malaria_two_species", "ode", 0xa196af484eabfada),
-    ("polio_age", "ode", 0x8666c2e727620de6),
-    ("polio_spatial_5", "ode", 0x81ed3b07bb11e95a),
-    ("ross_macdonald", "ode", 0xabf137964976a29a),
-    ("seir_age", "ode", 0xe751bceb05d6d96f),
-    ("seir_age_incidence_sum", "ode", 0xe751bceb05d6d96f),
-    ("seir_age_let_projection", "ode", 0xe751bceb05d6d96f),
-    ("seir_age_table_rates", "ode", 0x939b7744fa70ca36),
-    ("seir_defines_adj", "ode", 0x572dd8daf4bf4a11),
-    ("seir_defines_patch", "ode", 0x673d152ffc0d0062),
-    ("seir_erlang", "ode", 0x9b29cf1f075449e3),
-    ("seir_erlang_staged", "ode", 0x0c24c269bfbacab6),
-    ("seir_observations", "ode", 0x7a508de2aa682947),
-    ("seir_seasonal_patch", "ode", 0x4c239067cbb27691),
-    ("seir_vaccine", "ode", 0xe4e6cdeb29305f53),
-    ("seir_vaccine_seasonal", "ode", 0x8e29acb2da8ea04d),
-    ("sia_anchored_dates", "ode", 0x9b58a5d46cc8deb2),
-    ("sia_instance_enable", "ode", 0x7e56c0a730dab27c),
-    ("sir_basic", "ode", 0xb2fa9101b5997ef6),
-    ("sir_coupling", "ode", 0xdaa46bf899ced8ec),
-    ("sir_demography", "ode", 0xaace1bf8fd9af151),
-    ("sir_dim_annotated", "ode", 0xd4eabe748e47ff65),
-    ("sir_dt", "ode", 0x3dcd4ae27fe484e3),
-    ("sir_five_age", "ode", 0x512ca373f1110261),
-    ("sir_init_table", "ode", 0x635f90433ba03360),
-    ("sir_patches_5", "ode", 0xef155405de7c8672),
-    ("sir_priors", "ode", 0xb2fa9101b5997ef6),
-    ("sir_reservoir", "ode", 0xfc216d83dd10cc5f),
-    ("sir_reservoir_mixed", "ode", 0x9f6524558df9a394),
-    ("sir_spatial_sum", "ode", 0x4a4e770716cd1bad),
-    ("sir_two_patch", "ode", 0xdf3aace63920506c),
-    ("sirv_anchored_calendar", "ode", 0xc72bec34c422826d),
+    ("bimolecular", "ode", 0x1ce301a16a9eeb09),
+    ("branching_si_symp_asym", "ode", 0x4eda6ed210277e9f),
+    ("malaria_two_species", "ode", 0xd01fd8a3703b9dc4),
+    ("polio_age", "ode", 0x1f040d959e6323ca),
+    ("polio_spatial_5", "ode", 0x4e8bdc54a671d999),
+    ("ross_macdonald", "ode", 0x9936d8be032ee329),
+    ("seir_age", "ode", 0x8aa296b3076e93fc),
+    ("seir_age_incidence_sum", "ode", 0x8aa296b3076e93fc),
+    ("seir_age_let_projection", "ode", 0x8aa296b3076e93fc),
+    ("seir_age_table_rates", "ode", 0x02db95ab5f51ace2),
+    ("seir_defines_adj", "ode", 0xc9f7c349a3fb22b8),
+    ("seir_defines_patch", "ode", 0x67f253757f6fdf20),
+    ("seir_erlang", "ode", 0x4efdc2f2a6804705),
+    ("seir_erlang_staged", "ode", 0xa2eba02bacaa46c4),
+    ("seir_observations", "ode", 0x161499ee171f2fd1),
+    ("seir_seasonal_patch", "ode", 0xeccf62bb424d89d9),
+    ("seir_vaccine", "ode", 0x2a8b816be323b2b5),
+    ("seir_vaccine_seasonal", "ode", 0xd19de3bb345d7972),
+    ("sia_anchored_dates", "ode", 0x201a644a49adfeea),
+    ("sia_instance_enable", "ode", 0x0d87d86228d215e4),
+    ("sir_basic", "ode", 0x4ae6c250a7177f1d),
+    ("sir_coupling", "ode", 0xaf728e3338e9ab2f),
+    ("sir_demography", "ode", 0x1e08e3d040e0d06d),
+    ("sir_dim_annotated", "ode", 0xf8bf275e8b43a533),
+    ("sir_dt", "ode", 0x8ba9ccad33b6afd8),
+    ("sir_five_age", "ode", 0xbdf3386855a95428),
+    ("sir_init_table", "ode", 0x8184083d1f8a43fc),
+    ("sir_patches_5", "ode", 0x8d2038c84fbecb8b),
+    ("sir_priors", "ode", 0x4ae6c250a7177f1d),
+    ("sir_reservoir", "ode", 0x2301ce16246992ac),
+    ("sir_reservoir_mixed", "ode", 0x87c93348cc373c7b),
+    ("sir_spatial_sum", "ode", 0x7b0bf794695e169d),
+    ("sir_two_patch", "ode", 0x717c78aa763557d5),
+    ("sirv_anchored_calendar", "ode", 0xf76cbcc1f0c30d13),
     // Six feature-coverage goldens added in c760b230 (forcing-from-data,
     // unchecked phenom mixing, population balance, seasonal importation,
     // guarded FOI, surveillance likelihoods). Captured deterministically;
@@ -218,27 +231,27 @@ const BASELINES: &[(&str, &str, u64)] = &[
     // seir_pop_balance is chain_binomial-only (capability-skip on gillespie/ode).
     ("flu_data_forcing", "gillespie", 0xbefc2c0366093bcf),
     ("flu_data_forcing", "chain_binomial", 0x7b037870200ca140),
-    ("flu_data_forcing", "ode", 0xfd20048316f7a482),
+    ("flu_data_forcing", "ode", 0xf600243711af15c9),
     ("phenom_mixing_unchecked", "gillespie", 0x5113d45f49fcb942),
     ("phenom_mixing_unchecked", "chain_binomial", 0x25b6e10456e53ef9),
-    ("phenom_mixing_unchecked", "ode", 0x42467ed8ccd09406),
+    ("phenom_mixing_unchecked", "ode", 0x2321b6e8b671eee7),
     ("seir_pop_balance", "chain_binomial", 0xc3eb97c9311a8dca),
     ("seir_seasonal_importation", "gillespie", 0xba237ff576896498),
     ("seir_seasonal_importation", "chain_binomial", 0xba237ff576896498),
     ("seir_seasonal_importation", "ode", 0xba237ff576896498),
     ("sir_guarded_foi", "gillespie", 0x5eca6018289b72bd),
     ("sir_guarded_foi", "chain_binomial", 0x80ef48856ef6bf15),
-    ("sir_guarded_foi", "ode", 0x0e9a715d22f77ee8),
+    ("sir_guarded_foi", "ode", 0x6a167aea46343b8e),
     ("surveillance_likelihoods", "gillespie", 0xd289093f707a3cea),
     ("surveillance_likelihoods", "chain_binomial", 0xcfa2b111d613f1e7),
-    ("surveillance_likelihoods", "ode", 0xad279a4387e666c2),
+    ("surveillance_likelihoods", "ode", 0xb92468c0f4c9d6c6),
     // §4.2 long-form stratified-observation fixture (sir_two_patch_long_obs):
     // a 2-patch SIR with an indexed `cases[p in patch]` header. The trajectory
     // hash excludes observations, so it pins only the dynamics (identical-shape
     // to sir_two_patch but distinct params/levels).
     ("sir_two_patch_long_obs", "gillespie", 0x695d50d1cbec83fc),
     ("sir_two_patch_long_obs", "chain_binomial", 0xcd2756793661993f),
-    ("sir_two_patch_long_obs", "ode", 0x1a92a4c0784ba9c8),
+    ("sir_two_patch_long_obs", "ode", 0xc0b0bc52f355bd1f),
 ];
 
 #[test]

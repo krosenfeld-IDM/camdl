@@ -64,8 +64,17 @@ fn trajectory_hash(traj: &sim::state::Trajectory) -> u64 {
         for &v in &snap.real_state.values {
             mix(&v.to_bits().to_le_bytes());
         }
-        for &f in snap.flows.as_int() {
-            mix(&f.to_le_bytes());
+        match &snap.flows {
+            sim::state::Flows::Int(fs) => {
+                for &f in fs {
+                    mix(&f.to_le_bytes());
+                }
+            }
+            sim::state::Flows::Real(fs) => {
+                for &f in fs {
+                    mix(&f.to_bits().to_le_bytes());
+                }
+            }
         }
     }
     h
