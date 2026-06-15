@@ -11,7 +11,7 @@ use crate::{
     resolved_expr::eval_resolved,
     schedule::{Cursor, Schedule, StepPolicy},
     simulate::Simulate,
-    state::{FlowVec, Snapshot, Trajectory},
+    state::{Flows, FlowVec, Snapshot, Trajectory},
     transition_diagnostics::TransitionDiagnostics,
 };
 
@@ -142,7 +142,7 @@ pub fn run_gillespie_with_observer(
             t,
             int_state: int_s.clone(),
             real_state: real_s.clone(),
-            flows: current_flows.clone(),
+            flows: Flows::Int(current_flows.counts.clone()),
         });
         current_flows.reset();
         cursor.pass_output();
@@ -179,7 +179,7 @@ pub fn run_gillespie_with_observer(
                     t: ot,
                     int_state: int_s.clone(),
                     real_state: real_s.clone(),
-                    flows: current_flows.clone(),
+                    flows: Flows::Int(current_flows.counts.clone()),
                 });
                 current_flows.reset();
                 cursor.pass_output();
@@ -283,7 +283,7 @@ pub fn run_gillespie_with_observer(
                     t: ot,
                     int_state: int_s.clone(),
                     real_state: real_s.clone(),
-                    flows: current_flows.clone(),
+                    flows: Flows::Int(current_flows.counts.clone()),
                 });
                 current_flows.reset();
                 cursor.pass_output();
@@ -398,7 +398,7 @@ pub fn run_gillespie_with_observer(
                 t: ot,
                 int_state: int_s.clone(),
                 real_state: real_s.clone(),
-                flows: current_flows.clone(),
+                flows: Flows::Int(current_flows.counts.clone()),
             });
             current_flows.reset();
         });
@@ -411,7 +411,7 @@ pub fn run_gillespie_with_observer(
             t: ot,
             int_state: int_s.clone(),
             real_state: real_s.clone(),
-            flows: current_flows.clone(),
+            flows: Flows::Int(current_flows.counts.clone()),
         });
         current_flows.reset();
     });

@@ -1622,7 +1622,10 @@ impl engine::RunSink for StreamSink {
                 }
                 for &c in &snap.int_state.counts  { write!(out, "\t{}", c).map_err(|e| e.to_string())?; }
                 for &v in &snap.real_state.values { write!(out, "\t{:.4}", v).map_err(|e| e.to_string())?; }
-                for &f in &snap.flows.counts      { write!(out, "\t{}", f).map_err(|e| e.to_string())?; }
+                match &snap.flows {
+                    sim::Flows::Int(fs)  => for &f in fs { write!(out, "\t{}", f).map_err(|e| e.to_string())?; },
+                    sim::Flows::Real(fs) => for &f in fs { write!(out, "\t{:.4}", f).map_err(|e| e.to_string())?; },
+                }
                 writeln!(out).map_err(|e| e.to_string())?;
             }
         }
@@ -1836,11 +1839,13 @@ pub(crate) fn project_all_obs_times(
     // difference consecutive obs times. Shared by CumulativeFlow (one exact
     // transition) and CumulativeFlowSum (explicit strata family per §25.4).
     let incidence_over = |flow_indices: &[usize]| -> Vec<f64> {
-        let mut cum_at_snap: Vec<(f64, u64)> = Vec::with_capacity(traj.snapshots.len());
-        let mut running = 0u64;
+        // `f64` throughout: ODE flows are real-valued (the chain-binomial /
+        // Gillespie integer flows widen losslessly via `Flows::value`).
+        let mut cum_at_snap: Vec<(f64, f64)> = Vec::with_capacity(traj.snapshots.len());
+        let mut running = 0.0f64;
         for snap in &traj.snapshots {
             for &fi in flow_indices {
-                running += snap.flows.counts[fi];
+                running += snap.flows.value(fi);
             }
             cum_at_snap.push((snap.t, running));
         }
@@ -1856,15 +1861,15 @@ pub(crate) fn project_all_obs_times(
             cum_at_obs.push(if snap_idx < cum_at_snap.len() && cum_at_snap[snap_idx].0 <= obs_t + 1e-9 {
                 cum_at_snap[snap_idx].1
             } else {
-                0
+                0.0
             });
         }
 
         // Difference: flow in interval (prev_obs_t, obs_t]
         let mut result = Vec::with_capacity(obs_times.len());
-        let mut prev_cum = 0u64;
+        let mut prev_cum = 0.0f64;
         for &cum in &cum_at_obs {
-            result.push((cum - prev_cum) as f64);
+            result.push(cum - prev_cum);
             prev_cum = cum;
         }
         result

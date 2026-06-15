@@ -902,6 +902,18 @@ impl MultiStreamObsModel {
         }
     }
 
+    /// Real-valued fold for the deterministic ODE path: identical to
+    /// [`fold_into_acc`] but over `f64` flows (the ODE backend's continuous
+    /// `rate·dt` accumulation, never rounded).
+    pub fn fold_into_acc_real(&self, flow_accumulators: &[f64], acc: &mut [f64]) {
+        for (k, slot) in self.interval_slots.iter().enumerate() {
+            let bin: f64 = slot.flow_indices.iter()
+                .map(|&i| flow_accumulators[i])
+                .sum();
+            acc[k] += bin;
+        }
+    }
+
     /// Zero the `acc` bins for the Interval streams scheduled at union index
     /// `union_idx` (`at_union[union_idx].is_some()`). A stream not scheduled
     /// here keeps its running bin toward its own next observation.
@@ -910,6 +922,16 @@ impl MultiStreamObsModel {
             let si = slot.stream_idx;
             if self.streams[si].at_union[union_idx].is_some() {
                 acc[k] = 0;
+            }
+        }
+    }
+
+    /// Real-valued sibling of [`reset_due_acc`] for the ODE path.
+    pub fn reset_due_acc_real(&self, union_idx: usize, acc: &mut [f64]) {
+        for (k, slot) in self.interval_slots.iter().enumerate() {
+            let si = slot.stream_idx;
+            if self.streams[si].at_union[union_idx].is_some() {
+                acc[k] = 0.0;
             }
         }
     }
@@ -937,19 +959,36 @@ impl MultiStreamObsModel {
         }
     }
 
-    /// Project + score from raw per-particle arrays. Used by PGAS which
-    /// carries `counts` and the per-stream `acc` as flat Vec<i64>/Vec<u64> and
-    /// has no `ParticleState`.
-    ///
-    /// `acc` is the per-Interval-stream folded bin vector (Phase 2a), length
-    /// `n_interval_streams()`, indexed by `stream_to_slot`. An Interval stream
-    /// reads `acc[k]` directly; a prevalence stream projects from `counts`.
-    pub fn log_likelihood_from_flows_and_counts(
+    /// Real-acc sibling of [`project_stream_from_acc`]: the Interval bin
+    /// `acc[k]` is already `f64` (the ODE path), so it is read directly with no
+    /// `as f64` quantization.
+    fn project_stream_from_acc_real(
         &self,
-        acc: &[u64],
+        stream_idx: usize,
+        acc: &[f64],
         counts: &[i64],
-        obs_idx: usize,
         params: &[f64],
+        t: f64,
+    ) -> f64 {
+        match self.stream_to_slot[stream_idx] {
+            Some(k) => acc[k],
+            None => eval_stream_projection(
+                &self.streams[stream_idx].projection,
+                &[], counts, params, &self.compiled, &self.real_s, t,
+            ),
+        }
+    }
+
+    /// Shared per-stream scoring loop. `project(stream_idx, t)` supplies the
+    /// projected value for each stream — the only thing that differs between the
+    /// integer (PGAS/PF) and real (ODE) accumulator paths. Hole handling, union
+    /// mapping, and likelihood evaluation are identical, so they live here once.
+    fn score_streams(
+        &self,
+        obs_idx: usize,
+        counts: &[i64],
+        params: &[f64],
+        project: impl Fn(usize, f64) -> f64,
     ) -> f64 {
         let t = self.obs_times[obs_idx];
         (0..self.streams.len()).map(|si| {
@@ -970,7 +1009,7 @@ impl MultiStreamObsModel {
                 Some(ObsCell::Scalar(v)) => v,
                 None => return 0.0,
             };
-            let projected = self.project_stream_from_acc(si, acc, counts, params, t);
+            let projected = project(si, t);
             // GitHub #6 fix: the likelihood's p/mean/sd expressions can
             // reference compartment state (e.g. `p = projected / N`
             // with `N = S + I + R`). Evaluate against actual counts,
@@ -985,6 +1024,40 @@ impl MultiStreamObsModel {
                 )
             })
         }).sum()
+    }
+
+    /// Project + score from raw per-particle arrays. Used by PGAS which
+    /// carries `counts` and the per-stream `acc` as flat Vec<i64>/Vec<u64> and
+    /// has no `ParticleState`.
+    ///
+    /// `acc` is the per-Interval-stream folded bin vector (Phase 2a), length
+    /// `n_interval_streams()`, indexed by `stream_to_slot`. An Interval stream
+    /// reads `acc[k]` directly; a prevalence stream projects from `counts`.
+    pub fn log_likelihood_from_flows_and_counts(
+        &self,
+        acc: &[u64],
+        counts: &[i64],
+        obs_idx: usize,
+        params: &[f64],
+    ) -> f64 {
+        self.score_streams(obs_idx, counts, params, |si, t| {
+            self.project_stream_from_acc(si, acc, counts, params, t)
+        })
+    }
+
+    /// Real-acc sibling of [`log_likelihood_from_flows_and_counts`] for the
+    /// deterministic ODE path: the Interval bins are `f64` (un-rounded
+    /// continuous flow), so scoring reads them directly.
+    pub fn log_likelihood_from_flows_and_counts_real(
+        &self,
+        acc: &[f64],
+        counts: &[i64],
+        obs_idx: usize,
+        params: &[f64],
+    ) -> f64 {
+        self.score_streams(obs_idx, counts, params, |si, t| {
+            self.project_stream_from_acc_real(si, acc, counts, params, t)
+        })
     }
 
     /// Deprecated-shape helper kept for tests that exercise the flow-only

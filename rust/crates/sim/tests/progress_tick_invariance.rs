@@ -84,8 +84,11 @@ fn assert_traj_eq(a: &Trajectory, b: &Trajectory, ctx: &str) {
         let ra: Vec<u64> = sa.real_state.values.iter().map(|v| v.to_bits()).collect();
         let rb: Vec<u64> = sb.real_state.values.iter().map(|v| v.to_bits()).collect();
         assert_eq!(ra, rb, "{ctx}: real compartments differ at snapshot {i} (t={})", sa.t);
+        // Compare the `Flows` enum directly (it derives PartialEq), so this
+        // works for both the stochastic (Int) and ODE (Real) backends —
+        // `ode_tick_does_not_change_trajectory` exercises the Real arm.
         assert_eq!(
-            sa.flows.counts, sb.flows.counts,
+            sa.flows, sb.flows,
             "{ctx}: flows differ at snapshot {i} (t={})",
             sa.t
         );

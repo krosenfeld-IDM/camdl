@@ -256,7 +256,7 @@ fn test_overdispersion_variance_chain_binomial() {
         let traj = ChainBinomialSim.run(&compiled, &params, seed, &config).unwrap();
         let last = traj.snapshots.last().unwrap();
         // Infections = flow_infection (index 0)
-        counts.push(last.flows.counts[0] as f64);
+        counts.push(last.flows.as_int()[0] as f64);
     }
 
     let n = counts.len() as f64;

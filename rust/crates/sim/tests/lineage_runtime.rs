@@ -39,7 +39,7 @@ fn gillespie_cfg(t_end: f64) -> SimConfig {
 fn traj_signature(t: &Trajectory) -> Vec<(String, Vec<i64>, Vec<u64>)> {
     t.snapshots
         .iter()
-        .map(|s| (format!("{:?}", s.t), s.int_state.counts.clone(), s.flows.counts.clone()))
+        .map(|s| (format!("{:?}", s.t), s.int_state.counts.clone(), s.flows.as_int().to_vec()))
         .collect()
 }
 
