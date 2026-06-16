@@ -19,10 +19,11 @@ fn default_time_unit() -> String { "days".to_string() }
 /// `{"method":"rk4"}` / `{"method":"rk45","atol":…,"rtol":…}`; omitted entirely
 /// from `simulation_config` at the `Rk4` default (no IR-body change for the
 /// pre-gh#166 corpus).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum Integrator {
     /// Fixed-step classic RK4 (the default).
+    #[default]
     Rk4,
     /// Adaptive Dormand–Prince RK4(5). `atol`/`rtol` are dimensionless; `None` →
     /// the runtime's calibrated default.
@@ -32,10 +33,6 @@ pub enum Integrator {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rtol: Option<f64>,
     },
-}
-
-impl Default for Integrator {
-    fn default() -> Self { Integrator::Rk4 }
 }
 
 fn is_default_integrator(i: &Integrator) -> bool { matches!(i, Integrator::Rk4) }
