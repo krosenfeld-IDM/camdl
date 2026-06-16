@@ -37,6 +37,12 @@ SNAP = HERE / "snapshots.ndjson"  # forward-accruing metric log (gitignored)
 # 1d catches the bursty triage days; 3d smooths. Swap 7 -> 5 for a work-week.
 WINDOWS = [1, 3, 7]
 
+# Selectable momentum-chart windows: (days back, pill label). The longest sets
+# how far back we fetch; DEFAULT_DAYS is the range shown on first load.
+RANGES = [(7, "1w"), (14, "2w"), (30, "1m")]
+DEFAULT_DAYS = 14
+MAX_DAYS = max(d for d, _ in RANGES)
+
 # Canonical display order (axes from ../issue-labels.md).
 KIND_ORDER = [
     "kind/bug", "kind/feature", "kind/refactor",
@@ -91,14 +97,17 @@ def parse_ts(s: str | None):
     return datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
 
 
-def fetch_flow(now: datetime) -> dict[int, dict]:
+def fetch_flow(now: datetime) -> tuple[dict[int, dict], list[tuple[str, int]]]:
     """Exact open-count momentum from issue timestamps (backfilled, real).
 
-    Two bounded calls (created / closed within the widest window + a day of
-    slack), then bucketed locally with full-precision timestamps. net = opened
-    - closed = the change in the open count over the window.
+    Two bounded calls (created / closed within the widest span we chart + a day
+    of slack), then bucketed locally with full-precision timestamps:
+      - windowed net per WINDOWS: net = opened - closed = change in open count.
+      - per-day net backlog reduction (closed - opened) for the last MAX_DAYS,
+        oldest -> newest, for the momentum charts (>0 progress, <0 grew).
     """
-    since = (now - timedelta(days=max(WINDOWS) + 1)).strftime("%Y-%m-%d")
+    span = max(max(WINDOWS), MAX_DAYS)
+    since = (now - timedelta(days=span + 1)).strftime("%Y-%m-%d")
     opened = json.loads(sh(["gh", "issue", "list", "--state", "all",
                             "--search", f"created:>={since}", "--limit", "800",
                             "--json", "createdAt"]))
@@ -113,7 +122,13 @@ def fetch_flow(now: datetime) -> dict[int, dict]:
         op = sum(1 for t in oc if t and t >= cut)
         cl = sum(1 for t in cc if t and t >= cut)
         flow[w] = {"opened": op, "closed": cl, "net": op - cl}
-    return flow
+    daily = []
+    for d in range(MAX_DAYS - 1, -1, -1):
+        day = (now - timedelta(days=d)).date()
+        op = sum(1 for t in oc if t and t.date() == day)
+        cl = sum(1 for t in cc if t and t.date() == day)
+        daily.append((day.isoformat(), cl - op))
+    return flow, daily
 
 
 def load_snaps() -> list[dict]:
@@ -148,6 +163,112 @@ def delta_cell(delta, lower_better: bool = True) -> str:
     good = (delta < 0) if lower_better else (delta > 0)
     arrow = "&#9660;" if delta < 0 else "&#9650;"  # ▼ / ▲
     return f'<td class="{"good" if good else "bad"}">{arrow}{abs(delta)}</td>'
+
+
+def fmt_date(iso: str) -> str:
+    """'2026-06-16' -> 'Jun 16' for a compact, intuitive axis tick."""
+    months = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    _, m, d = iso.split("-")
+    return f"{months[int(m)]} {int(d)}"
+
+
+def bar_chart_svg(daily: list[tuple[str, int]], w: int = 340, h: int = 150) -> str:
+    """Per-day net backlog change (closed - opened) as diverging bars: up &
+    green = net progress, down & red = backlog grew (red when < 0). Bars share a
+    central zero baseline, scaled to the largest-magnitude day. Inline SVG,
+    no JS, no external assets."""
+    if not daily:
+        return '<p class="empty">&mdash; no issue flow in the window &mdash;</p>'
+    m = max(1, max(abs(v) for _, v in daily))
+    n = len(daily)
+    pad_l = pad_r = 6
+    pad_t, pad_b = 12, 18
+    plot_h = h - pad_t - pad_b
+    mid = pad_t + plot_h / 2
+    bw = (w - pad_l - pad_r) / n
+    gap = min(4.0, bw * 0.3)
+    parts = [f'<line x1="{pad_l}" y1="{mid:.1f}" x2="{w - pad_r}" y2="{mid:.1f}" '
+             f'stroke="#d0d7de" stroke-width="1"/>']
+    for i, (d, v) in enumerate(daily):
+        x = pad_l + i * bw + gap / 2
+        bwi = max(1.0, bw - gap)
+        bh = max(2.0, (abs(v) / m) * (plot_h / 2))
+        if v > 0:
+            y, color = mid - bh, "#1a7f37"
+        elif v < 0:
+            y, color = mid, "#cf222e"
+        else:
+            y, color, bh = mid - 1, "#afb8c1", 2.0
+        tip = f"{d}: {'+' if v > 0 else ''}{v} " + (
+            "net (progress)" if v > 0 else
+            "net (backlog grew)" if v < 0 else "flat")
+        parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bwi:.1f}" '
+                     f'height="{bh:.1f}" rx="1" fill="{color}">'
+                     f'<title>{tip}</title></rect>')
+    for i, anchor in ((0, "start"), (n - 1, "end")):
+        x = pad_l + i * bw + bw / 2
+        parts.append(f'<text x="{x:.1f}" y="{h - 5}" font-size="9" '
+                     f'fill="#8b949e" text-anchor="{anchor}">{fmt_date(daily[i][0])}</text>')
+    return (f'<svg viewBox="0 0 {w} {h}" style="width:100%;height:auto" '
+            f'role="img" aria-label="net backlog change per day">'
+            + "".join(parts) + "</svg>")
+
+
+def line_chart_svg(points: list[tuple[str, int]], w: int = 340, h: int = 150) -> str:
+    """Open-issue count trajectory (reconstructed from timestamps), oldest ->
+    newest, with a simple y-axis (count gridlines at lo/mid/hi) and an intuitive
+    date x-axis (~4 ticks). A falling line = backlog shrinking. The level whose
+    daily change is the bar chart. Inline SVG, no JS, no external assets."""
+    if len(points) < 2:
+        return '<p class="empty">&mdash; not enough history &mdash;</p>'
+    vals = [v for _, v in points]
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        hi, lo = hi + 1, lo - 1          # avoid a zero span on a flat series
+    span = hi - lo
+    n = len(points)
+    pad_l, pad_r, pad_t, pad_b = 26, 10, 10, 22
+    plot_w = w - pad_l - pad_r
+    plot_h = h - pad_t - pad_b
+    base = pad_t + plot_h
+
+    def fx(i):
+        return pad_l + (i / (n - 1)) * plot_w
+
+    def fy(v):
+        return pad_t + (hi - v) / span * plot_h
+
+    parts = []
+    # y-axis: faint gridlines + count labels at lo / mid / hi
+    for yv in sorted({lo, (lo + hi) // 2, hi}):
+        y = fy(yv)
+        parts.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{w - pad_r}" y2="{y:.1f}" '
+                     f'stroke="#eef1f4" stroke-width="1"/>')
+        parts.append(f'<text x="{pad_l - 5}" y="{y + 3:.1f}" font-size="9" '
+                     f'fill="#8b949e" text-anchor="end">{yv}</text>')
+    # area fill + trajectory line + current-value marker
+    pts = " ".join(f"{fx(i):.1f},{fy(v):.1f}" for i, v in enumerate(vals))
+    parts.append(f'<polygon points="{fx(0):.1f},{base:.1f} {pts} '
+                 f'{fx(n - 1):.1f},{base:.1f}" fill="rgba(29,118,219,0.10)"/>')
+    parts.append(f'<polyline points="{pts}" fill="none" stroke="#1d76db" '
+                 f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+    parts.append(f'<circle cx="{fx(n - 1):.1f}" cy="{fy(vals[-1]):.1f}" r="3" '
+                 f'fill="#1d76db"/>')
+    # x-axis: baseline + ~4 evenly spaced intuitive date ticks
+    parts.append(f'<line x1="{pad_l}" y1="{base:.1f}" x2="{w - pad_r}" y2="{base:.1f}" '
+                 f'stroke="#d0d7de" stroke-width="1"/>')
+    k = min(4, n)
+    for i in sorted({round(j * (n - 1) / (k - 1)) for j in range(k)}):
+        x = fx(i)
+        anchor = "start" if i == 0 else "end" if i == n - 1 else "middle"
+        parts.append(f'<line x1="{x:.1f}" y1="{base:.1f}" x2="{x:.1f}" '
+                     f'y2="{base + 3:.1f}" stroke="#d0d7de"/>')
+        parts.append(f'<text x="{x:.1f}" y="{h - 6}" font-size="9" fill="#8b949e" '
+                     f'text-anchor="{anchor}">{fmt_date(points[i][0])}</text>')
+    return (f'<svg viewBox="0 0 {w} {h}" style="width:100%;height:auto" '
+            f'role="img" aria-label="open issue count over time">'
+            + "".join(parts) + "</svg>")
 
 
 def esc(s: str) -> str:
@@ -197,8 +318,8 @@ def details(summary: str, items: list[dict], open_: bool = False) -> str:
     return f"<details{op}><summary>{summary} <b>({len(items)})</b></summary>{body}</details>"
 
 
-def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
-           now: datetime):
+def render(repo: str, issues: list[dict], flow: dict,
+           daily: list[tuple[str, int]], snaps: list[dict], now: datetime):
     total = len(issues)
     by_kind = {k: [i for i in issues if i["kind"] == k] for k in KIND_ORDER}
     by_area = {a: [i for i in issues if a in i["areas"]] for a in AREA_ORDER}
@@ -248,17 +369,20 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
         + "".join(xcell(k, a) for k in kinds_present) + "</tr>"
         for a in AREA_ORDER)
 
-    def stat(label, n, href=None):
+    def stat(label, n, href=None, tone=None):
         inner = (f'<a href="{href}">{n}</a>' if href else n)
-        return f'<div class="stat"><div class="num">{inner}</div><div class="lab">{label}</div></div>'
+        cls = f"stat {tone}" if tone else "stat"
+        return f'<div class="{cls}"><div class="num">{inner}</div><div class="lab">{label}</div></div>'
 
     stats = "".join([
         stat("open", total, f"https://github.com/{repo}/issues"),
-        stat("blockers", len(blockers), search_url(repo, "blocker")),
+        stat("blockers", len(blockers), search_url(repo, "blocker"),
+             tone="ok" if not blockers else "danger"),
+        stat("external", len(external), ext_search,
+             tone="ok" if not external else "warn"),
         stat("bugs", len(by_kind["kind/bug"]), search_url(repo, "kind/bug")),
         stat("features", len(by_kind["kind/feature"]), search_url(repo, "kind/feature")),
         stat("needs RFC", len(design), search_url(repo, "kind/design")),
-        stat("external", len(external), ext_search),
     ])
 
     kind_blocks = "".join(
@@ -279,7 +403,7 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
         sclass_hint = ('<p class="empty">Empty until the effort pass runs — '
                        '<code>effort/</code> and <code>status/s-class</code> '
                        'are set by reading each issue + a code peek, not from '
-                       'titles. See the playbook below.</p>')
+                       'titles.</p>')
 
     # Snapshot row (the series we trend on) + momentum panel.
     row = {
@@ -312,6 +436,42 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
     trend_note = ("Open trend is exact (issue timestamps); label trends "
                   + ("" if has_hist else "begin accruing now &mdash; ")
                   + "from the <code>--snapshot</code> log. &#9660; down is good.")
+    # Two momentum charts, half-width each (fixes the letterboxed aspect ratio):
+    # per-day net change (bars) and the open-count level it integrates to (line),
+    # reconstructed by walking the daily net reductions back from today's total.
+    line_pts = []
+    running = total
+    for date, red in reversed(daily):   # newest first: open count at day's end
+        line_pts.append((date, running))
+        running += red                  # undo the day's reduction -> prior end
+    line_pts.reverse()
+
+    # Per-range chart variants + a CSS-only window switch (1w / 2w / 1m). Each
+    # range slices the tail of the 30-day series; one variant is shown at a time
+    # via radio :checked sibling rules (no JS). Selectors are generated from
+    # RANGES so the markup and CSS can't drift apart.
+    bar_cvs = "".join(
+        f'<div class="cv cv{d}">{bar_chart_svg(daily[-d:])}</div>' for d, _ in RANGES)
+    line_cvs = "".join(
+        f'<div class="cv cv{d}">{line_chart_svg(line_pts[-d:])}</div>' for d, _ in RANGES)
+    radios = "".join(
+        f'<input class="mrange" type="radio" name="mrange" id="mr{d}"'
+        + (" checked" if d == DEFAULT_DAYS else "") + ">" for d, _ in RANGES)
+    pills = "".join(f'<label class="rng" for="mr{d}">{lbl}</label>'
+                    for d, lbl in RANGES)
+    range_css = "\n  ".join([
+        ".momentum-charts > input.mrange { position:absolute; opacity:0; pointer-events:none; }",
+        ".bc-toolbar { text-align:right; margin:2px 0 6px; font-size:11px; }",
+        ".rng-cap { text-transform:uppercase; letter-spacing:.03em; color:#8b949e; margin-right:4px; }",
+        ".rng { display:inline-block; padding:2px 9px; margin-left:4px;"
+        " border:1px solid #d0d7de; border-radius:999px; color:#57606a; cursor:pointer; }",
+        ".rng:hover { border-color:#1d76db; color:#1d76db; }",
+        ".cv { display:none; }",
+        ",\n  ".join(f"#mr{d}:checked ~ .bc-row .cv{d}" for d, _ in RANGES)
+        + " { display:block; }",
+        ",\n  ".join(f'#mr{d}:checked ~ .bc-toolbar .rng[for="mr{d}"]' for d, _ in RANGES)
+        + " { background:#1d76db; border-color:#1d76db; color:#fff; }",
+    ])
 
     gen = now.strftime("%Y-%m-%d %H:%M UTC")
     labels_doc = blob(repo, "docs/dev/issue-labels.md")
@@ -337,6 +497,12 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
   .stat {{ flex: 1 1 120px; background: #fff; border: 1px solid #e7ebef; border-radius: 10px;
            padding: 14px 16px; }}
   .num {{ font-size: 26px; font-weight: 650; }}
+  .stat.ok {{ background: #e6f4ea; border-color: #aacdb6; }}
+  .stat.ok .num {{ color: #1a7f37; }}
+  .stat.danger {{ background: #ffecea; border-color: #f3b0aa; }}
+  .stat.danger .num {{ color: #b60205; }}
+  .stat.warn {{ background: #fff8e1; border-color: #ecd98a; }}
+  .stat.warn .num {{ color: #9a6700; }}
   .lab {{ font-size: 12px; color: #6e7781; text-transform: uppercase; letter-spacing: .03em; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
   th, td {{ border: 1px solid #e7ebef; padding: 6px 9px; text-align: center; }}
@@ -365,17 +531,30 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
   .nd   {{ color: #c4cdd6; font-weight: 400; }}
   .flow {{ font-size: 13px; color: #57606a; margin: 8px 0 2px; }}
   .flow b {{ font-variant-numeric: tabular-nums; color: #1b1f24; }}
+  .bc-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+             margin: 10px 0 2px; }}
+  .barchart {{ background: #fff; border: 1px solid #e7ebef; border-radius: 8px;
+               padding: 10px 12px 4px; }}
+  .bc-head {{ font-size: 12px; color: #57606a; text-transform: uppercase;
+              letter-spacing: .03em; margin-bottom: 6px; overflow: hidden; }}
+  .bc-legend {{ float: right; text-transform: none; letter-spacing: 0;
+                color: #8b949e; font-size: 11px; font-weight: 400; }}
+  .bc-legend i {{ display: inline-block; width: 9px; height: 9px;
+                  border-radius: 2px; margin-right: 2px; }}
+  .bc-legend i.g {{ background: #1a7f37; }}
+  .bc-legend i.r {{ background: #cf222e; }}
+  {range_css}
   .cols {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
   .xtab.narrow {{ display: none; }}
   @media (max-width: 720px) {{
     .cols {{ grid-template-columns: 1fr; }}
+    .bc-row {{ grid-template-columns: 1fr; }}
     .xtab.wide {{ display: none; }}
     .xtab.narrow {{ display: table; }}
     .xtab.narrow th, .xtab.narrow td {{ padding: 4px 4px; font-size: 12px; }}
     .xtab.narrow th.rk {{ white-space: nowrap; }}
     .xtab.narrow .ct {{ display: none; }}
   }}
-  .play td, .play th {{ text-align: left; }}
   code {{ background: #eef1f4; border-radius: 4px; padding: 1px 5px; font-size: 12px; }}
   footer {{ margin-top: 40px; color: #8b949e; font-size: 12px; }}
 </style></head><body><div class="wrap">
@@ -390,6 +569,22 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
 <h2>Momentum</h2>
 <table class="trend"><tr><th></th><th>now</th>{win_h}</tr>{trend_rows}</table>
 <p class="flow">opened / closed: {flow_line}</p>
+<div class="momentum-charts">
+  {radios}
+  <div class="bc-toolbar"><span class="rng-cap">window</span>{pills}</div>
+  <div class="bc-row">
+    <div class="barchart">
+      <div class="bc-head">net change
+        <span class="bc-legend"><i class="g"></i>progress&nbsp;<i class="r"></i>grew</span></div>
+      {bar_cvs}
+    </div>
+    <div class="barchart">
+      <div class="bc-head">open issues
+        <span class="bc-legend">now <b>{total}</b></span></div>
+      {line_cvs}
+    </div>
+  </div>
+</div>
 <p class="empty">{trend_note}</p>
 
 <h2>Critical path &mdash; blockers</h2>
@@ -416,17 +611,6 @@ def render(repo: str, issues: list[dict], flow: dict, snaps: list[dict],
 <h2>By area</h2>
 {area_blocks}
 
-<h2>Reduction playbook</h2>
-<table class="play">
-  <tr><th>Lever</th><th>Mechanism</th><th>Risk</th></tr>
-  <tr><td>1 &middot; stale / dup sweep</td><td>verify against <code>main</code>, close with evidence &mdash; no code</td><td>none</td></tr>
-  <tr><td>2 &middot; s-class batch</td><td>small, isolated, collision-free bugs w/ clean red&rarr;green, ~4 per worktree</td><td>low</td></tr>
-  <tr><td>3 &middot; umbrella collapse</td><td>close satellites as one design lift lands (e.g. obs-model under #172)</td><td>mixed</td></tr>
-  <tr><td>4 &middot; audit-cohort sprint</td><td>clear the <code>upstream-audit</code> engine backlog as a focused pass</td><td>med</td></tr>
-  <tr><td>5 &middot; blocker correctness</td><td>careful inference pass &mdash; gates trust, not count</td><td>high</td></tr>
-  <tr><td>6 &middot; design RFCs</td><td>proposal first, then build</td><td>&mdash;</td></tr>
-</table>
-
 <footer>Order &amp; discipline: <a href="{tiers_doc}">issue-triage-tiers.md</a> &middot;
   rebuild: <code>python3 docs/dev/dashboard/build.py</code></footer>
 
@@ -439,9 +623,9 @@ def build(snapshot: bool = False) -> Path:
     repo = repo_slug()
     issues = fetch_issues()
     now = datetime.now(timezone.utc)
-    flow = fetch_flow(now)
+    flow, daily = fetch_flow(now)
     snaps = load_snaps()
-    page, row = render(repo, issues, flow, snaps, now)
+    page, row = render(repo, issues, flow, daily, snaps, now)
     OUT.write_text(page, encoding="utf-8")
     if snapshot:
         record_snap(row)
@@ -465,8 +649,11 @@ def serve(port: int) -> None:
         def log_message(self, *a):  # quiet
             pass
 
+    class Server(socketserver.TCPServer):
+        allow_reuse_address = True  # rebind immediately after a restart (TIME_WAIT)
+
     handler = functools.partial(Handler, directory=str(HERE))
-    with socketserver.TCPServer(("", port), handler) as httpd:
+    with Server(("", port), handler) as httpd:
         print(f"serving live dashboard at http://localhost:{port}/  (Ctrl-C to stop)")
         httpd.serve_forever()
 
