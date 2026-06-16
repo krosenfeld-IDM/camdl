@@ -986,10 +986,31 @@ let output_config_of_json j =
 
 (* ── Simulation config ───────────────────────────────────────────────────── *)
 
+(* gh#166: integrator serialized internally-tagged — {"method":"rk4"} /
+   {"method":"rk45","atol":…,"rtol":…} — mirroring the Rust enum. *)
+let integrator_to_json (i : integrator) : Yojson.Safe.t =
+  match i with
+  | Rk4 -> obj [ ("method", str "rk4") ]
+  | Rk45 { atol; rtol } ->
+    obj (
+      [ ("method", str "rk45") ]
+      @ (match atol with None -> [] | Some v -> [ ("atol", flt v) ])
+      @ (match rtol with None -> [] | Some v -> [ ("rtol", flt v) ])
+    )
+
+let integrator_of_json j =
+  match member_opt "method" j with
+  | Some (`String "rk45") ->
+    Rk45 {
+      atol = (match member_opt "atol" j with Some `Null | None -> None | Some v -> Some (as_float v));
+      rtol = (match member_opt "rtol" j with Some `Null | None -> None | Some v -> Some (as_float v));
+    }
+  | _ -> Rk4
+
 let simulation_config_to_json (s : simulation_config) : Yojson.Safe.t =
-  (* integrator/atol/rtol are OMITTED at their defaults (rk4 / None), mirroring
-     the Rust side's `skip_serializing_if`, so a default model's IR body is
-     unchanged by gh#166 (only the version string moves). *)
+  (* integrator OMITTED at the Rk4 default, mirroring the Rust side's
+     `skip_serializing_if`, so a default model's IR body is unchanged by gh#166
+     (only the version string moves). *)
   obj (
     [ ("t_start",        flt s.t_start);
       ("t_end",          flt s.t_end);
@@ -997,9 +1018,7 @@ let simulation_config_to_json (s : simulation_config) : Yojson.Safe.t =
       ("dt",             match s.dt       with None -> null | Some v -> flt v);
       ("rng_seed",       match s.rng_seed with None -> null | Some n -> int n);
     ]
-    @ (if s.integrator = "rk4" then [] else [("integrator", str s.integrator)])
-    @ (match s.atol with None -> [] | Some v -> [("atol", flt v)])
-    @ (match s.rtol with None -> [] | Some v -> [("rtol", flt v)])
+    @ (match s.integrator with Rk4 -> [] | i -> [ ("integrator", integrator_to_json i) ])
   )
 
 let simulation_config_of_json j =
@@ -1008,9 +1027,7 @@ let simulation_config_of_json j =
     time_semantics = as_string (member "time_semantics" j);
     dt             = (match member_opt "dt"       j with Some `Null | None -> None | Some v -> Some (as_float v));
     rng_seed       = (match member_opt "rng_seed" j with Some `Null | None -> None | Some v -> Some (as_int   v));
-    integrator     = (match member_opt "integrator" j with Some `Null | None -> "rk4" | Some v -> as_string v);
-    atol           = (match member_opt "atol"     j with Some `Null | None -> None | Some v -> Some (as_float v));
-    rtol           = (match member_opt "rtol"     j with Some `Null | None -> None | Some v -> Some (as_float v));
+    integrator     = (match member_opt "integrator" j with Some `Null | None -> Rk4 | Some v -> integrator_of_json v);
   }
 
 (* ── Presets ─────────────────────────────────────────────────────────────── *)

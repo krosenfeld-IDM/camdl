@@ -57,7 +57,7 @@ fn model_with_forcing(kind: TimeFuncKind) -> Model {
             t_start: 0.0, t_end: 1.0,
             time_semantics: "continuous".into(),
             dt: None, rng_seed: Some(1),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

@@ -13,22 +13,24 @@ How to read an entry: **what changed**, the **migration** (old → new), and the
 
 ---
 
-## 2026-06-16 — `simulate {}` gains `integrator` / `atol` / `rtol` (gh#166)
+## 2026-06-16 — `simulate {}` gains a tagged `integrator` (gh#166)
 
-**What.** The `simulate {}` block accepts three new optional keys selecting the
-ODE integrator and its adaptive tolerances:
+**What.** The `simulate {}` block gains an optional **tagged integrator** selecting
+the ODE method and (for rk45) its adaptive tolerances:
 
-- **`integrator = "rk4" | "rk45"`** — `"rk4"` (fixed-step classic RK4) is the
-  default and is unchanged. `"rk45"` selects the adaptive Dormand–Prince
-  integrator (opt-in; large steps in smooth stretches, small steps only where
-  the trajectory changes fast).
-- **`atol` / `rtol`** — absolute / relative error tolerances for the `rk45`
-  step-size controller. **Dimensionless** (they are tolerances, not times).
-  Ignored by `rk4`. Omitted → the runtime's calibrated default.
+- **`integrator = rk4`** — fixed-step classic RK4 (the default; omit `integrator`
+  entirely for it). Unchanged behaviour.
+- **`integrator = rk45 { atol = 1e-8  rtol = 1e-6 }`** — adaptive Dormand–Prince
+  RK4(5) (opt-in; large steps in smooth stretches, small steps only where the
+  trajectory changes fast). `atol`/`rtol` are **dimensionless** (tolerances, not
+  times), optional (omitted → the runtime's calibrated default), and are **keys
+  of the `rk45` block** — they cannot be written without rk45.
 
-This is **purely additive** — every existing model is unaffected (no
-`integrator` key means `rk4`, exactly as before). The IR schema version bumped
-**0.14 → 0.15**; old IR (without the keys) deserializes to `rk4`.
+The tolerances live *inside* the `rk45` tag by design: the IR type is
+`Rk4 | Rk45 { atol, rtol }`, so an orphan tolerance (atol without rk45, or rk4
+with tolerances) is unrepresentable. This is **purely additive** — every existing
+model is unaffected (no `integrator` → `rk4`). The IR schema version bumped
+**0.14 → 0.15**; old IR deserializes to `rk4`.
 
 **Migration.** None required. To opt a model into adaptive stepping:
 
@@ -36,20 +38,22 @@ This is **purely additive** — every existing model is unaffected (no
 simulate {
   from = 0 'years
   to   = 40 'years
-  integrator = "rk45"
-  atol = 1e-8
-  rtol = 1e-6
+  integrator = rk45 { atol = 1e-8  rtol = 1e-6 }   # or just `integrator = rk45`
 }
 ```
 
 **Diagnostics.**
 
-- `integrator = "rk99"` → **E106** `unknown integrator 'rk99': expected "rk4" or
-  "rk45"`.
-- `atol = 1e-8 'days` (or any unit) → **E106** `` `atol` must be dimensionless ``.
-- A `dt` / `integrator` / `atol` / `rtol` key inside a **scenario** `simulate {}`
-  block → **E106** (these are whole-model knobs; set them once at the top level).
-- `integrator = "rk45"` on a model that references `dt` in a rate (`Expr::Dt`) →
+- `integrator = rk99` → **E106** `unknown integrator 'rk99': expected rk4 or rk45`.
+- `integrator = rk4 { atol = 1e-8 }` → **E106** `` `integrator = rk4` takes no
+  tolerances `` (atol/rtol are rk45-only).
+- `integrator = rk45 { foo = 1 }` → **E106** `unknown integrator option 'foo'`.
+- `atol = 1e-8` at the top level (outside the `rk45` block) → **E106** `unknown
+  simulate key 'atol'`.
+- `atol = 1e-8 'days` (any unit) → **E106** `` `atol` must be dimensionless ``.
+- A `dt` / `integrator` key inside a **scenario** `simulate {}` block → **E106**
+  (whole-model knobs; set them once at the top level).
+- `integrator = rk45` on a model that references `dt` in a rate (`Expr::Dt`) →
   rejected at simulation: adaptive stepping has no single fixed `dt`; use `rk4`.
 
 ---

@@ -161,7 +161,7 @@ fn representative_model() -> Model {
             time_semantics: "continuous".into(),
             dt: Some(1.0),
             rng_seed: Some(42),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![Preset {
             name: "high_beta".into(),

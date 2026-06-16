@@ -270,7 +270,7 @@ mod tests {
                 time_semantics: "continuous".into(),
                 dt: None,
                 rng_seed: Some(1),
-                integrator: "rk4".into(), atol: None, rtol: None,
+                integrator: Default::default(),
             },
             presets: vec![],
             model_structure: None,

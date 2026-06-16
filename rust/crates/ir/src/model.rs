@@ -13,8 +13,32 @@ use crate::{
 
 fn default_time_unit() -> String { "days".to_string() }
 
-fn default_integrator() -> String { "rk4".to_string() }
-fn is_default_integrator(s: &str) -> bool { s == "rk4" }
+/// ODE integrator selection (gh#166). `Rk45` carries its adaptive tolerances, so
+/// the orphan state — tolerances without rk45, or rk4 with tolerances — is
+/// UNREPRESENTABLE (illegal-states-unrepresentable). Serializes internally-tagged:
+/// `{"method":"rk4"}` / `{"method":"rk45","atol":…,"rtol":…}`; omitted entirely
+/// from `simulation_config` at the `Rk4` default (no IR-body change for the
+/// pre-gh#166 corpus).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum Integrator {
+    /// Fixed-step classic RK4 (the default).
+    Rk4,
+    /// Adaptive Dormand–Prince RK4(5). `atol`/`rtol` are dimensionless; `None` →
+    /// the runtime's calibrated default.
+    Rk45 {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        atol: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtol: Option<f64>,
+    },
+}
+
+impl Default for Integrator {
+    fn default() -> Self { Integrator::Rk4 }
+}
+
+fn is_default_integrator(i: &Integrator) -> bool { matches!(i, Integrator::Rk4) }
 
 // ── Compartment ───────────────────────────────────────────────────────────────
 
@@ -74,21 +98,11 @@ pub struct SimulationConfig {
     pub time_semantics: String,
     pub dt:             Option<f64>,
     pub rng_seed:       Option<i64>,
-    /// ODE integrator selection (gh#166): `"rk4"` (fixed-step, the default) or
-    /// `"rk45"` (adaptive Dormand–Prince). A String to mirror `time_semantics`;
-    /// the type-safe `Integrator` enum lives in `sim::config::OdeConfig` where it
-    /// drives dispatch. `default`/`skip_serializing_if` so pre-gh#166 IR (no
-    /// field) deserializes to `"rk4"` and a default model adds no JSON noise.
-    #[serde(default = "default_integrator", skip_serializing_if = "is_default_integrator")]
-    pub integrator:     String,
-    /// Absolute tolerance for the `rk45` adaptive controller (dimensionless).
-    /// Ignored by `rk4`. `None` → the runtime's calibrated default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub atol:           Option<f64>,
-    /// Relative tolerance for the `rk45` adaptive controller (dimensionless).
-    /// Ignored by `rk4`. `None` → the runtime's calibrated default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rtol:           Option<f64>,
+    /// ODE integrator + (for rk45) its adaptive tolerances (gh#166). `default`/
+    /// `skip_serializing_if` so pre-gh#166 IR (no field) deserializes to `Rk4`
+    /// and a default model adds no JSON noise.
+    #[serde(default, skip_serializing_if = "is_default_integrator")]
+    pub integrator:     Integrator,
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────
@@ -199,4 +213,38 @@ pub struct Model {
 pub struct Binding {
     pub name: String,
     pub expr: Expr,
+}
+
+#[cfg(test)]
+mod integrator_serde_tests {
+    use super::Integrator;
+
+    // Pins the cross-language JSON contract for the tagged integrator — exactly
+    // the forms the OCaml compiler emits (internally-tagged on "method"). gh#166.
+    #[test]
+    fn integrator_tagged_json_roundtrips() {
+        let cases = [
+            (Integrator::Rk4, r#"{"method":"rk4"}"#),
+            (Integrator::Rk45 { atol: None, rtol: None }, r#"{"method":"rk45"}"#),
+            (
+                Integrator::Rk45 { atol: Some(1e-8), rtol: Some(1e-6) },
+                r#"{"method":"rk45","atol":1e-8,"rtol":1e-6}"#,
+            ),
+        ];
+        for (val, json) in cases {
+            assert_eq!(serde_json::to_string(&val).unwrap(), json, "serialize {val:?}");
+            assert_eq!(
+                serde_json::from_str::<Integrator>(json).unwrap(),
+                val,
+                "deserialize {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn integrator_rk45_partial_tolerances_parse() {
+        // OCaml omits a None tolerance; the present one must still parse.
+        let i: Integrator = serde_json::from_str(r#"{"method":"rk45","atol":1e-9}"#).unwrap();
+        assert_eq!(i, Integrator::Rk45 { atol: Some(1e-9), rtol: None });
+    }
 }

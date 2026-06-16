@@ -545,27 +545,22 @@ pub fn run_ode(
     // override is C4). The driver below is integrator-agnostic: it hands each
     // stepper the raw distance to the next boundary and re-enters until the
     // boundary is reached, so fixed RK4 and adaptive Dopri5 share one loop.
-    let mut stepper: Box<dyn OdeStepper> = match model.model.simulation.integrator.as_str() {
-        "rk4" => Box::new(Rk4Fixed { dt: cfg.dt, euler_flow }),
-        "rk45" => {
+    let mut stepper: Box<dyn OdeStepper> = match &model.model.simulation.integrator {
+        ir::model::Integrator::Rk4 => Box::new(Rk4Fixed { dt: cfg.dt, euler_flow }),
+        ir::model::Integrator::Rk45 { atol, rtol } => {
             // C3 capability gate: a `dt`-in-rate (RUNTIME_DT) model has no single
             // fixed step — adaptive stepping is undefined. Honest hard error, never
             // a silent rk4 fallback.
             if euler_flow {
                 return Err(SimError::Validation(
-                    "integrator = \"rk45\" cannot run a model that references `dt` in a \
+                    "integrator = rk45 cannot run a model that references `dt` in a \
                      rate (Expr::Dt): adaptive stepping has no fixed step size — use \
-                     integrator = \"rk4\".".to_string(),
+                     integrator = rk4.".to_string(),
                 ));
             }
-            let atol = model.model.simulation.atol.unwrap_or(DEFAULT_ATOL);
-            let rtol = model.model.simulation.rtol.unwrap_or(DEFAULT_RTOL);
+            let atol = atol.unwrap_or(DEFAULT_ATOL);
+            let rtol = rtol.unwrap_or(DEFAULT_RTOL);
             Box::new(Dopri5::new(atol, rtol, cfg))
-        }
-        other => {
-            return Err(SimError::Validation(format!(
-                "unknown integrator '{other}': expected \"rk4\" or \"rk45\""
-            )))
         }
     };
 

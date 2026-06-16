@@ -151,7 +151,7 @@ fn build_sir(obs_times: Vec<f64>) -> (MultiStreamObsModel, Arc<CompiledModel>, V
             time_semantics: "continuous".into(),
             dt: Some(1.0),
             rng_seed: Some(42),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None,

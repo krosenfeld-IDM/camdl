@@ -3643,7 +3643,7 @@ let expand_simulate ctx =
   | None ->
     { Ir.t_start = 0.0; Ir.t_end = 100.0;
       Ir.time_semantics = "continuous"; Ir.dt = None; Ir.rng_seed = None;
-      Ir.integrator = "rk4"; Ir.atol = None; Ir.rtol = None }
+      Ir.integrator = Ir.Rk4 }
   | Some sd ->
     let t_start = resolve_float_expr ctx sd.sim_from in
     let t_end   = resolve_float_expr ctx sd.sim_to   in
@@ -3652,11 +3652,10 @@ let expand_simulate ctx =
        model time units). None when omitted, so the CLI default / --dt
        override applies. *)
     let dt = Option.map (resolve_float_expr ctx) sd.sim_dt in
-    (* gh#166: integrator is validated to {rk4,rk45} at parse time; default rk4. *)
-    let integrator = Option.value ~default:"rk4" sd.sim_integrator in
-    (* atol/rtol are DIMENSIONLESS adaptive tolerances — a unit literal is a
-       mistake (they are ratios, not times). dimcheck does not visit the simulate
-       block, so reject the unit here. *)
+    (* gh#166: build the tagged integrator. atol/rtol are DIMENSIONLESS adaptive
+       tolerances (ratios, not times) — a unit literal is a mistake, and dimcheck
+       does not visit the simulate block, so reject the unit here. rk4 takes NO
+       tolerances (the grammar permits `rk4 { ... }`; reject it semantically). *)
     let resolve_tol name = function
       | None -> None
       | Some (EUnit (_, _)) ->
@@ -3667,11 +3666,26 @@ let expand_simulate ctx =
         None
       | Some e -> Some (resolve_float_expr ctx e)
     in
-    let atol = resolve_tol "atol" sd.sim_atol in
-    let rtol = resolve_tol "rtol" sd.sim_rtol in
+    let integrator =
+      match sd.sim_integrator with
+      | None | Some "rk4" ->
+        if sd.sim_atol <> None || sd.sim_rtol <> None then
+          Diagnostics.error ctx.diags ~code:"E106" ~loc:Diagnostics.no_loc
+            ~message:"`integrator = rk4` takes no tolerances (atol/rtol are rk45-only)"
+            ~hint:"write `integrator = rk45 { atol = .., rtol = .. }`" ();
+        Ir.Rk4
+      | Some "rk45" ->
+        Ir.Rk45 { atol = resolve_tol "atol" sd.sim_atol;
+                  rtol = resolve_tol "rtol" sd.sim_rtol }
+      | Some other ->
+        Diagnostics.error ctx.diags ~code:"E106" ~loc:Diagnostics.no_loc
+          ~message:(Printf.sprintf "unknown integrator '%s': expected `rk4` or `rk45`" other)
+          ~hint:"`integrator = rk4` or `integrator = rk45 { atol = .., rtol = .. }`" ();
+        Ir.Rk4
+    in
     { Ir.t_start; Ir.t_end;
       Ir.time_semantics = "continuous"; Ir.dt; Ir.rng_seed = None;
-      Ir.integrator; Ir.atol; Ir.rtol }
+      Ir.integrator }
 
 let expand_output ctx =
   let t_start, t_end = match ctx.simulate with

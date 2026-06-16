@@ -150,7 +150,7 @@ fn pathological_sir_model() -> (CompiledModel, Vec<f64>) {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: 50.0, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(1),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],
@@ -386,7 +386,7 @@ fn healthy_sir_model() -> (CompiledModel, Vec<f64>) {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: 30.0, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(1),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

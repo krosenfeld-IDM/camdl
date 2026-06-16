@@ -99,9 +99,7 @@ fn compiled_model(name: &str, rk45: Option<(f64, f64)>) -> CompiledModel {
     let json = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {:?}: {e}", path));
     let mut model = ir::from_str(&json).unwrap_or_else(|e| panic!("parse {name}: {e}"));
     if let Some((atol, rtol)) = rk45 {
-        model.simulation.integrator = "rk45".into();
-        model.simulation.atol = Some(atol);
-        model.simulation.rtol = Some(rtol);
+        model.simulation.integrator = ir::model::Integrator::Rk45 { atol: Some(atol), rtol: Some(rtol) };
     }
     CompiledModel::new(model).unwrap_or_else(|e| panic!("compile {name}: {e}"))
 }

@@ -111,7 +111,7 @@ fn periodic_xfer_model(at_day: f64, period: f64, end: f64, model_dt: Option<f64>
             time_semantics: "continuous".into(),
             dt: model_dt,
             rng_seed: Some(42),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

@@ -89,9 +89,7 @@ let empty_model
       time_semantics = "continuous";
       dt = None;
       rng_seed = None;
-      integrator = "rk4";
-      atol = None;
-      rtol = None;
+      integrator = Rk4;
     };
     presets = [];
     model_structure = None;

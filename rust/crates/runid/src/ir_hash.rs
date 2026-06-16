@@ -849,21 +849,15 @@ impl ContentAddressed for SimulationConfig {
         h.write_str(&self.time_semantics);
         hash_opt_f64(h, &self.dt);
         self.rng_seed.hash_into(h);
-        // gh#166: integrator/atol/rtol hashed ONLY when non-default (tagged so
-        // atol vs rtol can't collide), so a default-rk4 model keeps its
-        // pre-gh#166 run-id (no cache churn) while rk45 / explicit tolerances —
-        // which produce different trajectories — get a distinct content address.
-        if self.integrator != "rk4" {
-            h.write_str("integrator");
-            h.write_str(&self.integrator);
-        }
-        if let Some(a) = self.atol {
-            h.write_str("atol");
-            h.write_f64_bits(a);
-        }
-        if let Some(r) = self.rtol {
-            h.write_str("rtol");
-            h.write_f64_bits(r);
+        // gh#166: hash the integrator ONLY when non-default (Rk45 + its
+        // tolerances, tagged so atol/rtol can't collide), so a default-Rk4 model
+        // keeps its pre-gh#166 run-id (no cache churn) while rk45 / explicit
+        // tolerances — which produce different trajectories — get a distinct
+        // content address.
+        if let ir::model::Integrator::Rk45 { atol, rtol } = &self.integrator {
+            h.write_str("rk45");
+            if let Some(a) = atol { h.write_str("atol"); h.write_f64_bits(*a); }
+            if let Some(r) = rtol { h.write_str("rtol"); h.write_f64_bits(*r); }
         }
     }
 }

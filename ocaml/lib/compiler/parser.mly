@@ -810,9 +810,13 @@ simulate_body:
           | `From e -> sim_from := e
           | `To   e -> sim_to   := e
           | `Dt   e -> sim_dt   := Some e
-          | `Integrator s -> sim_integrator := Some s
-          | `Atol e -> sim_atol := Some e
-          | `Rtol e -> sim_rtol := Some e
+          | `Integrator (meth, opts) ->
+            sim_integrator := Some meth;
+            List.iter (fun (ok, e) -> match ok with
+              | "atol" -> sim_atol := Some e
+              | "rtol" -> sim_rtol := Some e
+              | _ -> ()  (* opt-key validity already diagnosed in simulate_kv *)
+            ) opts
         ) kvs;
         { sim_from = !sim_from; sim_to = !sim_to; sim_dt = !sim_dt;
           sim_integrator = !sim_integrator; sim_atol = !sim_atol; sim_rtol = !sim_rtol } }
@@ -827,36 +831,47 @@ simulate_body:
 simulate_kv:
   | FROM EQ e = expr { `From e }
   | TO   EQ e = expr { `To   e }
+  (* gh#166: TAGGED integrator with an optional tolerance block —
+     `integrator = rk45 { atol = 1e-8  rtol = 1e-6 }`. atol/rtol are keys of the
+     rk45 block, so they cannot be written without rk45 (illegal-states-
+     unrepresentable: the IR type is `Rk4 | Rk45 { atol, rtol }`). Opt-key
+     validity is checked here; method validity and "rk4 takes no tolerances" in
+     the expander (which builds the enum). *)
+  | k = IDENT EQ meth = IDENT LBRACE opts = list(integ_opt) RBRACE
+      { if k <> "integrator" then
+          Parser_errors.push_error ~sp:$startpos(k) ~ep:$endpos(k) ~code:"E106"
+            ~msg:(Printf.sprintf
+              "unknown simulate key '%s' { ... }: only `integrator` takes a block" k);
+        List.iter (fun (ok, _) ->
+          if ok <> "atol" && ok <> "rtol" then
+            Parser_errors.push_error ~sp:$startpos(meth) ~ep:$endpos ~code:"E106"
+              ~msg:(Printf.sprintf
+                "unknown integrator option '%s': expected `atol` or `rtol`" ok)) opts;
+        `Integrator (meth, opts) }
   | k = IDENT EQ e = expr
       { match k with
         | "dt"   -> `Dt e
-        | "atol" -> `Atol e   (* gh#166: dimensionless adaptive tolerance (rk45) *)
-        | "rtol" -> `Rtol e
         | "integrator" ->
-          (* gh#166: `integrator = "rk4" | "rk45"`. A string literal lexes to an
-             `EIdent` (atom_expr), so the value rides the same `expr` slot — a
-             dedicated `IDENT EQ STRING` rule would reduce/reduce-conflict with
-             `atom_expr -> STRING`. Extract + validate the string here. *)
+          (* bare form: `integrator = rk4` / `integrator = rk45` (default tols).
+             The method lexes as an EIdent (atom_expr). *)
           (match e with
-           | EIdent (s, _) when s = "rk4" || s = "rk45" -> `Integrator s
-           | EIdent (s, _) ->
-             Parser_errors.push_error ~sp:$startpos(e) ~ep:$endpos(e)
-               ~code:"E106"
-               ~msg:(Printf.sprintf
-                 "unknown integrator '%s': expected \"rk4\" or \"rk45\"" s);
-             `Integrator s  (* placeholder; the error above aborts compilation *)
+           | EIdent (s, _) -> `Integrator (s, [])
            | _ ->
-             Parser_errors.push_error ~sp:$startpos(e) ~ep:$endpos(e)
-               ~code:"E106"
-               ~msg:"`integrator` must be a string: write `integrator = \"rk4\"` or \"rk45\"";
-             `Integrator "rk4")
+             Parser_errors.push_error ~sp:$startpos(e) ~ep:$endpos(e) ~code:"E106"
+               ~msg:"`integrator` names an integrator: `integrator = rk4` or \
+                     `integrator = rk45 { atol = .., rtol = .. }`";
+             `Integrator ("rk4", []))
         | _ -> begin
           Parser_errors.push_error ~sp:$startpos(k) ~ep:$endpos(k)
             ~code:"E106"
             ~msg:(Printf.sprintf
-              "unknown simulate key '%s': expected one of from, to, dt, integrator, atol, rtol" k);
+              "unknown simulate key '%s': expected one of from, to, dt, integrator" k);
           `Dt e  (* placeholder; the error above aborts compilation *)
         end }
+
+(* A single `key = expr` inside an `integrator = rk45 { ... }` block. *)
+integ_opt:
+  | k = IDENT EQ e = expr { (k, e) }
 
 (* ── Init block ──────────────────────────────────────────────────────────── *)
 
@@ -1027,8 +1042,6 @@ scenario_field:
         (match List.find_map (function
            | `Dt _         -> Some "dt"
            | `Integrator _ -> Some "integrator"
-           | `Atol _       -> Some "atol"
-           | `Rtol _       -> Some "rtol"
            | _             -> None) kvs with
          | Some key ->
            Parser_errors.push_error ~sp:$startpos ~ep:$endpos

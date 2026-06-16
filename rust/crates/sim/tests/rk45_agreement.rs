@@ -50,14 +50,12 @@ fn rk45_agrees_with_fine_rk4_on_prevalence_and_incidence() {
     for (name, t_end) in [("sir", 60.0), ("seir", 80.0)] {
         // Fixed RK4 at a fine dt — the accurate, independent reference.
         let mut m_rk4 = oracle_model(name);
-        m_rk4.simulation.integrator = "rk4".into();
+        m_rk4.simulation.integrator = ir::model::Integrator::Rk4;
         let rk4 = run(m_rk4, 0.01, t_end);
 
         // Adaptive rk45 at a tight tolerance.
         let mut m_rk45 = oracle_model(name);
-        m_rk45.simulation.integrator = "rk45".into();
-        m_rk45.simulation.atol = Some(1e-10);
-        m_rk45.simulation.rtol = Some(1e-10);
+        m_rk45.simulation.integrator = ir::model::Integrator::Rk45 { atol: Some(1e-10), rtol: Some(1e-10) };
         let rk45 = run(m_rk45, 1.0, t_end);
 
         assert_eq!(
@@ -98,9 +96,7 @@ fn rk45_agrees_with_fine_rk4_on_prevalence_and_incidence() {
 #[test]
 fn rk45_is_deterministic() {
     let mut m = oracle_model("sir");
-    m.simulation.integrator = "rk45".into();
-    m.simulation.atol = Some(1e-8);
-    m.simulation.rtol = Some(1e-6);
+    m.simulation.integrator = ir::model::Integrator::Rk45 { atol: Some(1e-8), rtol: Some(1e-6) };
     let h1 = traj_hash(&run(m.clone(), 1.0, 60.0));
     let h2 = traj_hash(&run(m, 1.0, 60.0));
     assert_eq!(h1, h2, "rk45 must be byte-identical for the same (model, atol, rtol)");
@@ -111,9 +107,7 @@ fn rk45_takes_adaptive_steps_not_just_the_grid() {
     // Sanity: rk45 must actually integrate (produce a non-trivial epidemic),
     // not degenerate. Peak infections should be a real fraction of N0=100000.
     let mut m = oracle_model("sir");
-    m.simulation.integrator = "rk45".into();
-    m.simulation.atol = Some(1e-8);
-    m.simulation.rtol = Some(1e-6);
+    m.simulation.integrator = ir::model::Integrator::Rk45 { atol: Some(1e-8), rtol: Some(1e-6) };
     let traj = run(m, 1.0, 60.0);
     let peak_i = traj.snapshots.iter().map(|s| s.int_state.counts[1]).max().unwrap();
     assert!(peak_i > 1000, "rk45 SIR epidemic should peak well above 1000 infections, got {peak_i}");
@@ -126,7 +120,7 @@ fn rk45_rejects_runtime_dt_model() {
         env!("CARGO_MANIFEST_DIR")
     );
     let mut m = ir::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    m.simulation.integrator = "rk45".into();
+    m.simulation.integrator = ir::model::Integrator::Rk45 { atol: None, rtol: None };
     let compiled = CompiledModel::new(m).expect("compile dt_rate");
     let params = compiled.default_params.clone();
     let res = OdeSim.run(

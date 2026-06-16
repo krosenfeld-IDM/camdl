@@ -103,7 +103,7 @@ fn model_with_obs_param() -> (Arc<CompiledModel>, Vec<f64>) {
             t_start: 0.0, t_end: 50.0,
             time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(42),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None,

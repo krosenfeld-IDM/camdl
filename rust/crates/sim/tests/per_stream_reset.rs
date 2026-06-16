@@ -104,7 +104,7 @@ fn model(k_per_unit: f64) -> Arc<CompiledModel> {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: 90.0, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(1),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

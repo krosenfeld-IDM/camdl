@@ -122,7 +122,7 @@ fn death_model(event_times: Option<Vec<f64>>) -> CompiledModel {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: 10.0, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(42),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

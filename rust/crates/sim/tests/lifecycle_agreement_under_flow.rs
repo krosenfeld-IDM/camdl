@@ -125,7 +125,7 @@ fn flow_model() -> CompiledModel {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: T_END, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(7),
-            integrator: "rk4".into(), atol: None, rtol: None,
+            integrator: Default::default(),
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

@@ -487,18 +487,19 @@ type output_config = {
 
 (* ── Simulation config ───────────────────────────────────────────────────────── *)
 
+(* gh#166: ODE integrator. Rk45 carries its dimensionless adaptive tolerances, so
+   the orphan state (tolerances without rk45) is unrepresentable. *)
+type integrator =
+  | Rk4
+  | Rk45 of { atol: float option; rtol: float option }
+
 type simulation_config = {
   t_start:        float;
   t_end:          float;
   time_semantics: string;
   dt:             float option;
   rng_seed:       int option;
-  (* gh#166: ODE integrator selection — "rk4" (fixed-step, default) or "rk45"
-     (adaptive Dormand-Prince). atol/rtol are the dimensionless adaptive
-     tolerances (ignored by rk4; None -> runtime calibrated default). *)
-  integrator:     string;
-  atol:           float option;
-  rtol:           float option;
+  integrator:     integrator;
 }
 
 (* ── Presets (named parameter sets for web UI / CLI) ─────────────────────────── *)
