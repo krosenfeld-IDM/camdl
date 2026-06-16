@@ -146,16 +146,24 @@ conversions) would let the predicate read `< 50 'km` and catch
 distance-vs-time-vs-rate mistakes — a worthwhile but separable enhancement,
 tracked separately, not required here.
 
-### Pipeline ordering (resolved)
+### Pipeline ordering (reordered: tables before transitions)
 
-`expand_transitions_counted ctx` (`expander.ml:5859`) runs before
-`expand_tables ctx` (`5886`), and the predicate is evaluated in the `ESum` arm
-during transition expansion (`expander.ml:2053`) — so resolved table _values_ do
-not yet exist there. Resolution: the predicate evaluator resolves only the
-table(s) it references, on demand, from the table declarations in `ctx`,
-**memoized per table** (a `read()` table does file I/O, and the predicate is
-evaluated O(P) times per `p` → O(P²) total at expansion; without memoization a
-`read()` would be re-parsed each time). No pipeline reorder.
+The predicate is evaluated in the `ESum` arm during transition expansion and
+needs resolved table _values_. Originally `expand_tables` ran _after_ transition
+expansion — an accident that worked only because nothing needed table values at
+expansion time until now (transition rates emit `TableLookup` _nodes_ carrying
+only the table name; the values were attached later and read first by the
+constant-fold). Tables are compile-time constants depending only on dimensions,
+not transitions, so the clean fix is the natural producer-before-consumer order:
+**resolve tables before transition expansion** and store the result in
+`ctx.table_index` (name → row-major cells + dim names) — the same shape as
+`dim_registry` holds resolved dimensions. The predicate reads `ctx.table_index`;
+the resolved list is reused verbatim for `Ir.tables`, so there is no second
+resolution path and no memo. The reorder perturbs no existing model (verified:
+`make test` DRIFT 0). The guard-eval block (`eval_guard`, `eval_tab_cell`) is
+defined before `resolve_expr`, which calls it. Expansion stays O(P²) (every
+`(p,q)` pair is tested to know it is pruned — same order as the status-quo
+dense-sum-then-fold); only the IR and per-step runtime become O(P·k).
 
 ### Lowering
 
@@ -214,10 +222,10 @@ The richer predicate becomes the single `guard` type used by both transition
 `where` and sum `where` (the natural seam — one predicate language to hold in
 the head). Mechanical cost: a `GTab` constructor breaks four exhaustive matches
 (`eval_guard`, `check_guard_compile_time`, `guard_to_string`, `inspect.ml`), and
-`eval_guard` gains `ctx` + memoized table values + dim sizes (for row-major
-indexing) in its signature. A table-valued predicate on a _transition_ is legal
-but the wrong tool for coupling (still per-pair transitions); the warning below
-steers coupling to the `sum` form.
+`eval_guard` gains `ctx` in its signature (it reads the resolved
+`ctx.table_index` for cell values and dimension sizes). A table-valued predicate
+on a _transition_ is legal but the wrong tool for coupling (still per-pair
+transitions); the warning below steers coupling to the `sum` form.
 
 ## The O(P²) warning
 
