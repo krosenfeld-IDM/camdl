@@ -2411,6 +2411,11 @@ pub fn simulate_compiled(
             run.backend, missing
         ));
     }
+    // gh#166 B2: warn (once) if a `dt`-in-rate model runs on ODE with first-order
+    // Euler incidence — every other model gets high-order augmented flow.
+    if matches!(run.backend, Backend::Ode) {
+        crate::fit::methods::warn_if_ode_euler_flow(compiled);
+    }
 
     // Tick closure: advance the bar to the current sim time. Read-only, RNG-free
     // (the backends call it before any draw). We scale by 1000 so a unit-`dt`

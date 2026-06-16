@@ -45,34 +45,36 @@ const TRUE_BETA: f64 = 0.8;
 const START_BETA: f64 = 1.8; // far from truth, so recovery is a real test
 
 /// SIR with a weakly-informative `~` prior on beta; gamma + N0 fixed. R0 ≈ 2.7
-/// over 60 days gives a clear epidemic, so prevalence observations identify
-/// beta well. Returns the compiled IR path.
-fn write_model(dir: &Path, camdl: &Path) -> PathBuf {
-    let src = r#"
+/// over 60 days gives a clear epidemic, so the observations identify beta well.
+/// `projected` selects the observation projection (`prevalence(I)` or
+/// `incidence(infection)`), which is the only thing the two recovery tests
+/// differ in. Returns the compiled IR path.
+fn write_model_proj(dir: &Path, camdl: &Path, projected: &str) -> PathBuf {
+    let src = format!(r#"
 time_unit = 'days
-compartments { S, I, R }
-parameters {
+compartments {{ S, I, R }}
+parameters {{
   beta  : rate  in [0.05, 5.0] ~ log_normal(mu = 0.0, sigma = 1.0)
   gamma : rate  in [0.01, 1.0]
   N0    : count in [100, 100000]
-}
-transitions {
+}}
+transitions {{
   infection : S --> I @ beta * S * I / N0
   recovery  : I --> R @ gamma * I
-}
-observations {
-  cases {
-    columns       { time : time, cases : count }
-    projected     = prevalence(I)
+}}
+observations {{
+  cases {{
+    columns       {{ time : time, cases : count }}
+    projected     = {projected}
     emit_schedule = every 2 'days
     cases ~ poisson(rate = projected)
-  }
-}
-init { S = 9990  I = 10 }
-simulate { from = 0 'days  to = 60 'days }
-"#;
+  }}
+}}
+init {{ S = 9990  I = 10 }}
+simulate {{ from = 0 'days  to = 60 'days }}
+"#);
     let model_path = dir.join("sir.camdl");
-    std::fs::write(&model_path, src).unwrap();
+    std::fs::write(&model_path, &src).unwrap();
     let ir_path = dir.join("sir.ir.json");
     let out = Command::new(camdl).arg(&model_path).output().unwrap();
     assert!(out.status.success(),
@@ -118,18 +120,20 @@ fn beta_samples(trace: &Path) -> Vec<f64> {
         .collect()
 }
 
-#[test]
-fn mh_ode_recovers_known_beta() {
+/// Shared end-to-end recovery harness: author the SIR with the given observation
+/// `projected`, simulate synthetic data at TRUE_BETA on the ODE backend, run an
+/// `mh`+`ode` fit from START_BETA, and return (posterior beta mean, out dir,
+/// tmp). The tmp guard must be kept alive by the caller. Returns `None` when the
+/// release binary / camdlc is missing (so the test skips).
+fn recover_beta(tag: &str, projected: &str) -> Option<(f64, PathBuf, TempDir)> {
     let bin = camdl_bin();
     if !bin.exists() || camdlc().is_none() {
         eprintln!("skip: release camdl / camdlc.exe missing (run `make build`)");
-        return;
+        return None;
     }
-    let tmp = tempdir("recovery");
-    let ir = write_model(tmp.path(), &camdlc().unwrap());
+    let tmp = tempdir(tag);
+    let ir = write_model_proj(tmp.path(), &camdlc().unwrap(), projected);
 
-    // Truth + synthetic observations from the ODE backend (deterministic
-    // trajectory + Poisson obs sampling).
     let truth = tmp.path().join("truth.toml");
     std::fs::write(&truth, format!("beta = {TRUE_BETA}\ngamma = 0.3\nN0 = 10000\n")).unwrap();
     let data = tmp.path().join("cases.tsv");
@@ -143,7 +147,6 @@ fn mh_ode_recovers_known_beta() {
         "simulate (data gen) failed: {}", String::from_utf8_lossy(&sim.stderr));
     assert!(data.exists(), "synthetic data not written");
 
-    // mh + ode fit, starting beta far from truth.
     let out = tmp.path().join("out");
     let fit_toml = tmp.path().join("fit.toml");
     std::fs::write(&fit_toml, format!(r#"
@@ -176,13 +179,18 @@ burn_in = 400
         .status().unwrap();
     assert!(status.success(), "mh+ode `fit run` must succeed (exit 0)");
 
-    // Recovery: pool post-burn-in beta across chains.
     let traces = find_traces(&out);
     assert!(!traces.is_empty(), "no chain trace.tsv produced under {}", out.display());
     let betas: Vec<f64> = traces.iter().flat_map(|t| beta_samples(t)).collect();
     assert!(betas.len() >= 100,
         "too few post-burn-in beta samples ({}) — the mh chains didn't run", betas.len());
     let mean = betas.iter().sum::<f64>() / betas.len() as f64;
+    Some((mean, out, tmp))
+}
+
+#[test]
+fn mh_ode_recovers_known_beta() {
+    let Some((mean, out, _tmp)) = recover_beta("recovery", "prevalence(I)") else { return };
 
     assert!(mean.is_finite() && (0.05..=5.0).contains(&mean),
         "posterior beta mean {mean} not finite/in-bounds");
@@ -205,4 +213,22 @@ burn_in = 400
     assert!(any_dt_check,
         "mh+ode fit_state.toml has no [dt_check] block — the ODE dt-check did \
          not run on the mh path (regression: gh#227 wiring).");
+}
+
+/// gh#166 Phase B (B7): the same recovery, but the observation projects
+/// `incidence(infection)` — so the fit scores through the AUGMENTED per-interval
+/// flow that `compute_ode_loglik` sums from `snapshot.flows`. Recovering beta
+/// from incidence data end-to-end proves the augmented (high-order) flow is what
+/// the ODE-inference likelihood now consumes, and that the incidence-scoring
+/// shape (sum per-interval flows, fold, score) still works.
+#[test]
+fn mh_ode_recovers_known_beta_from_incidence() {
+    let Some((mean, _out, _tmp)) = recover_beta("incidence", "incidence(infection)") else { return };
+
+    assert!(mean.is_finite() && (0.05..=5.0).contains(&mean),
+        "incidence posterior beta mean {mean} not finite/in-bounds");
+    assert!((0.45..=1.35).contains(&mean),
+        "mh+ode did not recover beta from INCIDENCE observations: posterior mean \
+         {mean:.3} (truth {TRUE_BETA}, start {START_BETA}). A failure here means the \
+         augmented incidence is not flowing correctly through compute_ode_loglik.");
 }

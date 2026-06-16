@@ -1,0 +1,47 @@
+# gh#166 Phase B incidence oracle — 2-stage-latency TB with timescale
+# separation: fast progression from early latency vs slow (per-decade)
+# reactivation from late latency. This is the regime that stresses augmented
+# flow's handling of a SLOW transition's sub-unit incidence (the TB-reactivation
+# case the gh#126 sub-unit-flow fix was about). RHS (N = S+Lf+Ls+I+R constant):
+#   dS/dt  = -beta*S*I/N
+#   dLf/dt =  beta*S*I/N - (phi + kappa)*Lf
+#   dLs/dt =  kappa*Lf - omega*Ls
+#   dI/dt  =  phi*Lf + omega*Ls - gamma*I
+#   dR/dt  =  gamma*I
+# Tracked incidence: infection, fast_prog (phi*Lf), stabilize (kappa*Lf),
+# reactivate (omega*Ls, the slow sub-unit flow), recovery. Params baked via
+# --set; the scipy/deSolve oracles match exactly.
+
+time_unit = 'days
+
+compartments { S, Lf, Ls, I, R }
+
+let N = S + Lf + Ls + I + R
+
+parameters {
+  beta  : rate  in [0.001, 5.0]
+  phi   : rate  in [0.0, 5.0]
+  kappa : rate  in [0.0, 5.0]
+  omega : rate  in [0.0, 5.0]
+  gamma : rate  in [0.001, 5.0]
+  N0    : count in [1, 100000000]
+  I0    : count in [1, 1000000]
+}
+
+transitions {
+  infection  : S  --> Lf  @ beta * S * (I / N)
+  fast_prog  : Lf --> I   @ phi * Lf
+  stabilize  : Lf --> Ls  @ kappa * Lf
+  reactivate : Ls --> I   @ omega * Ls
+  recovery   : I  --> R   @ gamma * I
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+simulate {
+  from = 0 'days
+  to   = 365 'days
+}

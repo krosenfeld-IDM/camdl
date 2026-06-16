@@ -344,13 +344,15 @@ pub fn run_richardson_ladder(
 /// the RK4 substep *between* outputs — the obs-time alignment inside
 /// `compute_ode_loglik` is preserved at every rung.
 ///
-/// Convergence-order caveat: prevalence observations read the RK4 state
-/// (O(dt⁴)); incidence observations read the Euler flow accumulator
-/// (`flow_acc += rate·dt`, O(dt)). The `Backend::Ode` default τ is calibrated
-/// to the prevalence (RK4) case, so an incidence-heavy model can register
-/// Marginal/Fail at a dt where prevalence would pass — that is the check
-/// correctly reporting that the incidence likelihood is the dt-sensitive part,
-/// not a false alarm.
+/// Convergence-order note: since the augmented-flow unification (gh#166 Q1B),
+/// BOTH prevalence (RK4 state, O(dt⁴)) and incidence (augmented flow, `dc/dt =
+/// rate` through the same RK4 stages, also O(dt⁴)) converge at the same high
+/// order, so the `Backend::Ode` τ calibrated to the prevalence case applies to
+/// incidence too. The one exception is a model that references `dt` in a rate
+/// (`Expr::Dt` / RUNTIME_DT), which keeps the first-order Euler flow (O(dt), the
+/// augmented derivative is undefined when the rate depends on the step size) —
+/// for those, an incidence-heavy fit can still register Marginal/Fail at a dt
+/// where prevalence passes, correctly flagging the dt-sensitive incidence.
 ///
 /// Disabled (`config.enabled = false`) → returns a `Skipped` verdict.
 pub fn run_richardson_ladder_ode(

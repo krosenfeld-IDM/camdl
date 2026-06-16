@@ -49,6 +49,14 @@ impl Simulate for OdeSim {
 /// every substep, quantizing state and producing O(1/N) relative error
 /// that caused premature extinction at small N. Rounding now happens
 /// only when snapshotting to the output trajectory.
+/// `d_flow[i]` receives the augmented-flow derivative `dc_i/dt = propensity_i`
+/// (one per transition) — the SAME per-transition propensities computed for the
+/// compartment derivatives, so carrying flows through the RK4 stages costs no
+/// extra rate evaluations (B1: the standalone Euler flow eval is dropped, 5→4
+/// evals/step). The propensities are evaluated at the UNROUNDED float state
+/// (`int_float_override`), unlike the old Euler flow which read the rounded
+/// integer state — so the augmented incidence is both higher-order AND
+/// evaluated at the same state the integrator sees.
 fn ode_derivs(
     model: &CompiledModel,
     int_vals: &[f64],
@@ -58,6 +66,7 @@ fn ode_derivs(
     dt: f64,
     d_int: &mut [f64],
     d_real: &mut [f64],
+    d_flow: &mut [f64],
 ) -> Result<(), SimError> {
     // Placeholder i64 int_s — never read because int_float_override overrides.
     let int_s = IntState::from_vec(vec![0_i64; int_vals.len()]);
@@ -70,12 +79,26 @@ fn ode_derivs(
         int_float_override: Some(int_vals),
     };
 
+    // Activate the per-state binding cache for this stage: each model binding
+    // (N_p, I_agg_p, spatial FOI, …) is evaluated at most once across all rates
+    // and ODE equations at THIS (state, t), instead of on every `BindingRef`.
+    // Byte-identical to the uncached path (value memoization — gate_binding_cache_ab),
+    // and the lever that makes coupled ODE models (cVDPV2) fast. Restored here
+    // because B1 dropped the standalone `eval_propensities` call that used to be
+    // the only cache-entering ODE eval; the RK4 stages now own it. Dropped at the
+    // end of this stage so the next stage (different state) recomputes.
+    let _cache = crate::resolved_expr::CacheScope::enter(model.resolved.bindings.len());
+
     // Integer compartment derivatives from transition stoichiometry × rate.
     let n_tr = model.model.transitions.len();
     let mut propensities = Vec::with_capacity(n_tr);
     for i in 0..n_tr {
         propensities.push(eval_resolved(&model.resolved.rates[i], &ctx));
     }
+
+    // Augmented flow derivative: dc_i/dt = propensity_i (per transition). Reuses
+    // the propensities just computed — no additional rate evaluation.
+    d_flow.copy_from_slice(&propensities);
 
     for v in d_int.iter_mut() { *v = 0.0; }
     for (tr_idx, stoich) in model.transition_stoich.iter().enumerate() {
@@ -95,48 +118,66 @@ fn ode_derivs(
     Ok(())
 }
 
-/// Single RK4 step over the combined (int_vals, real_vals) state.
+/// Single RK4 step over the combined (int_vals, real_vals) state, optionally
+/// carrying the augmented flow.
+///
+/// When `flow` is `Some`, the per-transition cumulative flow integrals ride
+/// along as augmented state: `dc_i/dt = propensity_i` integrated by the SAME RK4
+/// stages as the compartments (Q1B). Because `dc/dt` depends only on (int, real,
+/// t) — never on `c` itself — the flow needs no stage-state perturbation; its
+/// stage slopes are exactly the `d_flow` each `ode_derivs` already returns.
+/// Flow is NOT clamped (a monotone non-decreasing accumulator; propensities ≥ 0).
+///
+/// When `flow` is `None` the compartment integration is identical and flow is
+/// left to the caller (the `Expr::Dt` / RUNTIME_DT Euler path).
 fn rk4_step(
     model: &CompiledModel,
     int_vals: &mut Vec<f64>,
     real_vals: &mut Vec<f64>,
+    flow: Option<&mut Vec<f64>>,
     params: &[f64],
     t: f64,
     dt: f64,
 ) -> Result<(), SimError> {
     let ni = int_vals.len();
     let nr = real_vals.len();
+    let nf = model.model.transitions.len();
 
     let mut di = vec![0.0f64; ni];
     let mut dr = vec![0.0f64; nr];
+    let mut df = vec![0.0f64; nf];
 
     // k1
-    ode_derivs(model, int_vals, real_vals, params, t, dt, &mut di, &mut dr)?;
+    ode_derivs(model, int_vals, real_vals, params, t, dt, &mut di, &mut dr, &mut df)?;
     let k1i: Vec<f64> = di.clone();
     let k1r: Vec<f64> = dr.clone();
+    let k1f: Vec<f64> = df.clone();
 
     // k2
     let s2i: Vec<f64> = int_vals.iter().zip(&k1i).map(|(x, k)| x + 0.5 * dt * k).collect();
     let s2r: Vec<f64> = real_vals.iter().zip(&k1r).map(|(x, k)| x + 0.5 * dt * k).collect();
-    ode_derivs(model, &s2i, &s2r, params, t + 0.5 * dt, dt, &mut di, &mut dr)?;
+    ode_derivs(model, &s2i, &s2r, params, t + 0.5 * dt, dt, &mut di, &mut dr, &mut df)?;
     let k2i: Vec<f64> = di.clone();
     let k2r: Vec<f64> = dr.clone();
+    let k2f: Vec<f64> = df.clone();
 
     // k3
     let s3i: Vec<f64> = int_vals.iter().zip(&k2i).map(|(x, k)| x + 0.5 * dt * k).collect();
     let s3r: Vec<f64> = real_vals.iter().zip(&k2r).map(|(x, k)| x + 0.5 * dt * k).collect();
-    ode_derivs(model, &s3i, &s3r, params, t + 0.5 * dt, dt, &mut di, &mut dr)?;
+    ode_derivs(model, &s3i, &s3r, params, t + 0.5 * dt, dt, &mut di, &mut dr, &mut df)?;
     let k3i: Vec<f64> = di.clone();
     let k3r: Vec<f64> = dr.clone();
+    let k3f: Vec<f64> = df.clone();
 
     // k4
     let s4i: Vec<f64> = int_vals.iter().zip(&k3i).map(|(x, k)| x + dt * k).collect();
     let s4r: Vec<f64> = real_vals.iter().zip(&k3r).map(|(x, k)| x + dt * k).collect();
-    ode_derivs(model, &s4i, &s4r, params, t + dt, dt, &mut di, &mut dr)?;
+    ode_derivs(model, &s4i, &s4r, params, t + dt, dt, &mut di, &mut dr, &mut df)?;
     let k4i = &di;
     let k4r = &dr;
+    let k4f = &df;
 
-    // Combine
+    // Combine compartments (clamped ≥ 0).
     for i in 0..ni {
         int_vals[i] += dt / 6.0 * (k1i[i] + 2.0 * k2i[i] + 2.0 * k3i[i] + k4i[i]);
         int_vals[i] = int_vals[i].max(0.0);
@@ -144,6 +185,13 @@ fn rk4_step(
     for i in 0..nr {
         real_vals[i] += dt / 6.0 * (k1r[i] + 2.0 * k2r[i] + 2.0 * k3r[i] + k4r[i]);
         real_vals[i] = real_vals[i].max(0.0);
+    }
+
+    // Combine augmented flow (NOT clamped).
+    if let Some(flow) = flow {
+        for i in 0..nf {
+            flow[i] += dt / 6.0 * (k1f[i] + 2.0 * k2f[i] + 2.0 * k3f[i] + k4f[i]);
+        }
     }
 
     Ok(())
@@ -184,8 +232,14 @@ trait OdeStepper {
 /// stepper's carried step guess; one `advance` takes `min(dt, h_max)`. (The
 /// proposal sketches a unit struct; carrying `dt` makes the re-entry contract
 /// self-contained and parallels `Dopri5`'s carried `h`.)
+///
+/// `euler_flow` selects the flow-accounting scheme (B2): when the model
+/// references the step size in a rate (`Expr::Dt` / RUNTIME_DT) the augmented
+/// flow has no single `dt` to thread through the stages, so those models keep
+/// the first-order Euler flow; every other model gets augmented (RK4) flow.
 struct Rk4Fixed {
     dt: f64,
+    euler_flow: bool,
 }
 
 impl OdeStepper for Rk4Fixed {
@@ -201,23 +255,27 @@ impl OdeStepper for Rk4Fixed {
         // bit-identical to the old `Schedule::substep` (= `dt.min(boundary - t)`).
         let h = self.dt.min(h_max);
 
-        // Euler flow accumulation (`c += rate(t)·h`, global order O(h)): a LEFT-
-        // rectangle rule via a separate `eval_propensities` call, distinct from
-        // the RK4 stages. It reads the START-of-step ROUNDED integer state
-        // (`eval_propensities` uses `int_float_override: None`), unlike the RK4
-        // stages which read the unrounded f64 via `int_float_override` — Phase B
-        // (augmented flow) unifies the flow onto the stage propensities, which is
-        // why both the rule AND the eval point change there. gh#126 §#11: the
-        // `dt`-referencing rate (`Expr::Dt`, gh#54) sees the REALIZED substep `h`
-        // (`dt_actual`), matching the RK4 derivs and the StepClock rule.
-        let (is, rs) = to_states(&state.int, &state.real);
-        let mut propensities = Vec::with_capacity(state.flow.len());
-        eval_propensities(model, &is, &rs, params, t, h, &mut propensities)?;
-        for (i, &p) in propensities.iter().enumerate() {
-            state.flow[i] += p * h;
+        if self.euler_flow {
+            // RUNTIME_DT models (B2): keep the O(h) Euler flow (`c += rate(t)·h`,
+            // a left-rectangle rule) at the REALIZED substep `h` — augmented flow
+            // is undefined when the rate depends on the step size. gh#126 §#11:
+            // the `Expr::Dt` rate (gh#54) sees `h` (dt_actual), matching the RK4
+            // derivs and the StepClock rule. Evaluated at the start-of-step
+            // ROUNDED integer state (`int_float_override: None`), as it was before
+            // this change. The user is warned once at load (see the CLI).
+            let (is, rs) = to_states(&state.int, &state.real);
+            let mut propensities = Vec::with_capacity(state.flow.len());
+            eval_propensities(model, &is, &rs, params, t, h, &mut propensities)?;
+            for (i, &p) in propensities.iter().enumerate() {
+                state.flow[i] += p * h;
+            }
+            rk4_step(model, &mut state.int, &mut state.real, None, params, t, h)?;
+        } else {
+            // Augmented flow (Q1B): `dc_i/dt = propensity_i` carried through the
+            // SAME RK4 stages as the compartments — one mechanism, integrator-
+            // order incidence, and no standalone 5th propensity eval.
+            rk4_step(model, &mut state.int, &mut state.real, Some(&mut state.flow), params, t, h)?;
         }
-
-        rk4_step(model, &mut state.int, &mut state.real, params, t, h)?;
         Ok(h)
     }
 }
@@ -275,11 +333,16 @@ pub fn run_ode(
     // parametric `at [...]` schedules.
     let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
-    // The integrator behind the seam. Fixed RK4 is the default — and, in Phase A,
-    // the only — integrator; Phase C selects `Dopri5` here from `cfg`. The driver
-    // below is integrator-agnostic: it hands each stepper the raw distance to the
-    // next boundary and re-enters until the boundary is reached.
-    let mut stepper = Rk4Fixed { dt: cfg.dt };
+    // The integrator behind the seam. Fixed RK4 is the default integrator;
+    // Phase C selects `Dopri5` here from `cfg`. The driver below is integrator-
+    // agnostic: it hands each stepper the raw distance to the next boundary and
+    // re-enters until the boundary is reached. B2: models that reference the step
+    // size in a rate (`Expr::Dt` / RUNTIME_DT) keep the first-order Euler flow;
+    // all others use augmented (RK4-integrated) flow. Computed once per run.
+    let euler_flow = model
+        .required_capabilities()
+        .contains(crate::Capabilities::RUNTIME_DT);
+    let mut stepper = Rk4Fixed { dt: cfg.dt, euler_flow };
 
     let mut traj = Trajectory::new();
     // The ODE flow is genuinely real-valued; recorded as `Flows::Real` WITHOUT

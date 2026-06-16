@@ -54,8 +54,12 @@ fn load(name: &str) -> ir::Model {
     ir::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e))
 }
 
-/// FNV-1a/64 over the full trajectory numeric content — identical to
-/// `gate_trajectory_baseline.rs` so the two gates are comparable.
+/// FNV-1a/64 over the trajectory's STATE content (`t`, integer counts, real
+/// values). Unlike `gate_trajectory_baseline.rs::trajectory_hash`, this gate does
+/// NOT mix the `flows` — so it is invariant to the gh#166 Q1B flow unification
+/// (augmented vs Euler incidence) and pins only the compartment trajectory: the
+/// off-grid intervention snap, coincident-boundary order, fractional output end,
+/// and lifecycle ordering this corpus exists to lock.
 fn trajectory_hash(traj: &sim::state::Trajectory) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     let mut mix = |bytes: &[u8]| {

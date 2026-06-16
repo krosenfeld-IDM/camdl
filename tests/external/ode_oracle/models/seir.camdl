@@ -1,0 +1,38 @@
+# gh#166 Phase B incidence oracle — frequency-dependent SEIR, no vital dynamics.
+# RHS (N = S+E+I+R constant):
+#   dS/dt = -beta*S*I/N
+#   dE/dt =  beta*S*I/N - sigma*E
+#   dI/dt =  sigma*E - gamma*I
+#   dR/dt =  gamma*I
+# Tracked incidence: infection (beta*S*I/N), progression (sigma*E), recovery
+# (gamma*I). Params baked via --set; the scipy/deSolve oracles match exactly.
+
+time_unit = 'days
+
+compartments { S, E, I, R }
+
+let N = S + E + I + R
+
+parameters {
+  beta  : rate  in [0.001, 5.0]
+  sigma : rate  in [0.001, 5.0]
+  gamma : rate  in [0.001, 5.0]
+  N0    : count in [1, 100000000]
+  I0    : count in [1, 1000000]
+}
+
+transitions {
+  infection   : S --> E  @ beta * S * (I / N)
+  progression : E --> I  @ sigma * E
+  recovery    : I --> R  @ gamma * I
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+simulate {
+  from = 0 'days
+  to   = 80 'days
+}

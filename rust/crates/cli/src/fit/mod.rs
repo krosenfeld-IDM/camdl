@@ -58,6 +58,12 @@ fn gate_run_stages_against_model(
             return Err(format!("stage '{}': {}", stage_name, msg));
         }
     }
+    // gh#166 B2: warn (once) if any ODE-backed stage will fit a `dt`-in-rate model
+    // with first-order Euler incidence (the high-order augmented flow is undefined
+    // when a rate depends on the step size).
+    if stages.iter().any(|(_, s)| s.backend().as_str() == "ode") {
+        methods::warn_if_ode_euler_flow(compiled);
+    }
     Ok(())
 }
 

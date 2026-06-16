@@ -555,6 +555,30 @@ pub fn check_model_capabilities(
     ))
 }
 
+/// gh#166 B2: a model that references the step size in a rate (`Expr::Dt` /
+/// RUNTIME_DT) keeps the FIRST-ORDER Euler incidence on the ODE backend — the
+/// high-order augmented flow (Q1B) is undefined when a rate depends on the step
+/// size. This is allowed and not a capability error, but it silently degrades
+/// incidence accuracy relative to every other model, so it is surfaced LOUDLY,
+/// once per invocation, by the ODE dispatch chokepoints (`util::run_simulation`
+/// for `simulate`, `gate_run_stages_against_model` for `fit`). No-op unless the
+/// model is RUNTIME_DT (callers gate on the ODE backend).
+pub fn warn_if_ode_euler_flow(compiled: &sim::CompiledModel) {
+    if compiled
+        .required_capabilities()
+        .contains(sim::Capabilities::RUNTIME_DT)
+    {
+        eprintln!(
+            "\x1b[33m⚠ model references `dt` in a rate (Expr::Dt): on the ODE \
+             backend its incidence is computed with the first-order Euler method \
+             — the high-order augmented flow is undefined when a rate depends on \
+             the step size. `dt` in a rate is a discrete-time construct; consider \
+             whether it belongs on the continuous ODE backend (every other model \
+             gets high-order incidence).\x1b[0m"
+        );
+    }
+}
+
 /// Per-capability hint text for the unsupported-capability error. Keyed on the
 /// `Capabilities` flag; `name` is the bitflags constant name (used as the
 /// non-blank fallback for any flag without bespoke guidance, so the message
