@@ -1,0 +1,33 @@
+# gh#208 regression: a transition rate that goes NEGATIVE on a sparse Gillespie
+# propensity update must raise SimError::NegativePropensity, not be silently
+# clamped to 0 by eval_one's `.max(0.0)`.
+#
+# `recover` rate = gamma * I * (cap - I) / N goes negative once I climbs past
+# cap=9. The model is NON-absorbing at t=0 (I=8 < cap, infect+wane rates > 0),
+# so the initial full `eval_propensities` does not catch it; the crossing only
+# happens later on the incremental (sparse) update path. `wane : R --> S` keeps
+# lambda_total > 0 across the crossing so the absorbing-state safety-net full
+# recompute does not fire on every seed — the silent clamp is then observable
+# (seed-dependent). chain_binomial errors on this model from the first substep.
+time_unit = 'days
+
+compartments { S, I, R }
+
+let N = S + I + R
+
+parameters {
+  beta  : rate  in [0.001, 100.0]
+  gamma : rate  in [0.001, 100.0]
+  omega : rate  in [0.001, 100.0]
+  cap   : count in [1, 1000]
+}
+
+transitions {
+  infect  : S --> I @ beta * S * (I / N)
+  recover : I --> R @ gamma * I * (cap - I) / N
+  wane    : R --> S @ omega * R
+}
+
+init { S = 92  I = 8  R = 0 }
+
+simulate { from = 0 'days  to = 5 'days }

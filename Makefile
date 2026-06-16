@@ -177,7 +177,7 @@ test-cli-docs: build-rust
 
 # ── Golden file management ────────────────────────────────────────────────────
 
-.PHONY: update-golden update-ocaml-golden update-corner-golden
+.PHONY: update-golden update-ocaml-golden update-corner-golden update-regression-golden
 
 # Recompile all DSL fixtures → ocaml/golden/*.ir.json
 update-ocaml-golden: build-ocaml
@@ -207,6 +207,16 @@ update-corner-golden: build-ocaml
 	@$(CAMDLC) $(CORNER_DIR)/event_intervention_agree.camdl    --set k=0.0 --set keep=0.5 -o $(CORNER_DIR)/ir/event_intervention_agree.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/event_drain_fusion.camdl          --set k=0.3 --set f=0.2 -o $(CORNER_DIR)/ir/event_drain_fusion.ir.json
 	@$(CAMDLC) $(CORNER_DIR)/dt_rate.camdl                     --set beta=1.0 --set gamma=0.2 --set tau=1.0 -o $(CORNER_DIR)/ir/dt_rate.ir.json
+
+# Recompile the regression fixtures (params baked via --set) →
+# tests/fixtures/regression/ir/*.ir.json. These reproduce specific fixed bugs;
+# unlike the corner-case corpus they are NOT auto-discovered by a baseline gate
+# (a sim error must not break baseline capture), only loaded by their own
+# regression tests. Re-run after a schema bump.
+REGRESSION_DIR := tests/fixtures/regression
+update-regression-golden: build-ocaml
+	@echo "Recompiling regression fixtures..."
+	@$(CAMDLC) $(REGRESSION_DIR)/gh208_sparse_negative_rate.camdl --set beta=2.0 --set gamma=0.2 --set omega=1.0 --set cap=9 -o $(REGRESSION_DIR)/ir/gh208_sparse_negative_rate.ir.json
 # ── Release / changelog ───────────────────────────────────────────────────────
 
 .PHONY: changelog version-bump release-suggest release-prep release-publish

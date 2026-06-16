@@ -47,11 +47,45 @@ impl Simulate for GillespieSim {
     fn name(&self) -> &'static str { "gillespie" }
 }
 
-/// Evaluate a single transition's propensity, clamping negative values to 0.0.
-/// Used for incremental sparse updates where transient negatives can arise from drift.
+/// Evaluate a single transition's propensity for an incremental (sparse) update.
+///
+/// Rejects negative / NaN propensities with the SAME typed errors the full
+/// `eval_propensities` path raises, so the sparse and full paths cannot disagree
+/// (gh#208). A negative rate is a model bug, not drift: silently clamping it to 0
+/// turns the transition off and produces a wrong trajectory with no error. (FP
+/// drift in the running `lambda_total` SUM is a separate concern, still handled
+/// by the `lambda_total.max(0.0)` guards at the call sites and the periodic full
+/// recompute.)
 #[inline]
-fn eval_one(tr_idx: usize, ctx: &EvalCtx<'_>) -> f64 {
-    eval_resolved(&ctx.model.resolved.rates[tr_idx], ctx).max(0.0)
+fn eval_one(tr_idx: usize, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
+    let p = eval_resolved(&ctx.model.resolved.rates[tr_idx], ctx);
+    if p.is_nan() {
+        // Mirror eval_propensities: a NaN may be the sentinel an out-of-range
+        // table lookup left on the thread-local — surface the named, actionable
+        // error if so, else the generic numerical collapse. take() clears it.
+        if let Some((table_idx, index, len)) = crate::resolved_expr::take_table_oob() {
+            let table_name = ctx.model.model.tables[table_idx].name.clone();
+            return Err(SimError::TableLookup(format!(
+                "table '{table_name}': index {index} out of bounds [0, {len}) \
+                 while evaluating rate of transition '{}' at t={} \
+                 (the index is computed from model state/parameters; widen the \
+                 table or fix the index expression)",
+                ctx.model.model.transitions[tr_idx].name, ctx.t
+            )));
+        }
+        return Err(SimError::NumericalCollapse {
+            kind: crate::error::CollapseKind::DivByZero,
+            t: ctx.t,
+        });
+    }
+    if p < 0.0 {
+        return Err(SimError::NegativePropensity {
+            transition: ctx.model.model.transitions[tr_idx].name.clone(),
+            value: p,
+            t: ctx.t,
+        });
+    }
+    Ok(p)
 }
 
 pub fn run_gillespie(
@@ -269,7 +303,7 @@ pub fn run_gillespie_with_observer(
                 let ctx = EvalCtx { model, int_s: &int_s, real_s: &real_s, params, t, dt: model.model.simulation.dt.unwrap_or(1.0), projected: None, aux: None, int_float_override: None };
                 for &tr_idx in &model.time_dep_transitions {
                     let old = propensities[tr_idx];
-                    let new_p = eval_one(tr_idx, &ctx);
+                    let new_p = eval_one(tr_idx, &ctx)?;
                     propensities[tr_idx] = new_p;
                     lambda_total += new_p - old;
                 }
@@ -370,7 +404,7 @@ pub fn run_gillespie_with_observer(
                 for &tr_idx in &model.comp_to_transitions[local] {
                     if !updated.contains(&tr_idx) {
                         let old = propensities[tr_idx];
-                        let new_p = eval_one(tr_idx, &ctx);
+                        let new_p = eval_one(tr_idx, &ctx)?;
                         propensities[tr_idx] = new_p;
                         lambda_total += new_p - old;
                         updated.push(tr_idx);
@@ -382,7 +416,7 @@ pub fn run_gillespie_with_observer(
             for &tr_idx in &model.time_dep_transitions {
                 if !updated.contains(&tr_idx) {
                     let old = propensities[tr_idx];
-                    let new_p = eval_one(tr_idx, &ctx);
+                    let new_p = eval_one(tr_idx, &ctx)?;
                     propensities[tr_idx] = new_p;
                     lambda_total += new_p - old;
                 }
