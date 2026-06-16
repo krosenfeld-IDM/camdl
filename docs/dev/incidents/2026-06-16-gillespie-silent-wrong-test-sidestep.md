@@ -1,9 +1,9 @@
 # Gillespie silent-wrong: known bugs sidestepped in tests, missed by final-state-only cross-backend comparison
 
 Date: 2026-06-16 Issues: gh#70 (absorbing-state flush + reverse-time boundary),
-gh#208 (sparse propensity negative-rate clamp) Status: bugs open + `blocker`;
-fixes pending. This report is about the _process_ failure that let two
-silent-wrong bugs persist undetected.
+gh#208 (sparse propensity negative-rate clamp) Status: **RESOLVED 2026-06-16**
+(`8779b873` gh#208, `35dd9c24` gh#70) — see "Resolution" below. This report is
+about the _process_ failure that let two silent-wrong bugs persist undetected.
 
 ## Summary
 
@@ -112,6 +112,11 @@ caught them:
    `Schedule::clip` (`schedule.rs:298-299`) mirroring the effect filter. _Risk:
    `clip` is shared spine code used by all backends — gate with the
    cross-backend full-trajectory test below + the existing byte-identity gates._
+   (**Superseded by the Resolution below**: the `clip` `> t`-on-output change
+   was _not_ taken — it would break the documented, tested "an output exactly at
+   `t` is still recorded" contract. The shipped fix instead advances the
+   absorbing branch one boundary at a time _through_ `clip`, which keeps the
+   cursor in lockstep so a stale-cursor boundary never arises.)
 2. **gh#208** — make `eval_one` `Result`-returning; reject negative / NaN / Inf
    with `NegativePropensity { transition, value, t }`, consistent with
    `eval_propensities`; thread through the three sparse-update call sites.
@@ -142,3 +147,40 @@ point fixes are downstream of it.
   flushing (gh#70). Both bugs are instances of "the optimized incremental path
   silently disagrees with the full path." The full-trajectory cross-backend gate
   is the right systematic defense against the whole class.
+
+## Resolution (2026-06-16)
+
+Both fixes landed as independent commits, each red→green per the bug-fix
+standard; the cross-backend full-trajectory harness the remediation called for
+was written first and is the durable artifact.
+
+- **gh#208** (`8779b873`) — `eval_one` is now `Result`-returning and mirrors
+  `eval_propensities`' guards exactly (negative → `NegativePropensity`, NaN →
+  `NumericalCollapse` / named table-OOB); the three sparse call sites thread
+  `?`. The per-site `lambda_total.max(0.0)` drift guards stayed (they clamp the
+  running SUM, a separate concern from a negative individual rate). Red test:
+  `tests/gillespie_sparse_negative_rate.rs` (a rate crossing zero on the sparse
+  path, with a non-crossing control so it can't pass vacuously). Happy path
+  byte-identical — zero golden drift.
+- **gh#70** (`35dd9c24`) — the absorbing branch now advances **one boundary at a
+  time through the shared `Schedule::clip`** (the primitive the non-absorbing
+  path already uses), deleting the hand-rolled `next_special` min + partial
+  flush. Per-boundary advance keeps the output cursor in lockstep with `t`, so a
+  later boundary cannot be pulled behind the clock. Red test:
+  `cross_backend_lifecycle_agreement.rs::full_trajectory_no_pre_event_leak_or_time_reversal`
+  (full-trajectory + time-monotonicity, replacing the `final_a_b`-only probe).
+  Exactly one reviewed baseline moved — `event_intervention_agree/gillespie` to
+  the value chain_binomial/ode already produce, i.e. gillespie now agrees
+  row-for-row with both other backends.
+
+**Deferred to spine consolidation (separate worktree).** The fix routes through
+`Schedule::clip`, not `Schedule::next_stop`. `next_stop` — the spine's
+advertised "single boundary authority" — has **zero production callers** (it
+shipped as a unit-tested stub) and cannot be dropped into a boundary-advance
+loop as-is: it takes the effect time raw (no `> t` filter), so an effect landing
+exactly on `t` (e.g. at `t_start`) leaves `boundary == t` with nothing to
+advance the clock — a non-terminating loop. Making `next_stop` the genuine
+single authority (add the `> t` filter; route every backend's boundary loop
+through it; collapse gillespie's three remaining output-flush idioms) is the
+standing follow-up. gh#70 was a symptom of that incomplete centralization, not
+just a local bug.
