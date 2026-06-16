@@ -131,12 +131,16 @@ is a computational truncation (kernel tails are negligible), not an estimand.
 
 ### Dimensional checking
 
-Relational comparisons in `P` are dimension-checked like rate expressions: both
-sides must share a dimension. camdl today has only two base dimensions, P
-(population) and T (time) — there is **no length axis**, and `'km` does not lex
-(`dimcheck.ml:3`; the unit-literal list is fixed). So a distance table is
-**dimensionless** (`'ratio` or unitless), the radius is a bare literal (`< 50`),
-and the kernel `dist[p,q]^(-rho)` type-checks precisely because the base is
+The predicate `P` is evaluated and pruned at expansion, _before_ dimcheck runs
+on the IR rate exprs — so the predicate comparison is **not** dimension-checked
+(it is a numeric compare of a constant cell to a literal). That is acceptable
+because camdl has only two base dimensions, P (population) and T (time) — there
+is **no length axis**, and `'km` does not lex (`dimcheck.ml:3`; the unit-literal
+list is fixed) — so a distance/mask table is **dimensionless** and the literal
+radius is a bare number: there is no dimensional ambiguity to check. (Adding a
+length dimension later would also be the point at which predicate dim-checking
+earns its keep.) The _kernel_ in the rate body still goes through dimcheck
+normally; `dist[p,q]^(-rho)` type-checks precisely because the base is
 dimensionless — `dimcheck.ml:394` rejects a non-constant exponent over a
 _dimensioned_ base, so a dimensionless distance is exactly what makes a fitted
 exponent legal (no `unchecked_dim` needed).

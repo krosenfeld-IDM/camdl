@@ -1351,8 +1351,9 @@ set is decidable before the simulation runs:
 - **index variables**, compared with `==` / `!=` — `q != p`, `q == kano`;
 - **constant table cells**, compared against a numeric literal with
   `< <= > >= == !=` — `dist[p,q] < 50`, `mask[p,q] != 0`. The table must be a
-  compile-time constant (an inline literal or a `read(...)` table), and the
-  comparison is dimension-checked like a rate expression.
+  compile-time constant (an inline literal or a `read(...)` table); the
+  comparison is numeric (distance/mask tables are dimensionless — §2.1 has no
+  length unit — so there is no dimensional ambiguity to check).
 
 It may **not** reference a parameter, compartment state, or a parameterized
 (non-constant) table cell — those are runtime quantities, and a
