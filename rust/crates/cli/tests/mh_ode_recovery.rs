@@ -49,7 +49,7 @@ const START_BETA: f64 = 1.8; // far from truth, so recovery is a real test
 /// `projected` selects the observation projection (`prevalence(I)` or
 /// `incidence(infection)`), which is the only thing the two recovery tests
 /// differ in. Returns the compiled IR path.
-fn write_model_proj(dir: &Path, camdl: &Path, projected: &str) -> PathBuf {
+fn write_model_proj(dir: &Path, camdl: &Path, projected: &str, integ: &str) -> PathBuf {
     let src = format!(r#"
 time_unit = 'days
 compartments {{ S, I, R }}
@@ -71,7 +71,7 @@ observations {{
   }}
 }}
 init {{ S = 9990  I = 10 }}
-simulate {{ from = 0 'days  to = 60 'days }}
+simulate {{ from = 0 'days  to = 60 'days  {integ} }}
 "#);
     let model_path = dir.join("sir.camdl");
     std::fs::write(&model_path, &src).unwrap();
@@ -126,13 +126,21 @@ fn beta_samples(trace: &Path) -> Vec<f64> {
 /// tmp). The tmp guard must be kept alive by the caller. Returns `None` when the
 /// release binary / camdlc is missing (so the test skips).
 fn recover_beta(tag: &str, projected: &str) -> Option<(f64, PathBuf, TempDir)> {
+    recover_beta_integ(tag, projected, "")
+}
+
+/// As `recover_beta`, but with an explicit `simulate {}` integrator clause
+/// (e.g. `integrator = rk45 { atol = 1e-8  rtol = 1e-6 }`). The clause is honored
+/// for BOTH the synthetic data-gen and the fit (`compute_ode_loglik` reads the
+/// model's declared integrator), so this drives rk45 through the whole fit path.
+fn recover_beta_integ(tag: &str, projected: &str, integ: &str) -> Option<(f64, PathBuf, TempDir)> {
     let bin = camdl_bin();
     if !bin.exists() || camdlc().is_none() {
         eprintln!("skip: release camdl / camdlc.exe missing (run `make build`)");
         return None;
     }
     let tmp = tempdir(tag);
-    let ir = write_model_proj(tmp.path(), &camdlc().unwrap(), projected);
+    let ir = write_model_proj(tmp.path(), &camdlc().unwrap(), projected, integ);
 
     let truth = tmp.path().join("truth.toml");
     std::fs::write(&truth, format!("beta = {TRUE_BETA}\ngamma = 0.3\nN0 = 10000\n")).unwrap();
@@ -231,4 +239,25 @@ fn mh_ode_recovers_known_beta_from_incidence() {
         "mh+ode did not recover beta from INCIDENCE observations: posterior mean \
          {mean:.3} (truth {TRUE_BETA}, start {START_BETA}). A failure here means the \
          augmented incidence is not flowing correctly through compute_ode_loglik.");
+}
+
+/// gh#166 (PR #231 review): no test ran rk45 through `camdl fit`. Same recovery,
+/// but the model DECLARES `integrator = rk45 { ... }`, so both the synthetic
+/// data-gen and the `compute_ode_loglik` fit seam run the adaptive integrator.
+/// Recovering beta end-to-end proves rk45 is honored on the inference path (it
+/// reads `model.simulation.integrator`), not just in forward `simulate`.
+#[test]
+fn mh_ode_recovers_known_beta_rk45() {
+    let Some((mean, _out, _tmp)) = recover_beta_integ(
+        "recovery_rk45",
+        "prevalence(I)",
+        "integrator = rk45 { atol = 1e-8  rtol = 1e-6 }",
+    ) else { return };
+
+    assert!(mean.is_finite() && (0.05..=5.0).contains(&mean),
+        "rk45 mh+ode posterior beta mean {mean} not finite/in-bounds");
+    assert!((0.45..=1.35).contains(&mean),
+        "mh+ode on a model declaring `integrator = rk45` did not recover beta: \
+         posterior mean {mean:.3} (truth {TRUE_BETA}, start {START_BETA}). A failure \
+         here means rk45 is not honored on the fit path (compute_ode_loglik).");
 }

@@ -9,8 +9,9 @@ use std::collections::HashMap;
 use ir::expr::{BinOp, Expr, ProjectedExpr};
 use ir::intervention::{Action, Intervention, InterventionSchedule, RecurringSchedule, SetAction};
 use ir::model::{
-    BalanceSpec, Binding, Compartment, CompartmentKind, Dimension, InitialConditions, Model,
-    ModelStructure, OutputConfig, OutputSchedule, Preset, RegularOutputSchedule, SimulationConfig,
+    BalanceSpec, Binding, Compartment, CompartmentKind, Dimension, InitialConditions, Integrator,
+    Model, ModelStructure, OutputConfig, OutputSchedule, Preset, RegularOutputSchedule,
+    SimulationConfig,
 };
 use ir::observation::{
     Likelihood, ObservationModel, ObservationSchedule, PoissonLikelihood, Projection, RegularSchedule,
@@ -255,6 +256,31 @@ fn rate_grad_map_order_invariant() {
         build(false).content_hash(),
         "rate_grad insertion order must not change the model hash"
     );
+}
+
+/// gh#166: the chosen integrator is part of the model's content identity (it
+/// changes the numerics), so it must flow into the run-id — but the `Rk4`
+/// default must be hash-invisible so pre-gh#166 run-ids are unchanged (the
+/// GOLDEN pin above is the proof of that, since `representative_model()` is
+/// `Rk4`).
+#[test]
+fn integrator_choice_changes_run_id() {
+    let with = |i: Integrator| {
+        let mut m = representative_model();
+        m.simulation.integrator = i;
+        m.content_hash()
+    };
+    let rk4 = with(Integrator::Rk4);
+    let rk45_default = with(Integrator::Rk45 { atol: None, rtol: None });
+    let rk45_a = with(Integrator::Rk45 { atol: Some(1e-8), rtol: Some(1e-6) });
+    let rk45_b = with(Integrator::Rk45 { atol: Some(1e-10), rtol: Some(1e-6) });
+
+    // Explicit Rk4 == the default model (Rk4 is hash-invisible / omitted).
+    assert_eq!(rk4, representative_model().content_hash(), "default rk4 must not move the run-id");
+    // rk4 vs rk45, and tolerance variations, all hash distinctly.
+    assert_ne!(rk4, rk45_default, "rk4 vs rk45 must hash distinctly");
+    assert_ne!(rk45_default, rk45_a, "rk45 default-tols vs explicit tols must differ");
+    assert_ne!(rk45_a, rk45_b, "a different atol must change the run-id");
 }
 
 /// Negative control: a structurally different model must hash differently
