@@ -68,6 +68,15 @@ type context = {
      through name resolution to E100. Empty outside the likelihood-resolution
      scope. *)
   mutable obs_aux_cols    : string list;
+  (* Resolved constant tables, indexed by name → (row-major flattened cells,
+     ordered dimension names). Populated once by [build_table_index] right
+     after [expand_tables] runs (and before transition expansion), so a
+     compile-time `where` predicate (`sum(... where dist[p,q] < r, ...)`) can
+     read a table's resolved values during [resolve_expr]. Tables resolve to
+     compile-time constants, so this is the natural place for them to live —
+     the same way [dim_registry] holds resolved dimensions. External
+     (`--table`) tables are absent here (no compile-time values). *)
+  mutable table_index    : (string, Ir.expr array * string list) Hashtbl.t;
 }
 
 let empty_context ?(source_dir = "") ?(filename = "<input>") () = {
@@ -109,6 +118,7 @@ let empty_context ?(source_dir = "") ?(filename = "<input>") () = {
   hoisted_rev          = [];
   suppress_hoist       = false;
   obs_aux_cols         = [];
+  table_index          = Hashtbl.create 16;
 }
 
 (* ── Model summary ────────────────────────────────────────────────────────── *)
@@ -1853,7 +1863,7 @@ let rec body_refs_param_or_let ctx (e : expr) : bool =
     || List.exists (function IPosn e | INamed (_, e) -> body_refs_param_or_let ctx e) items
   | EBinOp (_, l, r) -> body_refs_param_or_let ctx l || body_refs_param_or_let ctx r
   | EUnOp (_, e)     -> body_refs_param_or_let ctx e
-  | ESum (_, _, b)   -> body_refs_param_or_let ctx b
+  | ESum (_, _, _, b) -> body_refs_param_or_let ctx b
   | ECond (p, t, f)  ->
     body_refs_param_or_let ctx p || body_refs_param_or_let ctx t || body_refs_param_or_let ctx f
   | EFuncCall (_, args) -> List.exists (fun (_, e) -> body_refs_param_or_let ctx e) args
@@ -1879,7 +1889,7 @@ let free_index_var_clean (lb : let_binding) : bool =
         | IPosn e | INamed (_, e) -> ok bound e) items
     | EBinOp (_, l, r) -> ok bound l && ok bound r
     | EUnOp (_, e)     -> ok bound e
-    | ESum (v, _, b)   -> ok (v :: bound) b
+    | ESum (v, _, _, b) -> ok (v :: bound) b
     | ECond (p, t, f)  -> ok bound p && ok bound t && ok bound f
     | EFuncCall (_, args) -> List.for_all (fun (_, e) -> ok bound e) args
     | EList es            -> List.for_all (ok bound) es
@@ -1918,6 +1928,96 @@ let register_hoisted_binding ctx (concrete : string) (resolve_body : unit -> Ir.
 
 let collect_hoisted_bindings ctx : Ir.binding list =
   List.rev_map (fun (name, body) -> { Ir.bname = name; Ir.bexpr = body }) ctx.hoisted_rev
+
+(* ── Guard evaluation ─────────────────────────────────────────────────────── *)
+(* Defined before [resolve_expr] because the restricted-sum `where` filter calls
+   [eval_guard] during expression resolution (gh#185). *)
+
+let apply_relop op (a : float) (b : float) : bool =
+  match op with
+  | RLt -> a < b  | RLe -> a <= b
+  | RGt -> a > b  | RGe -> a >= b
+  | REq -> a = b  | RNe -> a <> b
+
+(* Resolve the constant value of a table cell referenced by a `where`
+   predicate: table name + index variables (resolved to dimension levels via
+   [env], row-major flattened offset). Reads the pre-built [ctx.table_index].
+   Emits E282 (predicate not compile-time decidable) and returns None on any
+   failure — unknown/non-constant table, bad arity, unknown level, OOB, or a
+   non-constant (parameterized) cell. *)
+let eval_tab_cell ctx env tname idxs : float option =
+  let err msg =
+    Diagnostics.error ctx.diags ~code:"E282" ~loc:Diagnostics.no_loc ~message:msg ();
+    None
+  in
+  match Hashtbl.find_opt ctx.table_index tname with
+  | None ->
+    err (Printf.sprintf
+      "the where-predicate references '%s', which is not a compile-time-constant \
+       table; a `where` predicate must be decidable before simulation (it may \
+       reference index variables and constant tables only)." tname)
+  | Some (cells, dims) ->
+    if List.length idxs <> List.length dims then
+      err (Printf.sprintf
+        "the where-predicate indexes table '%s' with %d indices, but it has %d \
+         dimensions." tname (List.length idxs) (List.length dims))
+    else begin
+      let levels_of dim = match List.assoc_opt dim ctx.dim_registry with
+        | Some l -> l | None -> [] in
+      let positions = List.map2 (fun var dim ->
+        let lvl = match List.assoc_opt var env with Some l -> l | None -> var in
+        List.find_index (fun v -> v = lvl) (levels_of dim)
+      ) idxs dims in
+      let sizes = List.map (fun dim -> List.length (levels_of dim)) dims in
+      if List.exists Option.is_none positions then
+        err (Printf.sprintf
+          "the where-predicate indexes table '%s' with a value that is not a \
+           known level of its dimension." tname)
+      else
+        let positions = List.map Option.get positions in
+        let offset = List.fold_left2 (fun acc pos sz -> (acc * sz) + pos) 0 positions sizes in
+        if offset < 0 || offset >= Array.length cells then
+          err (Printf.sprintf "the where-predicate index into table '%s' is out of bounds." tname)
+        else match cells.(offset) with
+          | Ir.Const f -> Some f
+          | _ ->
+            err (Printf.sprintf
+              "the where-predicate references a non-constant (parameterized) cell of \
+               table '%s'; the support must be a compile-time constant. Use a \
+               constant mask/distance table in the predicate and keep fitted \
+               weights in the rate body." tname)
+    end
+
+let rec eval_guard ctx env = function
+  | GEq (a, b) ->
+    let va = Option.value ~default:a (List.assoc_opt a env) in
+    let vb = Option.value ~default:b (List.assoc_opt b env) in
+    va = vb
+  | GNeq (a, b) ->
+    let va = Option.value ~default:a (List.assoc_opt a env) in
+    let vb = Option.value ~default:b (List.assoc_opt b env) in
+    va <> vb
+  | GTab (tname, idxs, op, operand) ->
+    (match operand with
+     | GoName n ->
+       (* A name as the threshold. camdl has no compile-time-constant scalars,
+          so it is a parameter (or unknown): a fitted radius would change which
+          patches couple at runtime — an unbounded reduction. Targeted error. *)
+       Diagnostics.error ctx.diags ~code:"E282" ~loc:Diagnostics.no_loc
+         ~message:(Printf.sprintf
+           "the where-predicate compares table '%s' against '%s', but a coupling \
+            support must be fixed at compile time. If '%s' is a parameter, a \
+            fitted threshold would change which patches couple at runtime (an \
+            unbounded reduction the engine cannot evaluate). Use a literal \
+            threshold (e.g. `< 50`) for the support and fit the kernel's \
+            shape/strength in the rate body instead." tname n n) ();
+       false
+     | GoNum rhs ->
+       (match eval_tab_cell ctx env tname idxs with
+        | Some cell -> apply_relop op cell rhs
+        | None      -> false))   (* error already emitted; drop the term *)
+  | GAnd (g1, g2) -> eval_guard ctx env g1 && eval_guard ctx env g2
+  | GOr  (g1, g2) -> eval_guard ctx env g1 || eval_guard ctx env g2
 
 let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
   match e with
@@ -2070,8 +2170,15 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
     Ir.Cond { pred  = resolve_expr ctx env p;
                then_ = resolve_expr ctx env a;
                else_ = resolve_expr ctx env b }
-  | ESum (v, d, body) ->
+  | ESum (v, d, guard_opt, body) ->
     let vals = dim_values ctx d in
+    (* Restricted sum: a `where` predicate prunes the domain to the levels that
+       satisfy it, evaluated at compile time (the sum var bound to each
+       candidate). Survivors-only → O(P·k) by construction (gh#185). *)
+    let vals = match guard_opt with
+      | None   -> vals
+      | Some g -> List.filter (fun vv -> eval_guard ctx ((v, vv) :: env) g) vals
+    in
     if vals = [] then Ir.Const 0.0
     else
       let terms = List.map (fun vv ->
@@ -2622,20 +2729,6 @@ let name_parts_from_bindings ibs env =
     | IComp v           -> List.assoc_opt v env
   ) ibs
 
-(* ── Guard evaluation ─────────────────────────────────────────────────────── *)
-
-let rec eval_guard env = function
-  | GEq (a, b) ->
-    let va = Option.value ~default:a (List.assoc_opt a env) in
-    let vb = Option.value ~default:b (List.assoc_opt b env) in
-    va = vb
-  | GNeq (a, b) ->
-    let va = Option.value ~default:a (List.assoc_opt a env) in
-    let vb = Option.value ~default:b (List.assoc_opt b env) in
-    va <> vb
-  | GAnd (g1, g2) -> eval_guard env g1 && eval_guard env g2
-  | GOr  (g1, g2) -> eval_guard env g1 || eval_guard env g2
-
 (** Transition-name expander — the incidence analogue of
     [expand_compartment_name]. Given a base transition name, return all
     fully-expanded IR transition names that base produces, in emission
@@ -2656,7 +2749,7 @@ let expand_transition_name ctx tname : string list option =
       List.concat_map (fun env ->
         let pass_guard = match tr.trguard with
           | None   -> true
-          | Some g -> eval_guard env g
+          | Some g -> eval_guard ctx env g
         in
         if not pass_guard then []
         else begin
@@ -2707,6 +2800,7 @@ let check_guard_compile_time ?(loc = Diagnostics.no_loc) ctx decl_name loop_vars
   in
   let rec walk = function
     | GEq (a, b) | GNeq (a, b) -> check_ident a; check_ident b
+    | GTab (_, idxs, _, _) -> List.iter check_ident idxs
     | GAnd (g1, g2) | GOr (g1, g2) -> walk g1; walk g2
   in
   walk guard
@@ -2738,9 +2832,14 @@ let check_guards ctx =
 (* ── Transition expansion ────────────────────────────────────────────────── *)
 
 let guard_to_string g =
+  let relop_str = function
+    | RLt -> "<" | RLe -> "<=" | RGt -> ">" | RGe -> ">=" | REq -> "==" | RNe -> "!=" in
+  let operand_str = function GoNum f -> Printf.sprintf "%g" f | GoName n -> n in
   let rec pp = function
     | GEq  (a, b) -> Printf.sprintf "%s == %s" a b
     | GNeq (a, b) -> Printf.sprintf "%s != %s" a b
+    | GTab (t, idxs, op, v) ->
+      Printf.sprintf "%s[%s] %s %s" t (String.concat "," idxs) (relop_str op) (operand_str v)
     | GAnd (g1, g2) -> Printf.sprintf "%s and %s" (pp g1) (pp g2)
     | GOr  (g1, g2) -> Printf.sprintf "%s or %s"  (pp g1) (pp g2)
   in
@@ -2754,7 +2853,7 @@ let expand_transitions_counted ctx =
     let results = List.map (fun env ->
       let pass_guard = match tr.trguard with
         | None   -> true
-        | Some g -> eval_guard env g
+        | Some g -> eval_guard ctx env g
       in
       if not pass_guard then (incr filtered; incr tr_filtered; [])
       else begin
@@ -3576,6 +3675,28 @@ let expand_tables ctx =
                  Ir.cell_kind = cell_kind }])
   ) ctx.table_decls
 
+(* Index the resolved constant tables by name → (row-major flattened cells,
+   ordered dimension names), so a compile-time `where` predicate can read a
+   cell's value during [resolve_expr]. Built once, right after [expand_tables]
+   and before transition expansion. External (`--table`) tables have no
+   compile-time values and are skipped (a predicate over one then errors with
+   E282 — "not a compile-time-constant table"). *)
+let build_table_index ctx (tables : Ir.table list) : unit =
+  Hashtbl.reset ctx.table_index;
+  let dim_name = function TDim s | TDimUnit (s, _) -> s in
+  List.iter (fun (t : Ir.table) ->
+    match t.Ir.source with
+    | Ir.Inline cells ->
+      let dims =
+        match List.find_opt (fun (td : table_decl) -> List.mem t.Ir.name td.tnames)
+                ctx.table_decls with
+        | Some td -> List.map dim_name td.tdims
+        | None    -> []
+      in
+      Hashtbl.replace ctx.table_index t.Ir.name (Array.of_list cells, dims)
+    | Ir.External _ -> ()
+  ) tables
+
 (* ── Initial conditions ──────────────────────────────────────────────────── *)
 
 let is_all_const e =
@@ -4290,7 +4411,7 @@ let expand_scheduled_actions ctx decls ~(kind : Ir.intervention_kind) =
     List.filter_map (fun env ->
       let pass_guard = match iv.ivguard with
         | None   -> true
-        | Some g -> eval_guard env g
+        | Some g -> eval_guard ctx env g
       in
       if not pass_guard then None
       else
@@ -4551,7 +4672,7 @@ let expand_observations ctx =
           | EUnOp (_, e) -> names_of e
           | ECond (p, a, b) -> names_of p @ names_of a @ names_of b
           | EFuncCall (_, args) -> List.concat_map (fun (_, e) -> names_of e) args
-          | ESum (_, _, e) -> names_of e
+          | ESum (_, _, _, e) -> names_of e
           | EList es -> List.concat_map names_of es
           | ERange (a, b) -> names_of a @ names_of b
           | EConst _ | EUnit _ -> []
@@ -4728,7 +4849,7 @@ let expand_observations ctx =
          The loop variable indexes the transition; each level instantiates one
          concrete flow. (A `sum` whose body is anything else falls through to
          the generic DerivedExpr arm below.) *)
-      | ProjDerived (ESum (loop_var, dim, EFuncCall ("incidence", iargs)))
+      | ProjDerived (ESum (loop_var, dim, _, EFuncCall ("incidence", iargs)))
         when (match List.assoc_opt "" iargs with
               | Some (EIndex (_, _)) -> true | _ -> false) ->
         let inner = match List.assoc_opt "" iargs with
@@ -4748,7 +4869,7 @@ let expand_observations ctx =
             | []       -> Ir.CumulativeFlow tr
             | [single] -> Ir.CumulativeFlow single
             | many     -> Ir.CumulativeFlowSum many)
-         | None -> Ir.DerivedExpr (resolve_expr ctx env (ESum (loop_var, dim, EConst 0.0))))
+         | None -> Ir.DerivedExpr (resolve_expr ctx env (ESum (loop_var, dim, None, EConst 0.0))))
       | ProjDerived e ->
         Ir.DerivedExpr (resolve_expr ctx env e)
     in
@@ -4916,7 +5037,7 @@ let rec collect_param_refs known_params acc = function
     let a = collect_param_refs known_params acc l in
     collect_param_refs known_params a r
   | EUnOp (_, e) -> collect_param_refs known_params acc e
-  | ESum (_, _, body) -> collect_param_refs known_params acc body
+  | ESum (_, _, _, body) -> collect_param_refs known_params acc body
   | ECond (p, t, e) ->
     let a = collect_param_refs known_params acc p in
     let a = collect_param_refs known_params a t in
@@ -5057,7 +5178,7 @@ let check_no_shadowing ctx =
       List.iter (function IPosn e | INamed (_, e) -> walk decl bound e) items
     | EBinOp (_, l, r) -> walk decl bound l; walk decl bound r
     | EUnOp (_, e) -> walk decl bound e
-    | ESum (v, _, b) ->
+    | ESum (v, _, _, b) ->
       if List.mem v bound then report decl v;
       walk decl (v :: bound) b
     | ECond (p, t, f) -> walk decl bound p; walk decl bound t; walk decl bound f
@@ -5594,7 +5715,7 @@ let expand_scenarios ctx : Ir.preset list =
       List.iter (fun env ->
         let pass_guard = match iv.ivguard with
           | None   -> true
-          | Some g -> eval_guard env g
+          | Some g -> eval_guard ctx env g
         in
         if pass_guard then begin
           let parts = name_parts_from_bindings iv.ivindices env in
@@ -6059,6 +6180,12 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
   check_surface_time_typing ctx;
   (* Save original transitions before desugaring *)
   ctx.orig_transitions <- ctx.transitions;
+  (* Resolve tables BEFORE transition expansion: tables are compile-time
+     constants (they depend only on dimensions, not transitions), and a
+     restricted-sum `where` predicate needs their values during resolve_expr.
+     Indexed into ctx.table_index for the predicate; reused for Ir.tables. *)
+  let resolved_tables = expand_tables ctx in
+  build_table_index ctx resolved_tables;
   let expanded_comps = expand_compartments ctx in
   let (expanded_trs, filtered_n) = expand_transitions_counted ctx in
   lint_l401 ctx expanded_trs;
@@ -6087,7 +6214,7 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
     Ir.transitions        = expanded_trs;
     Ir.ode_equations      = expand_ode_equations ctx;
     Ir.time_functions     = expand_time_functions ctx;
-    Ir.tables             = expand_tables ctx;
+    Ir.tables             = resolved_tables;
     Ir.interventions      = expand_interventions ctx;
     Ir.observations       = expand_observations ctx;
     Ir.parameters         = expand_parameters ctx;

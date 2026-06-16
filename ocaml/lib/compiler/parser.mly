@@ -521,7 +521,22 @@ guard_expr:
 guard_atom:
   | a = IDENT EQ2 b = IDENT { GEq  (a, b) }
   | a = IDENT NEQ  b = IDENT { GNeq (a, b) }
+  | t = IDENT LBRACKET idx = separated_nonempty_list(COMMA, IDENT) RBRACKET op = relop v = guard_operand
+      { GTab (t, idx, op, v) }
   | LPAREN g = guard_expr RPAREN { g }
+
+relop:
+  | LT  { RLt }
+  | LE  { RLe }
+  | GT  { RGt }
+  | GE  { RGe }
+  | EQ2 { REq }
+  | NEQ { RNe }
+
+guard_operand:
+  | i = INT   { GoNum (float_of_int i) }
+  | f = FLOAT { GoNum f }
+  | n = IDENT { GoName n }
 
 (* ── Index bindings ─────────────────────────────────────────────────────── *)
 
@@ -975,7 +990,9 @@ atom_expr:
       (* function call with optional keyword args *)
       { EFuncCall (name, args) }
   | SUM LPAREN v = IDENT IN d = IDENT COMMA body = expr RPAREN
-      { ESum (v, d, body) }
+      { ESum (v, d, None, body) }
+  | SUM LPAREN v = IDENT IN d = IDENT WHERE g = guard_expr COMMA body = expr RPAREN
+      { ESum (v, d, Some g, body) }
   | name = IDENT LBRACKET items = separated_list(COMMA, index_item) RBRACKET
       { EIndex (name, items) }
   | name = IDENT

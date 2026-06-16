@@ -6677,8 +6677,92 @@ let test_sum_var_distinct_from_index_ok () =
   let _ = compile_expect_ok src in
   ()
 
+(* ── Restricted sums: sum(v in d where P, body) (gh#185) ─────────────────── *)
+
+(* 4 patches a,b,c,d; row-major dist. Patch a couples only to b (dist 30 < 50);
+   c and d are at 99 (out of radius), and the self-term is excluded by q != p. *)
+let where_radius_src =
+  "time_unit = 'days\n\
+   compartments { S, I, R }\n\
+   dimensions { patch = [a, b, c, d] }\n\
+   stratify(by = patch)\n\
+   parameters { beta : rate in [0,2]  gamma : rate in [0,1]  rho : probability in [0,1] }\n\
+   tables { dist : patch × patch = [[0.0,30.0,99.0,99.0],[30.0,0.0,30.0,99.0],[99.0,30.0,0.0,30.0],[99.0,99.0,30.0,0.0]] }\n\
+   let N[p in patch] = S[p] + I[p] + R[p]\n\
+   transitions {\n\
+   infection[p in patch] : S[p] --> I[p] @ beta * S[p] * (I[p]/N[p] + rho * sum(q in patch where dist[p,q] < 50 and q != p, I[q]/N[q]))\n\
+   recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+   }\n\
+   init { S[a]=99 I[a]=1 S[b]=100 S[c]=100 S[d]=100 }\n\
+   simulate { from = 0 'days to = 30 'days }\n"
+
+let rec pop_names acc (e : Ir.expr) = match e with
+  | Ir.Pop n -> n :: acc
+  | Ir.BinOp b -> pop_names (pop_names acc b.left) b.right
+  | Ir.UnOp u -> pop_names acc u.arg
+  | Ir.Cond c -> pop_names (pop_names (pop_names acc c.pred) c.then_) c.else_
+  | Ir.Reduce ts -> List.fold_left pop_names acc ts
+  | Ir.UncheckedDim r -> pop_names acc r.inner
+  | _ -> acc
+
+(* With the constant-fold OFF, any pruning is purely from the `where` predicate
+   (not the fold dropping zero-W terms) — so this pins sparsity-by-construction. *)
+let test_where_radius_prunes () =
+  with_fold_disabled (fun () ->
+    let m = match Compiler.compile ~name:"where_radius" where_radius_src with
+      | Ok m -> m
+      | Error e -> Alcotest.failf "where-radius model should compile: %s" e in
+    match List.find_opt (fun (t : Ir.transition) -> t.name = "infection_a") m.transitions with
+    | None -> Alcotest.fail "no infection_a transition"
+    | Some t ->
+      let pops = pop_names [] t.rate in
+      Alcotest.(check bool) "infection_a couples to I_b (in radius)" true  (List.mem "I_b" pops);
+      Alcotest.(check bool) "infection_a does NOT couple to I_c"     false (List.mem "I_c" pops);
+      Alcotest.(check bool) "infection_a does NOT couple to I_d"     false (List.mem "I_d" pops))
+
+let test_where_fitted_threshold_rejected () =
+  compile_expect_error_code ~code:"E282" ~contains:"fitted threshold"
+    "time_unit = 'days\n\
+     compartments { S, I, R }\n\
+     dimensions { patch = [a, b, c] }\n\
+     stratify(by = patch)\n\
+     parameters { beta : rate in [0,2]  gamma : rate in [0,1]  thr : positive in [0,100] }\n\
+     tables { dist : patch × patch = [[0.0,30.0,99.0],[30.0,0.0,30.0],[99.0,30.0,0.0]] }\n\
+     let N[p in patch] = S[p] + I[p] + R[p]\n\
+     transitions {\n\
+     infection[p in patch] : S[p] --> I[p] @ beta * S[p] * sum(q in patch where dist[p,q] < thr, I[q]/N[q])\n\
+     recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+     }\n\
+     init { S[a]=99 I[a]=1 S[b]=100 S[c]=100 }\n\
+     simulate { from = 0 'days to = 10 'days }\n"
+
+let test_where_empty_survivors_ok () =
+  let _ = compile_expect_ok
+    "time_unit = 'days\n\
+     compartments { S, I, R }\n\
+     dimensions { patch = [a, b] }\n\
+     stratify(by = patch)\n\
+     parameters { beta : rate in [0,2]  gamma : rate in [0,1] }\n\
+     tables { dist : patch × patch = [[0.0, 99.0],[99.0, 0.0]] }\n\
+     let N[p in patch] = S[p] + I[p] + R[p]\n\
+     transitions {\n\
+     infection[p in patch] : S[p] --> I[p] @ beta * S[p] * sum(q in patch where dist[p,q] < 50 and q != p, I[q]/N[q])\n\
+     recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+     }\n\
+     init { S[a]=99 I[a]=1 S[b]=100 }\n\
+     simulate { from = 0 'days to = 10 'days }\n" in
+  ()
+
 let () =
   Alcotest.run "compiler" [
+    "restricted_sum_where", [
+      Alcotest.test_case "where dist[p,q] < r prunes to in-radius neighbours (fold off)"
+        `Quick test_where_radius_prunes;
+      Alcotest.test_case "E282 fitted-parameter threshold rejected"
+        `Quick test_where_fitted_threshold_rejected;
+      Alcotest.test_case "empty survivor set compiles (sum collapses to 0)"
+        `Quick test_where_empty_survivors_ok;
+    ];
     "index_shadowing", [
       Alcotest.test_case "E281 sum var shadows transition index"
         `Quick test_sum_var_shadows_transition_index_rejected;

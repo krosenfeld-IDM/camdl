@@ -41,9 +41,14 @@ let fmt_number n =
 (** Render a guard in human-readable form. *)
 let pp_guard ~ascii ppf g =
   let neq = if ascii then "!=" else "\xe2\x89\xa0" in  (* ≠ *)
+  let relop_str = function
+    | RLt -> "<" | RLe -> "<=" | RGt -> ">" | RGe -> ">=" | REq -> "==" | RNe -> neq in
+  let operand_str = function GoNum f -> Printf.sprintf "%g" f | GoName n -> n in
   let rec pp ppf = function
     | GEq  (a, b) -> Fmt.pf ppf "%s == %s" a b
     | GNeq (a, b) -> Fmt.pf ppf "%s %s %s" a neq b
+    | GTab (t, idxs, op, v) ->
+      Fmt.pf ppf "%s[%s] %s %s" t (String.concat "," idxs) (relop_str op) (operand_str v)
     | GAnd (g1, g2) -> Fmt.pf ppf "%a and %a" pp g1 pp g2
     | GOr  (g1, g2) -> Fmt.pf ppf "%a or %a"  pp g1 pp g2
   in
@@ -732,7 +737,7 @@ let collect_let_refs_ast ctx ast_rate =
        | Some lb -> add lb | None -> ())
     | EBinOp (_, l, r) -> walk l; walk r
     | EUnOp (_, e) -> walk e
-    | ESum (_, _, body) -> walk body
+    | ESum (_, _, _, body) -> walk body
     | ECond (p, t, el) -> walk p; walk t; walk el
     | EFuncCall (_, args) -> List.iter (fun (_, e) -> walk e) args
     | EList es -> List.iter walk es
@@ -978,7 +983,7 @@ let run_let ppf ctx name =
         | EIndex (n, _) when n = lb.lname -> true
         | EBinOp (_, l, r) -> expr_refs_name l || expr_refs_name r
         | EUnOp (_, e) -> expr_refs_name e
-        | ESum (_, _, body) -> expr_refs_name body
+        | ESum (_, _, _, body) -> expr_refs_name body
         | ECond (p, t, el) ->
           expr_refs_name p || expr_refs_name t || expr_refs_name el
         | EFuncCall (_, args) ->

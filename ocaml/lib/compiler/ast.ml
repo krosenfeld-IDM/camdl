@@ -34,6 +34,28 @@ type bin_op =
 type un_op = Neg | Exp | Log | Sqrt | Abs | Floor | Ceil
            | Sin | Cos | Tanh                                  (* gh#58 *)
 
+(* Relational operators usable in a `where` predicate (transition guards and
+   restricted sums). A subset of bin_op's comparisons, kept as a separate type
+   so the predicate grammar stays restricted (not the full expr language). *)
+type relop = RLt | RLe | RGt | RGe | REq | RNe
+
+(* The value a `where` predicate compares a constant table cell against. GoNum
+   is a numeric literal (the decidable case); GoName is a bare name, accepted
+   only so the decidability check can emit a targeted error when it resolves to
+   a parameter (e.g. a fitted radius `dist[p,q] < sparse_thresh`). *)
+type guard_operand =
+  | GoNum  of float
+  | GoName of string
+
+(* `where` predicate. Compile-time-decidable: index comparisons and constant
+   table-cell comparisons only — never parameters or compartment state. *)
+type guard =
+  | GEq  of string * string                              (* index_var == index_val_or_var *)
+  | GNeq of string * string
+  | GTab of string * string list * relop * guard_operand (* table[idx,…] relop operand *)
+  | GAnd of guard * guard
+  | GOr  of guard * guard
+
 (** A positional or named index in S[child] or S[age = child] *)
 type index_item =
   | IPosn  of expr
@@ -52,17 +74,11 @@ and expr =
   | EIndex  of string * index_item list      (* S[child] *)
   | EBinOp  of bin_op * expr * expr
   | EUnOp   of un_op * expr
-  | ESum    of string * string * expr        (* sum(i in dim, body) *)
+  | ESum    of string * string * guard option * expr  (* sum(i in dim [where P], body) *)
   | ECond   of expr * expr * expr            (* if p then a else b *)
   | EFuncCall of string * (string * expr) list  (* fname(kw=v,...) *)
   | EList   of expr list                     (* [1.0, 2.0] or [[...],[...]] *)
   | ERange  of expr * expr                   (* 7:100 — range literal, only in [...] *)
-
-type guard =
-  | GEq  of string * string   (* index_var == index_val_or_var *)
-  | GNeq of string * string
-  | GAnd of guard * guard
-  | GOr  of guard * guard
 
 type compartment_kind = Integer | Real
 
