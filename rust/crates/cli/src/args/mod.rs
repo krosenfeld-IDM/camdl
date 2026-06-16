@@ -841,9 +841,10 @@ pub struct FitRunArgs {
     // ── Richardson dt-convergence check (gh#52) ─────────────────────
 
     /// Skip the post-fit Richardson dt-convergence check at θ̂.
-    /// Default: the check runs on every IF2 stage. Use this for CI
-    /// smoke fits or known-converged-dt rerenders where the audit
-    /// cost is unwelcome.
+    /// Default: the check runs on every IF2 stage (PF likelihood) and
+    /// every ODE inference stage — nl-sbplx, nl-bobyqa, and mh
+    /// (deterministic likelihood). Use this for CI smoke fits or
+    /// known-converged-dt rerenders where the audit cost is unwelcome.
     #[arg(long)]
     pub no_dt_check: bool,
 

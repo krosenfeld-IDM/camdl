@@ -81,9 +81,8 @@ simulate { from = 0 'days  to = 60 'days }
     ir_path
 }
 
-/// Walk `dir` for every `trace.tsv`. The mh stage writes one per chain at
-/// `<stage_dir>/chain_<N>/trace.tsv`.
-fn find_traces(dir: &Path) -> Vec<PathBuf> {
+/// Walk `dir` for every file named `name`.
+fn find_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -91,13 +90,19 @@ fn find_traces(dir: &Path) -> Vec<PathBuf> {
             for e in entries.flatten() {
                 let p = e.path();
                 if p.is_dir() { stack.push(p); }
-                else if p.file_name().and_then(|n| n.to_str()) == Some("trace.tsv") {
+                else if p.file_name().and_then(|n| n.to_str()) == Some(name) {
                     found.push(p);
                 }
             }
         }
     }
     found
+}
+
+/// Walk `dir` for every `trace.tsv`. The mh stage writes one per chain at
+/// `<stage_dir>/chain_<N>/trace.tsv`.
+fn find_traces(dir: &Path) -> Vec<PathBuf> {
+    find_named(dir, "trace.tsv")
 }
 
 /// Post-burn-in beta samples from a trace.tsv. Columns are
@@ -188,4 +193,16 @@ burn_in = 400
          start {START_BETA}). Expected the chain to move from {START_BETA} toward \
          {TRUE_BETA}; a mean near {START_BETA} means it never moved, near a bound \
          means it degenerated.");
+
+    // gh#52, gh#227: the deterministic ODE dt-check ran at the MAP and wrote a
+    // verdict to fit_state.toml. Before gh#227 the mh path wrote `dt_check:
+    // None` — the audit silently never ran on ODE-MH. Guard that it does.
+    let states = find_named(&out, "fit_state.toml");
+    assert!(!states.is_empty(), "no fit_state.toml produced under {}", out.display());
+    let any_dt_check = states.iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .any(|t| t.contains("[dt_check]"));
+    assert!(any_dt_check,
+        "mh+ode fit_state.toml has no [dt_check] block — the ODE dt-check did \
+         not run on the mh path (regression: gh#227 wiring).");
 }

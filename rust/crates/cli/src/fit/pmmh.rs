@@ -123,6 +123,10 @@ pub fn run_stage(
     check_variance: bool,
     resume: bool,
     starts_from: Option<&str>,
+    // Post-fit deterministic ODE dt-check config (gh#52, gh#227). `Some` only on
+    // the `mh` (ODE) dispatch; PMMH passes `None` (its dt-check is PF-based and
+    // wired on the IF2 path). The bool is `--dt-check-strict`.
+    dt_check_opt: Option<(super::config_v2::DtCheckConfig, bool)>,
 ) -> Result<(), String> {
     // The experimental-PMMH caveat banner is emitted by the dispatch
     // chokepoint (`methods::emit_status_banner`), driven by the registry
@@ -895,6 +899,35 @@ pub fn run_stage(
         }
     }
 
+    // Post-fit Richardson dt-convergence check at the MAP (gh#52, gh#227) — only
+    // on the deterministic ODE-MH path. Re-evaluates `compute_ode_loglik(θ̂; dt)`
+    // (the SAME likelihood the chain scored) on a dt-halving ladder and warns
+    // when the MAP is discretization-dependent. PMMH passes `dt_check_opt = None`
+    // (its dt-check is the PF-based one wired on the IF2 path). Reuses the
+    // obs_model / obs_times / dt built once for the ODE-MH chain evals.
+    let dt_check_result = match (is_ode_mh, &dt_check_opt) {
+        (true, Some((cfg, strict))) => {
+            let obs_model = ode_obs_model.as_deref()
+                .expect("ode_obs_model built on the is_ode_mh path");
+            let result = super::dt_check::run_richardson_ladder_ode(
+                config.compiled.as_ref(),
+                obs_model,
+                &ode_obs_times,
+                &map_result.map_params,
+                ode_dt,
+                cfg,
+                *strict,
+            )?;
+            super::dt_check::print_terminal_report(&result);
+            if matches!(result.verdict, super::dt_check::DtCheckVerdict::Skipped) {
+                None
+            } else {
+                Some(result)
+            }
+        }
+        _ => None,
+    };
+
     let state = FitState {
         stage: stage_name.to_string(),
         seed,
@@ -932,8 +965,9 @@ pub fn run_stage(
         chain_init_source: Some(super::init::format_chain_init_source(
             &pmmh_opts.init_method, survey_top_k_result.as_ref(),
         )),
-        // gh#52: Richardson dt-check IF2-only in v1.
-        dt_check: None,
+        // gh#52, gh#227: deterministic ODE dt-check at the MAP (above); `None`
+        // on the PMMH path (PF dt-check is wired on the IF2 path).
+        dt_check: dt_check_result,
     };
     state.save(&stage_dir.to_string_lossy())?;
 

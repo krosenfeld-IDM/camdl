@@ -20,7 +20,8 @@ use sim::inference::deterministic::{
     optimize_det, NloptAlgorithm, OptResult, OptStatus,
 };
 
-use crate::fit::config_v2::{FitConfigV2, GateConfig, NloptStageConfig, Stage};
+use crate::fit::config_v2::{DtCheckConfig, FitConfigV2, GateConfig, NloptStageConfig, Stage};
+use crate::fit::dt_check;
 use crate::fit::init::{build_chain_param_vecs, InitMethod};
 use crate::fit::methods::check_model_capabilities;
 use crate::fit::runner::{compute_ode_loglik, ode_step_dt, FitRunConfig};
@@ -41,6 +42,8 @@ pub fn run_stage(
     parent_fit_hash: &str,
     model_hash: &str,
     data_hashes: &[(String, String)],
+    dt_check_cfg: &DtCheckConfig,
+    dt_check_strict: bool,
 ) -> Result<(), String> {
     let (algorithm, knobs) = extract_nlopt_config(stage)?;
 
@@ -208,6 +211,32 @@ pub fn run_stage(
         knobs.gate.decibans_thresh,
     );
 
+    // Post-fit Richardson dt-convergence check at θ̂ (gh#52, gh#227). The
+    // deterministic ODE sibling of the IF2/PF dt-check: re-evaluate the same
+    // ODE marginal likelihood at the winner on a dt-halving ladder and warn
+    // when θ̂'s loglik is still drifting — i.e. the MLE is discretization-
+    // dependent. This is the silent-wrong-answer mode where a coarse dt
+    // creates a fake basin that synthetic recovery shares and can't detect.
+    // Reuses the obs_model / obs_times / dt already built for the chain evals.
+    let mut winner_full = arc_config.base_params.clone();
+    for (slot, &idx) in est_indices.iter().enumerate() {
+        winner_full[idx] = winner.params[slot];
+    }
+    let dt_check_result = dt_check::run_richardson_ladder_ode(
+        arc_config.compiled.as_ref(),
+        obs_model.as_ref(),
+        &obs_times,
+        &winner_full,
+        dt,
+        dt_check_cfg,
+        dt_check_strict,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
+    dt_check::print_terminal_report(&dt_check_result);
+
     // Persist the winner's full parameter vector via fit_state.toml so
     // downstream stages (`refine`, `pgas`, `posterior`) can resume from it.
     let mut start_values = std::collections::HashMap::new();
@@ -263,10 +292,13 @@ pub fn run_stage(
         // verbatim; SurveyTopK refuses upstream in
         // build_chain_param_vecs.
         chain_init_source: Some(format!("{}", knobs.init_method)),
-        // gh#52: Richardson dt-check is wired only on IF2 stages in
-        // v1. NLopt-on-ODE has dt and would benefit from this check
-        // too — deferred to v2 alongside the launcher refactor.
-        dt_check: None,
+        // gh#52, gh#227: deterministic ODE dt-check at θ̂ (above). Skipped →
+        // omit the block, mirroring the IF2 path's legacy semantics.
+        dt_check: if matches!(dt_check_result.verdict, dt_check::DtCheckVerdict::Skipped) {
+            None
+        } else {
+            Some(dt_check_result)
+        },
     };
     fit_state
         .save(&stage_dir.to_string_lossy())

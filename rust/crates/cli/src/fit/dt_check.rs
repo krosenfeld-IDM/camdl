@@ -21,7 +21,9 @@
 
 use crate::fit::config_v2::{CombineMode, DtCheckConfig};
 use crate::fit::loglik_eval::combine_with_se;
-use crate::fit::runner::{run_quick_pfilter_with_dt, ruled_out_or_surface, FitRunConfig};
+use crate::fit::runner::{
+    compute_ode_loglik, run_quick_pfilter_with_dt, ruled_out_or_surface, FitRunConfig,
+};
 use crate::run_meta::Backend;
 use serde::{Deserialize, Serialize};
 
@@ -211,9 +213,61 @@ pub struct DtCheckInherits {
     pub combine: CombineMode,
 }
 
-/// Run the Richardson halving ladder + verdict end-to-end. Returns a
-/// fully-populated `DtCheckResult` ready to write to
-/// `fit_state.toml.dt_check`.
+/// A `Skipped` verdict with an empty ladder, shared by the disabled-path
+/// early returns of every wrapper. `threshold_nats` carries the floor that
+/// *would* have applied so `fit summary` can still report it.
+fn skipped_result(threshold_nats: f64, notes: &str) -> DtCheckResult {
+    DtCheckResult {
+        verdict: DtCheckVerdict::Skipped,
+        ladder: Vec::new(),
+        leg1_delta_nats: f64::NAN,
+        leg2_delta_nats: f64::NAN,
+        threshold_nats,
+        threshold_se_aware_nats: f64::NAN,
+        pf_se_inflation: false,
+        notes: notes.into(),
+    }
+}
+
+/// Build the dt ladder (`dt_fit`, then `n_halvings` successive halvings) and
+/// reduce it to a verdict, given a per-rung evaluator. This is the
+/// backend-agnostic seam: the stochastic PF path passes an evaluator that runs
+/// `n_replicates` particle filters and combines them to `(loglik, se)`; the
+/// deterministic ODE path passes one that calls `compute_ode_loglik` once
+/// (`se = 0`). Everything downstream of the ladder — the two-leg verdict,
+/// threshold, SE-aware floor, rendering, serialization — is shared and lives in
+/// [`compute_verdict`] (gh#52, gh#227).
+///
+/// `eval_rung(dt, rung_i) -> Result<(loglik, se), String>`: an `Err` aborts the
+/// whole ladder (a structural error must not be hidden as a quietly poisoned
+/// rung); `Ok((-inf, _))` is a ruled-out θ excursion at that dt and is recorded
+/// faithfully.
+pub fn run_ladder(
+    dt_fit: f64,
+    n_halvings: usize,
+    threshold_floor: f64,
+    mut eval_rung: impl FnMut(f64, usize) -> Result<(f64, f64), String>,
+) -> Result<DtCheckResult, String> {
+    let mut dts: Vec<f64> = Vec::with_capacity(n_halvings + 1);
+    dts.push(dt_fit);
+    let mut next = dt_fit;
+    for _ in 0..n_halvings {
+        next *= 0.5;
+        dts.push(next);
+    }
+
+    let mut ladder: Vec<LadderEntry> = Vec::with_capacity(dts.len());
+    for (rung_i, &dt) in dts.iter().enumerate() {
+        let (loglik, se) = eval_rung(dt, rung_i)?;
+        ladder.push(LadderEntry { dt, loglik, se });
+    }
+
+    Ok(compute_verdict(&ladder, threshold_floor))
+}
+
+/// Run the Richardson halving ladder + verdict end-to-end on the **stochastic
+/// particle-filter** likelihood. Returns a fully-populated `DtCheckResult`
+/// ready to write to `fit_state.toml.dt_check`.
 ///
 /// `theta_hat` is the MLE θ̂ (e.g., the IF2 winner's clean-eval θ);
 /// the ladder evaluates `pfilter(loglik | θ̂; dt)` at
@@ -227,7 +281,8 @@ pub struct DtCheckInherits {
 /// same ladder.
 ///
 /// Disabled (`config.enabled = false`) → returns a `Skipped` verdict
-/// with empty ladder.
+/// with empty ladder. The deterministic sibling is
+/// [`run_richardson_ladder_ode`].
 pub fn run_richardson_ladder(
     run_config: &FitRunConfig,
     theta_hat: &[f64],
@@ -237,37 +292,17 @@ pub fn run_richardson_ladder(
     inherits: &DtCheckInherits,
     seed: u64,
 ) -> Result<DtCheckResult, String> {
+    let threshold_floor = config.threshold_nats
+        .unwrap_or_else(|| default_threshold_for_backend(backend, strict));
     if !config.enabled {
-        return Ok(DtCheckResult {
-            verdict: DtCheckVerdict::Skipped,
-            ladder: Vec::new(),
-            leg1_delta_nats: f64::NAN,
-            leg2_delta_nats: f64::NAN,
-            threshold_nats: config.threshold_nats
-                .unwrap_or_else(|| default_threshold_for_backend(backend, strict)),
-            threshold_se_aware_nats: f64::NAN,
-            pf_se_inflation: false,
-            notes: "skipped: dt_check.enabled = false.".into(),
-        });
+        return Ok(skipped_result(threshold_floor, "skipped: dt_check.enabled = false."));
     }
 
     let n_particles  = config.n_particles.unwrap_or(inherits.n_particles);
     let n_replicates = config.n_replicates.unwrap_or(inherits.n_replicates);
     let combine      = config.combine.unwrap_or(inherits.combine);
-    let threshold_floor = config.threshold_nats
-        .unwrap_or_else(|| default_threshold_for_backend(backend, strict));
 
-    let dt_fit = run_config.if2_config.dt;
-    let mut dts: Vec<f64> = Vec::with_capacity(config.n_halvings + 1);
-    dts.push(dt_fit);
-    let mut next = dt_fit;
-    for _ in 0..config.n_halvings {
-        next *= 0.5;
-        dts.push(next);
-    }
-
-    let mut ladder: Vec<LadderEntry> = Vec::with_capacity(dts.len());
-    for (rung_i, &dt) in dts.iter().enumerate() {
+    run_ladder(run_config.if2_config.dt, config.n_halvings, threshold_floor, |dt, rung_i| {
         let mut per_rep: Vec<f64> = Vec::with_capacity(n_replicates);
         for k in 0..n_replicates {
             // Seed scheme: (seed, rung_i, k) → distinct PF seed.
@@ -287,11 +322,64 @@ pub fn run_richardson_ladder(
                     dt, rung_i, k, e))?;
             per_rep.push(ll);
         }
-        let (loglik, se) = combine_with_se(&per_rep, combine);
-        ladder.push(LadderEntry { dt, loglik, se });
+        Ok(combine_with_se(&per_rep, combine))
+    })
+}
+
+/// Deterministic ODE dt-convergence check at θ̂ — the deterministic sibling of
+/// [`run_richardson_ladder`], for the `nl-sbplx` / `nl-bobyqa` (ODE-MLE) and
+/// `mh` (ODE marginal-likelihood MH) stages (gh#52, gh#227).
+///
+/// Re-evaluates the SAME `compute_ode_loglik(θ̂; dt)` the stage scored with, on
+/// a halving ladder `dt ∈ {dt_fit, dt_fit/2, …}`, and warns when the fitted
+/// θ̂'s likelihood is still drifting past τ nats — i.e. when the MLE/MAP is
+/// discretization-dependent. This is exactly the trap a coarse-dt
+/// synthetic-recovery fit passes spuriously: data-generation and fit share the
+/// same dt bias, so only an independent dt ladder exposes it.
+///
+/// The ODE likelihood is deterministic, so each rung is a single eval with
+/// `se = 0` — there are no replicates and no particles, and the PF-only
+/// [`DtCheckInherits`] knobs do not apply. Because ODE snapshots land on the
+/// model's fixed output grid (`StepPolicy::Exact`), halving `dt` only refines
+/// the RK4 substep *between* outputs — the obs-time alignment inside
+/// `compute_ode_loglik` is preserved at every rung.
+///
+/// Convergence-order caveat: prevalence observations read the RK4 state
+/// (O(dt⁴)); incidence observations read the Euler flow accumulator
+/// (`flow_acc += rate·dt`, O(dt)). The `Backend::Ode` default τ is calibrated
+/// to the prevalence (RK4) case, so an incidence-heavy model can register
+/// Marginal/Fail at a dt where prevalence would pass — that is the check
+/// correctly reporting that the incidence likelihood is the dt-sensitive part,
+/// not a false alarm.
+///
+/// Disabled (`config.enabled = false`) → returns a `Skipped` verdict.
+pub fn run_richardson_ladder_ode(
+    compiled: &sim::compiled_model::CompiledModel,
+    obs_model: &sim::inference::MultiStreamObsModel,
+    obs_times: &[f64],
+    theta_hat: &[f64],
+    dt_fit: f64,
+    config: &DtCheckConfig,
+    strict: bool,
+) -> Result<DtCheckResult, String> {
+    let threshold_floor = config.threshold_nats
+        .unwrap_or_else(|| default_threshold_for_backend(Backend::Ode, strict));
+    if !config.enabled {
+        return Ok(skipped_result(threshold_floor, "skipped: dt_check.enabled = false."));
     }
 
-    Ok(compute_verdict(&ladder, threshold_floor))
+    run_ladder(dt_fit, config.n_halvings, threshold_floor, |dt, _rung_i| {
+        match compute_ode_loglik(compiled, obs_model, obs_times, dt, theta_hat) {
+            Ok(ll) => Ok((ll, 0.0)),
+            // gh#224: a structural error (config bug, unknown compartment)
+            // aborts the dt-check rather than poisoning the ladder; a per-θ
+            // excursion at a finer dt scores −∞ (recorded faithfully), mirroring
+            // the PF path's `ruled_out_or_surface` contract.
+            Err(e) if e.is_structural() => Err(format!(
+                "dt-check: structural error at dt={}: {}", dt, e)),
+            Err(_) => Ok((f64::NEG_INFINITY, 0.0)),
+        }
+    })
 }
 
 /// Render the dt-check verdict to stderr in the proposal's
@@ -528,6 +616,61 @@ mod tests {
             rung(0.5, -55.0, 0.5),
         ];
         assert!(!pf_se_inflation_fires(&ladder));
+    }
+
+    // ── run_ladder (the backend-agnostic driver / seam) ─────────────
+
+    #[test]
+    fn run_ladder_builds_halving_grid() {
+        // dt_fit = 1.0, n_halvings = 2 → rungs at {1.0, 0.5, 0.25}. The
+        // closure records the dts it was asked for, in order.
+        let mut seen: Vec<f64> = Vec::new();
+        let r = run_ladder(1.0, 2, 2.0, |dt, _i| {
+            seen.push(dt);
+            Ok((-50.0, 0.0)) // flat loglik
+        })
+        .expect("flat ladder should not error");
+        assert_eq!(seen, vec![1.0, 0.5, 0.25]);
+        assert_eq!(r.ladder.iter().map(|e| e.dt).collect::<Vec<_>>(), vec![1.0, 0.5, 0.25]);
+    }
+
+    #[test]
+    fn run_ladder_passes_on_flat_loglik() {
+        // A converged θ̂: loglik identical at every dt → both legs zero → Pass.
+        let r = run_ladder(1.0, 2, 0.5, |_dt, _i| Ok((-123.4, 0.0))).unwrap();
+        assert_eq!(r.verdict, DtCheckVerdict::Pass);
+        assert_eq!(r.leg1_delta_nats, 0.0);
+        assert_eq!(r.leg2_delta_nats, 0.0);
+    }
+
+    #[test]
+    fn run_ladder_fails_on_drifting_loglik() {
+        // Discretization-dependent θ̂: loglik climbs 5 nats per halving, far
+        // past the 0.5-nat ODE floor → Fail. This is the artifact the ODE
+        // dt-check exists to catch (coarse dt creates a fake basin).
+        let r = run_ladder(1.0, 2, 0.5, |dt, _i| {
+            // dt = 1.0 → -60, 0.5 → -55, 0.25 → -50: monotone, big drift.
+            let ll = -60.0 + (1.0 - dt) * 10.0;
+            Ok((ll, 0.0))
+        })
+        .unwrap();
+        assert_eq!(r.verdict, DtCheckVerdict::Fail);
+        assert!(r.leg2_delta_nats.abs() > 0.5);
+    }
+
+    #[test]
+    fn run_ladder_propagates_eval_error() {
+        // A structural error on any rung aborts the whole ladder rather than
+        // being hidden as a quietly poisoned rung (gh#224 contract).
+        let r = run_ladder(1.0, 2, 0.5, |dt, rung_i| {
+            if rung_i == 1 {
+                Err(format!("boom at dt={dt}"))
+            } else {
+                Ok((-50.0, 0.0))
+            }
+        });
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("boom"));
     }
 
     // ── compute_verdict ─────────────────────────────────────────────

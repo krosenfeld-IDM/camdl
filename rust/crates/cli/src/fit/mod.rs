@@ -1350,6 +1350,8 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     /* check_variance */ false,
                     a.resume.is_some(),
                     effective_starts.as_deref(),
+                    // PMMH's dt-check is the PF-based one wired on the IF2 path.
+                    /* dt_check_opt */ None,
                 ).unwrap_or_else(|e| {
                     eprintln!("error running pmmh stage '{}': {}", stage_name, e);
                     std::process::exit(1);
@@ -1381,6 +1383,13 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     pmmh_opts.survey_top_k_n = Some(k);
                 }
 
+                // Deterministic ODE dt-check at the MAP (gh#52, gh#227). On by
+                // default; honours the same CLI flags as the IF2 path
+                // (--no-dt-check / --dt-check-halvings / --dt-check-strict).
+                let mut mh_dt_check = config_v2::DtCheckConfig::default();
+                if a.no_dt_check { mh_dt_check.enabled = false; }
+                if let Some(n) = a.dt_check_halvings { mh_dt_check.n_halvings = n; }
+
                 pmmh::run_stage(
                     &sweep_config,
                     stage_name,
@@ -1391,6 +1400,7 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                     /* check_variance */ false,
                     a.resume.is_some(),
                     effective_starts.as_deref(),
+                    Some((mh_dt_check, a.dt_check_strict)),
                 ).unwrap_or_else(|e| {
                     eprintln!("error running mh stage '{}': {}", stage_name, e);
                     std::process::exit(1);
@@ -1430,6 +1440,13 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                             })
                             .collect())
                         .unwrap_or_default();
+                    // Deterministic ODE dt-check at θ̂ (gh#52, gh#227). On by
+                    // default; honours the same CLI flags as the IF2 path
+                    // (--no-dt-check / --dt-check-halvings / --dt-check-strict).
+                    let mut nl_dt_check = config_v2::DtCheckConfig::default();
+                    if a.no_dt_check { nl_dt_check.enabled = false; }
+                    if let Some(n) = a.dt_check_halvings { nl_dt_check.n_halvings = n; }
+
                     nlopt_stage::run_stage(
                         &sweep_config,
                         stage_name,
@@ -1440,6 +1457,8 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                         &parent_fit_hash,
                         &model_hash_for_prov,
                         &data_hashes_for_prov,
+                        &nl_dt_check,
+                        a.dt_check_strict,
                     ).unwrap_or_else(|e| {
                         eprintln!("error running nlopt stage '{}': {}", stage_name, e);
                         std::process::exit(1);
