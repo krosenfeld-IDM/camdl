@@ -42,6 +42,13 @@ simulate {
 }
 ```
 
+**CLI.** `camdl simulate --integrator rk4|rk45` overrides the method for a
+forward run (method-only; it mutates the model before the run-id is computed, so
+the choice is recorded in the content hash, and it preserves any model-declared
+tolerances). There is intentionally **no `fit --integrator`**: the integrator is
+part of the model's content identity, so on the inference path it is set in the
+model's `simulate {}` block, not on the command line.
+
 **Diagnostics.**
 
 - `integrator = rk99` → **E106** `unknown integrator 'rk99': expected rk4 or rk45`.

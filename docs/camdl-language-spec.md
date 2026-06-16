@@ -3139,8 +3139,25 @@ wants. When neither the model nor `--dt` sets a step, it defaults to `1` in the
 model's `time_unit`. Omit `dt` from the model only when you intend the run — not
 the model — to choose it.
 
+The optional `integrator` key selects the ODE method (it has no effect on the
+chain-binomial or Gillespie backends). It is **tagged**: `integrator = rk4` is
+fixed-step classic RK4 (the default — omit the key for it), and
+`integrator = rk45 { atol = 1e-8  rtol = 1e-6 }` is adaptive Dormand–Prince
+RK4(5), which takes large steps through smooth stretches and small steps only
+where the trajectory moves fast. The tolerances `atol`/`rtol` are
+**dimensionless** (error tolerances, not times), optional (omitted → the
+runtime's calibrated default of `1e-8`/`1e-6`), and are **keys of the `rk45`
+block** — they cannot be written without it, so an orphan tolerance (a tolerance
+without `rk45`, or a tolerance on `rk4`) is a compile error. A model that
+references `dt` in a rate (`Expr::Dt`) is incompatible with `rk45` — adaptive
+stepping has no single fixed `dt` — and is rejected with a hard error pointing
+back to `rk4`. The CLI `--integrator rk4|rk45` flag overrides the method for a
+single forward `simulate` run (it preserves any model-declared tolerances);
+there is no fit-side flag, because on the inference path the integrator is part
+of the model's content identity and is declared in `simulate {}`.
+
 A typo'd or unsupported key in `simulate {}` is a hard error (`E106`), never
-silently dropped; the accepted keys are `from`, `to`, `dt`.
+silently dropped; the accepted keys are `from`, `to`, `dt`, `integrator`.
 
 Seed is always external (CLI `--seed`), never in the model file.
 

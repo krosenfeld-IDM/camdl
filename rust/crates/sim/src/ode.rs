@@ -322,9 +322,12 @@ const DP_FACMIN: f64 = 0.2;      // shrink no more than 5× per step
 const DP_FACMAX: f64 = 5.0;      // grow   no more than 5× per step
 const DP_MAX_REJECTIONS: u32 = 10;
 
-/// Default adaptive tolerances when the model/CLI specify none. PLACEHOLDER
-/// pending the C8 calibration (loosest (atol, rtol) matching fine-dt RK4 to
-/// sub-nat loglik across the validation models) — the proposal's example values.
+/// Default adaptive tolerances when the model/CLI specify none. These are the
+/// C8-calibrated values: the `rk45_tolerance_calibration` sweep found every
+/// candidate matched fine-`dt` RK4 to sub-nat loglik (by 4–9 orders of
+/// magnitude) on the SIR/SEIR/TB validation models, so the proposal's example
+/// values were kept rather than over-tuned to one model. Rationale + ecosystem
+/// comparison: `docs/dev/notes/2026-06-16-deterministic-ode-integration.md`.
 pub const DEFAULT_ATOL: f64 = 1e-8;
 pub const DEFAULT_RTOL: f64 = 1e-6;
 
@@ -421,6 +424,13 @@ fn dopri5_try_step(
         err_sq += ((y5 - y4) / sc).powi(2);
         y5_real[m] = y5.max(0.0);
     }
+    // Flow increment: the 5th-order quadrature of `dc_i/dt = propensity_i ≥ 0`.
+    // Unlike RK4's (1,2,2,1)/6, `DP_B` has a NEGATIVE weight (b[4]=-2187/6784),
+    // so `flow_inc` is not non-negative by a positive-weights argument — its
+    // non-negativity/monotonicity rests on the error controller resolving the
+    // (smooth, non-decreasing) integral accurately, not on a sign guarantee.
+    // We deliberately do NOT clamp it: clamping would bias the incidence integral
+    // (accuracy, not clamping, keeps the accumulator faithful).
     for m in 0..nf {
         let mut s5 = 0.0;
         for i in 0..7 { s5 += DP_B[i] * kf[i][m]; }
