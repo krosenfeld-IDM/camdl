@@ -904,13 +904,7 @@ impl CasSink {
         }
 
         let scenario_label = if resolved.name.is_empty() { "baseline" } else { resolved.name.as_str() };
-        let param_label = if spec.point_overrides.is_empty() {
-            "base".to_string()
-        } else {
-            let mut sw: Vec<(&String, &f64)> = spec.point_overrides.iter().collect();
-            sw.sort_by(|a, b| a.0.cmp(b.0));
-            sw.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join("_")
-        };
+        let param_label = params_path_label(&spec.point_overrides);
 
         let ctx = crate::resolve::TrajectoryCtx {
             model: &self.base_model,
@@ -938,6 +932,73 @@ impl CasSink {
         let dir = runid::store_path(&root, runid::ArtifactKind::Sim, &rt.levels);
         let rel = dir.strip_prefix(&root).unwrap_or(&dir).to_string_lossy().into_owned();
         Ok((rt, dir, rel))
+    }
+}
+
+/// Human-readable provenance label for the `params` path level.
+///
+/// Sparse overrides — a scenario sweep point like `beta=0.3_gamma=0.1` — render
+/// as a readable, key-sorted `k=v` join so `ls results/sims/` stays skimmable. A
+/// *full* parameter vector (a `--draws` row over a stratified model) would blow a
+/// single path component past NAME_MAX (gh#169), so it collapses to a short
+/// `draws` tag. Identity is the level's content hash, never this label (see
+/// `resolve.rs`: label and hash are separate inputs to `level()`), so the
+/// collapse is lossless — the full drawn values live in `run.json`.
+fn params_path_label(overrides: &indexmap::IndexMap<String, f64>) -> String {
+    if overrides.is_empty() {
+        return "base".to_string();
+    }
+    let mut sorted: Vec<(&String, &f64)> = overrides.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let joined = sorted
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("_");
+    // Readable when sparse; a full draw vector is too long for a path
+    // component, so tag it `draws` (the level hash disambiguates the values).
+    const LABEL_CAP: usize = 96;
+    if joined.len() <= LABEL_CAP {
+        joined
+    } else {
+        "draws".to_string()
+    }
+}
+
+#[cfg(test)]
+mod gh169_params_label {
+    use super::params_path_label;
+    use indexmap::IndexMap;
+
+    fn im(pairs: &[(&str, f64)]) -> IndexMap<String, f64> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn empty_overrides_is_base() {
+        assert_eq!(params_path_label(&IndexMap::new()), "base");
+    }
+
+    #[test]
+    fn sparse_scenario_overrides_stay_readable() {
+        // a scenario sweep point: a couple of params -> readable, key-sorted join
+        assert_eq!(
+            params_path_label(&im(&[("gamma", 0.1), ("beta", 0.3)])),
+            "beta=0.3_gamma=0.1"
+        );
+    }
+
+    #[test]
+    fn full_draw_vector_collapses_to_short_tag() {
+        // a --draws row over a stratified model: the whole vector is overridden,
+        // which previously rendered as one 600+ byte path component -> ENAMETOOLONG (gh#169).
+        let overrides: IndexMap<String, f64> = (0..40)
+            .map(|i| (format!("beta_age{}_patch{}", i % 2, i), 0.3125))
+            .collect();
+        let label = params_path_label(&overrides);
+        assert_eq!(label, "draws", "a full draw vector must collapse to a short tag");
+        // the rendered path component `{label}-{hash8}` must fit in NAME_MAX (255)
+        assert!(label.len() + 1 + 8 <= 255);
     }
 }
 
