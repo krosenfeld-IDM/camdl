@@ -225,18 +225,36 @@ impl Schedule {
     ///   without stepping).
     /// - `Snap`: never clip to an output/effect — `dt.min(t_end - t)`.
     pub fn substep(&self, cursor: &Cursor, t: f64) -> Option<f64> {
+        // Exactly `dt.min(next_boundary - t)`; see [`Schedule::next_boundary`]
+        // for the raw landing target. The two share one boundary computation so
+        // the fixed-step substep and the adaptive ODE stepper's `h_max` cannot
+        // drift (pinned by `next_boundary_agrees_with_substep`).
+        self.next_boundary(cursor, t).map(|boundary| self.dt.min(boundary - t))
+    }
+
+    /// The next boundary time the integrator must stop on under this policy,
+    /// WITHOUT the per-step `dt` clip — the raw landing target. `Exact`: the min
+    /// over `(t_end, next_output, next_effect, next_obs)`. `Snap`: `t_end`
+    /// (effects fire off-grid via the backend's `resolve_fire_steps`). `None`
+    /// once `t >= t_end` (the cursor has walked past the window).
+    ///
+    /// [`Schedule::substep`] is exactly `dt.min(next_boundary - t)`. The adaptive
+    /// ODE stepper ([`crate::ode`]) instead consumes this RAW distance as its
+    /// `h_max` and chooses its own internal sub-step ≤ it (clipping its
+    /// controller's natural step to land exactly on the boundary), re-entered
+    /// until the boundary is reached. PURE in `(self, cursor, t)`.
+    pub fn next_boundary(&self, cursor: &Cursor, t: f64) -> Option<f64> {
         if t >= self.t_end {
             return None;
         }
-        let boundary = match self.policy {
+        Some(match self.policy {
             StepPolicy::Exact => self
                 .t_end
                 .min(self.next_output(cursor))
                 .min(self.next_effect(cursor))
                 .min(self.next_obs(cursor)),
             StepPolicy::Snap => self.t_end,
-        };
-        Some(self.dt.min(boundary - t))
+        })
     }
 
     /// The next boundary the integrator must stop on AND every reason it
@@ -589,6 +607,33 @@ mod tests {
         );
         let fragile = (t + dt).min(5000.0) - t;
         assert_ne!(got.to_bits(), fragile.to_bits(), "the fragile (t+dt)-t formula differs here");
+    }
+
+    #[test]
+    fn next_boundary_agrees_with_substep() {
+        // The single-source-of-truth invariant: `substep` is exactly
+        // `dt.min(next_boundary - t)` for BOTH policies, bit-for-bit, at every
+        // walk position. The adaptive ODE stepper consumes `next_boundary` as its
+        // raw `h_max`; if it drifted from `substep`, fixed-RK4 (which clips
+        // `dt.min(h_max)`) would stop moving the goldens silently.
+        for s in [
+            exact(1.0, 12.0, vec![0.0, 3.0, 7.0, 12.0], vec![2.5, 9.0]),
+            snap(0.7, 13.3, vec![0.0, 2.0, 4.0], vec![3.5]),
+            exact(0.1, 5000.0, vec![], vec![]),
+        ] {
+            let cur = Cursor::default();
+            for &t in &[0.0_f64, 0.05, 1.0, 2.4999, 6.999, 1095.7275] {
+                match (s.next_boundary(&cur, t), s.substep(&cur, t)) {
+                    (Some(b), Some(step)) => assert_eq!(
+                        step.to_bits(),
+                        s.grid().min(b - t).to_bits(),
+                        "substep must equal dt.min(next_boundary - t) at t={t}"
+                    ),
+                    (None, None) => {} // both past t_end
+                    (nb, ss) => panic!("next_boundary/substep disagree on None at t={t}: {nb:?} vs {ss:?}"),
+                }
+            }
+        }
     }
 
     #[test]

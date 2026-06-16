@@ -100,6 +100,34 @@ fn trajectory_hash(traj: &sim::state::Trajectory) -> u64 {
     h
 }
 
+/// FNV-1a/64 over the STATE-ONLY trajectory content: `t`, integer counts, and
+/// real values — EXCLUDING flows. The Phase-A→B instrument (gh#166, proposal
+/// gate #5): the Euler→augmented flow change (Q1B) moves the full
+/// `trajectory_hash` (which mixes flows) for every ODE model, but the
+/// compartment integration is independent of the flow accumulators (nothing in
+/// dX/dt reads them), so this hash must stay byte-identical across that change —
+/// proving prevalence is untouched and only incidence moves.
+fn ode_state_hash(traj: &sim::state::Trajectory) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut mix = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    };
+    for snap in &traj.snapshots {
+        mix(&snap.t.to_bits().to_le_bytes());
+        for &c in &snap.int_state.counts {
+            mix(&c.to_le_bytes());
+        }
+        for &v in &snap.real_state.values {
+            mix(&v.to_bits().to_le_bytes());
+        }
+        // snap.flows DELIBERATELY excluded — see the doc comment.
+    }
+    h
+}
+
 /// Committed baselines: (model, backend) -> trajectory hash, captured on the dev
 /// machine against the current compiler+runtime. Re-capture per the header.
 const BASELINES: &[(&str, &str, u64)] = &[
@@ -254,6 +282,55 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("sir_two_patch_long_obs", "ode", 0xc0b0bc52f355bd1f),
 ];
 
+/// State-only ODE baselines (gh#166 Phase A): model -> `ode_state_hash`, captured
+/// in the Euler-flow era. Phase B (augmented flow) must leave EVERY one of these
+/// unchanged — the proof that unifying flow accounting did not perturb the
+/// compartment integration. Re-capture per the file header with
+/// `CAMDL_CAPTURE_BASELINE=1`.
+const ODE_STATE_BASELINES: &[(&str, u64)] = &[
+    ("bimolecular", 0x1bd688a80a4578f1),
+    ("branching_si_symp_asym", 0x35a833278ee1fecc),
+    ("flu_data_forcing", 0xd55c543de04d2062),
+    ("malaria_two_species", 0xfd4699acf8596e87),
+    ("phenom_mixing_unchecked", 0x46f766b4f10b0138),
+    ("polio_age", 0x3feecf44d4f3c67a),
+    ("polio_spatial_5", 0x14cfd1ded179cc60),
+    ("ross_macdonald", 0x3d5f33467f72bafd),
+    ("seir_age", 0x310c060d6ceebe19),
+    ("seir_age_incidence_sum", 0x310c060d6ceebe19),
+    ("seir_age_let_projection", 0x310c060d6ceebe19),
+    ("seir_age_table_rates", 0x7740d7f2d7d93a9b),
+    ("seir_cross_dim", 0x56539345e82ada6f),
+    ("seir_defines_adj", 0x34100c3629bb7053),
+    ("seir_defines_patch", 0xcfaedfa885954f5f),
+    ("seir_erlang", 0xd67553e482930e56),
+    ("seir_erlang_staged", 0x9d71c13925516443),
+    ("seir_observations", 0xd98853739e669231),
+    ("seir_seasonal_importation", 0x674f33759aab5fb8),
+    ("seir_seasonal_patch", 0x647c238e73b173d3),
+    ("seir_vaccine", 0x4e897aed24c09e15),
+    ("seir_vaccine_seasonal", 0xe953521cacf5427e),
+    ("sia_anchored_dates", 0x483f6805d1c71332),
+    ("sia_instance_enable", 0xee4e306f1d08e9fc),
+    ("sir_basic", 0xbfe29deac5a25942),
+    ("sir_coupling", 0xe2121c407df25c01),
+    ("sir_demography", 0x1070553187edc261),
+    ("sir_dim_annotated", 0x8053d63f41130840),
+    ("sir_dt", 0x0625b77d9571b8d7),
+    ("sir_five_age", 0xca5a77e2fcbfc66f),
+    ("sir_guarded_foi", 0xf61bb2663c7f6d65),
+    ("sir_init_table", 0x8f76471fa24057b2),
+    ("sir_patches_5", 0x64d27ef986e34fc9),
+    ("sir_priors", 0xbfe29deac5a25942),
+    ("sir_reservoir", 0x68ce5f90016f7ae7),
+    ("sir_reservoir_mixed", 0xeb5efcb47704c2e5),
+    ("sir_spatial_sum", 0xcd94b01eae00eeb9),
+    ("sir_two_patch", 0xa589042453cfa6bc),
+    ("sir_two_patch_long_obs", 0x84dd19dfc276b148),
+    ("sirv_anchored_calendar", 0x59095d189f6f3b42),
+    ("surveillance_likelihoods", 0x1797802b02ef6f71),
+];
+
 #[test]
 fn gate_golden_trajectories_are_byte_identical() {
     // Match smoke_all_golden: legacy degenerate-rate mode + no interventions, so
@@ -332,6 +409,75 @@ fn gate_golden_trajectories_are_byte_identical() {
         assert!(
             missing.is_empty(),
             "no baseline for: {missing:?} — run with CAMDL_CAPTURE_BASELINE=1 and paste the table"
+        );
+    }
+}
+
+#[test]
+fn gate_ode_state_only_hash_is_stable() {
+    // Mirror the full gate's setup so the trajectory is the SAME run, then hash
+    // state only (int+real, no flows). See `ode_state_hash`.
+    sim::eval_stats::set_allow_degenerate_rates(true);
+    let capture = std::env::var("CAMDL_CAPTURE_BASELINE").is_ok();
+
+    let models = discover_models();
+    assert!(!models.is_empty(), "no *.ir.json in ocaml/golden/");
+
+    let lookup = |name: &str| -> Option<u64> {
+        ODE_STATE_BASELINES.iter().find(|(n, _)| *n == name).map(|(_, h)| *h)
+    };
+
+    let mut captured: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+
+    for name in &models {
+        let mut model = load_and_apply_baseline(name);
+        model.interventions.clear();
+        let compiled = match CompiledModel::new(model.clone()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let params = compiled.default_params.clone();
+        let t_start = model.simulation.t_start;
+        let t_end = model.simulation.t_end.min(30.0);
+
+        // ODE backend only; capability-skip drops models it can't run.
+        let required = compiled.required_capabilities();
+        if !(required - OdeSim.capabilities()).is_empty() {
+            continue;
+        }
+        let cfg = SimConfig::Ode(OdeConfig { t_start, t_end, dt: 1.0 });
+        let traj = match OdeSim.run(&compiled, &params, SEED, &cfg) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let hash = ode_state_hash(&traj);
+        if capture {
+            captured.push(format!("    (\"{name}\", 0x{hash:016x}),"));
+        } else {
+            match lookup(name) {
+                Some(expected) => assert_eq!(
+                    hash, expected,
+                    "ODE STATE-ONLY hash CHANGED for {name}: the compartment \
+                     integration moved (got 0x{hash:016x}, expected 0x{expected:016x}). \
+                     Phase B (augmented flow) must leave prevalence byte-identical."
+                ),
+                None => missing.push(name.clone()),
+            }
+        }
+    }
+
+    if capture {
+        eprintln!("\n// <<CAPTURED-ODE-STATE-BASELINES>> — paste into ODE_STATE_BASELINES:");
+        for line in &captured {
+            eprintln!("{line}");
+        }
+        eprintln!("// ({} entries)\n", captured.len());
+    } else {
+        assert!(
+            missing.is_empty(),
+            "no ODE state baseline for: {missing:?} — run with CAMDL_CAPTURE_BASELINE=1 \
+             and paste the table"
         );
     }
 }

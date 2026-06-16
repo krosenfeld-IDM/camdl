@@ -149,6 +149,79 @@ fn rk4_step(
     Ok(())
 }
 
+/// One integrated ODE state: the integer- and real-compartment values plus the
+/// cumulative per-transition flow integrals. `flow` is `∫ rate dt` accumulated
+/// since the last output reset (reset to 0 at each output boundary so
+/// `snapshot.flows` stays per-interval incidence — pomp's accumulator-variable
+/// semantics, King et al. 2016 JSS). Compartments are clamped `≥ 0`; `flow` is
+/// not (a monotone non-decreasing accumulator within an interval).
+struct OdeState {
+    int:  Vec<f64>,
+    real: Vec<f64>,
+    flow: Vec<f64>,
+}
+
+/// Advance the integrated state across ONE `[t, t + h_max]` boundary interval.
+/// `h_max` is the RAW distance to the next output / intervention / `t_end`
+/// boundary (from [`Schedule::next_boundary`]); the stepper MUST NOT cross it.
+/// Returns the step actually taken: `Rk4Fixed` takes `min(dt, h_max)` and the
+/// driver re-enters until the boundary is reached; an adaptive stepper (Phase C
+/// `Dopri5`) takes `≤ h_max` and is likewise re-entered. This seam is the single
+/// place "support both integrators" lives — `run_ode` stays integrator-agnostic.
+trait OdeStepper {
+    fn advance(
+        &mut self,
+        model: &CompiledModel,
+        params: &[f64],
+        t: f64,
+        h_max: f64,
+        state: &mut OdeState,
+    ) -> Result<f64, SimError>;
+}
+
+/// Fixed-step classic RK4 — today's integrator, the default and the golden
+/// reference. Carries `dt` (the nominal step) as the analogue of an adaptive
+/// stepper's carried step guess; one `advance` takes `min(dt, h_max)`. (The
+/// proposal sketches a unit struct; carrying `dt` makes the re-entry contract
+/// self-contained and parallels `Dopri5`'s carried `h`.)
+struct Rk4Fixed {
+    dt: f64,
+}
+
+impl OdeStepper for Rk4Fixed {
+    fn advance(
+        &mut self,
+        model: &CompiledModel,
+        params: &[f64],
+        t: f64,
+        h_max: f64,
+        state: &mut OdeState,
+    ) -> Result<f64, SimError> {
+        // Clip the nominal step to land on the boundary: `dt.min(h_max)`,
+        // bit-identical to the old `Schedule::substep` (= `dt.min(boundary - t)`).
+        let h = self.dt.min(h_max);
+
+        // Euler flow accumulation (`c += rate(t)·h`, global order O(h)): a LEFT-
+        // rectangle rule via a separate `eval_propensities` call, distinct from
+        // the RK4 stages. It reads the START-of-step ROUNDED integer state
+        // (`eval_propensities` uses `int_float_override: None`), unlike the RK4
+        // stages which read the unrounded f64 via `int_float_override` — Phase B
+        // (augmented flow) unifies the flow onto the stage propensities, which is
+        // why both the rule AND the eval point change there. gh#126 §#11: the
+        // `dt`-referencing rate (`Expr::Dt`, gh#54) sees the REALIZED substep `h`
+        // (`dt_actual`), matching the RK4 derivs and the StepClock rule.
+        let (is, rs) = to_states(&state.int, &state.real);
+        let mut propensities = Vec::with_capacity(state.flow.len());
+        eval_propensities(model, &is, &rs, params, t, h, &mut propensities)?;
+        for (i, &p) in propensities.iter().enumerate() {
+            state.flow[i] += p * h;
+        }
+
+        rk4_step(model, &mut state.int, &mut state.real, params, t, h)?;
+        Ok(h)
+    }
+}
+
 /// Convert (int_vals, real_vals) floats to the (IntState, RealState) used by
 /// the intervention machinery and output snapshots.
 fn to_states(int_vals: &[f64], real_vals: &[f64]) -> (IntState, RealState) {
@@ -176,10 +249,13 @@ pub fn run_ode(
     model.validate_schedule(cfg.dt, params)?;
 
     let (int_s0, real_s0) = model.initial_state(params)?;
-    let mut int_vals: Vec<f64> = int_s0.counts.iter().map(|&c| c as f64).collect();
-    let mut real_vals: Vec<f64> = real_s0.values.clone();
-
     let n_transitions = model.model.transitions.len();
+    let mut state = OdeState {
+        int:  int_s0.counts.iter().map(|&c| c as f64).collect(),
+        real: real_s0.values.clone(),
+        flow: vec![0.0; n_transitions],
+    };
+
     // Merged timeline spine. ODE is dt-independent, so EXACT and snap coincide;
     // it uses the EXACT policy (land on each output/effect boundary). Firing stays
     // inline; the schedule owns the sorted times and `cursor` walks them.
@@ -199,26 +275,29 @@ pub fn run_ode(
     // parametric `at [...]` schedules.
     let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
+    // The integrator behind the seam. Fixed RK4 is the default — and, in Phase A,
+    // the only — integrator; Phase C selects `Dopri5` here from `cfg`. The driver
+    // below is integrator-agnostic: it hands each stepper the raw distance to the
+    // next boundary and re-enters until the boundary is reached.
+    let mut stepper = Rk4Fixed { dt: cfg.dt };
+
     let mut traj = Trajectory::new();
-    // Accumulated continuous flows (rate × dt). The ODE flow is genuinely
-    // real-valued; it is recorded as `Flows::Real` WITHOUT rounding, so a
-    // sub-unit flow (a slow transition such as TB reactivation) survives into
-    // the likelihood instead of quantizing to 0 → `-∞`.
-    let mut flow_acc: Vec<f64> = vec![0.0; n_transitions];
+    // The ODE flow is genuinely real-valued; recorded as `Flows::Real` WITHOUT
+    // rounding, so a sub-unit flow (a slow transition such as TB reactivation)
+    // survives into the likelihood instead of quantizing to 0 → `-∞`.
+    let snapshot_flows = |flow: &[f64]| Flows::Real(flow.to_vec());
     let mut t = cfg.t_start;
 
     // Record initial snapshot
-    let snapshot_flows = |flow_acc: &[f64]| Flows::Real(flow_acc.to_vec());
-
     if schedule.output_due_at(&cursor, t) {
-        let (is, rs) = to_states(&int_vals, &real_vals);
+        let (is, rs) = to_states(&state.int, &state.real);
         traj.push(Snapshot {
             t,
             int_state: is,
             real_state: rs,
-            flows: snapshot_flows(&flow_acc),
+            flows: snapshot_flows(&state.flow),
         });
-        for v in flow_acc.iter_mut() { *v = 0.0; }
+        for v in state.flow.iter_mut() { *v = 0.0; }
         cursor.pass_output();
     }
 
@@ -227,12 +306,16 @@ pub fn run_ode(
         // has no RNG at all).
         if let Some(cb) = tick.as_deref_mut() { cb(t); }
 
-        // The schedule is the single source of truth for the step size,
-        // dt.min(next_boundary - t) — the original formula, bit-exact.
-        let dt = schedule.substep(&cursor, t).expect("t < t_end inside loop");
+        // Raw distance to the next boundary (output/effect/t_end), NOT clipped to
+        // `cfg.dt`. The stepper chooses its own internal step ≤ this; fixed RK4
+        // takes `min(dt, h_max)`, bit-identical to the old `schedule.substep`.
+        let boundary = schedule.next_boundary(&cursor, t).expect("t < t_end inside loop");
+        let h_max = boundary - t;
 
-        if dt <= 1e-15 {
-            // At a boundary — apply intervention or record output
+        if h_max <= 1e-15 {
+            // At a boundary — apply effects or record output. Same threshold as
+            // the old `substep <= 1e-15`: for `cfg.dt > 1e-15`,
+            // `dt.min(h_max) <= 1e-15  ⇔  h_max <= 1e-15`.
             if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
                 // Continuous lifecycle: events (frozen snapshot) fire before
                 // interventions (sequential, post-event). Applied EXACTLY to the
@@ -243,84 +326,69 @@ pub fn run_ode(
                 let mut batch = crate::schedule::EffectBatch::default();
                 crate::effects::due_effects(model, &fire_steps, t, cfg.dt, &mut batch);
                 crate::effects::apply_boundary_batch_continuous(
-                    model, &batch, &mut int_vals, &mut real_vals, params, t, cfg.dt,
+                    model, &batch, &mut state.int, &mut state.real, params, t, cfg.dt,
                 )?;
                 while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
             }
             while schedule.output_due_at(&cursor, t) {
                 let ot = schedule.output_time(&cursor).expect("due implies present");
-                let (is, rs) = to_states(&int_vals, &real_vals);
+                let (is, rs) = to_states(&state.int, &state.real);
                 traj.push(Snapshot {
                     t: ot,
                     int_state: is,
                     real_state: rs,
-                    flows: snapshot_flows(&flow_acc),
+                    flows: snapshot_flows(&state.flow),
                 });
-                for v in flow_acc.iter_mut() { *v = 0.0; }
+                for v in state.flow.iter_mut() { *v = 0.0; }
                 cursor.pass_output();
             }
             if t >= cfg.t_end { break; }
             continue;
         }
 
-        // Accumulate flows before the step (propensities × dt approximation)
-        {
-            let (is, rs) = to_states(&int_vals, &real_vals);
-            let mut propensities = Vec::with_capacity(n_transitions);
-            // gh#126 §#11: evaluate at the REALIZED substep `dt` (dt_actual),
-            // NOT the nominal grid `cfg.dt` — a rate referencing `Expr::Dt`
-            // (gh#54) must see the clipped length on truncated boundary
-            // substeps, matching the RK4 derivs (`:271`) and the StepClock rule
-            // (`EvalCtx.dt = dt_actual`, scheduling-spine-v2 §A). Overloading it
-            // with cfg.dt mis-scaled reported flows → incidence → likelihood.
-            eval_propensities(model, &is, &rs, params, t, dt, &mut propensities)?;
-            for (i, &p) in propensities.iter().enumerate() {
-                flow_acc[i] += p * dt;
-            }
-        }
+        // Advance one integrator step toward the boundary (fixed RK4: exactly one
+        // `min(dt, h_max)` step, accumulating the Euler flow; re-entered by the
+        // loop until the boundary). `t` advances by exactly the step taken.
+        let h_taken = stepper.advance(model, params, t, h_max, &mut state)?;
+        t += h_taken;
 
-        rk4_step(model, &mut int_vals, &mut real_vals, params, t, dt)?;
-        t += dt;
-
-        // Apply intervention if now at that time. Canonical lifecycle: events
-        // (reading the start-of-step snapshot `is`/`rs`, pre-intervention) fire
-        // BEFORE interventions, which read the post-event state. Matches
-        // chain_binomial.
+        // Apply effects if we just landed on a boundary. Canonical lifecycle:
+        // events (reading the start-of-step snapshot, pre-intervention) fire
+        // BEFORE interventions, which read the post-event state; applied EXACTLY
+        // to the f64 vectors so the fractional integrator state survives. A no-op
+        // on intermediate substeps (no effect time within 1e-10 of `t`).
         if schedule.effect_time(&cursor).is_some_and(|iv| (iv - t).abs() < 1e-10) {
-            // Continuous lifecycle (events then interventions), applied EXACTLY
-            // to the f64 vectors so the fractional integrator state survives. The
-            // due batch is derived once at the boundary `t` (grid = cfg.dt).
             let mut batch = crate::schedule::EffectBatch::default();
             crate::effects::due_effects(model, &fire_steps, t, cfg.dt, &mut batch);
             crate::effects::apply_boundary_batch_continuous(
-                model, &batch, &mut int_vals, &mut real_vals, params, t, cfg.dt,
+                model, &batch, &mut state.int, &mut state.real, params, t, cfg.dt,
             )?;
             while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
         }
 
-        // Record outputs
+        // Record outputs due at or before t (a no-op on intermediate substeps).
         schedule.drain_outputs(&mut cursor, t, |ot| {
-            let (is, rs) = to_states(&int_vals, &real_vals);
+            let (is, rs) = to_states(&state.int, &state.real);
             traj.push(Snapshot {
                 t: ot,
                 int_state: is,
                 real_state: rs,
-                flows: snapshot_flows(&flow_acc),
+                flows: snapshot_flows(&state.flow),
             });
-            for v in flow_acc.iter_mut() { *v = 0.0; }
+            for v in state.flow.iter_mut() { *v = 0.0; }
         });
     }
 
     // Flush any remaining output times
     schedule.drain_outputs(&mut cursor, f64::INFINITY, |ot| {
-        let (is, rs) = to_states(&int_vals, &real_vals);
+        let (is, rs) = to_states(&state.int, &state.real);
         traj.push(Snapshot {
             t: ot,
             int_state: is,
             real_state: rs,
-            flows: snapshot_flows(&flow_acc),
+            flows: snapshot_flows(&state.flow),
         });
-        for v in flow_acc.iter_mut() { *v = 0.0; }
+        for v in state.flow.iter_mut() { *v = 0.0; }
     });
 
     Ok(traj)
