@@ -9,9 +9,9 @@
 //!   the controller to shrink (and reject) steps yet still match the reference —
 //!   a bug in `shrink_factor`/the PI controller would diverge here. An
 //!   unsatisfiable (zero) tolerance must fail LOUDLY (honest hard error), not
-//!   return a silent coarse result. (See the finding in that test: a smooth
-//!   model integrates fine even at 1e-300, and the `H_MIN` guard is shadowed by
-//!   the max-rejections guard — so zero tolerance is the deterministic trigger.)
+//!   return a silent coarse result. (A smooth model integrates fine even at
+//!   1e-300, so zero tolerance is the deterministic trigger; which guard fires —
+//!   max-rejections vs `H_MIN` underflow — is characterized in that test.)
 //! - REAL_COMPARTMENTS: the real-state branch of `dopri5_try_step` (separate
 //!   from the integer branch) must agree with fine-dt RK4.
 //! - atol/rtol LOAD-BEARING: a loose tolerance must land measurably further from
@@ -216,16 +216,19 @@ fn rk45_unsatisfiable_tolerance_errors_loudly() {
     // (naming the conflict + suggesting rk4 / a looser tol), never a silent
     // coarse trajectory.
     //
-    // FINDING (PR #231): on a SMOOTH model even atol=rtol=1e-300 does NOT error —
-    // the adaptive controller just takes accurate small steps and integrates to
-    // roundoff-limited accuracy (the embedded error is genuinely satisfiable).
-    // And the `H_MIN` underflow guard is SHADOWED by the max-rejections guard:
-    // shrinking floors at DP_FACMIN=0.2, so after DP_MAX_REJECTIONS=10 rejections
-    // h = h_max·0.2¹⁰ ≈ 1e-7·h_max, still ≫ h_min = 1e-10·span — so for any
-    // reasonable span the rejection counter trips first. The deterministic
-    // trigger for the error path is therefore a literally-zero tolerance: no
-    // finite step has zero embedded error, so every step is rejected → the
-    // honest hard error fires regardless of the model.
+    // VERIFIED (PR #231):
+    //   - A SMOOTH model integrates fine even at atol=rtol=1e-300 — the adaptive
+    //     controller just takes accurate small steps; it does NOT error. So a
+    //     tiny-but-positive tolerance is not a reliable error trigger.
+    //   - A literally-ZERO tolerance is the deterministic trigger: sc = atol +
+    //     rtol·|y| = 0, so the scaled error is non-finite for every finite step
+    //     and the step is always rejected → an honest hard error, regardless of
+    //     model. On the models tested here the error reached is the MAX-REJECTIONS
+    //     guard (observed for sir at dt ∈ {1, 1e-3, 1e-6}).
+    // NOT verified: whether the separate `H_MIN` step-size-underflow guard is
+    // reachable at all (no config tested here trips it; also not proven dead).
+    // Tracked as a follow-up. This test asserts only the verified property: a
+    // zero tolerance fails LOUDLY (max-rejections OR underflow), not silently.
     let base = load_model("tests/external/ode_oracle/models/sir.ir.json");
     let compiled = CompiledModel::new(rk45(&base, 0.0, 0.0)).expect("compile");
     let params = compiled.default_params.clone();
@@ -266,22 +269,28 @@ fn rk45_real_compartments_match_fine_rk4() {
     let rk45_traj = run_default(rk45(&base, 1e-10, 1e-10), 1.0, t_end);
 
     assert_eq!(rk4_traj.snapshots.len(), rk45_traj.snapshots.len(), "shared grid");
-    // Two accurate-but-different integrators agree on the real reservoir to ~0.2%
-    // relative; a bug in the real branch of dopri5_try_step would diverge grossly,
-    // not at the 4th-significant-figure level.
+    // rk4(dt=0.002) and rk45(1e-10) agree on the real reservoir to ~4e-5 relative
+    // (observed). Assert each point within 2e-4 relative (≈5× the observed margin,
+    // both integrators deterministic) with a small absolute floor for near-zero W.
+    // A bug in the real branch of dopri5_try_step would diverge grossly, far above
+    // this band; the old ~50× absolute slack would have hidden a real regression.
+    const REL: f64 = 2e-4;
     let mut worst_rel = 0.0f64;
     let mut peak_w = 0.0f64;
     for (a, b) in rk4_traj.snapshots.iter().zip(&rk45_traj.snapshots) {
         for (x, y) in a.real_state.values.iter().zip(&b.real_state.values) {
             peak_w = peak_w.max(x.abs());
-            let tol = 1e-1 + 2e-3 * x.abs();
-            let d = (x - y).abs();
-            worst_rel = worst_rel.max(d / x.abs().max(1.0));
-            assert!(d <= tol, "real-state rk4={x} vs rk45={y} at t={} (Δ {d:.3e} > tol {tol:.3e})", a.t);
+            let rel = (x - y).abs() / x.abs().max(1.0);
+            worst_rel = worst_rel.max(rel);
+            assert!(
+                rel <= REL,
+                "real-state rk4={x} vs rk45={y} at t={} (relative Δ {rel:.3e} > {REL:.0e})",
+                a.t
+            );
         }
     }
     assert!(peak_w > 10.0, "the real reservoir W never grew (peak {peak_w}) — test would be vacuous");
-    eprintln!("real compartments: peak W {peak_w:.1}, worst relative Δ {:.2e}", worst_rel);
+    eprintln!("real compartments: peak W {peak_w:.1}, worst relative Δ {:.2e} (bound {REL:.0e})", worst_rel);
 }
 
 // ───────────────────────────── atol/rtol load-bearing ────────────────────────
