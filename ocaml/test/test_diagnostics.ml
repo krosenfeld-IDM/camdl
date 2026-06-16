@@ -222,15 +222,15 @@ let fixture_cases () =
    with a one-line rationale. *)
 let corpus_allowlist : (string * string) list = [
   (* (basename, code); e.g. ("some_model.camdl", "W301"); *)
-  (* W104 (per-(p,q) coupling antipattern): these spatial fixtures predate the
+  (* W105 (per-(p,q) coupling antipattern): these spatial fixtures predate the
      restricted-sum `where` construct and use the explicit per-pair importation
-     form, which W104 correctly flags as O(P²). Allowlisted, not migrated:
+     form, which W105 correctly flags as O(P²). Allowlisted, not migrated:
      whether each should move to `sum(q in dim where …, …)` or keep the per-pair
      form (to exercise that path) is a per-model follow-up (gh#185). *)
-  ("polio_spatial_5.camdl", "W104");
-  ("seir_defines_adj.camdl", "W104");
-  ("seir_spatial_5_inference.camdl", "W104");
-  ("polio_afp_es_2patch.camdl", "W104");
+  ("polio_spatial_5.camdl", "W105");
+  ("seir_defines_adj.camdl", "W105");
+  ("seir_spatial_5_inference.camdl", "W105");
+  ("polio_afp_es_2patch.camdl", "W105");
 ]
 
 (* The model corpora presumed clean. `ocaml/golden/errors/` is pruned: it

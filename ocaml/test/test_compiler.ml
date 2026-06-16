@@ -6656,7 +6656,7 @@ let test_sum_var_shadows_transition_index_rejected () =
      init { S[a] = 99  I[a] = 1  S[b] = 100  S[c] = 100 }\n\
      simulate { from = 0 'days  to = 10 'days }\n"
   in
-  compile_expect_error_code ~code:"E281" ~contains:"shadow" src
+  compile_expect_error_code ~code:"E283" ~contains:"shadow" src
 
 let test_sum_var_distinct_from_index_ok () =
   (* The normal pattern — sum var distinct from the transition index — compiles. *)
@@ -6721,7 +6721,7 @@ let test_where_radius_prunes () =
       Alcotest.(check bool) "infection_a does NOT couple to I_d"     false (List.mem "I_d" pops))
 
 let test_where_fitted_threshold_rejected () =
-  compile_expect_error_code ~code:"E282" ~contains:"fitted threshold"
+  compile_expect_error_code ~code:"E284" ~contains:"fitted threshold"
     "time_unit = 'days\n\
      compartments { S, I, R }\n\
      dimensions { patch = [a, b, c] }\n\
@@ -6824,7 +6824,7 @@ let test_where_boundary_excludes_equal () =
    this is the gap PR #238's review flagged — the guard was advertised as
    covering every binder but omitted events/forcing). *)
 let test_event_sum_shadow_rejected () =
-  compile_expect_error_code ~code:"E281" ~contains:"event"
+  compile_expect_error_code ~code:"E283" ~contains:"event"
     "time_unit = 'days\n\
      compartments { S, I, R }\n\
      dimensions { patch = [p0, p1] }\n\
@@ -6900,7 +6900,7 @@ let warns_w104 src =
   | Error e -> Alcotest.failf "model should compile (W104 is a warning, not an error): %s" e
   | Ok d ->
     List.exists (fun (dg : Diagnostics.diagnostic) ->
-      dg.code = "W104" && dg.severity = Diagnostics.Warning) d.ctx.diags.diags
+      dg.code = "W105" && dg.severity = Diagnostics.Warning) d.ctx.diags.diags
 
 let test_w104_perpair_warns () =
   Alcotest.(check bool) "W104 fires on the per-(p,q) coupling form" true (warns_w104 perpair_src)

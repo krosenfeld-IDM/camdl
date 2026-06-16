@@ -1942,12 +1942,12 @@ let apply_relop op (a : float) (b : float) : bool =
 (* Resolve the constant value of a table cell referenced by a `where`
    predicate: table name + index variables (resolved to dimension levels via
    [env], row-major flattened offset). Reads the pre-built [ctx.table_index].
-   Emits E282 (predicate not compile-time decidable) and returns None on any
+   Emits E284 (predicate not compile-time decidable) and returns None on any
    failure — unknown/non-constant table, bad arity, unknown level, OOB, or a
    non-constant (parameterized) cell. *)
 let eval_tab_cell ctx env tname idxs : float option =
   let err msg =
-    Diagnostics.error ctx.diags ~code:"E282" ~loc:Diagnostics.no_loc ~message:msg ();
+    Diagnostics.error ctx.diags ~code:"E284" ~loc:Diagnostics.no_loc ~message:msg ();
     None
   in
   match Hashtbl.find_opt ctx.table_index tname with
@@ -2003,7 +2003,7 @@ let rec eval_guard ctx env = function
        (* A name as the threshold. camdl has no compile-time-constant scalars,
           so it is a parameter (or unknown): a fitted radius would change which
           patches couple at runtime — an unbounded reduction. Targeted error. *)
-       Diagnostics.error ctx.diags ~code:"E282" ~loc:Diagnostics.no_loc
+       Diagnostics.error ctx.diags ~code:"E284" ~loc:Diagnostics.no_loc
          ~message:(Printf.sprintf
            "the where-predicate compares table '%s' against '%s', but a coupling \
             support must be fixed at compile time. If '%s' is a parameter, a \
@@ -3680,7 +3680,7 @@ let expand_tables ctx =
    cell's value during [resolve_expr]. Built once, right after [expand_tables]
    and before transition expansion. External (`--table`) tables have no
    compile-time values and are skipped (a predicate over one then errors with
-   E282 — "not a compile-time-constant table"). *)
+   E284 — "not a compile-time-constant table"). *)
 let build_table_index ctx (tables : Ir.table list) : unit =
   Hashtbl.reset ctx.table_index;
   let dim_name = function TDim s | TDimUnit (s, _) -> s in
@@ -5152,7 +5152,7 @@ let check_shadowing ctx =
         ()
   ) ctx.let_bindings
 
-(** E281: reject a `sum` bound variable that shadows an enclosing index or
+(** E283: reject a `sum` bound variable that shadows an enclosing index or
     bound variable. Resolution is first-match-wins (`resolve_expr`'s ESum arm
     prepends `(v, _) :: env`), so a shadowing `sum` silently rebinds — e.g.
     `sum(p in patch, …)` inside `infection[p in patch]` becomes a global sum
@@ -5164,7 +5164,7 @@ let check_shadowing ctx =
 let check_no_shadowing ctx =
   let report decl v =
     Diagnostics.error ctx.diags
-      ~code:"E281"
+      ~code:"E283"
       ~loc:Diagnostics.no_loc
       ~message:(Printf.sprintf
         "%s: sum variable '%s' shadows an enclosing binding of '%s'. \
@@ -5239,7 +5239,7 @@ let check_no_shadowing ctx =
     List.iter (fun (_, e) -> walk decl seed e) fd.fargs
   ) ctx.func_decls
 
-(** W104: a transition indexed by two levels of the SAME dimension where one of
+(** W105: a transition indexed by two levels of the SAME dimension where one of
     those index variables appears only in the rate (not the source/destination
     stoichiometry) is the per-(p,q) coupling antipattern — it generates P²−P
     transitions, each with its own flow accumulator. The intended form is one
@@ -5254,7 +5254,7 @@ let check_quadratic_coupling ctx =
     | EBinOp (_, l, r) -> mentions v l || mentions v r
     | EUnOp (_, e) -> mentions v e
     | ESum (sv, _, g, b) ->
-      if sv = v then false   (* inner sum rebinds v (E281 forbids); stop *)
+      if sv = v then false   (* inner sum rebinds v (E283 forbids); stop *)
       else (match g with Some g -> guard_mentions v g | None -> false) || mentions v b
     | ECond (p, t, f) -> mentions v p || mentions v t || mentions v f
     | EFuncCall (_, args) -> List.exists (fun (_, e) -> mentions v e) args
@@ -5286,7 +5286,7 @@ let check_quadratic_coupling ctx =
       count_dim d >= 2 && not (List.mem v stoich_vars) && mentions v tr.trrate
     ) dims in
     if offending then
-      Diagnostics.warning ctx.diags ~code:"W104" ~loc:Diagnostics.no_loc
+      Diagnostics.warning ctx.diags ~code:"W105" ~loc:Diagnostics.no_loc
         ~message:(Printf.sprintf
           "transition '%s' is indexed by two levels of the same dimension where an \
            index appears only in the rate, not the stoichiometry. This generates one \
@@ -6236,9 +6236,9 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
   build_lookup_tables ctx;
   (* W103 shadowing check: let bindings vs stratum values *)
   check_shadowing ctx;
-  (* E281: a sum/binder var must not shadow an enclosing index/bound var *)
+  (* E283: a sum/binder var must not shadow an enclosing index/bound var *)
   check_no_shadowing ctx;
-  (* W104: warn on the per-(p,q) coupling antipattern (O(P^2) transitions) *)
+  (* W105: warn on the per-(p,q) coupling antipattern (O(P^2) transitions) *)
   check_quadratic_coupling ctx;
   (* E236: hierarchical-prior cycle / self-reference detection (#3 gate 2) *)
   check_hierarchical_cycles ctx;

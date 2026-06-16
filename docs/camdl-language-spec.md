@@ -1359,7 +1359,7 @@ It may **not** reference a parameter, compartment state, or a parameterized
 (non-constant) table cell — those are runtime quantities, and a
 runtime-dependent support would change which terms exist as the simulation runs
 (an unbounded reduction). A fitted-parameter threshold such as
-`where dist[p,q] < sparse_thresh` is therefore rejected (E282): keep the
+`where dist[p,q] < sparse_thresh` is therefore rejected (E284): keep the
 *support* a compile-time constant — a literal radius, or a precomputed 0/1 mask
 table — and put any fitted **weight** in the rate body.
 
