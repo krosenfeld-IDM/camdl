@@ -6753,6 +6753,41 @@ let test_where_empty_survivors_ok () =
      simulate { from = 0 'days to = 10 'days }\n" in
   ()
 
+(* The headline of gh#185: a where-restricted coupling sum whose body carries a
+   parametric kernel is fittable — autodiff must differentiate it w.r.t. the
+   kernel params. This proves the gradient flows through the pruned Reduce. *)
+let fitted_kernel_src =
+  "time_unit = 'days\n\
+   compartments { S, I, R }\n\
+   dimensions { patch = [p0, p1, p2] }\n\
+   stratify(by = patch)\n\
+   parameters {\n\
+   beta  : rate     in [0.0, 2.0]\n\
+   gamma : rate     in [0.0, 1.0]\n\
+   G     : positive in [0.0, 10.0]\n\
+   rho   : positive in [0.0, 5.0]\n\
+   }\n\
+   tables { dist : patch × patch = [[0.0,30.0,99.0],[30.0,0.0,30.0],[99.0,30.0,0.0]] }\n\
+   let N[p in patch] = S[p] + I[p] + R[p]\n\
+   transitions {\n\
+   infection[p in patch] : S[p] --> I[p] @ beta * S[p] * (I[p]/N[p] + G * sum(q in patch where dist[p,q] < 50 and q != p, dist[p,q]^(-rho) * I[q]/N[q]))\n\
+   recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+   }\n\
+   init { S[p0]=999 I[p0]=1 S[p1]=1000 S[p2]=1000 }\n\
+   simulate { from = 0 'days to = 50 'days }\n"
+
+let test_where_fitted_kernel_gradient () =
+  let m = match Compiler.compile ~name:"fitted_kernel" fitted_kernel_src with
+    | Ok m -> m
+    | Error e -> Alcotest.failf "fitted-kernel model should compile: %s" e in
+  let t = match List.find_opt (fun (t : Ir.transition) -> t.name = "infection_p0") m.transitions with
+    | Some t -> t
+    | None -> Alcotest.fail "no infection_p0 transition" in
+  Alcotest.(check bool) "gradient w.r.t. coupling strength G flows through the where-Reduce"
+    true (List.mem_assoc "G" t.rate_grad);
+  Alcotest.(check bool) "gradient w.r.t. distance-decay rho flows through the where-Reduce"
+    true (List.mem_assoc "rho" t.rate_grad)
+
 (* W104: the per-(p,q) coupling antipattern (O(P²) transitions). *)
 let perpair_src =
   "time_unit = 'days\n\
@@ -6799,6 +6834,8 @@ let () =
         `Quick test_where_fitted_threshold_rejected;
       Alcotest.test_case "empty survivor set compiles (sum collapses to 0)"
         `Quick test_where_empty_survivors_ok;
+      Alcotest.test_case "fitted kernel: gradient flows through the where-Reduce to G/rho"
+        `Quick test_where_fitted_kernel_gradient;
     ];
     "index_shadowing", [
       Alcotest.test_case "E281 sum var shadows transition index"
@@ -6838,6 +6875,7 @@ let () =
       Alcotest.test_case "seir_erlang_staged" `Quick (test_golden "seir_erlang_staged");
       Alcotest.test_case "sir_coupling"       `Quick (test_golden "sir_coupling");
       Alcotest.test_case "sir_two_patch"      `Quick (test_golden "sir_two_patch");
+      Alcotest.test_case "sir_spatial_where"  `Quick (test_golden "sir_spatial_where");
       Alcotest.test_case "seir_vaccine"            `Quick (test_golden "seir_vaccine");
       Alcotest.test_case "seir_vaccine_seasonal"   `Quick (test_golden "seir_vaccine_seasonal");
       Alcotest.test_case "polio_age"               `Quick (test_golden "polio_age");

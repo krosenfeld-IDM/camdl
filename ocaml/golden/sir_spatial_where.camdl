@@ -1,0 +1,60 @@
+# SIR on a line of 6 patches with radius-limited spatial coupling (gh#185).
+#
+# The force of infection in patch p mixes local prevalence with a coupling sum
+# restricted to p's in-radius neighbours:
+#
+#   beta * S[p] * ( I[p]/N[p]
+#       + rho * sum(q in patch where dist[p,q] < 50 and q != p, I[q]/N[q]) )
+#
+# The `where` predicate carves the coupling support at COMPILE TIME from the
+# constant `dist` table (read from data): patches are a line p0..p5 with
+# adjacent distance 30, so each patch couples only to its immediate neighbours
+# (< 50), and the sum is sparse by construction — no per-(p,q) transitions, no
+# O(P²) blow-up. Seeded in p0, the epidemic travels down the line.
+
+time_unit = 'days
+
+compartments { S, I, R }
+
+dimensions { patch = [p0, p1, p2, p3, p4, p5] }
+
+stratify(by = patch)
+
+parameters {
+  beta  : rate        in [0.0, 2.0]
+  gamma : rate        in [0.0, 1.0]
+  rho   : probability in [0.0, 1.0]
+}
+
+tables {
+  # Pairwise distance, read from data. Only in-radius (adjacent) pairs are
+  # listed; every other pair defaults huge and is excluded by `< 50`.
+  dist : patch × patch = read("data/sir_spatial_where_dist.tsv", default = 1000000.0)
+}
+
+let N[p in patch] = S[p] + I[p] + R[p]
+
+transitions {
+  infection[p in patch] : S[p] --> I[p]
+    @ beta * S[p] * ( I[p] / N[p]
+        + rho * sum(q in patch where dist[p, q] < 50 and q != p, I[q] / N[q]) )
+  recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]
+}
+
+init {
+  S[p0] = 9990  I[p0] = 10
+  S[p1] = 10000
+  S[p2] = 10000
+  S[p3] = 10000
+  S[p4] = 10000
+  S[p5] = 10000
+}
+
+simulate { from = 0 'days  to = 250 'days }
+
+scenarios {
+  baseline {
+    label = "radius coupling (R0=2, neighbour-to-neighbour spread)"
+    set = { beta = 0.5  gamma = 0.25  rho = 0.03 }
+  }
+}

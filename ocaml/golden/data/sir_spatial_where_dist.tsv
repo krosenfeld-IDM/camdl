@@ -1,0 +1,11 @@
+patch	patch	dist
+p0	p1	30
+p1	p0	30
+p1	p2	30
+p2	p1	30
+p2	p3	30
+p3	p2	30
+p3	p4	30
+p4	p3	30
+p4	p5	30
+p5	p4	30

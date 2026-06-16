@@ -280,6 +280,13 @@ const BASELINES: &[(&str, &str, u64)] = &[
     ("sir_two_patch_long_obs", "gillespie", 0x695d50d1cbec83fc),
     ("sir_two_patch_long_obs", "chain_binomial", 0xcd2756793661993f),
     ("sir_two_patch_long_obs", "ode", 0x447fa76c8402b0ee),
+    // Restricted-sum `where` coupling (gh#185): 6-patch line, radius support
+    // pruned at compile time, seeded p0 → traveling wave across in-radius
+    // neighbours. The first golden exercising `sum(q where dist[p,q] < r, …)`.
+    // (Hashes re-captured post-rebase against IR 0.15 + augmented-flow ode.)
+    ("sir_spatial_where", "gillespie", 0x093f980c2089c00c),
+    ("sir_spatial_where", "chain_binomial", 0x3a8c0b0bb6dd86ac),
+    ("sir_spatial_where", "ode", 0x414139babb1ed18a),
 ];
 
 /// State-only ODE baselines (gh#166 Phase A): model -> `ode_state_hash`, captured
@@ -325,6 +332,7 @@ const ODE_STATE_BASELINES: &[(&str, u64)] = &[
     ("sir_reservoir", 0x68ce5f90016f7ae7),
     ("sir_reservoir_mixed", 0xeb5efcb47704c2e5),
     ("sir_spatial_sum", 0xcd94b01eae00eeb9),
+    ("sir_spatial_where", 0x416cb8b9aa0f7f83),
     ("sir_two_patch", 0xa589042453cfa6bc),
     ("sir_two_patch_long_obs", 0x84dd19dfc276b148),
     ("sirv_anchored_calendar", 0x59095d189f6f3b42),
