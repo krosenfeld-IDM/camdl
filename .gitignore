@@ -40,6 +40,9 @@ tests/snapshots/
 output/
 diagnostics.tsv
 **/diagnostics.tsv
+# stray TSV a doctest/example writes to cwd
+camdl_pop.tsv
+**/camdl_pop.tsv
 
 # camdl CAS run output. The content-addressed store (default output root
 # `./results`, e.g. `rust/crates/cli/results/` when the cli tests run from
