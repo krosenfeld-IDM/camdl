@@ -450,10 +450,14 @@ fn apply_action_f64(
 ) -> Result<(), SimError> {
     match action {
         Action::Add(aa) => {
-            if v.round() < 0.0 {
+            // Guard the RAW value, not the rounded one (gh#199): `(-0.3).round()`
+            // is `-0.0`, which is not `< 0.0`, so the rounded guard let a negative
+            // add in (-0.5, 0) reach `*= v` — a silent subtraction from the
+            // continuous reservoir each firing.
+            if v < 0.0 {
                 return Err(SimError::NegativeCount {
                     compartment: aa.compartment.clone(),
-                    attempted_value: v.round() as i64,
+                    attempted_value: v.floor() as i64,
                     t: 0.0,
                     cause: NegativeCountCause::InterventionAddNegative,
                 });
@@ -576,17 +580,21 @@ fn resolve_action(
 ) -> Result<(), SimError> {
     match action {
         Action::Add(aa) => {
-            let count = v.round() as i64;
             // A negative add is always a config bug (you cannot add a negative
-            // number of individuals) — hard error on every path.
-            if count < 0 {
+            // number of individuals) — hard error on every path. Guard the RAW
+            // resolved value, not the rounded one: a raw amount in (-0.5, 0)
+            // rounds to -0.0 (=> 0), so a rounded guard let it slip through as a
+            // silent no-op on an int target or a silent subtraction on a real
+            // one (gh#199).
+            if v < 0.0 {
                 return Err(SimError::NegativeCount {
                     compartment: aa.compartment.clone(),
-                    attempted_value: count,
+                    attempted_value: v.floor() as i64,
                     t,
                     cause: NegativeCountCause::InterventionAddNegative,
                 });
             }
+            let count = v.round() as i64;
             match resolve_target(model, &aa.compartment)? {
                 Arena::Int(i) => out.int.push(IntDelta { idx: i, delta: count }),
                 Arena::Real(i) => out.real.push(RealDelta { idx: i, delta: v }),
@@ -796,6 +804,88 @@ mod tests {
         let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
                                        &m.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap_err();
         assert!(matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionAddNegative, .. }));
+    }
+
+    /// gh#199: a negative add amount in the open interval (-0.5, 0) must hard-
+    /// error, not slip past the guard. The historical guard tested the ROUNDED
+    /// value (`v.round() as i64`), and `(-0.3).round()` is `-0.0` → `0`, so
+    /// `count < 0` was false and the negative add was silently accepted (a
+    /// no-op on an int target, a silent subtraction on a real target). The fix
+    /// guards the RAW resolved value. `-0.3` is the canonical hole representative
+    /// (the existing `add_negative_is_hard_error_on_any_path` uses `-1.0`, which
+    /// rounds to `-1` and so never exercises this interval).
+    #[test]
+    fn add_negative_subhalf_int_is_hard_error() {
+        let m = model_with(vec![Action::Add(AddAction {
+            compartment: "I".into(),
+            count: Expr::const_(-0.3),
+        })]);
+        let (int_s, real_s) = states();
+        let mut out = EffectDeltas::default();
+        let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap_err();
+        assert!(
+            matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionAddNegative, .. }),
+            "add(int, -0.3) must hard-error like add(int, -1.0); got: {err}"
+        );
+        assert!(out.is_empty(), "no delta may be emitted when the add is rejected");
+    }
+
+    /// gh#199, real target: `add(W, -0.3)` on the discrete resolver. The real
+    /// arm pushed `RealDelta { delta: v }` = -0.3 (a silent subtraction), since
+    /// the rounded guard did not fire. The raw-value guard must reject it.
+    #[test]
+    fn add_negative_subhalf_real_is_hard_error() {
+        let m = model_with(vec![Action::Add(AddAction {
+            compartment: "W".into(),
+            count: Expr::const_(-0.3),
+        })]);
+        let (int_s, real_s) = states();
+        let mut out = EffectDeltas::default();
+        let err = resolve_intervention(&m, 0, &m.model.interventions[0], snap(&int_s, &real_s),
+                                       &m.default_params, 1.0, 1.0, EffectKind::Intervention, None, &mut out).unwrap_err();
+        assert!(
+            matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionAddNegative, .. }),
+            "add(real, -0.3) must hard-error, not silently subtract; got: {err}"
+        );
+        assert!(out.is_empty(), "no delta may be emitted when the add is rejected");
+    }
+
+    /// gh#199, ODE path: `apply_action_f64`'s add arm tested `v.round() < 0.0`,
+    /// and `(-0.3).round()` is `-0.0` (not `< 0.0`), so the negative add reached
+    /// `real_vals[i] += v` = a silent subtraction of 0.3 from the reservoir each
+    /// firing. Drive it through the continuous boundary batch on a real target
+    /// and assert the hard error, with the reservoir left untouched.
+    #[test]
+    fn continuous_add_negative_subhalf_real_is_hard_error() {
+        let m = model_with(vec![Action::Add(AddAction {
+            compartment: "W".into(),
+            count: Expr::const_(-0.3),
+        })]);
+        let fire = m.resolve_fire_steps(1.0, &m.default_params);
+        let mut int_vals = vec![100.0_f64, 0.0];
+        let mut real_vals = vec![50.0_f64];
+        let err = apply_boundary_effects_continuous(&m, &fire, &mut int_vals, &mut real_vals, &m.default_params, 1.0, 1.0)
+            .unwrap_err();
+        assert!(
+            matches!(err, SimError::NegativeCount { cause: NegativeCountCause::InterventionAddNegative, .. }),
+            "ODE add(real, -0.3) must hard-error, not silently subtract; got: {err}"
+        );
+        assert_eq!(real_vals[0], 50.0, "the reservoir must be untouched when the add is rejected");
+    }
+
+    /// gh#199 boundary: a positive add that ROUNDS to zero (`0.4` → `round` = 0)
+    /// is a legitimate quantize-to-zero no-op, NOT a config bug — the raw-value
+    /// guard must reject only `v < 0`, leaving `[0, 0.5)` accepted. Pins that the
+    /// fix does not over-reject.
+    #[test]
+    fn add_positive_subhalf_int_is_zero_delta_not_error() {
+        let m = model_with(vec![Action::Add(AddAction {
+            compartment: "I".into(),
+            count: Expr::const_(0.4),
+        })]);
+        let d = resolve(&m);
+        assert_eq!(d.int, vec![IntDelta { idx: 1, delta: 0 }], "round(0.4)=0 is a no-op, not an error");
     }
 
     #[test]
