@@ -1377,7 +1377,7 @@ infection[p in patch] : S[p] --> I[p]
 
 Writing the *transition* per pair instead — `imp[p, q] : S[p] --> I[p] @ … where
 p != q` — produces P² transitions (and as many flow columns) rather than one
-summed rate per patch; the compiler warns (W104) and points back to the
+summed rate per patch; the compiler warns (W105) and points back to the
 `sum … where` form.
 
 ### 8.3 No Localization, No Magic
