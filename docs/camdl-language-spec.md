@@ -302,13 +302,14 @@ from the model's declared `origin` date, in the model's `time_unit`:
 origin = date("2019-01-01")   # top-level declaration (optional)
 
 simulate {
-  to = date("2021-06-30")     # 912 days from origin (in time_unit = 'days)
+  to = date("2021-06-30")     # 911 days from origin (in time_unit = 'days)
 }
 ```
 
 `date(...)` uses proleptic Gregorian calendar arithmetic. The result is exact
 (integer day count) when `time_unit = 'days`, and divided by the appropriate
-factor for other units (e.g., 365.25 for years).
+factor for other units (e.g., 365.2425 for years — the Gregorian average year,
+matching §2.1).
 
 **E220.** Using `date(...)` without a top-level `origin = date(...)` declaration
 is a compile error:
@@ -515,9 +516,11 @@ real        : unconstrained (default if omitted).
 instant     : dimension [T], absolute time. Renders as a date in anchored
               mode (requires origin). Negative lower bounds allowed.
 duration    : dimension [T], a span. Renders as a span.
-ivp         : initial-value parameter (PGAS draws stochastic initial
-              states; see §15).
 ```
+
+There is no `ivp` ("initial-value parameter") kind. Stochastic initial states
+are expressed through the `init {}` block (§15) and made estimable by the
+inference engine's `ic_free` setting — not a parameter kind.
 
 Types enable: validation of supplied values, default inference transforms, and
 dimensional analysis of rate expressions.
@@ -1039,8 +1042,9 @@ left. Name count must match non-index column count.
 ### 6.5 External Table Loading
 
 External tables are loaded at compile time and inlined into the IR. The IR is
-self-contained — no file references at runtime. For very large tables (>1M
-entries), binary IR format (msgpack) is recommended over JSON.
+self-contained — no file references at runtime. The canonical IR format is
+compact one-element-per-line JSON (a `--pretty` variant exists for inspection);
+there is no binary format.
 
 ### 6.6 Parameterized Table Entries
 
@@ -1083,13 +1087,18 @@ same row.
 
 ## 7. Forcing
 
-Named time-dependent forcing functions, usable in rate expressions. Four
+Named time-dependent forcing functions, usable in rate expressions. Six
 built-in types cover real-world needs:
 
 - `sinusoidal` — smooth seasonal forcing
 - `periodic` — repeating step function (day-of-week, month-of-year effects)
 - `piecewise` — non-repeating step function (policy changes, campaign windows)
 - `interpolated` — data-driven time series (empirical covariates)
+- `fourier` — finite Fourier series with estimable cos/sin harmonic pairs
+  (`period`, `harmonics = [(a1, b1), (a2, b2), ...]`), for smooth periodic
+  forcing richer than a single sinusoid (gh#59)
+- `periodic_spline` — periodic B-spline with uniform knots (`period`, `n_basis`,
+  optional `degree` = 3), for flexible smooth seasonality (gh#59)
 
 <!-- camdl-doctest-preamble: forcing-demo
 compartments { S, I, R }
@@ -1876,7 +1885,10 @@ index := expr                             # positional: S[child]
        | IDENT '=' expr                   # named: S[age = child]
 ```
 
-Comparison operators are available for `where` guards. `sum` is a keyword, not a
+In a `where` guard (transition or `sum` predicate) the comparison operators are
+restricted — see §8.2.1: index variables compare only with `==` / `!=`, and the
+relational operators (`< <= > >= == !=`) apply only to a constant table cell
+against a numeric literal (`dist[p,q] < 50`). `sum` is a keyword, not a
 user-definable function.
 
 **Built-in math functions.** These are recognized by the compiler as
@@ -1890,7 +1902,12 @@ function-call syntax and produce IR expression nodes (not forcing functions):
 | `abs(x)`    | 1     | Absolute value                                                  |
 | `floor(x)`  | 1     | Floor (round toward -∞)                                         |
 | `ceil(x)`   | 1     | Ceiling (round toward +∞)                                       |
+| `sin(x)`    | 1     | Sine (radians)                                                  |
+| `cos(x)`    | 1     | Cosine (radians)                                                |
+| `tanh(x)`   | 1     | Hyperbolic tangent                                             |
 | `mod(a, b)` | 2     | Euclidean remainder (always non-negative). Returns 0 for b = 0. |
+| `min(a, b)` | 2     | Smaller of two values                                          |
+| `max(a, b)` | 2     | Larger of two values                                           |
 
 Example:
 
@@ -1981,21 +1998,25 @@ waning    : R --> S  @ omega * R   # no extra noise
 
 ---
 
-## 10. Coupling Sugar (Shorthand for Stratified Transmission)
+## 10. Stratified Transmission (Explicit Indexed Form)
 
-> **Status: removed.** The `coupling[dim = M]` sugar described below was removed;
-> the compiler does not support it (there is no `coupling` keyword in the
-> grammar). Use the explicit indexed transition form (§9), or — for sparse
-> spatial coupling — a restricted sum, `sum(q in dim where …, …)` (§8.2.1).
+> **The `coupling[dim = M]` sugar was removed.** An earlier design had a
+> `coupling[dim = M]` block that auto-expanded a base transmission rate into a
+> contact-matrix-weighted sum; it was tried and removed, and there is no
+> `coupling` keyword in the grammar. Write stratified transmission with the
+> explicit indexed transition form below. For **sparse spatial coupling** the
+> recommended construct is a restricted sum, `sum(q in dim where P, body)`
+> (§8.2.1), which carves the neighbour support at compile time so the
+> force-of-infection sum costs O(P·k) rather than O(P²).
 
-### 10.1 Why Coupling Sugar Exists
+### 10.1 The Explicit Primitive
 
-Writing the full indexed transmission formula is the primitive — it's always
-correct and always available. But for models with multiple stratification
-dimensions, the formula gets long:
+Write the full indexed transmission formula directly — it is always correct and
+always available. For models with multiple stratification dimensions the formula
+is longer but fully transparent:
 
 ```camdl
-# Primitive: fully explicit age × sex structured transmission
+# Fully explicit age × sex structured transmission
 infection[a in age, s in sex] : S[a,s] --> E[a,s]
   @ beta * S[a,s] * sum(b in age, sum(t in sex,
       C_age[a,b] * B_sex[s,t] * I[b,t]
@@ -2003,50 +2024,11 @@ infection[a in age, s in sex] : S[a,s] --> E[a,s]
     ))
 ```
 
-The coupling sugar lets the user write the base (un-stratified) model and
-declare how each dimension interacts:
+The per-stratum denominator `sum(c in compartments, c[b,t])` is the total
+population of stratum `(age=b, sex=t)` across all compartments; you can also
+declare it once as a `let N_local[...] = ...` binding (§8.4) and reference it.
 
-```camdl
-# Sugar: base model + coupling declarations
-infection : S --> E @ beta * S * I / N {
-  coupling[age = C_age]
-  coupling[sex = B_sex]
-}
-```
-
-Both produce the **same IR**. The sugar is pure convenience — the spec documents
-exactly what it expands to, and the user can always write the primitive form
-instead.
-
-### 10.2 Expansion Rules
-
-The expansion of `coupling[dim = M]` transforms the base transmission rate as
-follows. Starting from `@ beta * S * I / N`:
-
-1. The compiler adds index variables for each coupling dimension
-2. `S` becomes `S[i]` (localized to the transition's stratum)
-3. `I / N` becomes `sum(j in dim, M[i,j] * I[j] / N_j)` where `N_j` is the total
-   population in stratum `j`
-4. `N_j` is auto-generated: `sum(c in compartments, c[j])` — the compiler always
-   knows the total population per stratum without any user-defined binding
-
-Multiple `coupling` lines nest the sums:
-
-```camdl
-# coupling[age = C_age], coupling[sex = B_sex] expands to:
-infection[a in age, s in sex] : S[a,s] --> E[a,s]
-  @ beta * S[a,s] * sum(b in age, sum(t in sex,
-      C_age[a,b] * B_sex[s,t] * I[b,t]
-        / sum(c in compartments, c[b,t])
-    ))
-```
-
-The denominator `sum(c in compartments, c[b,t])` is generated automatically. It
-equals the total population of stratum `(age=b, sex=t)` across all compartments.
-No user-defined `N_local` binding is required — the sugar is fully
-self-contained.
-
-### 10.3 What the Matrices Mean
+### 10.2 What the Matrices Mean
 
 All coupling structures are expressed through the same mechanism — a rate matrix
 `M[i,j]` weighting contact between strata i and j:
@@ -2093,10 +2075,9 @@ There is no separate `directed` or `mixing` keyword — they are all matrices. T
 matrix structure determines the coupling semantics. This is the right primitive:
 one concept (rate matrix), many structures.
 
-### 10.4 Multi-Strain Models
+### 10.3 Multi-Strain Models
 
-Multi-strain models are complex enough that coupling sugar is not provided. Use
-the primitive indexed transition form instead.
+Multi-strain models use the explicit indexed transition form throughout.
 
 The key structural insight: in a multi-strain compartmental model, **S is a
 shared pool** — a susceptible person isn't "susceptible to wild-type," they're
@@ -2166,9 +2147,11 @@ safety the rate expression should clamp:
 
 ## 11. ODE Block
 
-> **Not yet implemented (v0.2).** The `ode { }` block is parsed but currently
-> discarded by the expander. Real-valued compartments (`W : real`) and ODE
-> evolution are planned for v0.2.
+The `ode { }` block declares derivatives for real-valued compartments
+(`W : real`). The expander emits each `W = dW/dt` line as an IR ODE equation, and
+the runtime integrates them (RK4) between stochastic events — a
+piecewise-deterministic Markov process. A `Real` compartment must have an ODE
+equation; one without is a compile error.
 
 For real-valued compartments:
 
@@ -2441,21 +2424,25 @@ Generates one observation stream per patch.
 The `observations {}` block is evaluated at runtime in both directions.
 
 - **Forward simulation** (`camdl simulate`): the runtime evaluates each stream's
-  projection on the schedule (`every = ...`) and **samples** from the declared
-  likelihood family to produce synthetic observations. Synthetic-observation
-  files are written when `--obs`, `--obs-dir`, or `--obs-only` is passed (see
-  §21); no observation file is emitted by default. Trajectories are written
-  independently via `--output` / stdout.
+  projection on its `emit_schedule` and **samples** from the declared likelihood
+  family to produce synthetic observations. Synthetic-observation files are
+  written when `--obs`, `--obs-dir`, or `--obs-only` is passed (see §21); no
+  observation file is emitted by default. Trajectories are written independently
+  via `--output` / stdout.
 - **Inference** (`camdl fit` and friends): the runtime **scores** observed data
   against the same likelihood family, producing log p(y | θ). PGAS, IF2,
   particle filtering, and PMMH all consume the `observations {}` declarations
   via the compiled `dmeasure` / `rmeasure` paths. When fitting with `--data`,
   the data file's time column supplies the observation times and the declared
-  schedule (`every` / `at`) is not consulted; the schedule is used only for
-  forward synthetic-data generation under `simulate`.
+  `emit_schedule` is not consulted; the schedule is used only for forward
+  synthetic-data generation under `simulate`.
 
-Monthly incidence can be obtained natively by setting `every = 30 'days` (or
-`every = 1 'months` once time-unit arithmetic is implemented).
+The emission cadence is written `emit_schedule = every N 'unit` or
+`emit_schedule = at [t1, t2, ...] 'unit` (§12 examples). A bare `every`/`at`
+field at the top of an observation block is the removed pre-gh#171 form and is
+rejected with **E272** pointing at the `emit_schedule = ...` rewrite. Monthly
+incidence can be obtained natively by setting `emit_schedule = every 30 'days`
+(or `every 1 'months` once time-unit arithmetic is implemented).
 
 ---
 
@@ -2474,27 +2461,37 @@ interventions {
     until = 2 'years
   }
 
-  importation_pulse : set(I[child, p1], value = I[child, p1] + 10) at [90]
+  importation_pulse : { I_child_p1 = I_child_p1 + 10  at = [90] }
 }
 ```
 
 ### 13.1 Actions
 
+There are three actions. `transfer` and `add` are written as function-call
+forms; `set` (assign a compartment a value) is written inside the block form as
+`COMP = EXPR` — there is no `set(...)` function:
+
 ```camdl
-transfer(fraction = EXPR, from = COMP, to = COMP)   # move fraction
-transfer(count = EXPR, from = COMP, to = COMP)       # move count
-set(COMP, value = EXPR)                               # override value
+# transfer and add — function-call action forms
+NAME : transfer(fraction = EXPR, from = COMP, to = COMP) at [...]   # move fraction
+NAME : transfer(count = EXPR, from = COMP, to = COMP) at [...]       # move count
+NAME : add(COMP, EXPR) at [...]                                       # add a count
+
+# set — block form, one or more `COMP = EXPR` assignments plus a schedule
+NAME : { COMP = EXPR  at = [...] }                                    # override value
 ```
 
 `transfer` is atomic: `delta = floor(source * fraction)` computed from
 pre-intervention state, then `source -= delta, dest += delta` applied together.
 
 **Stratified compartments in actions.** `transfer(from = S, to = V)` with bare
-compartment names expands over all strata (see §25.10). `set` with a bare
-compartment name on a stratified compartment is a **compile error** — the
-compiler cannot guess what value to assign to each stratum. Use explicit
-indexing: `set(I[child, p1], value = ...)`. Named indexing is supported:
-`set(I[age = child, patch = p1], value = ...)`.
+compartment names expands over all strata (see §25.10). The `set` block form
+assigns by **compartment name on the left-hand side**; that name must be a single
+declared compartment. On a stratified compartment the bare name (e.g. `I`) is
+not a single compartment after expansion, so write the **expanded stratum name**
+directly (`I_child_p1 = ...`) — the compiler verifies the name against the
+expanded compartment table and rejects an unknown target (E265). (Index-binder
+forms like `I[child, p1]` on the left of a `set` are not part of the grammar.)
 
 ### 13.2 Scheduling
 
@@ -2655,10 +2652,13 @@ trajectory and is resampled away.
 
 ### 13.7 The `at_day` Schedule
 
-For events and interventions that recur on a specific day within each period:
+For `add` events and interventions that recur on a specific day within each
+period. The `every … at_day …` schedule is available only on the `add` action
+(`transfer`/`set` use the `at [...]` or `{ every = …; from = …; until = … }`
+schedule forms instead):
 
 ```camdl
-NAME : ACTION every PERIOD at_day DAY
+NAME : add(COMP, EXPR) every PERIOD at_day DAY
 ```
 
 `at_day` is the absolute phase within the period, measured from `t = 0`. Fire
@@ -2743,62 +2743,53 @@ the `simulate` block, holding the simulation's start and end times. They are
 available in any expression — most usefully to anchor intervention or event
 schedule windows relative to the run (e.g. `from` / `until`).
 
-If `simulate` is absent (e.g., during `camdl check`), `t_start` and `t_end` are
-undefined. Expressions referencing them produce a compile warning: "t_end
-referenced but no simulate block present."
+If `simulate` is absent (e.g., during `camdl check`), the expander silently
+defaults `t_start = 0` and `t_end = 100`; expressions referencing them use those
+defaults. There is no warning for a missing `simulate` block.
 
 ### 14.2 Reserved Identifiers
 
-The following names cannot be used as parameter, compartment, table, let
-binding, or index dimension names:
+Three distinct mechanisms prevent a name from being used as a declaration. They
+fail differently, so they are worth separating.
+
+**1. Genuinely reserved names** — checked explicitly by the compiler. Declaring a
+compartment, parameter, or `let` binding with one of these is an **E100** error
+("name '…' is reserved …"):
 
 ```
-# Time and origin
-t                # current time inside rate / let / observation expressions
-dt               # current substep length (used inside rate expressions)
-t_start          # simulation start time (from simulate block)
-t_end            # simulation end time (from simulate block)
-origin           # anchored-mode date origin (set via `origin = date(...)`)
-
-# Iteration / aggregation keywords
-compartments     # the set of integer compartment names (for iteration)
-sum              # summation keyword
-consecutive      # pair iteration keyword
-
-# Observation-likelihood namespace (reserved inside `observations { ... }` only)
-projected        # the evaluated projection expression inside `likelihood`
-
-# Calendar builtins (function names; cannot be redeclared)
-date
-add_calendar_days
-add_calendar_weeks
-add_calendar_months
-add_calendar_years
-date_range
-
-# Rate wrappers (function names)
-overdispersed
-deterministic
-
-# Likelihood distribution names (reserved inside `likelihood = ...`)
-poisson
-neg_binomial
-normal
-binomial
-beta_binomial
-bernoulli
-diagnostic_test
-
-# Scenario namespace
-baseline         # implicit identity scenario; user cannot redefine
-scenario         # the scenario builder keyword
+t          # current simulation time
+t_start    # simulation start time (from simulate block)
+t_end      # simulation end time (from simulate block)
+dt         # current substep length (used inside rate expressions)
+pi         # the constant π
+e          # Euler's number
 ```
 
-The compiler errors if a user declaration shadows a reserved name:
+**2. Keywords** — the lexer tokenizes these, so they cannot appear as an
+identifier; using one as a name is a bare **E001** syntax error, not a
+reserved-id diagnostic. This set includes the block keywords (`compartments`,
+`parameters`, `tables`, `forcing`, `transitions`, `observations`,
+`interventions`, `ode`, `output`, `simulate`, `init`, `scenarios`, …), the type
+keywords (`rate`, `probability`, `positive`, `count`, `real`, `integer`,
+`instant`, `duration`), and operator/iteration keywords (`sum`, `consecutive`,
+`where`, `let`, `if`/`then`/`else`, `and`/`or`/`not`, `in`, `by`, `from`, `to`,
+`every`, `until`, `at`, `origin`, `columns`, `emit_schedule`, …).
 
-```camdl
-ERROR: 't_end' is a reserved identifier and cannot be used as a
-  parameter name.
+**3. Function and distribution names** — these are **not** reserved and **not**
+keywords. They are recognized only in call position; used as a parameter name
+they compile fine. This includes the calendar builtins (`add_calendar_months`,
+`add_calendar_years`, `date`, `date_range` — note only the `_months`/`_years`
+calendar adders exist; there is no `add_calendar_days`/`add_calendar_weeks`), the
+rate wrappers (`overdispersed`, `deterministic`), the likelihood distributions
+(`poisson`, `neg_binomial`, `normal`, `binomial`, `beta_binomial`, `bernoulli`,
+`diagnostic_test`), the observation projection name (`projected`), and the
+scenario names (`baseline`, `scenario`). Reusing one as an ordinary parameter is
+legal but inadvisable for readability.
+
+A genuinely-reserved name (group 1) produces:
+
+```
+ERROR E100: parameter name 't_end' is reserved for simulation time
 ```
 
 ---
@@ -2958,8 +2949,8 @@ performs a table lookup at compile time — each expanded entry gets its own
 concrete value. Parameter references (e.g. `I0`) remain as IR-level expressions
 evaluated at runtime.
 
-This is fully supported in v0.1. The `distribute(total, weights = table)`
-aggregate helper for proportional allocation is future sugar (v0.2).
+This is fully supported. Per-stratum initial values come from index binders and
+compile-time table lookups; there is no `distribute(...)` allocation helper.
 
 ---
 
@@ -2967,28 +2958,27 @@ aggregate helper for proportional allocation is future sugar (v0.2).
 
 A simulation writes a **trajectory** — the time series of compartment states,
 sampled on a schedule. With no `output {}` block the default schedule applies;
-declare one to set the cadence, give explicit output times, or choose the file
-format.
+declare one to set the cadence or give explicit output times.
 
-> **Default schedule.** Snapshots every `1` in the model's `time_unit`, format
-> `tsv`, covering `[min(0, t_start), t_end]` — where the window is taken from
-> the `simulate {}` block (or `(0, 100)` if `simulate {}` is omitted). The
-> simulate command writes the trajectory to `--output` (or stdout) and writes
-> observation files only when `--obs` / `--obs-dir` / `--obs-only` is passed.
+> **Default schedule.** Snapshots every `1` in the model's `time_unit`, covering
+> `[min(0, t_start), t_end]` — where the window is taken from the `simulate {}`
+> block (or `(0, 100)` if `simulate {}` is omitted). The simulate command writes
+> the trajectory to `--output` (or stdout) and writes observation files only when
+> `--obs` / `--obs-dir` / `--obs-only` is passed.
 
 ```camdl
 output {
   trajectories {
     every  = 0.5 'days     # regular cadence (sub-unit is fine for fast dynamics)
-    format = parquet       # tsv (default) | parquet
   }
 }
 ```
 
 The schedule mirrors the observation surface: use **either** `every = E` for a
 regular cadence **or** `at = [t1, t2, ...]` for an explicit list of output times
-— the two are mutually exclusive (specifying both is an error). `format` selects
-the on-disk format.
+— the two are mutually exclusive (specifying both is an error). A `format = …`
+field parses but is currently inert: the writer always emits wide TSV. (`format`
+is stripped before run hashing, so it never affects cached results.)
 
 ```camdl
 output { trajectories { at = [0, 30, 60, 90] } }   # snapshot only at these times
@@ -2997,7 +2987,7 @@ output { trajectories { at = [0, 30, 60, 90] } }   # snapshot only at these time
 ### 16.1 Output Files
 
 ```
-trajectories.parquet  # time × compartment states (one row per output time)
+trajectories.tsv      # time × compartment states (one row per output time)
 metadata.json         # run provenance (see §19)
 ```
 
@@ -3300,8 +3290,10 @@ sim_hash   = sha256(model_hash + canonical_base_params
                     + backend + dt + tool_version)         # 64-char hex
                                                            # first 8 used in dir name
 
-scen_hash  = sha256(sorted(enable) + sorted(disable)
-                    + canonical_scen_params)               # 64-char hex
+scen_hash  = sha256("enable\0" + sorted(enable, NUL-terminated)
+                    + "disable\0" + sorted(disable, NUL-terminated)
+                    + "params\0" + canonical_scen_params + "\0"
+                    + tool_version)                        # 64-char hex
                                                            # first 8 used in dir name
 
 scenario_slug = scenario name lowercased,
@@ -3309,13 +3301,18 @@ scenario_slug = scenario name lowercased,
 seed_dir      = seed_{N}   (verbatim u64, no zero-padding)
 ```
 
-A scenario with no overrides, enables, or disables always produces
-`scen_hash = sha256("")` → `00000000` prefix, visually identifying it as the
-unmodified baseline.
+A scenario with no overrides, enables, or disables is the implicit baseline; the
+path builder assigns it the special-case display prefix `00000000` (see the note
+above — this is a marker, not `sha256("")` or the value of the formula above).
 
-`scen_hash` covers only the _delta_ (scenario overrides, enable, disable). Base
-params and model structure are captured in `sim_hash`. Renaming a scenario
-without changing its definition preserves the hash, so cached runs are reused.
+`scen_hash` covers only the _delta_ (scenario overrides, enable, disable). It is
+domain-separated (each list is prefixed with its label and every element is
+NUL-terminated) and pinned to `tool_version` — the version component is
+load-bearing: a code change that alters how enables/disables resolve (e.g.
+family-name expansion) must not silently return stale cached results under an
+identical hash. Base params and model structure are captured in `sim_hash`.
+Renaming a scenario without changing its definition preserves the hash, so cached
+runs are reused.
 
 **Structural content** included in `model_hash` (via IR JSON):
 
@@ -3544,9 +3541,11 @@ Run Specification (`camdl-run-spec.md` §5) for details.
 ```bash
 # Particle filter — log-likelihood estimation
 camdl pfilter MODEL --params P.toml --data cases.tsv \
-    --particles 5000 --dt 1 --seed 42 --tol 1e-18 --trace
+    --particles 5000 --dt 1 --seed 42 --trace diag.tsv
 
-# Iterated filtering (MLE) is a one-stage fit. Write a fit.toml with a
+# Iterated filtering (MLE) also has a standalone subcommand:
+#   camdl if2 MODEL --data cases.tsv --particles 2000 ...   (alias: camdl mif2)
+# More commonly it is run as a one-stage fit. Write a fit.toml with a
 # single `algorithm = "if2"` stage and run it through `camdl fit run`:
 #
 #   [model]
@@ -3575,15 +3574,16 @@ camdl pfilter MODEL --params P.toml --data cases.tsv \
 #
 camdl fit run fit.toml --seed 42
 
-# Profile likelihood — parameter identifiability
+# Profile likelihood — parameter identifiability. The swept parameter and its
+# grid are given by `--sweep "PARAM=lin(min,max,n)"` (repeat for 2D+).
 camdl profile MODEL --init from_params --params P.toml --data cases.tsv \
-    --focal R0 --grid "10,20,30,40,50,60,70" \
+    --sweep "R0=lin(0.5,5,20)" \
     --rw-sd "sigma=0.01,gamma=0.01" \
     --particles 500 --iterations 30 --starts 3 --parallel 8
 
-# 2D profile
-camdl profile MODEL --focal alpha,gamma \
-    --grid-alpha "0.85,0.90,0.95" --grid-gamma "0.06,0.08,0.10" ...
+# 2D profile — repeat --sweep
+camdl profile MODEL \
+    --sweep "alpha=lin(0.85,0.95,3)" --sweep "gamma=lin(0.06,0.10,3)" ...
 ```
 
 The projection and likelihood for each data stream come from the model's
@@ -3792,10 +3792,9 @@ at rate `mu * N` (population-dependent, balances deaths in expectation).
 
 ### 22.3 SEIR with Age Mixing (Introducing Stratification)
 
-Two versions shown: the **primitive** form (explicit indexed transitions) and
-the **coupling sugar** form. Both produce identical IR.
-
-**Primitive form:**
+Age-structured transmission is written with the explicit indexed form (§10): one
+`infection` transition per age class, with a contact-matrix-weighted sum over the
+infectious classes.
 
 ```camdl
 time_unit = 'days
@@ -3826,42 +3825,11 @@ transitions {
 }
 ```
 
-**Coupling sugar form** (not yet implemented — identical IR output when
-available):
-
-```camdl
-time_unit = 'days
-
-compartments { S, E, I, R }
-let N = S + E + I + R
-
-dimensions { age = [child, adult] }
-stratify(by = age)
-
-parameters {
-  beta   : rate
-  sigma  : rate
-  gamma  : rate
-}
-
-tables {
-  C_age : age × age = [[12.0, 4.0], [4.0, 8.0]]
-}
-
-transitions {
-  infection : S --> E @ beta * S * I / N {
-    coupling[age = C_age]
-  }
-  progression : E --> I  @ sigma * E
-  recovery    : I --> R  @ gamma * I
-}
-```
-
-The sugar version has no index variables, no `sum`, no `N_local`. The
-`coupling[age = C_age]` declaration tells the compiler to transform `S * I / N`
-into the per-stratum formula with contact-matrix-weighted summation. Progression
-and recovery are automatically replicated within each stratum (default behavior
-when no coupling is declared).
+The `sum(b in age, C_age[a,b] * I[b] / N_local[b])` term is the
+contact-matrix-weighted force of infection on age class `a`; progression and
+recovery are replicated within each stratum by the `[a in age]` binder. (An
+earlier `coupling[age = C_age]` shorthand that auto-generated this sum was
+removed — see §10.)
 
 ### 22.4 STI with Directed Transmission (Off-Diagonal Matrix)
 
@@ -3901,7 +3869,7 @@ same-sex terms. `infection_female` rate becomes
 `S[female] * beta_mf * I[male] / N_local[male]`. No special `directed` keyword
 needed — the matrix structure does all the work.
 
-### 22.5 Cholera with Environmental Reservoir (Real Compartment + ODE) _(planned v0.2)_
+### 22.5 Cholera with Environmental Reservoir (Real Compartment + ODE)
 
 ```camdl
 time_unit = 'days
@@ -4190,8 +4158,7 @@ observations {
 
 ## ── Init ───────────────────────────────────────────────
 # Minimal test initialization — single patch seeding.
-# For a full 774-patch model, use per-patch init from a table
-# or the distribute() function (v0.2).
+# For a full 774-patch model, use per-patch init from a table.
 
 init {
   S[child, p1]  = 100000
@@ -4273,15 +4240,17 @@ declaration :=
 **Mandatory** for `camdl check` (validation only): `compartments` and
 `parameters`. No `simulate` or `init` required.
 
-**Expander** (OCaml): indexed transitions → flat IR transitions, coupling sugar
-→ explicit sums, `c in compartments` → per-compartment transitions,
-`consecutive` → adjacent pair transitions, `where` → compile-time filtering, let
-bindings → inlined expressions, unit normalization.
+**Expander** (OCaml): indexed transitions → flat IR transitions,
+`c in compartments` → per-compartment transitions, `consecutive` → adjacent pair
+transitions, `sum(... where P, ...)` and transition `where` → compile-time
+filtering, let bindings → inlined expressions, `ode {}` → IR ODE equations, unit
+normalization.
 
 **Validator**: compartment arity checking, table dimension checking, index
 variable scoping, parameter reference resolution, dimensional analysis.
 
-**Serializer**: expanded IR → JSON (v0.1) or msgpack (large models).
+**Serializer**: expanded IR → compact one-element-per-line JSON (a `--pretty`
+variant exists for inspection).
 
 **Runtime** (Rust): deserializes IR, evaluates propensities, simulates, writes
 output. Knows nothing about the DSL — sees only flat compartments, transitions,
@@ -4389,21 +4358,16 @@ sia_round_1 : transfer(fraction = 0.80, from = S, to = V) at [180]
 # Delta computed from pre-intervention state.
 ```
 
-### 25.6 Coupling Sugar
+### 25.6 Stratified Transmission (Indexed Sum → IR)
 
 ```camdl
-# DSL:
-infection : S --> E @ beta * S * I / N {
-  coupling[age = C_age]
-}
-# with age = [child, adult]
-
-# Expands to primitive form:
+# DSL: explicit indexed transmission (§10)
 infection[a in age] : S[a] --> E[a]
   @ beta * S[a] * sum(b in age,
       C_age[a,b] * I[b] / sum(c in compartments, c[b]))
+# with age = [child, adult]
 
-# Which then expands to IR:
+# Expands to IR:
 { name: "infection_child",
   stoichiometry: [("S_child", -1), ("E_child", 1)],
   rate: BinOp(Mul, Param("beta"),
@@ -4417,8 +4381,8 @@ infection[a in age] : S[a] --> E[a]
             PopSum(["S_adult","E_adult","I_adult","R_adult"])))))) }
 ```
 
-The auto-generated denominator `sum(c in compartments, c[b])` becomes `PopSum`
-of all compartments in stratum `b`.
+The per-stratum denominator `sum(c in compartments, c[b])` becomes `PopSum` of
+all compartments in stratum `b`.
 
 ### 25.7 Consecutive Pairs
 
@@ -4535,18 +4499,26 @@ at compile time, not simulation time.
 ### 26.0 Diagnostic Codes
 
 Diagnostics carry a numeric code for programmatic consumption (e.g.,
-`--json-errors` mode):
+`--json-errors` mode). The codes below are a representative selection — the
+families (not every individual code) are: `E001` (parse/lexer), `E1xx`
+(names/indices/reserved-ids), `E2xx` (declaration, expansion, schedule, and
+observation-surface checks), `E3xx` (dimensional analysis), `E4xx`
+(forcing/table), `E6xx` (validator), and `W1xx`/`W2xx`/`W3xx` (warnings). The
+authoritative list is whatever `ocaml/lib/compiler/` and `ocaml/lib/ir/` emit.
 
-| Code | Kind    | Description                                                                                     |
-| ---- | ------- | ----------------------------------------------------------------------------------------------- |
-| E100 | Error   | Unknown index value in `[...]` — not a bound variable and not a member of any dimension         |
-| E200 | Error   | Undeclared compartment or parameter referenced in expression                                    |
-| E201 | Error   | Duplicate declaration (two parameters named `beta`, etc.)                                       |
-| E202 | Error   | Wrong number of indices for compartment                                                         |
-| E203 | Error   | Index belongs to wrong dimension (e.g., `C_age[i, s]` where `s : sex`)                          |
-| E204 | Error   | Partial-stratification stoichiometry: destination compartment dimensions incompletely specified |
-| W002 | Warning | Zero-firing transition (emitted at simulation time by `camdl`)                                  |
-| W103 | Warning | Let binding name shadows a stratum value in some dimension                                      |
+| Code | Kind    | Description                                                                                |
+| ---- | ------- | ----------------------------------------------------------------------------------------- |
+| E001 | Error   | Parse / lexer syntax error (including using a keyword as a name)                           |
+| E100 | Error   | Reserved name used as a declaration; unknown index value; undeclared name/function         |
+| E200 | Error   | Undeclared compartment or parameter referenced in expression                              |
+| E202 | Error   | Table arity / shape mismatch (e.g. `table '%s' expects %d indices`)                        |
+| E265 | Error   | Intervention `set` assignment targets a compartment that is not declared                   |
+| E272 | Error   | Removed observation cadence form — use `emit_schedule = …` (§12.4)                         |
+| E278 | Error   | Duplicate declaration (a name declared more than once / in multiple namespaces)            |
+| E300 | Error   | Transition rate has the wrong dimension                                                    |
+| E302 | Error   | Addition/subtraction of mismatched dimensions                                             |
+| E303 | Error   | Conflicting dimensions for a parameter across transitions                                 |
+| W103 | Warning | Let binding name shadows a stratum value in some dimension                                |
 
 Diagnostics can be emitted as structured JSON by passing `--json-errors` to
 `camdlc`:
@@ -4681,20 +4653,22 @@ Names are resolved in order: compartments → parameters → let bindings → fo
 
 ### 26.11 Compiler Reporting
 
-For every model, `camdl check` reports:
+For every model, `camdl check` reports a size summary. The real output uses the
+model name as a bold header, lowercase field labels, a `→` between base and
+expanded counts, and a "(+ N filtered by where)" suffix on the transitions line.
+The exact glyphs and colouring are terminal-dependent; illustratively:
 
 ```
-Model: seir_age_seasonal
-  Compartments: 5 base × 2 age × 774 patch = 7740 expanded
-  Transitions: 8 base → 47,892 expanded
-  Parameters: 13 declared
-  Tables: 6 (2 external)
-  Observations: 1 stream
-  Interventions: 1 (inactive by default)
-  Estimated Gillespie event types: 47,892
+seir_age_seasonal
+
+  compartments   5 base × 2 age × 774 patch = 7740 expanded
+  transitions    8 base → 47,892 expanded (+ 0 filtered by where)
+  parameters     13 declared
+  ...
 ```
 
-This gives the user a quick sanity check on model size before simulation.
+This gives the user a quick sanity check on model size before simulation. (For
+the full per-parameter listing use `camdlc inspect --parameters`.)
 
 ---
 
@@ -4741,7 +4715,9 @@ let name[indices] = expr              computed quantity (family of values)
 # Math functions
 exp(x), log(x), sqrt(x)             standard math (unary)
 abs(x), floor(x), ceil(x)           rounding and absolute value
+sin(x), cos(x), tanh(x)             trigonometric / hyperbolic (unary)
 mod(a, b)                            Euclidean remainder (binary)
+min(a, b), max(a, b)                element-wise min / max (binary)
 
 # Time
 t                                    current simulation time
@@ -4753,5 +4729,6 @@ forcing { NAME : piecewise { ... } }      non-repeating step
 forcing { NAME : interpolated { ... } }   data-driven (linear or spline)
 
 # Reserved identifiers
-t, t_start, t_end, compartments, sum, consecutive
+t, t_start, t_end, dt, pi, e                # genuinely reserved (E100)
+compartments, sum, consecutive             # keywords (E001 if used as a name)
 ```
