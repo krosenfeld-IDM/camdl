@@ -275,14 +275,16 @@ type output_decl = {
 }
 
 (* gh#166: sim_integrator ("rk4"|"rk45", None -> default rk4); sim_atol/sim_rtol
-   are the dimensionless adaptive tolerances (rk45 only). *)
+   are the dimensionless adaptive tolerances (rk45 only). Each carries its source
+   span so the expander's semantic diagnostics (unknown method, rk4-takes-no-
+   tolerances, dimensioned tolerance) point at the offending token. *)
 type simulate_decl = {
   sim_from: expr;
   sim_to: expr;
   sim_dt: expr option;
-  sim_integrator: string option;
-  sim_atol: expr option;
-  sim_rtol: expr option;
+  sim_integrator: (string * loc) option;
+  sim_atol: (expr * loc) option;
+  sim_rtol: (expr * loc) option;
 }
 
 type timepoint_decl = { tpname: string; tptime: expr }

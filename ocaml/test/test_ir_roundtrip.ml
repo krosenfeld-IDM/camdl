@@ -173,6 +173,25 @@ let prior_spec_single_slot_test () =
      Alcotest.(check bool) "Hierarchical → no single-level prior"
        true (Ir.param_prior_dist p = None))
 
+(* gh#166: integrator serde — the Rk45 branch was previously exercised by no
+   OCaml test. Assert rk45 {atol,rtol} round-trips through the tagged JSON, an
+   explicit rk4 tag decodes to Rk4, and an UNKNOWN method is rejected (raises
+   DeserError) rather than silently defaulting to rk4 — mirroring the Rust
+   internally-tagged enum. *)
+let integrator_serde_test () =
+  let i = Ir.Rk45 { atol = Some 1e-8; rtol = Some 1e-6 } in
+  (match Serde.integrator_of_json (Serde.integrator_to_json i) with
+   | Ir.Rk45 { atol = Some a; rtol = Some r } when a = 1e-8 && r = 1e-6 -> ()
+   | _ -> Alcotest.fail "rk45 {atol; rtol} did not round-trip");
+  (match Serde.integrator_of_json (`Assoc [("method", `String "rk4")]) with
+   | Ir.Rk4 -> ()
+   | _ -> Alcotest.fail "explicit rk4 tag did not decode to Rk4");
+  let rejects_unknown =
+    try ignore (Serde.integrator_of_json (`Assoc [("method", `String "euler")])); false
+    with Serde.DeserError _ -> true
+  in
+  Alcotest.(check bool) "unknown integrator method is rejected" true rejects_unknown
+
 let () =
   let tests =
     List.map (fun name ->
@@ -186,6 +205,7 @@ let () =
   in
   let invariant_tests = [
     Alcotest.test_case "prior_spec single slot" `Quick prior_spec_single_slot_test;
+    Alcotest.test_case "integrator serde (rk45 round-trip + strict)" `Quick integrator_serde_test;
   ] in
   Alcotest.run "IR round-trip" [
     ("golden", tests);

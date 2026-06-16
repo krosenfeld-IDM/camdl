@@ -1005,7 +1005,12 @@ let integrator_of_json j =
       atol = (match member_opt "atol" j with Some `Null | None -> None | Some v -> Some (as_float v));
       rtol = (match member_opt "rtol" j with Some `Null | None -> None | Some v -> Some (as_float v));
     }
-  | _ -> Rk4
+  | Some (`String "rk4") -> Rk4
+  (* Reject an unknown tag instead of silently defaulting to rk4 — mirrors the
+     Rust internally-tagged enum, which hard-errors on an unknown method. *)
+  | Some (`String s) -> fail "unknown integrator method '%s': expected \"rk4\" or \"rk45\"" s
+  | Some _           -> fail "integrator: \"method\" must be a string"
+  | None             -> fail "integrator: missing \"method\" field"
 
 let simulation_config_to_json (s : simulation_config) : Yojson.Safe.t =
   (* integrator OMITTED at the Rk4 default, mirroring the Rust side's

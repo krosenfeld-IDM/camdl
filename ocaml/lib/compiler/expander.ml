@@ -3653,32 +3653,62 @@ let expand_simulate ctx =
        override applies. *)
     let dt = Option.map (resolve_float_expr ctx) sd.sim_dt in
     (* gh#166: build the tagged integrator. atol/rtol are DIMENSIONLESS adaptive
-       tolerances (ratios, not times) — a unit literal is a mistake, and dimcheck
-       does not visit the simulate block, so reject the unit here. rk4 takes NO
-       tolerances (the grammar permits `rk4 { ... }`; reject it semantically). *)
+       tolerances (ratios, not times). dimcheck does not visit the simulate
+       block, so the dimension is checked here by computing the expression's NET
+       (population, time) dimension — NOT by AST shape: a bare `1e-8 'days`, a
+       composed `(1e-8) 'days`, and `0.5 * 1 'day` are all rejected, while a
+       dimensionless `'ratio` unit is accepted. rk4 takes NO tolerances (the
+       grammar permits `rk4 { ... }`; reject it semantically). *)
+    let rec tol_dim e : (int * int) option =
+      (* None when a sub-term is not a unit-bearing constant (e.g. a named
+         binding); those fall through to resolve_float_expr unchanged. *)
+      match e with
+      | EConst _       -> Some (0, 0)
+      | EUnit (_, u)   -> Some (unit_lit_to_dim u)
+      | EUnOp (Neg, a) -> tol_dim a
+      | EBinOp ((Add | Sub), a, b) ->
+        (match tol_dim a, tol_dim b with
+         | Some da, Some db when da = db -> Some da
+         | _ -> None)
+      | EBinOp (Mul, a, b) ->
+        (match tol_dim a, tol_dim b with
+         | Some (pa, ta), Some (pb, tb) -> Some (pa + pb, ta + tb)
+         | _ -> None)
+      | EBinOp (Div, a, b) ->
+        (match tol_dim a, tol_dim b with
+         | Some (pa, ta), Some (pb, tb) -> Some (pa - pb, ta - tb)
+         | _ -> None)
+      | _ -> None
+    in
     let resolve_tol name = function
       | None -> None
-      | Some (EUnit (_, _)) ->
-        Diagnostics.error ctx.diags ~code:"E106" ~loc:Diagnostics.no_loc
-          ~message:(Printf.sprintf
-            "`%s` must be dimensionless: drop the unit (it is a tolerance, not a time)" name)
-          ~hint:(Printf.sprintf "write `%s = 1e-8`" name) ();
-        None
-      | Some e -> Some (resolve_float_expr ctx e)
+      | Some (e, eloc) ->
+        (match tol_dim e with
+         | Some d when d <> (0, 0) ->
+           Diagnostics.error ctx.diags ~code:"E106"
+             ~loc:(diag_loc_of_ast_ctx ctx eloc)
+             ~message:(Printf.sprintf
+               "`%s` must be dimensionless: drop the unit (it is a tolerance, not a time)" name)
+             ~hint:(Printf.sprintf "write `%s = 1e-8`" name) ();
+           None
+         | _ -> Some (resolve_float_expr ctx e))
     in
     let integrator =
       match sd.sim_integrator with
-      | None | Some "rk4" ->
+      | None -> Ir.Rk4   (* no integrator key: tolerances cannot be parsed without one *)
+      | Some ("rk4", mloc) ->
         if sd.sim_atol <> None || sd.sim_rtol <> None then
-          Diagnostics.error ctx.diags ~code:"E106" ~loc:Diagnostics.no_loc
+          Diagnostics.error ctx.diags ~code:"E106"
+            ~loc:(diag_loc_of_ast_ctx ctx mloc)
             ~message:"`integrator = rk4` takes no tolerances (atol/rtol are rk45-only)"
             ~hint:"write `integrator = rk45 { atol = .., rtol = .. }`" ();
         Ir.Rk4
-      | Some "rk45" ->
+      | Some ("rk45", _) ->
         Ir.Rk45 { atol = resolve_tol "atol" sd.sim_atol;
                   rtol = resolve_tol "rtol" sd.sim_rtol }
-      | Some other ->
-        Diagnostics.error ctx.diags ~code:"E106" ~loc:Diagnostics.no_loc
+      | Some (other, mloc) ->
+        Diagnostics.error ctx.diags ~code:"E106"
+          ~loc:(diag_loc_of_ast_ctx ctx mloc)
           ~message:(Printf.sprintf "unknown integrator '%s': expected `rk4` or `rk45`" other)
           ~hint:"`integrator = rk4` or `integrator = rk45 { atol = .., rtol = .. }`" ();
         Ir.Rk4
