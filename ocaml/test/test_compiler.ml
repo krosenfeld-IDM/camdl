@@ -6736,22 +6736,110 @@ let test_where_fitted_threshold_rejected () =
      init { S[a]=99 I[a]=1 S[b]=100 S[c]=100 }\n\
      simulate { from = 0 'days to = 10 'days }\n"
 
-let test_where_empty_survivors_ok () =
-  let _ = compile_expect_ok
+let where_empty_src =
+  "time_unit = 'days\n\
+   compartments { S, I, R }\n\
+   dimensions { patch = [a, b] }\n\
+   stratify(by = patch)\n\
+   parameters { beta : rate in [0,2]  gamma : rate in [0,1] }\n\
+   tables { dist : patch × patch = [[0.0, 99.0],[99.0, 0.0]] }\n\
+   let N[p in patch] = S[p] + I[p] + R[p]\n\
+   transitions {\n\
+   infection[p in patch] : S[p] --> I[p] @ beta * S[p] * sum(q in patch where dist[p,q] < 50 and q != p, I[q]/N[q])\n\
+   recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+   }\n\
+   init { S[a]=99 I[a]=1 S[b]=100 }\n\
+   simulate { from = 0 'days to = 10 'days }\n"
+
+let test_where_empty_survivors_const_zero () =
+  (* No in-radius non-self neighbour (b is at 99) ⇒ the coupling sum is empty.
+     With the fold OFF, the empty `where` sum must lower to Const 0.0 — i.e.
+     the rate references no infectious compartment at all. *)
+  with_fold_disabled (fun () ->
+    let m = match Compiler.compile ~name:"where_empty" where_empty_src with
+      | Ok m -> m
+      | Error e -> Alcotest.failf "empty-survivor model should compile: %s" e in
+    let t = match List.find_opt (fun (t : Ir.transition) -> t.name = "infection_a") m.transitions with
+      | Some t -> t | None -> Alcotest.fail "no infection_a transition" in
+    let pops = pop_names [] t.rate in
+    Alcotest.(check bool) "empty coupling sum → no I_a in rate" false (List.mem "I_a" pops);
+    Alcotest.(check bool) "empty coupling sum → no I_b in rate" false (List.mem "I_b" pops))
+
+(* Mask form: `where mask[p,q] != 0` over a precomputed 0/1 adjacency table.
+   p0 couples to p1 (mask 1), not p2 (mask 0). *)
+let where_mask_src =
+  "time_unit = 'days\n\
+   compartments { S, I, R }\n\
+   dimensions { patch = [p0, p1, p2] }\n\
+   stratify(by = patch)\n\
+   parameters { beta : rate in [0,2]  gamma : rate in [0,1]  rho : probability in [0,1] }\n\
+   tables { mask : patch × patch = [[0.0,1.0,0.0],[1.0,0.0,1.0],[0.0,1.0,0.0]] }\n\
+   let N[p in patch] = S[p] + I[p] + R[p]\n\
+   transitions {\n\
+   infection[p in patch] : S[p] --> I[p] @ beta * S[p] * (I[p]/N[p] + rho * sum(q in patch where mask[p,q] != 0, I[q]/N[q]))\n\
+   recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+   }\n\
+   init { S[p0]=999 I[p0]=1 S[p1]=1000 S[p2]=1000 }\n\
+   simulate { from = 0 'days to = 50 'days }\n"
+
+let test_where_mask_prunes () =
+  with_fold_disabled (fun () ->
+    let m = match Compiler.compile ~name:"where_mask" where_mask_src with
+      | Ok m -> m
+      | Error e -> Alcotest.failf "mask model should compile: %s" e in
+    let t = match List.find_opt (fun (t : Ir.transition) -> t.name = "infection_p0") m.transitions with
+      | Some t -> t | None -> Alcotest.fail "no infection_p0 transition" in
+    let pops = pop_names [] t.rate in
+    Alcotest.(check bool) "mask=1 neighbour I_p1 present" true  (List.mem "I_p1" pops);
+    Alcotest.(check bool) "mask=0 neighbour I_p2 absent"  false (List.mem "I_p2" pops))
+
+(* Boundary: a cell exactly at the threshold (dist[p0,p1] = 50) must be EXCLUDED
+   by strict `< 50` — pins the float-comparison semantics. *)
+let where_boundary_src =
+  "time_unit = 'days\n\
+   compartments { S, I, R }\n\
+   dimensions { patch = [p0, p1] }\n\
+   stratify(by = patch)\n\
+   parameters { beta : rate in [0,2]  gamma : rate in [0,1]  rho : probability in [0,1] }\n\
+   tables { dist : patch × patch = [[0.0,50.0],[50.0,0.0]] }\n\
+   let N[p in patch] = S[p] + I[p] + R[p]\n\
+   transitions {\n\
+   infection[p in patch] : S[p] --> I[p] @ beta * S[p] * (I[p]/N[p] + rho * sum(q in patch where dist[p,q] < 50 and q != p, I[q]/N[q]))\n\
+   recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+   }\n\
+   init { S[p0]=999 I[p0]=1 S[p1]=1000 }\n\
+   simulate { from = 0 'days to = 50 'days }\n"
+
+let test_where_boundary_excludes_equal () =
+  with_fold_disabled (fun () ->
+    let m = match Compiler.compile ~name:"where_boundary" where_boundary_src with
+      | Ok m -> m
+      | Error e -> Alcotest.failf "boundary model should compile: %s" e in
+    let t = match List.find_opt (fun (t : Ir.transition) -> t.name = "infection_p0") m.transitions with
+      | Some t -> t | None -> Alcotest.fail "no infection_p0 transition" in
+    let pops = pop_names [] t.rate in
+    Alcotest.(check bool) "dist == 50 excluded by strict `< 50`" false (List.mem "I_p1" pops))
+
+(* E281 must also fire inside an indexed EVENT (events share intervention_decl;
+   this is the gap PR #238's review flagged — the guard was advertised as
+   covering every binder but omitted events/forcing). *)
+let test_event_sum_shadow_rejected () =
+  compile_expect_error_code ~code:"E281" ~contains:"event"
     "time_unit = 'days\n\
      compartments { S, I, R }\n\
-     dimensions { patch = [a, b] }\n\
+     dimensions { patch = [p0, p1] }\n\
      stratify(by = patch)\n\
-     parameters { beta : rate in [0,2]  gamma : rate in [0,1] }\n\
-     tables { dist : patch × patch = [[0.0, 99.0],[99.0, 0.0]] }\n\
+     parameters { beta : rate in [0.0,2.0]  gamma : rate in [0.0,1.0] }\n\
      let N[p in patch] = S[p] + I[p] + R[p]\n\
      transitions {\n\
-     infection[p in patch] : S[p] --> I[p] @ beta * S[p] * sum(q in patch where dist[p,q] < 50 and q != p, I[q]/N[q])\n\
+     infection[p in patch] : S[p] --> I[p] @ beta * S[p] * I[p] / N[p]\n\
      recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
      }\n\
-     init { S[a]=99 I[a]=1 S[b]=100 }\n\
-     simulate { from = 0 'days to = 10 'days }\n" in
-  ()
+     events {\n\
+     seed[p in patch] : add(I, sum(p in patch, S[p])) at [10]\n\
+     }\n\
+     init { S[p0]=100 I[p0]=1 S[p1]=100 }\n\
+     simulate { from = 0 'days to = 60 'days }\n"
 
 (* The headline of gh#185: a where-restricted coupling sum whose body carries a
    parametric kernel is fittable — autodiff must differentiate it w.r.t. the
@@ -6832,14 +6920,20 @@ let () =
         `Quick test_where_radius_prunes;
       Alcotest.test_case "E282 fitted-parameter threshold rejected"
         `Quick test_where_fitted_threshold_rejected;
-      Alcotest.test_case "empty survivor set compiles (sum collapses to 0)"
-        `Quick test_where_empty_survivors_ok;
+      Alcotest.test_case "empty survivor set → coupling sum is Const 0.0 (fold off)"
+        `Quick test_where_empty_survivors_const_zero;
+      Alcotest.test_case "mask form: where mask[p,q] != 0 prunes to mask-1 neighbours"
+        `Quick test_where_mask_prunes;
+      Alcotest.test_case "boundary: dist == 50 excluded by strict `< 50`"
+        `Quick test_where_boundary_excludes_equal;
       Alcotest.test_case "fitted kernel: gradient flows through the where-Reduce to G/rho"
         `Quick test_where_fitted_kernel_gradient;
     ];
     "index_shadowing", [
       Alcotest.test_case "E281 sum var shadows transition index"
         `Quick test_sum_var_shadows_transition_index_rejected;
+      Alcotest.test_case "E281 sum var shadows event index"
+        `Quick test_event_sum_shadow_rejected;
       Alcotest.test_case "distinct sum var still compiles"
         `Quick test_sum_var_distinct_from_index_ok;
     ];

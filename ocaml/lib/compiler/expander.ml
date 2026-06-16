@@ -5157,8 +5157,10 @@ let check_shadowing ctx =
     prepends `(v, _) :: env`), so a shadowing `sum` silently rebinds — e.g.
     `sum(p in patch, …)` inside `infection[p in patch]` becomes a global sum
     over all patches instead of the per-stratum term, with no diagnostic. This
-    is a silent-wrong result, so it is a hard error. Checked uniformly across
-    every index-binding construct that carries a user expression. *)
+    is a silent-wrong result, so it is a hard error. Checked across every
+    index-binding construct that carries a user expression: transitions, lets,
+    init, observations, interventions, events, and forcing args. (ODE equations
+    and the balance expr have no index binder, so they are exempt.) *)
 let check_no_shadowing ctx =
   let report decl v =
     Diagnostics.error ctx.diags
@@ -5217,13 +5219,25 @@ let check_no_shadowing ctx =
        List.iter (fun (_, e) -> walk decl seed e) kwargs
      | None -> ())
   ) ctx.obs_decls;
-  List.iter (fun (iv : intervention_decl) ->
-    let decl = Printf.sprintf "intervention '%s'" iv.ivname in
-    let seed = loop_vars_of_indices iv.ivindices in
-    match iv.ivaction with
+  let walk_action decl seed = function
     | ATransfer kwargs -> List.iter (fun (_, e) -> walk decl seed e) kwargs
     | ASet (_, _, e) | AAdd (_, _, e) -> walk decl seed e
-  ) ctx.interv_decls
+  in
+  (* interventions and events share intervention_decl (the same [p in dim]
+     index binder + expr actions). *)
+  List.iter (fun (iv : intervention_decl) ->
+    walk_action (Printf.sprintf "intervention '%s'" iv.ivname)
+      (loop_vars_of_indices iv.ivindices) iv.ivaction
+  ) ctx.interv_decls;
+  List.iter (fun (ev : intervention_decl) ->
+    walk_action (Printf.sprintf "event '%s'" ev.ivname)
+      (loop_vars_of_indices ev.ivindices) ev.ivaction
+  ) ctx.event_decls;
+  List.iter (fun (fd : func_decl) ->
+    let decl = Printf.sprintf "forcing '%s'" fd.fname in
+    let seed = loop_vars_of_indices fd.findices in
+    List.iter (fun (_, e) -> walk decl seed e) fd.fargs
+  ) ctx.func_decls
 
 (** W104: a transition indexed by two levels of the SAME dimension where one of
     those index variables appears only in the rate (not the source/destination

@@ -235,8 +235,8 @@ let corpus_allowlist : (string * string) list = [
 
 (* The model corpora presumed clean. `ocaml/golden/errors/` is pruned: it
    holds deliberately-broken negative fixtures (the dimcheck/semantic error
-   suite), not real models. `tests/fixtures/` carries only `.toml` today
-   (no `.camdl`), but is listed so a future `.camdl` there is auto-covered. *)
+   suite), not real models. `tests/fixtures/` and `tests/recovery/` carry real
+   `.camdl` models (e.g. `polio_afp_es_2patch.camdl`), all scanned here. *)
 let corpus_dirs = [
   ("ocaml/golden",   ["errors"; "data"]);
   ("tests/fixtures", []);
