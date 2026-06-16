@@ -69,10 +69,10 @@ fn local_idx(compiled: &CompiledModel, name: &str) -> usize {
     compiled.global_to_int[g].expect("integer compartment")
 }
 
-/// Counts of A and B at the FINAL snapshot. The final snapshot is the robust
-/// cross-backend probe: gillespie's absorbing-state output cadence back-fills
-/// earlier output rows differently (it jumps to the t=5 boundary), but the
-/// terminal state is the canonical post-lifecycle state on every backend.
+/// Counts of A and B at the FINAL snapshot — the canonical post-lifecycle state,
+/// identical on every backend. Final-state agreement is a necessary but not
+/// sufficient cross-backend invariant; the full-trajectory check below
+/// (`full_trajectory_no_pre_event_leak_or_time_reversal`) is the load-bearing one.
 fn final_a_b(compiled: &CompiledModel, sim: &dyn Simulate, cfg: &SimConfig) -> (i64, i64) {
     let params = compiled.default_params.clone();
     let traj = sim
@@ -118,6 +118,89 @@ fn all_backends_agree_on_coincident_event_intervention() {
              mean this backend still runs the pre-M1 inverted order \
              (intervention before event)."
         );
+    }
+}
+
+/// The pre-event compartment state: before the t=5 boundary nothing has fired,
+/// so A is unchanged at its init value and B is empty on every backend.
+const PRE_EVENT_A: i64 = 50;
+const PRE_EVENT_B: i64 = 0;
+/// The coincident event + intervention both fire at t=5 (see fixture header).
+const EVENT_T: f64 = 5.0;
+
+/// gh#70 regression: full-trajectory cross-backend invariant, not just the final
+/// snapshot. Two properties every backend must satisfy:
+///
+///   1. **Time never runs backward** — snapshot `t` is strictly non-decreasing.
+///   2. **No pre-event state leak** — for every snapshot at `t < 5`, the state is
+///      the untouched init (`A == 50`, `B == 0`); the `add(A, 100)` event and the
+///      transfer intervention fire at `t = 5`, so nothing may appear earlier.
+///
+/// Before the fix, gillespie's absorbing-state branch flushes outputs only up to
+/// `next_special` and then jumps `t` to the event time, stranding the output
+/// cursor; the next boundary clip pulls `t` *backward* and records the post-event
+/// state (`A = 150`) at an earlier output row. This test fails on gillespie row
+/// `t = 2` today. chain_binomial and ode are correct. `final_a_b` (above) only
+/// probed `snapshots.last()` — the one row neither defect corrupts — which is why
+/// this divergence slipped through. (Process post-mortem:
+/// docs/dev/incidents/2026-06-16-gillespie-silent-wrong-test-sidestep.md.)
+#[test]
+fn full_trajectory_no_pre_event_leak_or_time_reversal() {
+    let compiled = load();
+    let t_start = compiled.model.simulation.t_start;
+    let t_end = compiled.model.simulation.t_end;
+
+    let backends: &[(&str, &dyn Simulate, SimConfig)] = &[
+        (
+            "chain_binomial",
+            &ChainBinomialSim,
+            SimConfig::ChainBinomial(ChainBinomialConfig { t_start, t_end, dt: 1.0 }),
+        ),
+        (
+            "ode",
+            &OdeSim,
+            SimConfig::Ode(OdeConfig { t_start, t_end, dt: 1.0 }),
+        ),
+        (
+            "gillespie",
+            &GillespieSim,
+            SimConfig::Gillespie(GillespieConfig { t_start, t_end, output_dt: None }),
+        ),
+    ];
+
+    let params = compiled.default_params.clone();
+    let ia = local_idx(&compiled, "A");
+    let ib = local_idx(&compiled, "B");
+
+    for (name, sim, cfg) in backends {
+        let traj = sim
+            .run(&compiled, &params, SEED, cfg)
+            .expect("forward sim must succeed (zero-rate model)");
+
+        for w in traj.snapshots.windows(2) {
+            assert!(
+                w[1].t >= w[0].t,
+                "{name}: trajectory time ran backward — snapshot {} followed by {} \
+                 (gh#70: the absorbing-state boundary clip jumped t into the past).",
+                w[0].t, w[1].t
+            );
+        }
+
+        for snap in &traj.snapshots {
+            if snap.t < EVENT_T - 1e-9 {
+                let a = snap.int_state.counts[ia];
+                let b = snap.int_state.counts[ib];
+                assert!(
+                    a == PRE_EVENT_A && b == PRE_EVENT_B,
+                    "{name}: pre-event state leaked at t={} — got A={a}, B={b}, \
+                     expected the untouched init A={PRE_EVENT_A}, B={PRE_EVENT_B}. \
+                     The add(A,100) event + transfer fire at t={EVENT_T}; recording \
+                     post-event state earlier is gh#70 (gillespie back-fills the \
+                     event into pre-event output rows).",
+                    snap.t
+                );
+            }
+        }
     }
 }
 

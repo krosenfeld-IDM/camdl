@@ -103,12 +103,17 @@ const BASELINES: &[(&str, &str, u64)] = &[
     // backends byte-identical.
     ("event_drain_fusion", "ode", 0xf6cc6cd7b95392ac),
     // event_intervention_agree: a coincident always_active event + intervention
-    // where the intervention reads the compartment the event modified. The
-    // canonical (M1) lifecycle makes chain_binomial / ode byte-identical (same
-    // hash); gillespie differs only in its absorbing-state output cadence, not
-    // the terminal state. The cross-backend AGREEMENT on the terminal counts is
-    // asserted directly in cross_backend_lifecycle_agreement.rs.
-    ("event_intervention_agree", "gillespie", 0x178b6b9b28a16bca),
+    // where the intervention reads the compartment the event modified. The model
+    // is absorbing throughout (drain rate ≡ 0), so all three backends only change
+    // state at the t=5 boundary. The canonical (M1) lifecycle makes all three
+    // byte-identical across the FULL trajectory — same hash. (Before the gh#70
+    // fix, gillespie's absorbing-state branch back-filled the t=5 event into
+    // pre-event output rows and ran time backward, so its hash diverged; the fix
+    // routes the absorbing branch through the shared boundary clip, one stop at a
+    // time, and the trajectory now agrees row-for-row with chain_binomial/ode.)
+    // Full-trajectory agreement is asserted directly in
+    // cross_backend_lifecycle_agreement.rs.
+    ("event_intervention_agree", "gillespie", 0x17be41f06b7e1f78),
     ("event_intervention_agree", "chain_binomial", 0x17be41f06b7e1f78),
     ("event_intervention_agree", "ode", 0x17be41f06b7e1f78),
     ("fractional_output_end", "gillespie", 0x12ea70a5ebfd6189),

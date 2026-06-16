@@ -201,14 +201,56 @@ pub fn run_gillespie_with_observer(
         }
 
         if lambda_total <= 0.0 {
-            // Absorbing state — advance to next output/intervention or end.
-            // next_special = min(t_end, next_output, next_effect) with NO > t
-            // filter (matches the retired next_time helper).
-            let next_special = cfg.t_end
-                .min(schedule.output_time(&cursor).unwrap_or(f64::INFINITY))
-                .min(schedule.effect_time(&cursor).unwrap_or(f64::INFINITY));
-            while let Some(ot) = schedule.output_time(&cursor) {
-                if ot > next_special + 1e-12 { break; }
+            // Absorbing state: no integer reaction will fire. Advance to the next
+            // timeline boundary and handle it with the SAME effect-then-output
+            // logic the non-absorbing boundary path below uses — driven through
+            // the shared `Schedule::clip` (with no proposed reaction time, i.e.
+            // `t_proposed = +∞`) rather than a hand-rolled boundary `min` + partial
+            // flush. Advancing ONE boundary at a time keeps the output cursor in
+            // lockstep with `t`, so a later boundary can never be pulled behind the
+            // clock.
+            //
+            // gh#70: the old hand-rolled flush stopped at
+            // `min(next_output, next_effect)` and then jumped `t` straight to the
+            // event time, stranding the output cursor *behind* `t`; the next
+            // boundary clip then faithfully clipped to that stale cursor, dragging
+            // `t` backward and recording post-event state at pre-event output rows.
+            //
+            // `clip` `> t`-filters the effect candidate (an effect exactly at `t`
+            // has already been handled), which is why it is used here instead of
+            // `Schedule::next_stop`: next_stop takes the effect raw, so an effect
+            // landing on `t` (e.g. at `t_start`) would leave `boundary == t` with
+            // nothing to advance the clock — a non-terminating loop. Adopting
+            // next_stop as the single boundary authority requires giving it that
+            // `> t` filter first (spine-consolidation work).
+            let next_eff_after_t = schedule.effect_time(&cursor).filter(|&iv| iv > t);
+            t = schedule.clip(&cursor, t, f64::INFINITY).t;
+
+            // INTERVENE at the boundary if a scheduled effect lands here. Canonical
+            // lifecycle (matches chain_binomial): always-active events fire FIRST
+            // (reading the start-of-step snapshot — gillespie has no transition
+            // step at a boundary), then interventions on the post-event state.
+            let at_iv = next_eff_after_t.is_some_and(|iv_t| (iv_t - t).abs() < 1e-10);
+            if at_iv {
+                apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
+                // INTERVENE (stage 3) via the shared seam (byte-identical):
+                // `t - iv_resolution_dt` lands the seam's `t_end` on `t`. The due
+                // batch is derived once at the boundary `t` (grid = iv_resolution_dt).
+                let mut batch = crate::schedule::EffectBatch::default();
+                crate::effects::due_effects(model, &fire_steps, t, iv_resolution_dt, &mut batch);
+                crate::lifecycle::apply_post_advance(
+                    model, &batch.intervention_idx, &mut int_s, &mut real_s, params,
+                    t - iv_resolution_dt, iv_resolution_dt, None,
+                )?;
+                while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
+                // State changed — recompute; the model may leave the absorbing state.
+                eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;
+                lambda_total = propensities.iter().sum();
+            }
+
+            // Record every output due at this boundary, in the POST-effect state.
+            while schedule.output_due_at(&cursor, t) {
+                let ot = schedule.output_time(&cursor).expect("due implies present");
                 traj.push(Snapshot {
                     t: ot,
                     int_state: int_s.clone(),
@@ -218,40 +260,9 @@ pub fn run_gillespie_with_observer(
                 current_flows.reset();
                 cursor.pass_output();
             }
-            // If we hit t_end, break; if intervention, apply and continue.
-            // next-effect-after-t mirrors the retired next_iv (> t guard).
-            if let Some(iv_t) = schedule.effect_time(&cursor).filter(|&iv| iv > t) {
-                if iv_t <= cfg.t_end {
-                    t = iv_t;
-                    // Canonical lifecycle (matches chain_binomial): always_active
-                    // events fire FIRST, then interventions on the post-event
-                    // state. Gillespie is event-driven with no transition step at
-                    // a boundary, so the start-of-step snapshot is the current
-                    // `int_s`/`real_s`; events read it before interventions touch
-                    // it.
-                    apply_events_at(t, model, &fire_steps, iv_resolution_dt, &mut int_s, &mut real_s, params)?;
-                    // INTERVENE (stage 3) via the shared seam (byte-identical):
-                    // `t - iv_resolution_dt` lands the seam's `t_end` on `t`.
-                    // Gillespie has no transition step at a boundary, so the
-                    // start-of-step snapshot == current state and events stay
-                    // at-boundary (no fusion needed); balance is chain-only. The
-                    // due batch is derived once at the boundary `t` (grid =
-                    // iv_resolution_dt).
-                    let mut batch = crate::schedule::EffectBatch::default();
-                    crate::effects::due_effects(model, &fire_steps, t, iv_resolution_dt, &mut batch);
-                    crate::lifecycle::apply_post_advance(
-                        model, &batch.intervention_idx, &mut int_s, &mut real_s, params,
-                        t - iv_resolution_dt, iv_resolution_dt, None,
-                    )?;
-                    while schedule.effect_due_at(&cursor, t) { cursor.pass_effect(); }
-                    // Full recompute after intervention
-                    eval_propensities(model, &int_s, &real_s, params, t, model.model.simulation.dt.unwrap_or(1.0), &mut propensities)?;
-                    lambda_total = propensities.iter().sum();
-                    // Propensities might become non-zero again after intervention
-                    continue;
-                }
-            }
-            break;
+
+            if t >= cfg.t_end { break; }
+            continue;
         }
 
         // Draw time to next event (stateful for global clock, but keyed per transition)
