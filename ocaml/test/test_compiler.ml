@@ -6753,8 +6753,45 @@ let test_where_empty_survivors_ok () =
      simulate { from = 0 'days to = 10 'days }\n" in
   ()
 
+(* W104: the per-(p,q) coupling antipattern (O(P²) transitions). *)
+let perpair_src =
+  "time_unit = 'days\n\
+   compartments { S, I, R }\n\
+   dimensions { patch = [a, b, c] }\n\
+   stratify(by = patch)\n\
+   parameters { kappa : rate in [0,2]  gamma : rate in [0,1] }\n\
+   tables { w : patch × patch = [[0.0,1.0,1.0],[1.0,0.0,1.0],[1.0,1.0,0.0]] }\n\
+   let N[p in patch] = S[p] + I[p] + R[p]\n\
+   transitions {\n\
+   imp[p in patch, q in patch] : S[p] --> I[p] @ kappa * w[p,q] * I[q]/N[q]  where p != q\n\
+   recovery[p in patch] : I[p] --> R[p] @ gamma * I[p]\n\
+   }\n\
+   init { S[a]=99 I[a]=1 S[b]=100 S[c]=100 }\n\
+   simulate { from = 0 'days to = 10 'days }\n"
+
+let warns_w104 src =
+  Diagnostics.json_errors_mode := true;
+  let r = Compiler.compile_detail_result ~name:"w104" src in
+  Diagnostics.json_errors_mode := false;
+  match r with
+  | Error e -> Alcotest.failf "model should compile (W104 is a warning, not an error): %s" e
+  | Ok d ->
+    List.exists (fun (dg : Diagnostics.diagnostic) ->
+      dg.code = "W104" && dg.severity = Diagnostics.Warning) d.ctx.diags.diags
+
+let test_w104_perpair_warns () =
+  Alcotest.(check bool) "W104 fires on the per-(p,q) coupling form" true (warns_w104 perpair_src)
+
+let test_w104_summed_no_warn () =
+  (* the summed-rate `where` form (where_radius_src) must NOT trip W104 *)
+  Alcotest.(check bool) "W104 silent on the summed-rate form" false (warns_w104 where_radius_src)
+
 let () =
   Alcotest.run "compiler" [
+    "quadratic_coupling_warning", [
+      Alcotest.test_case "W104 on per-(p,q) transition" `Quick test_w104_perpair_warns;
+      Alcotest.test_case "no W104 on summed-rate form" `Quick test_w104_summed_no_warn;
+    ];
     "restricted_sum_where", [
       Alcotest.test_case "where dist[p,q] < r prunes to in-radius neighbours (fold off)"
         `Quick test_where_radius_prunes;

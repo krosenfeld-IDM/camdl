@@ -5225,6 +5225,62 @@ let check_no_shadowing ctx =
     | ASet (_, _, e) | AAdd (_, _, e) -> walk decl seed e
   ) ctx.interv_decls
 
+(** W104: a transition indexed by two levels of the SAME dimension where one of
+    those index variables appears only in the rate (not the source/destination
+    stoichiometry) is the per-(p,q) coupling antipattern — it generates P²−P
+    transitions, each with its own flow accumulator. The intended form is one
+    transition per stratum with a summed rate, `sum(q in dim where …, …)`. Warn
+    (the per-pair form is legal — someone may genuinely want per-pair flows). *)
+let check_quadratic_coupling ctx =
+  let rec mentions v = function
+    | EConst _ | EUnit _ -> false
+    | EIdent (n, _) -> n = v
+    | EIndex (n, items) ->
+      n = v || List.exists (function IPosn e | INamed (_, e) -> mentions v e) items
+    | EBinOp (_, l, r) -> mentions v l || mentions v r
+    | EUnOp (_, e) -> mentions v e
+    | ESum (sv, _, g, b) ->
+      if sv = v then false   (* inner sum rebinds v (E281 forbids); stop *)
+      else (match g with Some g -> guard_mentions v g | None -> false) || mentions v b
+    | ECond (p, t, f) -> mentions v p || mentions v t || mentions v f
+    | EFuncCall (_, args) -> List.exists (fun (_, e) -> mentions v e) args
+    | EList es -> List.exists (mentions v) es
+    | ERange (lo, hi) -> mentions v lo || mentions v hi
+  and guard_mentions v = function
+    | GEq (a, b) | GNeq (a, b) -> a = v || b = v
+    | GTab (_, idxs, _, operand) ->
+      List.mem v idxs || (match operand with GoName n -> n = v | GoNum _ -> false)
+    | GAnd (g1, g2) | GOr (g1, g2) -> guard_mentions v g1 || guard_mentions v g2
+  in
+  let stoich_ref_vars ((_, items) : stoich_ref) =
+    List.filter_map (function
+      | IPosn (EIdent (v, _)) | INamed (_, EIdent (v, _)) -> Some v
+      | _ -> None) items
+  in
+  List.iter (fun (tr : transition_decl) ->
+    let dims = List.filter_map (function
+      | IBind (v, d) | IConsec (v, _, d) -> Some (v, d)
+      | IComp _ -> None) tr.trindices in
+    let count_dim d = List.length (List.filter (fun (_, d') -> d' = d) dims) in
+    let stoich_vars =
+      List.concat_map stoich_ref_vars tr.trsrc
+      @ (match tr.trdst with
+         | DstSum refs   -> List.concat_map stoich_ref_vars refs
+         | DstBranch brs -> List.concat_map (fun (r, _) -> stoich_ref_vars r) brs)
+    in
+    let offending = List.exists (fun (v, d) ->
+      count_dim d >= 2 && not (List.mem v stoich_vars) && mentions v tr.trrate
+    ) dims in
+    if offending then
+      Diagnostics.warning ctx.diags ~code:"W104" ~loc:Diagnostics.no_loc
+        ~message:(Printf.sprintf
+          "transition '%s' is indexed by two levels of the same dimension where an \
+           index appears only in the rate, not the stoichiometry. This generates one \
+           transition per pair (O(P^2) transitions and flow columns). For coupling, \
+           write one transition per stratum with a summed rate, e.g. \
+           `sum(q in dim where dist[p,q] < r, ...)`." tr.trname) ()
+  ) ctx.transitions
+
 (* ── Surface time-typing (Phase 1 of typed-time proposal) ────────────────── *)
 
 (** Surface-level time-typing pass. Implements rules from the
@@ -6168,6 +6224,8 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
   check_shadowing ctx;
   (* E281: a sum/binder var must not shadow an enclosing index/bound var *)
   check_no_shadowing ctx;
+  (* W104: warn on the per-(p,q) coupling antipattern (O(P^2) transitions) *)
+  check_quadratic_coupling ctx;
   (* E236: hierarchical-prior cycle / self-reference detection (#3 gate 2) *)
   check_hierarchical_cycles ctx;
   (* E217: check that guard expressions only reference dim levels / loop vars *)

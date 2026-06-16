@@ -97,6 +97,7 @@ documented at each emit site in `ocaml/lib/compiler/`.)
 | W100 | Warning  | model-file | inconsistent digit grouping in a numeric literal (drained from the lexer)                    |
 | W103 | Warning  | model-file | questionable model-file construct                                                            |
 | W104 | Warning  | model-file | `read(...)` uses an absolute path — non-portable model (gh#211)                              |
+| W105 | Warning  | model-file | per-(p,q) coupling antipattern (O(P²) transitions); use a summed rate `sum(q in dim where …)` |
 | W200 | Warning  | IR         | suspicious IR shape                                                                          |
 | W201 | Warning  | IR         | suspicious IR shape                                                                          |
 | W301 | Warning  | covariate  | periodic range not aligned to step size                                                      |
