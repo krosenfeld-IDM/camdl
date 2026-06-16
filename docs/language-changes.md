@@ -13,6 +13,27 @@ How to read an entry: **what changed**, the **migration** (old → new), and the
 
 ---
 
+## 2026-06-16 — `log_uniform` and `truncated_normal` prior distributions (gh#155)
+
+**What.** Two new priors for the `~ dist(...)` syntax:
+
+- `~ log_uniform(lower, upper)` — uniform on the log scale (every order of
+  magnitude equally likely); the honest weakly-informative choice for a scale
+  parameter known only to within orders of magnitude, where `log_normal`
+  overstates knowledge. Requires the parameter's `Log` transform.
+- `~ truncated_normal(mean, sd)` — a normal truncated to the parameter's
+  declared `in [lo, hi]` bounds, which are the **single source of truth** for
+  the support (exact inverse-CDF sampling, so no draw-time rejection unlike
+  `normal(...)` + `in [..]`). The parameter MUST declare `in [lo, hi]`.
+
+Both reject hierarchical/pooled use. Purely additive — no existing model
+changes. (IR schema 0.15 → 0.16.)
+
+**Migration.** None required (additive).
+
+**Diagnostic.** `truncated_normal` without a declared `in [lo, hi]` → **E285**;
+either new prior used as a hierarchical/pooled prior → **E286**.
+
 ## 2026-06-16 — `positive` / `real` accept an optional unit literal (gh#60)
 
 **What.** The dimension-under-determined parameter kinds `positive` and `real`
