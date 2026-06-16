@@ -280,6 +280,207 @@ impl OdeStepper for Rk4Fixed {
     }
 }
 
+// ── Adaptive Dormand–Prince RK4(5) — gh#166 Phase C ────────────────────────────
+//
+// Canonical DOPRI5: 7-stage explicit RK with an embedded 4th-order solution for
+// error estimation, and a PI step-size controller. Tableau transcribed from
+// Dormand & Prince (1980), J. Comp. Appl. Math. 6(1):19–26 / Hairer, Nørsett &
+// Wanner (1993) "Solving ODEs I", Table 5.2 — consistency-verified (every a-row
+// sums to its c; b and b̂ each sum to 1; FSAL a[6]=b[..6]). The error is taken as
+// y5−y4 directly (the b−b̂ weights are derived, not hand-transcribed). Flows ride
+// as augmented state through the same stages (Phase B), 5th-order, not
+// error-controlled (a quadrature whose accuracy follows the state step).
+
+/// Stage abscissae c_i.
+const DP_C: [f64; 7] = [0.0, 1.0 / 5.0, 3.0 / 10.0, 4.0 / 5.0, 8.0 / 9.0, 1.0, 1.0];
+/// Lower-triangular stage coefficients a[i][j] (j < i); unused entries are 0.
+const DP_A: [[f64; 6]; 7] = [
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [1.0 / 5.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [3.0 / 40.0, 9.0 / 40.0, 0.0, 0.0, 0.0, 0.0],
+    [44.0 / 45.0, -56.0 / 15.0, 32.0 / 9.0, 0.0, 0.0, 0.0],
+    [19372.0 / 6561.0, -25360.0 / 2187.0, 64448.0 / 6561.0, -212.0 / 729.0, 0.0, 0.0],
+    [9017.0 / 3168.0, -355.0 / 33.0, 46732.0 / 5247.0, 49.0 / 176.0, -5103.0 / 18656.0, 0.0],
+    [35.0 / 384.0, 0.0, 500.0 / 1113.0, 125.0 / 192.0, -2187.0 / 6784.0, 11.0 / 84.0],
+];
+/// 5th-order solution weights b_i (the accepted step).
+const DP_B: [f64; 7] =
+    [35.0 / 384.0, 0.0, 500.0 / 1113.0, 125.0 / 192.0, -2187.0 / 6784.0, 11.0 / 84.0, 0.0];
+/// Embedded 4th-order weights b̂_i (for the error estimate y5−y4).
+const DP_BH: [f64; 7] = [
+    5179.0 / 57600.0, 0.0, 7571.0 / 16695.0, 393.0 / 640.0,
+    -92097.0 / 339200.0, 187.0 / 2100.0, 1.0 / 40.0,
+];
+
+// PI step-size controller (Gustafsson) — standard DOPRI5 defaults (Hairer-Nørsett-
+// Wanner §II.4; confirmed for this implementation). These affect EFFICIENCY (the
+// step sequence), not correctness: the error control bounds accuracy regardless.
+const DP_SAFETY: f64 = 0.9;
+const DP_ALPHA: f64 = 0.7 / 5.0; // err exponent (k = embedded order + 1 = 5)
+const DP_BETA: f64 = 0.4 / 5.0;  // PI memory exponent on the previous error
+const DP_FACMIN: f64 = 0.2;      // shrink no more than 5× per step
+const DP_FACMAX: f64 = 5.0;      // grow   no more than 5× per step
+const DP_MAX_REJECTIONS: u32 = 10;
+
+/// Default adaptive tolerances when the model/CLI specify none. PLACEHOLDER
+/// pending the C8 calibration (loosest (atol, rtol) matching fine-dt RK4 to
+/// sub-nat loglik across the validation models) — the proposal's example values.
+pub const DEFAULT_ATOL: f64 = 1e-8;
+pub const DEFAULT_RTOL: f64 = 1e-6;
+
+/// Adaptive Dormand–Prince RK4(5) integrator. `h` is the controller's carried
+/// next-step guess (clipped to `h_max` each `advance`); the driver re-enters
+/// until the boundary is reached. Opt-in (`integrator = "rk45"`); capability-
+/// gated out of `Expr::Dt` / RUNTIME_DT models (no single fixed step).
+struct Dopri5 {
+    atol: f64,
+    rtol: f64,
+    h: f64,
+    err_prev: f64,
+    h_min: f64,
+}
+
+impl Dopri5 {
+    fn new(atol: f64, rtol: f64, cfg: &OdeConfig) -> Self {
+        let span = (cfg.t_end - cfg.t_start).abs().max(1.0);
+        Dopri5 {
+            atol,
+            rtol,
+            // Initial step guess = the nominal dt (a good seed; the controller
+            // adapts immediately, rejecting+shrinking if it overshoots tolerance).
+            h: if cfg.dt.is_finite() && cfg.dt > 0.0 { cfg.dt } else { span },
+            err_prev: 1.0,
+            h_min: 1e-10 * span,
+        }
+    }
+}
+
+/// One trial DOPRI5 step of size `h` from `state` at `t`. Returns the proposed
+/// (int, real) at `t+h` (5th-order, clamped ≥0), the per-transition flow
+/// increment over `[t, t+h]` (augmented, 5th-order), and the scaled error norm
+/// (RMS of (y5−y4)/scale over int+real). Does not mutate `state`.
+fn dopri5_try_step(
+    model: &CompiledModel,
+    params: &[f64],
+    t: f64,
+    h: f64,
+    state: &OdeState,
+    atol: f64,
+    rtol: f64,
+) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, f64), SimError> {
+    let (ni, nr, nf) = (state.int.len(), state.real.len(), state.flow.len());
+    let mut ki: Vec<Vec<f64>> = Vec::with_capacity(7);
+    let mut kr: Vec<Vec<f64>> = Vec::with_capacity(7);
+    let mut kf: Vec<Vec<f64>> = Vec::with_capacity(7);
+    let mut di = vec![0.0f64; ni];
+    let mut dr = vec![0.0f64; nr];
+    let mut df = vec![0.0f64; nf];
+
+    for i in 0..7 {
+        // Stage state: x + h·Σ_{j<i} a[i][j]·k_j. Stages are NOT clamped (RK
+        // stages may transiently dip <0); only the accepted result is clamped,
+        // matching rk4_step.
+        let mut si = state.int.clone();
+        let mut sr = state.real.clone();
+        for j in 0..i {
+            let a = DP_A[i][j];
+            if a != 0.0 {
+                for m in 0..ni { si[m] += h * a * ki[j][m]; }
+                for m in 0..nr { sr[m] += h * a * kr[j][m]; }
+            }
+        }
+        // dt = h passed for signature parity; rk45 rejects RUNTIME_DT models, so
+        // no rate reads Expr::Dt here.
+        ode_derivs(model, &si, &sr, params, t + DP_C[i] * h, h, &mut di, &mut dr, &mut df)?;
+        ki.push(di.clone());
+        kr.push(dr.clone());
+        kf.push(df.clone());
+    }
+
+    let mut y5_int = state.int.clone();
+    let mut y5_real = state.real.clone();
+    let mut flow_inc = vec![0.0f64; nf];
+    let mut err_sq = 0.0f64;
+    let n = ni + nr;
+
+    for m in 0..ni {
+        let (mut s5, mut s4) = (0.0, 0.0);
+        for i in 0..7 { s5 += DP_B[i] * ki[i][m]; s4 += DP_BH[i] * ki[i][m]; }
+        let y5 = state.int[m] + h * s5;
+        let y4 = state.int[m] + h * s4;
+        let sc = atol + rtol * state.int[m].abs().max(y5.abs());
+        err_sq += ((y5 - y4) / sc).powi(2);
+        y5_int[m] = y5.max(0.0);
+    }
+    for m in 0..nr {
+        let (mut s5, mut s4) = (0.0, 0.0);
+        for i in 0..7 { s5 += DP_B[i] * kr[i][m]; s4 += DP_BH[i] * kr[i][m]; }
+        let y5 = state.real[m] + h * s5;
+        let y4 = state.real[m] + h * s4;
+        let sc = atol + rtol * state.real[m].abs().max(y5.abs());
+        err_sq += ((y5 - y4) / sc).powi(2);
+        y5_real[m] = y5.max(0.0);
+    }
+    for m in 0..nf {
+        let mut s5 = 0.0;
+        for i in 0..7 { s5 += DP_B[i] * kf[i][m]; }
+        flow_inc[m] = h * s5;
+    }
+
+    let err = if n > 0 { (err_sq / n as f64).sqrt() } else { 0.0 };
+    Ok((y5_int, y5_real, flow_inc, err))
+}
+
+impl OdeStepper for Dopri5 {
+    fn advance(
+        &mut self,
+        model: &CompiledModel,
+        params: &[f64],
+        t: f64,
+        h_max: f64,
+        state: &mut OdeState,
+    ) -> Result<f64, SimError> {
+        let mut h = self.h.min(h_max);
+        if !(h > 0.0) { h = h_max; }
+        let mut rejections = 0u32;
+        loop {
+            let (y5_int, y5_real, flow_inc, err) =
+                dopri5_try_step(model, params, t, h, state, self.atol, self.rtol)?;
+            if err <= 1.0 {
+                // Accept. Commit state + augmented flow.
+                state.int = y5_int;
+                state.real = y5_real;
+                for m in 0..state.flow.len() { state.flow[m] += flow_inc[m]; }
+                // PI controller for the next step (err floored to avoid div-by-0
+                // and an unbounded grow on an exact step).
+                let e = err.max(1e-10);
+                let fac = DP_SAFETY * e.powf(-DP_ALPHA) * self.err_prev.powf(DP_BETA);
+                self.h = h * fac.clamp(DP_FACMIN, DP_FACMAX);
+                self.err_prev = err.max(1e-4);
+                return Ok(h);
+            }
+            // Reject: shrink (elementary, no PI memory on rejection).
+            rejections += 1;
+            if rejections > DP_MAX_REJECTIONS {
+                return Err(SimError::Validation(format!(
+                    "rk45: step rejected {DP_MAX_REJECTIONS}+ times at t={t} (h={h:.3e}); \
+                     the model may be too stiff for the explicit DOPRI5 integrator — \
+                     use integrator = \"rk4\" with a fine dt, or loosen atol/rtol"
+                )));
+            }
+            let e = err.max(1e-10);
+            h *= (DP_SAFETY * e.powf(-DP_ALPHA)).clamp(DP_FACMIN, 1.0);
+            if h < self.h_min {
+                return Err(SimError::Validation(format!(
+                    "rk45: step-size underflow at t={t} (h={h:.3e} < h_min={:.3e}); cannot \
+                     meet (atol={}, rtol={}) — loosen tolerances or use integrator = \"rk4\"",
+                    self.h_min, self.atol, self.rtol
+                )));
+            }
+        }
+    }
+}
+
 /// Convert (int_vals, real_vals) floats to the (IntState, RealState) used by
 /// the intervention machinery and output snapshots.
 fn to_states(int_vals: &[f64], real_vals: &[f64]) -> (IntState, RealState) {
@@ -333,37 +534,40 @@ pub fn run_ode(
     // parametric `at [...]` schedules.
     let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
-    // gh#166: select the integrator from the model's declared config. The schema
-    // accepts "rk45" (the adaptive Dopri5 stepper, Phase C C2) but the stepper is
-    // not yet wired — reject it LOUDLY rather than silently running rk4 (no loose
-    // semantics). The CLI `--integrator` override is C4. Phase C2 replaces the
-    // rk45 arm with the actual Dopri5 construction behind the OdeStepper trait.
-    match model.model.simulation.integrator.as_str() {
-        "rk4" => {}
+    // gh#166: B2 — models that reference the step size in a rate (`Expr::Dt` /
+    // RUNTIME_DT) keep the first-order Euler flow on fixed RK4; all others use
+    // augmented (RK4-integrated) flow. Computed once per run.
+    let euler_flow = model
+        .required_capabilities()
+        .contains(crate::Capabilities::RUNTIME_DT);
+
+    // Select the integrator from the model's declared config (CLI `--integrator`
+    // override is C4). The driver below is integrator-agnostic: it hands each
+    // stepper the raw distance to the next boundary and re-enters until the
+    // boundary is reached, so fixed RK4 and adaptive Dopri5 share one loop.
+    let mut stepper: Box<dyn OdeStepper> = match model.model.simulation.integrator.as_str() {
+        "rk4" => Box::new(Rk4Fixed { dt: cfg.dt, euler_flow }),
         "rk45" => {
-            return Err(SimError::Validation(
-                "integrator = \"rk45\" (adaptive Dormand–Prince) is not yet \
-                 implemented — use integrator = \"rk4\". (gh#166 Phase C: schema \
-                 has landed; the adaptive stepper is the next commit.)".to_string(),
-            ))
+            // C3 capability gate: a `dt`-in-rate (RUNTIME_DT) model has no single
+            // fixed step — adaptive stepping is undefined. Honest hard error, never
+            // a silent rk4 fallback.
+            if euler_flow {
+                return Err(SimError::Validation(
+                    "integrator = \"rk45\" cannot run a model that references `dt` in a \
+                     rate (Expr::Dt): adaptive stepping has no fixed step size — use \
+                     integrator = \"rk4\".".to_string(),
+                ));
+            }
+            let atol = model.model.simulation.atol.unwrap_or(DEFAULT_ATOL);
+            let rtol = model.model.simulation.rtol.unwrap_or(DEFAULT_RTOL);
+            Box::new(Dopri5::new(atol, rtol, cfg))
         }
         other => {
             return Err(SimError::Validation(format!(
                 "unknown integrator '{other}': expected \"rk4\" or \"rk45\""
             )))
         }
-    }
-
-    // The integrator behind the seam. Fixed RK4 is the default integrator;
-    // Phase C2 selects `Dopri5` here for "rk45". The driver below is integrator-
-    // agnostic: it hands each stepper the raw distance to the next boundary and
-    // re-enters until the boundary is reached. B2: models that reference the step
-    // size in a rate (`Expr::Dt` / RUNTIME_DT) keep the first-order Euler flow;
-    // all others use augmented (RK4-integrated) flow. Computed once per run.
-    let euler_flow = model
-        .required_capabilities()
-        .contains(crate::Capabilities::RUNTIME_DT);
-    let mut stepper = Rk4Fixed { dt: cfg.dt, euler_flow };
+    };
 
     let mut traj = Trajectory::new();
     // The ODE flow is genuinely real-valued; recorded as `Flows::Real` WITHOUT

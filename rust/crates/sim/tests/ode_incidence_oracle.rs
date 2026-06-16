@@ -78,17 +78,8 @@ fn load_ref(path: &std::path::Path, ncomp: usize, ninc: usize) -> Vec<RefRow> {
     rows
 }
 
-fn load_model(name: &str) -> CompiledModel {
-    let path = oracle_dir().join("models").join(format!("{name}.ir.json"));
-    let json = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {:?}: {e}", path));
-    let model = ir::from_str(&json).unwrap_or_else(|e| panic!("parse {name}: {e}"));
-    CompiledModel::new(model).unwrap_or_else(|e| panic!("compile {name}: {e}"))
-}
-
-#[test]
-fn ode_incidence_matches_scipy_and_desolve() {
-    let models = [
+fn oracle_models() -> [OracleModel; 3] {
+    [
         OracleModel { name: "sir", comps: &["S", "I", "R"], incs: &["infection", "recovery"], t_end: 60.0, dt: 0.1 },
         OracleModel { name: "seir", comps: &["S", "E", "I", "R"], incs: &["infection", "progression", "recovery"], t_end: 80.0, dt: 0.1 },
         OracleModel {
@@ -98,22 +89,83 @@ fn ode_incidence_matches_scipy_and_desolve() {
             t_end: 365.0,
             dt: 0.1,
         },
-    ];
-    // Tolerances are combined absolute+relative, |camdl - ref| <= atol + rtol*|ref|.
-    // Prevalence: camdl reports integer compartment counts ROUNDED at snapshot
-    // (±0.5), so atol=1.0 absorbs rounding; rtol catches integration drift.
-    // Incidence: camdl's flow is unrounded real, so it tracks the oracle tightly
-    // even at sub-unit magnitudes — atol guards the floor, rtol the bulk.
-    const PREV_ATOL: f64 = 1.0;
-    const PREV_RTOL: f64 = 1e-3;
-    const INC_ATOL: f64 = 1e-2;
-    const INC_RTOL: f64 = 1e-3;
+    ]
+}
 
-    let methods = ["scipy_rk45", "scipy_lsoda", "desolve_lsoda"];
+/// Compile the named oracle model, optionally switching it to rk45 with the given
+/// `(atol, rtol)`. `None` → the default fixed RK4.
+fn compiled_model(name: &str, rk45: Option<(f64, f64)>) -> CompiledModel {
+    let path = oracle_dir().join("models").join(format!("{name}.ir.json"));
+    let json = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {:?}: {e}", path));
+    let mut model = ir::from_str(&json).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+    if let Some((atol, rtol)) = rk45 {
+        model.simulation.integrator = "rk45".into();
+        model.simulation.atol = Some(atol);
+        model.simulation.rtol = Some(rtol);
+    }
+    CompiledModel::new(model).unwrap_or_else(|e| panic!("compile {name}: {e}"))
+}
 
-    for m in &models {
-        let compiled = load_model(m.name);
-        // Augmented (RK4) flow path, not the Expr::Dt Euler path.
+// Combined absolute+relative tolerances, |camdl - ref| <= atol + rtol*|ref|.
+// Prevalence: camdl reports integer compartment counts ROUNDED at snapshot
+// (±0.5), so atol=1.0 absorbs rounding; rtol catches integration drift.
+// Incidence: camdl's flow is unrounded real, so it tracks the oracle tightly even
+// at sub-unit magnitudes — atol guards the floor, rtol the bulk.
+const PREV_ATOL: f64 = 1.0;
+const PREV_RTOL: f64 = 1e-3;
+const INC_ATOL: f64 = 1e-2;
+const INC_RTOL: f64 = 1e-3;
+
+/// Compare a camdl trajectory against the three cached references (scipy RK45,
+/// scipy LSODA, R deSolve::lsoda) for both prevalence and incidence at the grid.
+fn check_against_oracle(traj: &sim::state::Trajectory, m: &OracleModel, label: &str) {
+    for method in ["scipy_rk45", "scipy_lsoda", "desolve_lsoda"] {
+        let ref_path = oracle_dir().join("ref").join(format!("{}__{}.tsv", m.name, method));
+        let refrows = load_ref(&ref_path, m.comps.len(), m.incs.len());
+        let (mut worst_prev, mut worst_inc) = (0.0_f64, 0.0_f64);
+        for rr in &refrows {
+            let snap = traj
+                .snapshots
+                .iter()
+                .find(|s| (s.t - rr.t).abs() < 1e-9)
+                .unwrap_or_else(|| panic!("{} [{label}]: no camdl snapshot at t={}", m.name, rr.t));
+            let flows = snap.flows.as_real();
+            for c in 0..m.comps.len() {
+                let got = snap.int_state.counts[c] as f64;
+                let want = rr.prev[c];
+                let tol = PREV_ATOL + PREV_RTOL * want.abs();
+                let d = (got - want).abs();
+                worst_prev = worst_prev.max(d / tol);
+                assert!(
+                    d <= tol,
+                    "{}/{} [{label}]: prevalence {} at t={} : camdl {} vs oracle {} (Δ {:.4e} > tol {:.4e})",
+                    m.name, method, m.comps[c], rr.t, got, want, d, tol
+                );
+            }
+            for i in 0..m.incs.len() {
+                let got = flows[i];
+                let want = rr.inc[i];
+                let tol = INC_ATOL + INC_RTOL * want.abs();
+                let d = (got - want).abs();
+                worst_inc = worst_inc.max(d / tol);
+                assert!(
+                    d <= tol,
+                    "{}/{} [{label}]: incidence {} over (t-1,{}] : camdl {} vs oracle {} (Δ {:.4e} > tol {:.4e})",
+                    m.name, method, m.incs[i], rr.t, got, want, d, tol
+                );
+            }
+        }
+        eprintln!(
+            "{}/{} [{label}]: OK ({} grid pts; worst prev {:.1}% of tol, worst inc {:.1}% of tol)",
+            m.name, method, refrows.len(), 100.0 * worst_prev, 100.0 * worst_inc
+        );
+    }
+}
+
+#[test]
+fn ode_incidence_matches_scipy_and_desolve() {
+    for m in &oracle_models() {
+        let compiled = compiled_model(m.name, None);
         assert!(
             !compiled.required_capabilities().contains(sim::Capabilities::RUNTIME_DT),
             "{}: oracle models must use the augmented flow path",
@@ -122,54 +174,21 @@ fn ode_incidence_matches_scipy_and_desolve() {
         let params = compiled.default_params.clone();
         let cfg = SimConfig::Ode(OdeConfig { t_start: 0.0, t_end: m.t_end, dt: m.dt });
         let traj = OdeSim.run(&compiled, &params, SEED, &cfg).expect("ode run");
+        check_against_oracle(&traj, m, "rk4");
+    }
+}
 
-        for method in methods {
-            let ref_path = oracle_dir().join("ref").join(format!("{}__{}.tsv", m.name, method));
-            let refrows = load_ref(&ref_path, m.comps.len(), m.incs.len());
-
-            // Index camdl snapshots by rounded time for lookup. Track the worst
-            // discrepancy-to-tolerance ratio (1.0 = at the limit) for headroom.
-            let mut worst_prev = 0.0_f64;
-            let mut worst_inc = 0.0_f64;
-            for rr in &refrows {
-                let snap = traj
-                    .snapshots
-                    .iter()
-                    .find(|s| (s.t - rr.t).abs() < 1e-9)
-                    .unwrap_or_else(|| panic!("{}: no camdl snapshot at t={}", m.name, rr.t));
-                let flows = snap.flows.as_real();
-
-                // Prevalence (rounded integer counts, in compartment order).
-                for (c, _name) in m.comps.iter().enumerate() {
-                    let got = snap.int_state.counts[c] as f64;
-                    let want = rr.prev[c];
-                    let tol = PREV_ATOL + PREV_RTOL * want.abs();
-                    let d = (got - want).abs();
-                    worst_prev = worst_prev.max(d / tol);
-                    assert!(
-                        d <= tol,
-                        "{}/{}: prevalence {} at t={} : camdl {} vs oracle {} (Δ {:.4e} > tol {:.4e})",
-                        m.name, method, m.comps[c], rr.t, got, want, d, tol
-                    );
-                }
-                // Per-interval incidence (unrounded flows, in transition order).
-                for (i, _name) in m.incs.iter().enumerate() {
-                    let got = flows[i];
-                    let want = rr.inc[i];
-                    let tol = INC_ATOL + INC_RTOL * want.abs();
-                    let d = (got - want).abs();
-                    worst_inc = worst_inc.max(d / tol);
-                    assert!(
-                        d <= tol,
-                        "{}/{}: incidence {} over (t-1,{}] : camdl {} vs oracle {} (Δ {:.4e} > tol {:.4e})",
-                        m.name, method, m.incs[i], rr.t, got, want, d, tol
-                    );
-                }
-            }
-            eprintln!(
-                "{}/{}: OK ({} grid points; worst prev {:.1}% of tol, worst inc {:.1}% of tol)",
-                m.name, method, refrows.len(), 100.0 * worst_prev, 100.0 * worst_inc
-            );
-        }
+/// gh#166 C6: the adaptive rk45 integrator validated DIRECTLY against scipy
+/// `solve_ivp` (RK45 — the same DOPRI5 algorithm) + LSODA and R deSolve, for both
+/// prevalence and incidence. rk45's initial-step guess is the nominal `dt`; the
+/// controller adapts, so the comparison is integrator-internals-agnostic.
+#[test]
+fn ode_rk45_incidence_matches_scipy_and_desolve() {
+    for m in &oracle_models() {
+        let compiled = compiled_model(m.name, Some((1e-10, 1e-10)));
+        let params = compiled.default_params.clone();
+        let cfg = SimConfig::Ode(OdeConfig { t_start: 0.0, t_end: m.t_end, dt: 1.0 });
+        let traj = OdeSim.run(&compiled, &params, SEED, &cfg).expect("rk45 ode run");
+        check_against_oracle(&traj, m, "rk45");
     }
 }
