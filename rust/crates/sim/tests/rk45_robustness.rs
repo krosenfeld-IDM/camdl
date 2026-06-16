@@ -7,11 +7,11 @@
 //!   RK4. This was the proposal's named validation target.
 //! - ERROR CONTROL: a stiff/fast-transient model at a loose tolerance must drive
 //!   the controller to shrink (and reject) steps yet still match the reference —
-//!   a bug in `shrink_factor`/the PI controller would diverge here. An
-//!   unsatisfiable (zero) tolerance must fail LOUDLY (honest hard error), not
-//!   return a silent coarse result. (A smooth model integrates fine even at
-//!   1e-300, so zero tolerance is the deterministic trigger; which guard fires —
-//!   max-rejections vs `H_MIN` underflow — is characterized in that test.)
+//!   a bug in `shrink_factor`/the PI controller would diverge here. Both
+//!   give-up guards must fail LOUDLY (honest hard error), not silently: a zero
+//!   tolerance trips MAX-REJECTIONS (`rk45_unsatisfiable_…`), and extreme
+//!   stiffness — where the explicit stability limit drops below `h_min` — trips
+//!   the `H_MIN` step-size underflow (`rk45_extreme_stiffness_…`).
 //! - REAL_COMPARTMENTS: the real-state branch of `dopri5_try_step` (separate
 //!   from the integer branch) must agree with fine-dt RK4.
 //! - atol/rtol LOAD-BEARING: a loose tolerance must land measurably further from
@@ -223,12 +223,13 @@ fn rk45_unsatisfiable_tolerance_errors_loudly() {
     //   - A literally-ZERO tolerance is the deterministic trigger: sc = atol +
     //     rtol·|y| = 0, so the scaled error is non-finite for every finite step
     //     and the step is always rejected → an honest hard error, regardless of
-    //     model. On the models tested here the error reached is the MAX-REJECTIONS
-    //     guard (observed for sir at dt ∈ {1, 1e-3, 1e-6}).
-    // NOT verified: whether the separate `H_MIN` step-size-underflow guard is
-    // reachable at all (no config tested here trips it; also not proven dead).
-    // Tracked as a follow-up. This test asserts only the verified property: a
-    // zero tolerance fails LOUDLY (max-rejections OR underflow), not silently.
+    //     model. The guard reached here is MAX-REJECTIONS (observed for sir at
+    //     dt ∈ {1, 1e-3, 1e-6}): at zero tol the error norm divides by 0 → inf/NaN,
+    //     and the NaN path leaves the shrink at ~1.0, so h barely moves and the
+    //     rejection counter trips before any underflow.
+    // The SEPARATE `H_MIN` underflow guard is reachable under extreme stiffness —
+    // see `rk45_extreme_stiffness_trips_h_min_underflow`. This test pins the
+    // max-rejections path; that one pins H_MIN.
     let base = load_model("tests/external/ode_oracle/models/sir.ir.json");
     let compiled = CompiledModel::new(rk45(&base, 0.0, 0.0)).expect("compile");
     let params = compiled.default_params.clone();
@@ -248,6 +249,47 @@ fn rk45_unsatisfiable_tolerance_errors_loudly() {
     assert!(
         msg.contains("rk4") || msg.contains("loosen") || msg.contains("atol"),
         "error must suggest a fix (rk4 / loosen tolerance), got: {msg}"
+    );
+}
+
+#[test]
+fn rk45_extreme_stiffness_trips_h_min_underflow() {
+    // Pins the H_MIN step-size-underflow guard specifically (the sibling of
+    // max-rejections). It fires when the problem is so stiff that the explicit
+    // DOPRI5 stability limit (~2.8/λ for a decay rate λ) drops BELOW
+    // h_min = 1e-10·span: no stable step exists above the floor, so the controller
+    // shrinks h past h_min and gives up HONESTLY rather than hanging on
+    // infinitesimal steps or committing an unstable (garbage) result.
+    //
+    // Construction: crank the I→R rate to λ = 1e12 (stability limit ~2.8e-12) on a
+    // short horizon (span = 1 → h_min = 1e-10, ≫ the stability limit), with a small
+    // initial dt = 1e-9 so h reaches h_min within ~2 rejections — well before the
+    // max-rejections guard (10). A normal tolerance (1e-8); the failure is
+    // stability-driven, not tolerance-driven. Verified: errors at t=0 with
+    // h ≈ 4e-11 < h_min = 1e-10.
+    let base = bake(
+        &load_model("tests/external/ode_oracle/models/sir.ir.json"),
+        &[("gamma", 1e12)],
+    );
+    let compiled = CompiledModel::new(rk45(&base, 1e-8, 1e-8)).expect("compile");
+    let params = compiled.default_params.clone();
+    let res = OdeSim.run(
+        &compiled,
+        &params,
+        0,
+        &SimConfig::Ode(OdeConfig { t_start: 0.0, t_end: 1.0, dt: 1e-9 }),
+    );
+    assert!(res.is_err(), "an unintegrable stiff transient must error, not hang or return garbage");
+    let msg = format!("{:?}", res.unwrap_err()).to_lowercase();
+    // SPECIFICALLY the underflow guard, not max-rejections — this is the test that
+    // proves the H_MIN branch is live.
+    assert!(
+        msg.contains("underflow") || msg.contains("h_min") || msg.contains("step-size"),
+        "the error must be the H_MIN step-size underflow (not max-rejections), got: {msg}"
+    );
+    assert!(
+        msg.contains("rk4") || msg.contains("loosen"),
+        "the error must suggest a fix (rk4 / loosen tolerance), got: {msg}"
     );
 }
 
