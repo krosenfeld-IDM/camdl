@@ -924,6 +924,7 @@ mod tests {
                 t_start: 0.0, t_end: 1.0,
                 time_semantics: "continuous".into(),
                 dt: None, rng_seed: None,
+                integrator: "rk4".into(), atol: None, rtol: None,
             },
             presets: vec![],
             model_structure: None,

@@ -96,6 +96,7 @@ fn pure_death_model() -> (CompiledModel, Vec<f64>) {
             time_semantics: "continuous".into(),
             dt: Some(1.0),
             rng_seed: Some(42),
+            integrator: "rk4".into(), atol: None, rtol: None,
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

@@ -42,6 +42,7 @@ fn tiny_model() -> Model {
             time_semantics: "continuous".into(),
             dt: Some(1.0),
             rng_seed: None,
+            integrator: "rk4".into(), atol: None, rtol: None,
         },
         presets: vec![],
         model_structure: None,

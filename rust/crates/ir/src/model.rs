@@ -13,6 +13,9 @@ use crate::{
 
 fn default_time_unit() -> String { "days".to_string() }
 
+fn default_integrator() -> String { "rk4".to_string() }
+fn is_default_integrator(s: &str) -> bool { s == "rk4" }
+
 // ── Compartment ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,6 +74,21 @@ pub struct SimulationConfig {
     pub time_semantics: String,
     pub dt:             Option<f64>,
     pub rng_seed:       Option<i64>,
+    /// ODE integrator selection (gh#166): `"rk4"` (fixed-step, the default) or
+    /// `"rk45"` (adaptive Dormand–Prince). A String to mirror `time_semantics`;
+    /// the type-safe `Integrator` enum lives in `sim::config::OdeConfig` where it
+    /// drives dispatch. `default`/`skip_serializing_if` so pre-gh#166 IR (no
+    /// field) deserializes to `"rk4"` and a default model adds no JSON noise.
+    #[serde(default = "default_integrator", skip_serializing_if = "is_default_integrator")]
+    pub integrator:     String,
+    /// Absolute tolerance for the `rk45` adaptive controller (dimensionless).
+    /// Ignored by `rk4`. `None` → the runtime's calibrated default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atol:           Option<f64>,
+    /// Relative tolerance for the `rk45` adaptive controller (dimensionless).
+    /// Ignored by `rk4`. `None` → the runtime's calibrated default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtol:           Option<f64>,
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ fn minimal_model(compartments: Vec<Compartment>, params: Vec<Parameter>) -> Mode
             time_semantics: "continuous".into(),
             dt: None,
             rng_seed: Some(42),
+            integrator: "rk4".into(), atol: None, rtol: None,
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

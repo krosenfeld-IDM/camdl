@@ -2973,7 +2973,7 @@ mod tests {
                 m
             }),
             output: OutputConfig { times: OutputSchedule::AtTimes(vec![0.0, 80.0]), format: "tsv".into(), trajectory: true, observations: false },
-            simulation: SimulationConfig { t_start: 0.0, t_end: 80.0, time_semantics: "continuous".into(), dt: Some(1.0), rng_seed: Some(42) },
+            simulation: SimulationConfig { t_start: 0.0, t_end: 80.0, time_semantics: "continuous".into(), dt: Some(1.0), rng_seed: Some(42), integrator: "rk4".into(), atol: None, rtol: None },
             presets: vec![], model_structure: None, balance: None, identity_tracked_compartments: vec![],
         };
 
@@ -3144,6 +3144,7 @@ mod tests {
             simulation: SimulationConfig {
                 t_start: 0.0, t_end: 1.0, time_semantics: "continuous".into(),
                 dt: Some(1.0), rng_seed: Some(42),
+                integrator: "rk4".into(), atol: None, rtol: None,
             },
             presets: vec![], model_structure: None, balance: None, identity_tracked_compartments: vec![],
         };
@@ -3246,6 +3247,7 @@ mod tests {
             simulation: SimulationConfig {
                 t_start: 0.0, t_end: 1.0, time_semantics: "continuous".into(),
                 dt: Some(1.0), rng_seed: Some(42),
+                integrator: "rk4".into(), atol: None, rtol: None,
             },
             presets: vec![], model_structure: None, balance: None, identity_tracked_compartments: vec![],
         };
@@ -3383,6 +3385,7 @@ mod tests {
             simulation: ir::model::SimulationConfig {
                 t_start: 0.0, t_end: 1.0, time_semantics: "continuous".into(),
                 dt: None, rng_seed: None,
+                integrator: "rk4".into(), atol: None, rtol: None,
             },
             presets: vec![], model_structure: None, balance: None, identity_tracked_compartments: vec![],
         };
@@ -3953,6 +3956,7 @@ dt = 1.0
             simulation: SimulationConfig {
                 t_start: 0.0, t_end: 1.0, time_semantics: "continuous".into(),
                 dt: Some(1.0), rng_seed: Some(42),
+                integrator: "rk4".into(), atol: None, rtol: None,
             },
             presets: vec![], model_structure: None, balance: None, identity_tracked_compartments: vec![],
         };
@@ -4459,6 +4463,7 @@ dt = 1.0
             simulation: SimulationConfig {
                 t_start: 0.0, t_end: 28.0, time_semantics: "continuous".into(),
                 dt: Some(1.0), rng_seed: Some(1),
+                integrator: "rk4".into(), atol: None, rtol: None,
             },
             presets: vec![],
             model_structure: None, balance: None, identity_tracked_compartments: vec![],

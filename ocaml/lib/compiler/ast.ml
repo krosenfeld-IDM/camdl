@@ -274,7 +274,16 @@ type output_decl = {
   out_trajectories: output_traj_decl option;
 }
 
-type simulate_decl = { sim_from: expr; sim_to: expr; sim_dt: expr option }
+(* gh#166: sim_integrator ("rk4"|"rk45", None -> default rk4); sim_atol/sim_rtol
+   are the dimensionless adaptive tolerances (rk45 only). *)
+type simulate_decl = {
+  sim_from: expr;
+  sim_to: expr;
+  sim_dt: expr option;
+  sim_integrator: string option;
+  sim_atol: expr option;
+  sim_rtol: expr option;
+}
 
 type timepoint_decl = { tpname: string; tptime: expr }
 

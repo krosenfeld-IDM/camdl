@@ -109,6 +109,7 @@ fn balance_model() -> CompiledModel {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: T_END, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(11),
+            integrator: "rk4".into(), atol: None, rtol: None,
         },
         presets: vec![],
         model_structure: None,

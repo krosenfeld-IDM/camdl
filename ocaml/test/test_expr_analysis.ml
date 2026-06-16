@@ -85,7 +85,8 @@ let model_with_bindings bs =
     output = { times = OutAtTimes []; format = "tsv";
                trajectory = true; observations = true };
     simulation = { t_start = 0.0; t_end = 1.0; time_semantics = "continuous";
-                   dt = None; rng_seed = None };
+                   dt = None; rng_seed = None;
+                   integrator = "rk4"; atol = None; rtol = None };
     presets = []; model_structure = None; balance = None;
     identity_tracked_compartments = [];
   }

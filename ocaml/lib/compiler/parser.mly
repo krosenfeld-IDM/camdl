@@ -803,12 +803,19 @@ simulate_body:
       { let sim_from = ref (EConst 0.0) in
         let sim_to   = ref (EConst 100.0) in
         let sim_dt   = ref None in
+        let sim_integrator = ref None in
+        let sim_atol = ref None in
+        let sim_rtol = ref None in
         List.iter (function
           | `From e -> sim_from := e
           | `To   e -> sim_to   := e
           | `Dt   e -> sim_dt   := Some e
+          | `Integrator s -> sim_integrator := Some s
+          | `Atol e -> sim_atol := Some e
+          | `Rtol e -> sim_rtol := Some e
         ) kvs;
-        { sim_from = !sim_from; sim_to = !sim_to; sim_dt = !sim_dt } }
+        { sim_from = !sim_from; sim_to = !sim_to; sim_dt = !sim_dt;
+          sim_integrator = !sim_integrator; sim_atol = !sim_atol; sim_rtol = !sim_rtol } }
 
 (* `dt` is the discretization step (gh#161). It is a model knob — models are
    sensitive to it (discretization error; Richardson-extrapolation diagnostics
@@ -821,12 +828,33 @@ simulate_kv:
   | FROM EQ e = expr { `From e }
   | TO   EQ e = expr { `To   e }
   | k = IDENT EQ e = expr
-      { if k = "dt" then `Dt e
-        else begin
+      { match k with
+        | "dt"   -> `Dt e
+        | "atol" -> `Atol e   (* gh#166: dimensionless adaptive tolerance (rk45) *)
+        | "rtol" -> `Rtol e
+        | "integrator" ->
+          (* gh#166: `integrator = "rk4" | "rk45"`. A string literal lexes to an
+             `EIdent` (atom_expr), so the value rides the same `expr` slot — a
+             dedicated `IDENT EQ STRING` rule would reduce/reduce-conflict with
+             `atom_expr -> STRING`. Extract + validate the string here. *)
+          (match e with
+           | EIdent (s, _) when s = "rk4" || s = "rk45" -> `Integrator s
+           | EIdent (s, _) ->
+             Parser_errors.push_error ~sp:$startpos(e) ~ep:$endpos(e)
+               ~code:"E106"
+               ~msg:(Printf.sprintf
+                 "unknown integrator '%s': expected \"rk4\" or \"rk45\"" s);
+             `Integrator s  (* placeholder; the error above aborts compilation *)
+           | _ ->
+             Parser_errors.push_error ~sp:$startpos(e) ~ep:$endpos(e)
+               ~code:"E106"
+               ~msg:"`integrator` must be a string: write `integrator = \"rk4\"` or \"rk45\"";
+             `Integrator "rk4")
+        | _ -> begin
           Parser_errors.push_error ~sp:$startpos(k) ~ep:$endpos(k)
             ~code:"E106"
             ~msg:(Printf.sprintf
-              "unknown simulate key '%s': expected one of from, to, dt" k);
+              "unknown simulate key '%s': expected one of from, to, dt, integrator, atol, rtol" k);
           `Dt e  (* placeholder; the error above aborts compilation *)
         end }
 
@@ -993,15 +1021,21 @@ scenario_block:
 scenario_field:
   | SIMULATE LBRACE kvs = list(simulate_kv) RBRACE
       { (* A scenario's `simulate {}` block overrides only the end time
-           (`to`); it lowers to ScTEnd. `dt` is a whole-model knob, not a
-           per-scenario override, so reject it here rather than silently
-           drop it (no-loose-semantics). *)
-        (match List.find_map (function `Dt e -> Some e | _ -> None) kvs with
-         | Some _ ->
+           (`to`); it lowers to ScTEnd. `dt`/`integrator`/`atol`/`rtol` are
+           whole-model knobs, not per-scenario overrides, so reject them here
+           rather than silently drop them (no-loose-semantics). *)
+        (match List.find_map (function
+           | `Dt _         -> Some "dt"
+           | `Integrator _ -> Some "integrator"
+           | `Atol _       -> Some "atol"
+           | `Rtol _       -> Some "rtol"
+           | _             -> None) kvs with
+         | Some key ->
            Parser_errors.push_error ~sp:$startpos ~ep:$endpos
              ~code:"E106"
-             ~msg:"`dt` is not a per-scenario override: set it once in the \
-                   top-level `simulate {}` block, or pass --dt on the CLI"
+             ~msg:(Printf.sprintf
+               "`%s` is not a per-scenario override: set it once in the \
+                top-level `simulate {}` block" key)
          | None -> ());
         let e = match List.find_map (function `To e -> Some e | _ -> None) kvs with
                 | Some e -> e | None -> EConst 0.0 in

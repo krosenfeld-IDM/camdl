@@ -25,7 +25,7 @@ fn binary() -> PathBuf {
 /// No transitions, so state moves only via these actions.
 fn trace_model_ir() -> String {
     r#"{
-      "ir_version": "0.14",
+      "ir_version": "0.15",
       "validated_by": "test-fixture",
       "model": {
         "name": "trace_arms", "version": "0.3", "time_unit": "days",

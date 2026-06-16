@@ -493,6 +493,12 @@ type simulation_config = {
   time_semantics: string;
   dt:             float option;
   rng_seed:       int option;
+  (* gh#166: ODE integrator selection — "rk4" (fixed-step, default) or "rk45"
+     (adaptive Dormand-Prince). atol/rtol are the dimensionless adaptive
+     tolerances (ignored by rk4; None -> runtime calibrated default). *)
+  integrator:     string;
+  atol:           float option;
+  rtol:           float option;
 }
 
 (* ── Presets (named parameter sets for web UI / CLI) ─────────────────────────── *)

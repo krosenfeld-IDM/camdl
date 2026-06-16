@@ -992,7 +992,10 @@
         "t_end": { "type": "number" },
         "time_semantics": { "type": "string", "enum": ["continuous", "discrete"] },
         "dt": { "type": ["number", "null"] },
-        "rng_seed": { "type": ["integer", "null"] }
+        "rng_seed": { "type": ["integer", "null"] },
+        "integrator": { "type": "string", "enum": ["rk4", "rk45"] },
+        "atol": { "type": ["number", "null"] },
+        "rtol": { "type": ["number", "null"] }
       }
     }
   }

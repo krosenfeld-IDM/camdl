@@ -987,13 +987,20 @@ let output_config_of_json j =
 (* ── Simulation config ───────────────────────────────────────────────────── *)
 
 let simulation_config_to_json (s : simulation_config) : Yojson.Safe.t =
-  obj [
-    ("t_start",        flt s.t_start);
-    ("t_end",          flt s.t_end);
-    ("time_semantics", str s.time_semantics);
-    ("dt",             match s.dt       with None -> null | Some v -> flt v);
-    ("rng_seed",       match s.rng_seed with None -> null | Some n -> int n);
-  ]
+  (* integrator/atol/rtol are OMITTED at their defaults (rk4 / None), mirroring
+     the Rust side's `skip_serializing_if`, so a default model's IR body is
+     unchanged by gh#166 (only the version string moves). *)
+  obj (
+    [ ("t_start",        flt s.t_start);
+      ("t_end",          flt s.t_end);
+      ("time_semantics", str s.time_semantics);
+      ("dt",             match s.dt       with None -> null | Some v -> flt v);
+      ("rng_seed",       match s.rng_seed with None -> null | Some n -> int n);
+    ]
+    @ (if s.integrator = "rk4" then [] else [("integrator", str s.integrator)])
+    @ (match s.atol with None -> [] | Some v -> [("atol", flt v)])
+    @ (match s.rtol with None -> [] | Some v -> [("rtol", flt v)])
+  )
 
 let simulation_config_of_json j =
   { t_start        = as_float  (member "t_start"        j);
@@ -1001,6 +1008,9 @@ let simulation_config_of_json j =
     time_semantics = as_string (member "time_semantics" j);
     dt             = (match member_opt "dt"       j with Some `Null | None -> None | Some v -> Some (as_float v));
     rng_seed       = (match member_opt "rng_seed" j with Some `Null | None -> None | Some v -> Some (as_int   v));
+    integrator     = (match member_opt "integrator" j with Some `Null | None -> "rk4" | Some v -> as_string v);
+    atol           = (match member_opt "atol"     j with Some `Null | None -> None | Some v -> Some (as_float v));
+    rtol           = (match member_opt "rtol"     j with Some `Null | None -> None | Some v -> Some (as_float v));
   }
 
 (* ── Presets ─────────────────────────────────────────────────────────────── *)

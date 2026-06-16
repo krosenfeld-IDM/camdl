@@ -85,6 +85,7 @@ fn decay_model() -> Model {
             t_start: 0.0, t_end: 30.0,
             time_semantics: "continuous".into(),
             dt: None, rng_seed: Some(42),
+            integrator: "rk4".into(), atol: None, rtol: None,
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

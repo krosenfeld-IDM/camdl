@@ -13,6 +13,47 @@ How to read an entry: **what changed**, the **migration** (old → new), and the
 
 ---
 
+## 2026-06-16 — `simulate {}` gains `integrator` / `atol` / `rtol` (gh#166)
+
+**What.** The `simulate {}` block accepts three new optional keys selecting the
+ODE integrator and its adaptive tolerances:
+
+- **`integrator = "rk4" | "rk45"`** — `"rk4"` (fixed-step classic RK4) is the
+  default and is unchanged. `"rk45"` selects the adaptive Dormand–Prince
+  integrator (opt-in; large steps in smooth stretches, small steps only where
+  the trajectory changes fast).
+- **`atol` / `rtol`** — absolute / relative error tolerances for the `rk45`
+  step-size controller. **Dimensionless** (they are tolerances, not times).
+  Ignored by `rk4`. Omitted → the runtime's calibrated default.
+
+This is **purely additive** — every existing model is unaffected (no
+`integrator` key means `rk4`, exactly as before). The IR schema version bumped
+**0.14 → 0.15**; old IR (without the keys) deserializes to `rk4`.
+
+**Migration.** None required. To opt a model into adaptive stepping:
+
+```camdl
+simulate {
+  from = 0 'years
+  to   = 40 'years
+  integrator = "rk45"
+  atol = 1e-8
+  rtol = 1e-6
+}
+```
+
+**Diagnostics.**
+
+- `integrator = "rk99"` → **E106** `unknown integrator 'rk99': expected "rk4" or
+  "rk45"`.
+- `atol = 1e-8 'days` (or any unit) → **E106** `` `atol` must be dimensionless ``.
+- A `dt` / `integrator` / `atol` / `rtol` key inside a **scenario** `simulate {}`
+  block → **E106** (these are whole-model knobs; set them once at the top level).
+- `integrator = "rk45"` on a model that references `dt` in a rate (`Expr::Dt`) →
+  rejected at simulation: adaptive stepping has no single fixed `dt`; use `rk4`.
+
+---
+
 ## 2026-06-10 — observation block: `~` measurement, `columns {}`, `from`, `emit_schedule` (gh#171)
 
 **What.** The `observations {}` surface was reshaped so it reads like the rest

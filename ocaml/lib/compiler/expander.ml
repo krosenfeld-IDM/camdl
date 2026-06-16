@@ -3642,7 +3642,8 @@ let expand_simulate ctx =
   match ctx.simulate with
   | None ->
     { Ir.t_start = 0.0; Ir.t_end = 100.0;
-      Ir.time_semantics = "continuous"; Ir.dt = None; Ir.rng_seed = None }
+      Ir.time_semantics = "continuous"; Ir.dt = None; Ir.rng_seed = None;
+      Ir.integrator = "rk4"; Ir.atol = None; Ir.rtol = None }
   | Some sd ->
     let t_start = resolve_float_expr ctx sd.sim_from in
     let t_end   = resolve_float_expr ctx sd.sim_to   in
@@ -3651,8 +3652,26 @@ let expand_simulate ctx =
        model time units). None when omitted, so the CLI default / --dt
        override applies. *)
     let dt = Option.map (resolve_float_expr ctx) sd.sim_dt in
+    (* gh#166: integrator is validated to {rk4,rk45} at parse time; default rk4. *)
+    let integrator = Option.value ~default:"rk4" sd.sim_integrator in
+    (* atol/rtol are DIMENSIONLESS adaptive tolerances — a unit literal is a
+       mistake (they are ratios, not times). dimcheck does not visit the simulate
+       block, so reject the unit here. *)
+    let resolve_tol name = function
+      | None -> None
+      | Some (EUnit (_, _)) ->
+        Diagnostics.error ctx.diags ~code:"E106" ~loc:Diagnostics.no_loc
+          ~message:(Printf.sprintf
+            "`%s` must be dimensionless: drop the unit (it is a tolerance, not a time)" name)
+          ~hint:(Printf.sprintf "write `%s = 1e-8`" name) ();
+        None
+      | Some e -> Some (resolve_float_expr ctx e)
+    in
+    let atol = resolve_tol "atol" sd.sim_atol in
+    let rtol = resolve_tol "rtol" sd.sim_rtol in
     { Ir.t_start; Ir.t_end;
-      Ir.time_semantics = "continuous"; Ir.dt; Ir.rng_seed = None }
+      Ir.time_semantics = "continuous"; Ir.dt; Ir.rng_seed = None;
+      Ir.integrator; Ir.atol; Ir.rtol }
 
 let expand_output ctx =
   let t_start, t_end = match ctx.simulate with

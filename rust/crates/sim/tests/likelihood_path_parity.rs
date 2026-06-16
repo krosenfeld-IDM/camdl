@@ -116,6 +116,7 @@ fn model() -> Arc<CompiledModel> {
         simulation: SimulationConfig {
             t_start: 0.0, t_end: 50.0, time_semantics: "continuous".into(),
             dt: Some(1.0), rng_seed: Some(42),
+            integrator: "rk4".into(), atol: None, rtol: None,
         },
         presets: vec![],
         model_structure: None, balance: None, identity_tracked_compartments: vec![],

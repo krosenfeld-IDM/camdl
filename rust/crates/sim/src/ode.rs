@@ -333,8 +333,29 @@ pub fn run_ode(
     // parametric `at [...]` schedules.
     let fire_steps = model.resolve_fire_steps(cfg.dt, params);
 
+    // gh#166: select the integrator from the model's declared config. The schema
+    // accepts "rk45" (the adaptive Dopri5 stepper, Phase C C2) but the stepper is
+    // not yet wired — reject it LOUDLY rather than silently running rk4 (no loose
+    // semantics). The CLI `--integrator` override is C4. Phase C2 replaces the
+    // rk45 arm with the actual Dopri5 construction behind the OdeStepper trait.
+    match model.model.simulation.integrator.as_str() {
+        "rk4" => {}
+        "rk45" => {
+            return Err(SimError::Validation(
+                "integrator = \"rk45\" (adaptive Dormand–Prince) is not yet \
+                 implemented — use integrator = \"rk4\". (gh#166 Phase C: schema \
+                 has landed; the adaptive stepper is the next commit.)".to_string(),
+            ))
+        }
+        other => {
+            return Err(SimError::Validation(format!(
+                "unknown integrator '{other}': expected \"rk4\" or \"rk45\""
+            )))
+        }
+    }
+
     // The integrator behind the seam. Fixed RK4 is the default integrator;
-    // Phase C selects `Dopri5` here from `cfg`. The driver below is integrator-
+    // Phase C2 selects `Dopri5` here for "rk45". The driver below is integrator-
     // agnostic: it hands each stepper the raw distance to the next boundary and
     // re-enters until the boundary is reached. B2: models that reference the step
     // size in a rate (`Expr::Dt` / RUNTIME_DT) keep the first-order Euler flow;
