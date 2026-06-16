@@ -777,6 +777,7 @@ fn run_simulate(a: &args::SimulateArgs) {
         backend,
         dt,
         seed, // overridden per-replicate below
+        integrator: a.backend.integrator, // gh#166: CLI --integrator override
     };
 
     // ── Pre-flight: validate obs model availability ─────────────────────────
@@ -1026,6 +1027,7 @@ fn run_simulate(a: &args::SimulateArgs) {
         params_files: base_sim_run.params_files.clone(),
         backend,
         dt,
+        integrator: a.backend.integrator, // gh#166: CLI --integrator override
         source,
         scenarios,
         seeds: job_seeds,

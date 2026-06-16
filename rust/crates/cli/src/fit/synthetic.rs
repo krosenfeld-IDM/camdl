@@ -109,6 +109,7 @@ fn generate_one_dataset(
         backend,
         dt,
         seed: sim_seed,
+        integrator: None, // synthetic data-gen uses the model's declared integrator
     };
     let (traj, model) = run_simulation(&run)?;
 

@@ -393,6 +393,7 @@ pub fn build_cell_sim_run(
         backend: job.backend,
         dt: job.dt,
         seed: process_seed,
+        integrator: job.integrator, // gh#166: CLI --integrator override
     }
 }
 

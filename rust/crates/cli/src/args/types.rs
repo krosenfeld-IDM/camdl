@@ -121,6 +121,19 @@ impl Backend {
     }
 }
 
+/// CLI override for the ODE integrator METHOD (gh#166). Method-only by design:
+/// the tolerances are a model property (the `simulate { integrator = rk45 { … } }`
+/// block, where the type forbids orphan tolerances), so there is no `--atol`/
+/// `--rtol` flag to orphan. Forcing rk45 preserves the model's tolerances when it
+/// declared them, else uses the runtime defaults; forcing rk4 drops them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum IntegratorArg {
+    #[value(name = "rk4")]
+    Rk4,
+    #[value(name = "rk45")]
+    Rk45,
+}
+
 impl std::fmt::Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

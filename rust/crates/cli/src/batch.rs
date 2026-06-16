@@ -709,6 +709,7 @@ pub fn cmd_batch_run(a: &crate::args::BatchArgs) {
         params_files: params_file_opt.as_ref().map(|p| vec![p.clone()]).unwrap_or_default(),
         backend,
         dt,
+        integrator: None, // batch uses the model's declared integrator (no CLI override)
         source,
         scenarios: job_scenarios,
         // Batch seeds are always explicit (range / count / list).

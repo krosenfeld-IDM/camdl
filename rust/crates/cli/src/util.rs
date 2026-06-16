@@ -2222,6 +2222,34 @@ pub struct SimRun {
     pub backend: crate::args::types::Backend,
     pub dt: f64,
     pub seed: u64,
+    /// gh#166: optional CLI override of the ODE integrator method (rk4/rk45),
+    /// applied to the model's simulation config before compile. `None` → use the
+    /// model's declared integrator.
+    pub integrator: Option<crate::args::types::IntegratorArg>,
+}
+
+/// Apply a CLI integrator-method override (gh#166) to the model in place.
+/// Method-only: forcing rk45 PRESERVES the model's tolerances if it declared
+/// them (else runtime defaults); forcing rk4 drops them. No-op when `method` is
+/// `None`. There is no CLI tolerance flag — the orphan-tolerance state stays
+/// unrepresentable (tolerances are a model property).
+pub fn apply_integrator_override(
+    model: &mut ir::Model,
+    method: Option<crate::args::types::IntegratorArg>,
+) {
+    use crate::args::types::IntegratorArg;
+    use ir::model::Integrator;
+    if let Some(m) = method {
+        model.simulation.integrator = match (m, &model.simulation.integrator) {
+            (IntegratorArg::Rk4, _) => Integrator::Rk4,
+            (IntegratorArg::Rk45, Integrator::Rk45 { atol, rtol }) => {
+                Integrator::Rk45 { atol: *atol, rtol: *rtol } // preserve model tolerances
+            }
+            (IntegratorArg::Rk45, Integrator::Rk4) => {
+                Integrator::Rk45 { atol: None, rtol: None } // runtime defaults
+            }
+        };
+    }
 }
 
 impl Default for SimRun {
@@ -2238,6 +2266,7 @@ impl Default for SimRun {
             backend: crate::args::types::Backend::ChainBinomial,
             dt: 1.0,
             seed: 1,
+            integrator: None,
         }
     }
 }
@@ -2255,8 +2284,10 @@ pub fn resolve_run_model(run: &SimRun) -> Result<(CompiledModel, ir::Model), Str
     let src = std::fs::read_to_string(&ir_path_resolved)
         .map_err(|e| format!("cannot read {}: {}", ir_path_resolved, e))?;
     // gh#audit-C8. Envelope-aware load (see load_model above).
-    let model: ir::Model = ir::from_str(&src)
+    let mut model: ir::Model = ir::from_str(&src)
         .map_err(|e| format!("IR load error from {}: {}", ir_path_resolved, e))?;
+    // gh#166: CLI `--integrator` override (method only), before validate/compile.
+    apply_integrator_override(&mut model, run.integrator);
     // RC1 in 2026-04-19 engine review.
     ir::validate::validate(&model).map_err(|errs| {
         let mut msg = format!("IR validation failed ({} error(s)):\n", errs.len());
@@ -2651,6 +2682,36 @@ pub fn fmt_relative_time(from: std::time::SystemTime, now: std::time::SystemTime
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── apply_integrator_override (gh#166 C4) ────────────────────────────────
+
+    #[test]
+    fn integrator_override_method_only_and_preserves_tolerances() {
+        use ir::model::Integrator;
+        use crate::args::types::IntegratorArg;
+        let (base, _) = load_model(&sir_model()).expect("load golden");
+        let with = |i: Integrator| { let mut m = base.clone(); m.simulation.integrator = i; m };
+
+        // rk4 model + force rk45 → rk45 with DEFAULT (None) tolerances.
+        let mut m = with(Integrator::Rk4);
+        apply_integrator_override(&mut m, Some(IntegratorArg::Rk45));
+        assert_eq!(m.simulation.integrator, Integrator::Rk45 { atol: None, rtol: None });
+
+        // rk45 model with tolerances + force rk45 → tolerances PRESERVED.
+        let mut m = with(Integrator::Rk45 { atol: Some(1e-9), rtol: Some(1e-7) });
+        apply_integrator_override(&mut m, Some(IntegratorArg::Rk45));
+        assert_eq!(m.simulation.integrator, Integrator::Rk45 { atol: Some(1e-9), rtol: Some(1e-7) });
+
+        // rk45 model + force rk4 → rk4 (tolerances dropped).
+        let mut m = with(Integrator::Rk45 { atol: Some(1e-9), rtol: None });
+        apply_integrator_override(&mut m, Some(IntegratorArg::Rk4));
+        assert_eq!(m.simulation.integrator, Integrator::Rk4);
+
+        // None override → unchanged.
+        let mut m = with(Integrator::Rk45 { atol: Some(1e-9), rtol: Some(1e-7) });
+        apply_integrator_override(&mut m, None);
+        assert_eq!(m.simulation.integrator, Integrator::Rk45 { atol: Some(1e-9), rtol: Some(1e-7) });
+    }
 
     // ── resolve_relative_to_toml ─────────────────────────────────────────────
 

@@ -63,6 +63,9 @@ pub struct SimulateJob {
     pub params_files: Vec<String>,
     pub backend: Backend,
     pub dt: f64,
+    /// gh#166: optional CLI `--integrator` override (method only); `None` → the
+    /// model's declared integrator.
+    pub integrator: Option<crate::args::types::IntegratorArg>,
     /// Where parameter vectors come from (the central dispatch).
     pub source: ParamSource,
     /// σ layer — which scenarios to run. Empty ⇒ a single implicit

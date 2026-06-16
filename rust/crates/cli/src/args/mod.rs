@@ -333,6 +333,12 @@ pub struct SimBackend {
     /// Step size for discrete-time backends (default: 1.0)
     #[arg(long)]
     pub dt: Option<f64>,
+
+    /// ODE integrator method override: rk4 (fixed) or rk45 (adaptive). gh#166.
+    /// Tolerances are a model property — set them in
+    /// `simulate { integrator = rk45 { atol = .., rtol = .. } }`.
+    #[arg(long)]
+    pub integrator: Option<crate::args::types::IntegratorArg>,
 }
 
 /// Core inference knobs shared by pfilter / if2 / profile
