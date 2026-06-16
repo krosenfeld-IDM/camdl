@@ -980,6 +980,176 @@ observations {
   Alcotest.(check bool) "probability column feeding poisson rate must E304"
     true (has_e304_in src)
 
+(* ── Tier-3 unit literal on positive/real param kinds (gh#60) ──────────── *)
+
+(* `positive`/`real` may carry an optional tier-3 unit literal that supplies the
+   parameter's dimension (the dimension half of the unit; a parameter's scale is
+   always the model time unit). `positive 'ratio` ≡ `positive [1]`,
+   `real 'count` ≡ `real [P]`. The unit is sugar over the bracket annotation and
+   flows to `param_dim`; dimcheck consumes it unchanged. A unit on a kind whose
+   dimension is already fixed is E281; a unit combined with a bracket is E282. *)
+
+let compile_ok name src =
+  match Compiler.compile ~name src with
+  | Ok m -> m
+  | Error e -> Alcotest.failf "%s: compile failed: %s" name e
+
+let dim_of_param name (r : Dimcheck.result) =
+  Option.map (fun a -> (a.(0), a.(1))) (param_dim_of name r)
+
+(* `tau : positive 'ratio` carries dimension [1] (dimensionless) and, used as a
+   dimensionless multiplier on a valid rate, produces no errors. *)
+let test_positive_ratio_is_dimensionless () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+  tau   : positive 'ratio in [0.001, 3.0]
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ tau * beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+|camdl} in
+  let m = compile_ok "positive-ratio" src in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check bool) "positive 'ratio compiles clean" true (no_errors r);
+  Alcotest.(check (option (pair int int))) "tau is [1]"
+    (Some (0, 0)) (dim_of_param "tau" r)
+
+(* `real 'count` carries dimension [P] (population). Used as a count seed inside
+   `(I + iota)`, the addition typechecks (P + P). *)
+let test_real_count_is_population () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta : rate
+  gamma : rate
+  iota : real 'count in [0.0, 10.0]
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * (I + iota) * S / N
+  recovery  : I --> R @ gamma * I
+}
+|camdl} in
+  let m = compile_ok "real-count" src in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check bool) "real 'count compiles clean" true (no_errors r);
+  Alcotest.(check (option (pair int int))) "iota is [P]"
+    (Some (1, 0)) (dim_of_param "iota" r)
+
+(* `positive 'per_year` carries dimension [T^-1]. With `time_unit = 'days` the
+   dimension half is what matters (the per-year scale does not change the
+   exponents); used alone as a per-capita * pop rate, it typechecks. *)
+let test_positive_per_year_is_rate () =
+  let src = {camdl|
+time_unit = 'days
+compartments { S, I }
+parameters {
+  iota : positive 'per_year in [0.0001, 0.1]
+}
+transitions {
+  importation : S --> I @ iota * S
+}
+|camdl} in
+  let m = compile_ok "positive-per-year" src in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check bool) "positive 'per_year compiles clean" true (no_errors r);
+  Alcotest.(check (option (pair int int))) "iota is [T^-1]"
+    (Some (0, -1)) (dim_of_param "iota" r)
+
+(* The dimension is load-bearing: `tau : positive 'ratio` (dimensionless) used
+   where a count is required (added to a population) is now a real dimension
+   error (E302), not a silently-swallowed I300. *)
+let test_positive_ratio_misuse_is_caught () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+  tau   : positive 'ratio
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * (I + tau) * S / N
+  recovery  : I --> R @ gamma * I
+}
+|camdl} in
+  let diags = Compiler.collect_diagnostics ~filename:"<ratio-misuse>" src in
+  let has code =
+    List.exists (fun (d : Diagnostics.diagnostic) -> d.code = code) diags in
+  (* (I + tau) is P + dimensionless → E302; and no I300, because the dim is now
+     fully determined by the annotation. *)
+  Alcotest.(check bool) "dimensionless tau added to a population is E302"
+    true (has "E302");
+  Alcotest.(check bool) "no I300: dimension is determined by the unit"
+    false (has "I300")
+
+(* A unit literal on a kind whose dimension the keyword already fixes (e.g.
+   `rate`, `count`) is rejected with E281, naming the offending kind. *)
+let test_unit_on_rate_kind_rejected () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta  : rate 'ratio
+  gamma : rate
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+|camdl} in
+  let diags = Compiler.collect_diagnostics ~filename:"<unit-on-rate>" src in
+  let has code =
+    List.exists (fun (d : Diagnostics.diagnostic) -> d.code = code) diags in
+  Alcotest.(check bool) "unit literal on 'rate' kind is E281" true (has "E281")
+
+(* Giving both a unit literal and a bracket dimension annotation is E282. *)
+let test_unit_and_bracket_conflict_rejected () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+  tau   : positive 'ratio [1]
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ tau * beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+|camdl} in
+  let diags = Compiler.collect_diagnostics ~filename:"<unit-and-bracket>" src in
+  let has code =
+    List.exists (fun (d : Diagnostics.diagnostic) -> d.code = code) diags in
+  Alcotest.(check bool) "unit + bracket annotation is E282" true (has "E282")
+
+(* The feature is purely additive: a bare `positive` (no unit) is unchanged —
+   under-determined, still emits I300 when used in a dim-determined slot. *)
+let test_bare_positive_unchanged () =
+  let src = {camdl|
+compartments { S, I, R }
+parameters {
+  beta  : rate
+  gamma : rate
+  alpha : positive
+  kappa : positive
+}
+let N = S + I + R
+transitions {
+  infection : S --> I @ alpha * kappa * beta * S * I / N
+  recovery  : I --> R @ gamma * I
+}
+|camdl} in
+  let m = compile_ok "bare-positive" src in
+  let r = Dimcheck.check_model m in
+  Alcotest.(check bool) "two bare positives are under-determined → I300"
+    true (has_info "I300" r)
+
 (* ── Test Registration ─────────────────────────────────────────────────── *)
 
 let () =
@@ -1089,6 +1259,15 @@ let () =
     "check_phase", [
       Alcotest.test_case "no duplicate errors"         `Quick test_check_phase_no_duplicates;
       Alcotest.test_case "single error reported once"  `Quick test_check_phase_single_error;
+    ];
+    "param_unit_literal", [
+      Alcotest.test_case "positive 'ratio is [1]"        `Quick test_positive_ratio_is_dimensionless;
+      Alcotest.test_case "real 'count is [P]"            `Quick test_real_count_is_population;
+      Alcotest.test_case "positive 'per_year is [T^-1]"  `Quick test_positive_per_year_is_rate;
+      Alcotest.test_case "ratio misuse is caught"        `Quick test_positive_ratio_misuse_is_caught;
+      Alcotest.test_case "unit on rate kind → E281"      `Quick test_unit_on_rate_kind_rejected;
+      Alcotest.test_case "unit + bracket → E282"         `Quick test_unit_and_bracket_conflict_rejected;
+      Alcotest.test_case "bare positive unchanged"       `Quick test_bare_positive_unchanged;
     ];
     "negative_golden", [
       Alcotest.test_case "e300_missing_susceptible" `Quick

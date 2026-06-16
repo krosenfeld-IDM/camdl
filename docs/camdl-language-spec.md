@@ -574,6 +574,46 @@ Annotations are optional. The compiler infers dimensions from context for most
 models — annotations are only needed when inference is ambiguous (reported as
 info I300).
 
+### 4.1.2 Unit literal on `positive` / `real`
+
+The dimension-under-determined kinds — `positive` and `real` — also accept an
+optional **tier-3 unit literal** (§2.4) in place of a bracket annotation:
+
+```camdl
+parameters {
+  tau    : positive 'ratio    in [0.001, 3.0]    # dimensionless CV (= positive [1])
+  iota   : positive 'count    in [0.0, 50.0]     # a count seed   (= positive [P])
+  importn: positive 'per_year in [1e-4, 0.1]     # per-time rate  (= positive [T^-1])
+  amp    : real 'ratio                            # signed multiplier
+}
+```
+
+A unit literal here is read for its **dimension only** — the dimension half of
+the (dimension, scale) pair a unit literal carries (§2.4). The scale half plays
+no role on a parameter: a parameter's value is always supplied in the model's
+`time_unit`, so `'per_year` and `'per_day` set the same dimension (T⁻¹) on the
+declaration. The literal is therefore exact sugar for the corresponding bracket
+annotation: `positive 'ratio` ≡ `positive [1]`, `positive 'count` ≡
+`positive [P]`, `positive 'per_year` ≡ `positive [T^-1]`. The two notations are
+interchangeable; use whichever reads more naturally for the quantity.
+
+The annotation fixes the parameter's dimension exactly as a bracket does — so it
+resolves the I300 a bare `positive`/`real` would emit in a dimension-determined
+slot, **and** turns a dimensional misuse into a hard error. A `tau : positive
+'ratio` added to a population (`I + tau`) is now an E302, not a swallowed I300;
+that is the point — a determined dimension catches the bug a `positive` would
+hide.
+
+Two restrictions keep the surface honest:
+
+- A unit literal is only meaningful on `positive` and `real`. On a kind whose
+  dimension the keyword already fixes (`rate`, `probability`, `count`,
+  `instant`, `duration`), it is rejected with **E281** — drop the literal; the
+  kind already carries the dimension.
+- A unit literal and a `[dim]` bracket annotation may not both appear on one
+  declaration (they would be redundant or contradictory): **E282**. Use one or
+  the other.
+
 ### 4.2 External parameter values
 
 Parameter values are **never** specified inside `.camdl` files. The model file

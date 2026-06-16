@@ -13,24 +13,56 @@ How to read an entry: **what changed**, the **migration** (old → new), and the
 
 ---
 
+## 2026-06-16 — `positive` / `real` accept an optional unit literal (gh#60)
+
+**What.** The dimension-under-determined parameter kinds `positive` and `real`
+now accept an optional **tier-3 unit literal** that supplies the parameter's
+dimension, in the same grammar slot a `[dim]` bracket annotation would use:
+
+```camdl
+parameters {
+  tau    : positive 'ratio    in [0.001, 3.0]    # dimensionless (= positive [1])
+  iota   : positive 'count                        # a count       (= positive [P])
+  importn: positive 'per_year                     # per-time rate (= positive [T^-1])
+}
+```
+
+Only the unit's **dimension** is read — a parameter's value is always in the
+model `time_unit`, so the scale half is inert (`'per_year` and `'per_day` set
+the same T⁻¹ dimension). The literal is exact sugar for the matching bracket
+annotation. This **resolves the I300** ("dimension of parameter could not be
+determined") a bare `positive`/`real` emits in a dimension-determined slot, and
+makes a dimensional misuse of the parameter a hard error rather than a swallowed
+info. This is **purely additive** — every existing `positive`/`real` declaration
+is unchanged. No IR schema change (the literal lowers into the existing
+`param_dim` field).
+
+**Migration.** None required. To type a previously-undetermined `positive`:
+replace `tau : positive` with `tau : positive 'ratio` (or the appropriate unit).
+
+**Diagnostic.** A unit literal on a kind whose dimension is already fixed
+(`rate`, `probability`, `count`, `instant`, `duration`) is **E281** ("a unit
+literal is only allowed on the 'positive' and 'real' kinds"). A unit literal
+combined with a `[dim]` bracket on the same declaration is **E282**.
+
 ## 2026-06-16 — `simulate {}` gains a tagged `integrator` (gh#166)
 
-**What.** The `simulate {}` block gains an optional **tagged integrator** selecting
-the ODE method and (for rk45) its adaptive tolerances:
+**What.** The `simulate {}` block gains an optional **tagged integrator**
+selecting the ODE method and (for rk45) its adaptive tolerances:
 
-- **`integrator = rk4`** — fixed-step classic RK4 (the default; omit `integrator`
-  entirely for it). Unchanged behaviour.
+- **`integrator = rk4`** — fixed-step classic RK4 (the default; omit
+  `integrator` entirely for it). Unchanged behaviour.
 - **`integrator = rk45 { atol = 1e-8  rtol = 1e-6 }`** — adaptive Dormand–Prince
   RK4(5) (opt-in; large steps in smooth stretches, small steps only where the
   trajectory changes fast). `atol`/`rtol` are **dimensionless** (tolerances, not
   times), optional (omitted → the runtime's calibrated default), and are **keys
   of the `rk45` block** — they cannot be written without rk45.
 
-The tolerances live *inside* the `rk45` tag by design: the IR type is
+The tolerances live _inside_ the `rk45` tag by design: the IR type is
 `Rk4 | Rk45 { atol, rtol }`, so an orphan tolerance (atol without rk45, or rk4
-with tolerances) is unrepresentable. This is **purely additive** — every existing
-model is unaffected (no `integrator` → `rk4`). The IR schema version bumped
-**0.14 → 0.15**; old IR deserializes to `rk4`.
+with tolerances) is unrepresentable. This is **purely additive** — every
+existing model is unaffected (no `integrator` → `rk4`). The IR schema version
+bumped **0.14 → 0.15**; old IR deserializes to `rk4`.
 
 **Migration.** None required. To opt a model into adaptive stepping:
 
@@ -51,11 +83,14 @@ model's `simulate {}` block, not on the command line.
 
 **Diagnostics.**
 
-- `integrator = rk99` → **E106** `unknown integrator 'rk99': expected rk4 or rk45`.
-- `integrator = rk4 { atol = 1e-8 }` → **E106** `` `integrator = rk4` takes no
+- `integrator = rk99` → **E106**
+  `unknown integrator 'rk99': expected rk4 or rk45`.
+- `integrator = rk4 { atol = 1e-8 }` → **E106**
+  `` `integrator = rk4` takes no
   tolerances `` (atol/rtol are rk45-only).
 - `integrator = rk45 { foo = 1 }` → **E106** `unknown integrator option 'foo'`.
-- `atol = 1e-8` at the top level (outside the `rk45` block) → **E106** `unknown
+- `atol = 1e-8` at the top level (outside the `rk45` block) → **E106**
+  `unknown
   simulate key 'atol'`.
 - `atol = 1e-8 'days` (any unit) → **E106** `` `atol` must be dimensionless ``.
 - A `dt` / `integrator` key inside a **scenario** `simulate {}` block → **E106**

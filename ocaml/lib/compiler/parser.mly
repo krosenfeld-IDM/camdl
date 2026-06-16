@@ -227,36 +227,36 @@ param_list:
 
 param_decl:
   (* scalar, no bounds, no prior *)
-  | name = IDENT COLON pk = param_kind da = dim_annotation_opt
-      { PScalar { pname = name; pkind = pk; pdim = da; pbounds = None; pprior = None;
+  | name = IDENT COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt
+      { PScalar { pname = name; pkind = pk; pdim = da; punit = pu; pbounds = None; pprior = None;
                   ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* scalar, no bounds, with prior *)
-  | name = IDENT COLON pk = param_kind da = dim_annotation_opt TILDE pr = prior_clause
-      { PScalar { pname = name; pkind = pk; pdim = da; pbounds = None; pprior = Some pr;
+  | name = IDENT COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt TILDE pr = prior_clause
+      { PScalar { pname = name; pkind = pk; pdim = da; punit = pu; pbounds = None; pprior = Some pr;
                   ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* scalar, with bounds, no prior *)
-  | name = IDENT COLON pk = param_kind da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET
-      { PScalar { pname = name; pkind = pk; pdim = da; pbounds = Some (lo, hi); pprior = None;
+  | name = IDENT COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET
+      { PScalar { pname = name; pkind = pk; pdim = da; punit = pu; pbounds = Some (lo, hi); pprior = None;
                   ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* scalar, with bounds, with prior *)
-  | name = IDENT COLON pk = param_kind da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET TILDE pr = prior_clause
-      { PScalar { pname = name; pkind = pk; pdim = da; pbounds = Some (lo, hi); pprior = Some pr;
+  | name = IDENT COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET TILDE pr = prior_clause
+      { PScalar { pname = name; pkind = pk; pdim = da; punit = pu; pbounds = Some (lo, hi); pprior = Some pr;
                   ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* indexed, no bounds, no prior *)
-  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind da = dim_annotation_opt
-      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; pbounds = None; pprior = None;
+  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt
+      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; punit = pu; pbounds = None; pprior = None;
                    ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* indexed, no bounds, with prior *)
-  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind da = dim_annotation_opt TILDE pr = prior_clause
-      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; pbounds = None; pprior = Some pr;
+  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt TILDE pr = prior_clause
+      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; punit = pu; pbounds = None; pprior = Some pr;
                    ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* indexed, with bounds, no prior *)
-  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET
-      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; pbounds = Some (lo, hi); pprior = None;
+  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET
+      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; punit = pu; pbounds = Some (lo, hi); pprior = None;
                    ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
   (* indexed, with bounds, with prior *)
-  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET TILDE pr = prior_clause
-      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; pbounds = Some (lo, hi); pprior = Some pr;
+  | name = IDENT LBRACKET dim = IDENT RBRACKET COLON pk = param_kind pu = param_unit_opt da = dim_annotation_opt IN LBRACKET lo = expr COMMA hi = expr RBRACKET TILDE pr = prior_clause
+      { PIndexed { pname = name; pdims = [dim]; pkind = pk; pdim = da; punit = pu; pbounds = Some (lo, hi); pprior = Some pr;
                    ploc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
 
 prior_clause:
@@ -279,6 +279,14 @@ prior_kwarg:
 dim_annotation_opt:
   | (* empty *) { None }
   | LBRACKET da = dim_literal RBRACKET { Some da }
+
+(* Optional tier-3 unit literal on a parameter kind (gh#60):
+   `tau : positive 'ratio`. Syntactically accepted after any kind; the
+   expander restricts it to `positive`/`real` (E281) and rejects a clash with
+   a `[dim]` bracket (E282). *)
+param_unit_opt:
+  | (* empty *) { None }
+  | u = unit_lit { Some u }
 
 dim_literal:
   (* [1] — dimensionless *)
