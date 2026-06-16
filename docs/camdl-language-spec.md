@@ -1329,6 +1329,56 @@ let N_local[a in age] = S[a] + E[a] + I[a] + R[a]
 # sum(a in age, N_local[a]) = N_local[child] + N_local[adult] = N
 ```
 
+### 8.2.1 Restricted sums (`where`)
+
+A `sum` may carry a `where` predicate that restricts the reduction to the index
+values satisfying it:
+
+```camdl
+infection[p in patch] : S[p] --> I[p]
+  @ beta * S[p] * sum(q in patch where dist[p,q] < 50 and q != p, I[q] / N[q])
+```
+
+The predicate is evaluated **at compile time**, so the sum expands to a term
+only for the surviving index values. For a sparse spatial coupling this makes
+the force-of-infection sum cost **O(P·k)** — roughly k neighbours per patch —
+rather than O(P²), and by construction: it does not depend on any optimization
+pass discovering that most weights are zero.
+
+What a `where` predicate may reference is deliberately narrow, so the surviving
+set is decidable before the simulation runs:
+
+- **index variables**, compared with `==` / `!=` — `q != p`, `q == kano`;
+- **constant table cells**, compared against a numeric literal with
+  `< <= > >= == !=` — `dist[p,q] < 50`, `mask[p,q] != 0`. The table must be a
+  compile-time constant (an inline literal or a `read(...)` table), and the
+  comparison is dimension-checked like a rate expression.
+
+It may **not** reference a parameter, compartment state, or a parameterized
+(non-constant) table cell — those are runtime quantities, and a
+runtime-dependent support would change which terms exist as the simulation runs
+(an unbounded reduction). A fitted-parameter threshold such as
+`where dist[p,q] < sparse_thresh` is therefore rejected (E282): keep the
+*support* a compile-time constant — a literal radius, or a precomputed 0/1 mask
+table — and put any fitted **weight** in the rate body.
+
+That separation is what lets a spatial kernel be both sparse and fittable. The
+predicate carves the (fixed) support; the rate body holds the kernel, which may
+carry parameters and so can be estimated:
+
+```camdl
+# constant `dist` carves the support; G and rho are fitted in the rate body
+infection[p in patch] : S[p] --> I[p]
+  @ beta * S[p] * ( I[p]/N[p]
+      + G * sum(q in patch where dist[p,q] < 50 and q != p,
+                dist[p,q]^(-rho) * I[q]/N[q]) )
+```
+
+Writing the *transition* per pair instead — `imp[p, q] : S[p] --> I[p] @ … where
+p != q` — produces P² transitions (and as many flow columns) rather than one
+summed rate per patch; the compiler warns (W104) and points back to the
+`sum … where` form.
+
 ### 8.3 No Localization, No Magic
 
 The mixing formula in the base model uses global N:
@@ -1799,8 +1849,10 @@ Precedence  Operators        Associativity
 
 Standard mathematical convention: `a + b * c` parses as `a + (b * c)`.
 Exponentiation is right-associative: `a ^ b ^ c` = `a ^ (b ^ c)`. Comparisons
-cannot be chained: `a < b < c` is a parse error (use `a < b and b < c` in
-`where` guards).
+cannot be chained: `a < b < c` is a parse error. In a `where` predicate,
+relational operators (`< <= > >= == !=`) compare a constant table cell to a
+literal (`dist[p,q] < 50`); index variables support only `==` / `!=` (see
+§8.2.1).
 
 **Full grammar:**
 
@@ -1930,10 +1982,10 @@ waning    : R --> S  @ omega * R   # no extra noise
 
 ## 10. Coupling Sugar (Shorthand for Stratified Transmission)
 
-> **Status: not yet implemented.** The coupling sugar described in this section
-> is a design specification for a planned feature. The compiler does not
-> currently support `coupling[dim = M]` syntax. Use the fully explicit indexed
-> transition form instead (see §9).
+> **Status: removed.** The `coupling[dim = M]` sugar described below was removed;
+> the compiler does not support it (there is no `coupling` keyword in the
+> grammar). Use the explicit indexed transition form (§9), or — for sparse
+> spatial coupling — a restricted sum, `sum(q in dim where …, …)` (§8.2.1).
 
 ### 10.1 Why Coupling Sugar Exists
 
