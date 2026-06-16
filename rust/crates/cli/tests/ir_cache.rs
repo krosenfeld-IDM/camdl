@@ -183,3 +183,79 @@ fn no_ir_cache_flag_bypasses_the_cache() {
     run_simulate(&bin, &shim, &model, &cache, &tmp.path().join("o2"), true);
     assert_eq!(compiles(&counter), 2, "--no-ir-cache must recompile every run");
 }
+
+/// Spawn `simulate <model>` WITHOUT waiting — for the concurrency test. The
+/// returned `Child` is `wait()`ed by the caller after all peers are launched,
+/// so the processes genuinely race on the cold cache.
+fn spawn_simulate(bin: &Path, shim_dir: &Path, model: &Path, cache_dir: &Path, out: &Path, seed: &str)
+    -> std::process::Child
+{
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    Command::new(bin)
+        .args([
+            "simulate", model.to_str().unwrap(),
+            "--backend", "chain_binomial", "--seed", seed,
+            "--param", "beta=0.3", "--param", "gamma=0.1", "--param", "N0=1000",
+            "--output-dir", out.to_str().unwrap(), "--progress", "none",
+        ])
+        .env("PATH", format!("{}:{}", shim_dir.display(), old_path))
+        .env("CAMDL_IR_CACHE_DIR", cache_dir)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        // Discard the TSV so a full pipe buffer can't stall a worker.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn().expect("spawn")
+}
+
+/// gh#214: N concurrent `simulate` of the SAME model on a COLD cache must
+/// compile camdlc exactly ONCE (single-flight), not N times. Before the fix
+/// every worker missed the cache and spawned its own ~11 GB camdlc → OOM storm;
+/// the reproduction counted N invocations. With the single-flight lock one
+/// worker compiles and publishes the IR while the rest wait and serve it.
+///
+/// The assertion is on the camdlc *invocation count* (via the counting shim),
+/// which is timing-independent — it does not depend on how the N processes
+/// interleave, only that they all contend on one cold key.
+#[test]
+fn concurrent_simulate_compiles_camdlc_once() {
+    let Some((bin, real)) = skip_if_unbuilt() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let model = tmp.path().join("sir.camdl");
+    std::fs::write(&model, SIR).unwrap();
+    let counter = tmp.path().join("compiles.log");
+    let shim = counting_shim(tmp.path(), &real, &counter);
+    // COLD cache: a dir that does not yet exist — every worker misses.
+    let cache = tmp.path().join("ircache");
+
+    const N: usize = 6;
+    let children: Vec<_> = (0..N)
+        .map(|i| spawn_simulate(
+            &bin, &shim, &model, &cache,
+            &tmp.path().join(format!("w{i}")), &i.to_string()))
+        .collect();
+
+    for (i, mut c) in children.into_iter().enumerate() {
+        let st = c.wait().expect("wait");
+        assert!(st.success(), "worker {i} should succeed (exit 0)");
+    }
+
+    // The single-flight lock dedupes the compile: exactly one camdlc run.
+    assert_eq!(
+        compiles(&counter), 1,
+        "{N} concurrent cold-cache simulates must compile camdlc ONCE (single-flight), \
+         not once-per-worker (the gh#214 storm)");
+
+    // The lock file must not linger after the leader finished — it is removed
+    // on guard drop so the entry is a clean cache hit thereafter.
+    let leftover_locks: Vec<_> = std::fs::read_dir(&cache).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "lock"))
+        .collect();
+    assert!(leftover_locks.is_empty(),
+        "single-flight .lock must be removed after compile, found: {leftover_locks:?}");
+
+    // A subsequent run is a pure cache hit: no new compile.
+    run_simulate(&bin, &shim, &model, &cache, &tmp.path().join("after"), false);
+    assert_eq!(compiles(&counter), 1,
+        "a warm run after the concurrent storm must hit the cache (0 new compiles)");
+}

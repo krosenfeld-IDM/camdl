@@ -44,6 +44,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 toml = { version = "0.8", features = ["parse", "display"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 
+[target.'cfg(unix)'.dependencies]
+# Process-liveness check (kill(pid, 0)) for the single-flight IR-compile lock:
+# a contender waits only while the lock holder is alive, and reclaims a lock
+# left by a crashed/OOM-killed leader. Same idiom as `runid::store`'s Mode-B
+# `.lock` reclaim (gh#214).
+libc = "0.2"
+
 [features]
 default = ["ode", "lineage-parquet"]
 # `ode` enables the deterministic-inference algorithms (nl-sbplx, nl-bobyqa

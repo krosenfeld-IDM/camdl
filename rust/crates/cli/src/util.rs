@@ -459,11 +459,217 @@ fn ir_cache_dir() -> Option<std::path::PathBuf> {
     Some(base.join("camdl").join("ir"))
 }
 
+/// Single-flight compile lock (gh#214).
+///
+/// Without coordination, N concurrent `camdl simulate` of the SAME model on a
+/// COLD IR cache each independently miss the cache and spawn their own camdlc —
+/// N simultaneous compiles. On a national-scale model each compile peaks at
+/// ~11 GB RSS, so the herd OOMs the machine. `resolve_ir_path` already does an
+/// atomic tmp+rename cache *write*, which is race-safe for the filesystem, but
+/// does nothing to *dedupe the work*: every process still compiles.
+///
+/// The fix is single-flight with double-checked locking. On a miss we take an
+/// advisory lock keyed on the cache path, then **re-check the cache** (a peer
+/// may have just published the IR while we contended). One process — the lock
+/// holder — compiles and atomic-writes; the others wait and serve the result.
+///
+/// **Lock primitive.** O_EXCL `create_new` on `<cache_path>.lock`, the same
+/// race guard `runid::store`'s Mode-B leaf `.lock` uses — no new dependency, no
+/// `flock`/`fs2`. Whoever creates the file is the leader; the create is atomic
+/// across processes. The holder's PID is written into the file so a contender
+/// can tell a live compile (keep waiting — a national compile legitimately
+/// takes 20 s+) from a crashed one (reclaim the stale lock and proceed).
+///
+/// **Graceful, never deadlocks.** A contender waits only while the holder's PID
+/// is alive (`kill(pid, 0)`); a dead holder's lock is reclaimed. If the lock is
+/// unreadable, on a non-unix platform (no PID liveness), or the wait exceeds a
+/// generous ceiling, the fallback is to compile anyway — degrading to the
+/// pre-fix behavior for that one process rather than hanging. A redundant
+/// compile is wasteful, not wrong (the atomic rename keeps the cache correct);
+/// a hang would be worse than the storm.
+mod single_flight {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    /// Outcome of contending for the right to compile a cache entry.
+    pub enum Lease {
+        /// A peer published the IR while we waited; serve the cache, skip camdlc.
+        AlreadyCached,
+        /// We hold the lock and must compile. The guard releases on drop.
+        Compile(LockGuard),
+        /// We could not coordinate (lock dir unwritable, contended past the
+        /// ceiling, or a platform without PID liveness). Compile anyway — this
+        /// just reverts to the un-coordinated behavior for this one process.
+        CompileUncoordinated,
+    }
+
+    /// RAII holder of `<cache_path>.lock`. Removing the lock on drop wakes any
+    /// waiting contender (which then re-checks the now-populated cache). Drop
+    /// runs on every normal/`?`-error return out of `resolve_ir_path`; only a
+    /// hard `process::exit` skips it, and a leftover lock from that is reclaimed
+    /// by the next process's liveness check (the exiting PID is dead).
+    pub struct LockGuard {
+        lock_path: PathBuf,
+    }
+    impl Drop for LockGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.lock_path);
+        }
+    }
+
+    /// How long a contender will wait on a *live* lock holder before giving up
+    /// and compiling itself. Generous: a national-scale compile can take tens of
+    /// seconds, and waiting is cheap (idle sleep) versus a redundant 11 GB
+    /// compile. The ceiling only bounds a pathological holder that is alive but
+    /// wedged — it must never expire under a legitimate slow compile.
+    const MAX_WAIT: Duration = Duration::from_secs(300);
+    /// Poll cadence while waiting. Short enough that a contender serves the
+    /// cache promptly after the leader publishes; long enough to idle cheaply.
+    const POLL: Duration = Duration::from_millis(50);
+
+    /// Acquire the single-flight lease for `cache_path`. Call only after a
+    /// confirmed cache miss; the returned lease tells the caller whether to
+    /// compile (holding the lock) or to re-read the cache a peer just wrote.
+    pub fn acquire(cache_path: &Path) -> Lease {
+        let lock_path = lock_path_for(cache_path);
+        if let Some(parent) = lock_path.parent() {
+            // Best-effort: if the dir can't be made, coordination is impossible
+            // — fall back to an uncoordinated compile rather than erroring.
+            if std::fs::create_dir_all(parent).is_err() {
+                return Lease::CompileUncoordinated;
+            }
+        }
+
+        let deadline = Instant::now() + MAX_WAIT;
+        loop {
+            // Double-checked locking: a peer may have published between the
+            // caller's miss and now (or since our last poll). Serve the cache.
+            if cache_path.exists() {
+                return Lease::AlreadyCached;
+            }
+
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(mut f) => {
+                    // We are the leader. Record our PID so contenders can check
+                    // our liveness; an empty/short write just makes the lock
+                    // look stale to others (they'd reclaim), which is safe — at
+                    // worst a redundant compile, never a wrong cache.
+                    use std::io::Write;
+                    let _ = write!(f, "{}", std::process::id());
+                    let _ = f.sync_all();
+                    return Lease::Compile(LockGuard { lock_path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Someone else holds it. Decide: wait (live holder) or
+                    // reclaim (dead holder) or give up (ceiling/non-unix).
+                    match holder_state(&lock_path) {
+                        HolderState::Alive => {
+                            if Instant::now() >= deadline {
+                                // Wedged-but-alive holder: don't hang forever.
+                                return Lease::CompileUncoordinated;
+                            }
+                            std::thread::sleep(POLL);
+                            // loop: re-check the cache, then the lock.
+                        }
+                        HolderState::Dead => {
+                            // Crashed/OOM-killed leader left a stale lock. Remove
+                            // it and retry the create. `remove_file` racing with
+                            // a peer reclaimer is benign: at most one wins the
+                            // subsequent `create_new`, the rest see AlreadyExists
+                            // again and re-evaluate.
+                            let _ = std::fs::remove_file(&lock_path);
+                            // loop: attempt to become the leader.
+                        }
+                        HolderState::Unknown => {
+                            // Can't determine liveness (unreadable lock, or a
+                            // platform without PID liveness): don't risk a hang.
+                            return Lease::CompileUncoordinated;
+                        }
+                    }
+                }
+                // The lock dir vanished or some other IO error: coordination
+                // failed, but a compile must still happen.
+                Err(_) => return Lease::CompileUncoordinated,
+            }
+        }
+    }
+
+    /// `<cache_path>.lock` — colocated with the entry it guards, so the lock is
+    /// keyed on the exact cache key (model × compiler × schema × fold flag).
+    fn lock_path_for(cache_path: &Path) -> PathBuf {
+        let mut s = cache_path.as_os_str().to_owned();
+        s.push(".lock");
+        PathBuf::from(s)
+    }
+
+    enum HolderState {
+        Alive,
+        Dead,
+        Unknown,
+    }
+
+    /// Classify the holder of `lock_path` by reading its recorded PID and
+    /// checking liveness. Mirrors `runid::store::pid_is_alive` (`kill(pid, 0)`).
+    fn holder_state(lock_path: &Path) -> HolderState {
+        let Ok(contents) = std::fs::read_to_string(lock_path) else {
+            // The lock may have just been removed by its holder (race) — treat
+            // as unknown so we loop and re-check the cache / re-create.
+            return HolderState::Unknown;
+        };
+        let trimmed = contents.trim();
+        if trimmed.is_empty() {
+            // Holder hasn't written its PID yet (it created the file then we
+            // raced its write), or wrote nothing. Treat as alive briefly: it is
+            // almost certainly a live leader mid-startup. The MAX_WAIT ceiling
+            // still bounds the wait if it never materializes.
+            return HolderState::Alive;
+        }
+        let Ok(pid) = trimmed.parse::<u32>() else {
+            return HolderState::Unknown;
+        };
+        if pid_is_alive(pid) {
+            HolderState::Alive
+        } else {
+            HolderState::Dead
+        }
+    }
+
+    #[cfg(unix)]
+    fn pid_is_alive(pid: u32) -> bool {
+        // `kill(pid, 0)` sends no signal but performs the existence/permission
+        // checks. rc == 0 ⇒ alive. On error, only ESRCH ("no such process")
+        // means dead; EPERM means alive-but-not-ours (still a live holder).
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        if rc == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    #[cfg(not(unix))]
+    fn pid_is_alive(_pid: u32) -> bool {
+        // No portable liveness check off-unix. Report "alive" so we never
+        // reclaim a lock we can't reason about; the MAX_WAIT ceiling then bounds
+        // the wait and falls back to an uncoordinated compile, so a crashed
+        // holder on Windows degrades to (at most) the pre-fix storm, not a hang.
+        true
+    }
+}
+
 /// If path ends with `.camdl`, compile it via camdlc, reusing a cached IR when
 /// one exists for the (model, compiler, schema) key. Returns
 /// (resolved_path, None) for a `.camdl` served from / written to the cache (the
 /// cache file is persistent, so there is nothing to clean up), (tmp, Some(tmp))
 /// for the un-cacheable fallback, or (path, None) for a plain `.ir.json`.
+///
+/// On a cache miss with caching enabled, concurrent invocations are coordinated
+/// by a single-flight lock (gh#214): one process compiles while the rest wait
+/// and serve its result, instead of every process spawning its own ~11 GB
+/// camdlc and OOMing the machine. See [`single_flight`].
 pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>), String> {
     if !path.ends_with(".camdl") {
         return Ok((path.to_string(), None));
@@ -492,6 +698,28 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
             crate::status::step("cached",
                 format!("IR for {} ({})", crate::status::concise_path(path), &key[..8.min(key.len())]));
             return Ok((cache_path.to_string_lossy().into_owned(), None));
+        }
+    }
+
+    // MISS with caching enabled: take the single-flight lease (gh#214) so
+    // concurrent invocations of the SAME model don't each spawn camdlc. The
+    // lease either tells us a peer just published the IR (serve it), or hands us
+    // the compile lock — held by `_compile_lock` for the duration of the compile
+    // + atomic-write below, released on drop so a waiting contender wakes to the
+    // populated cache.
+    let mut _compile_lock: Option<single_flight::LockGuard> = None;
+    if let Some((cache_path, key)) = &cache_target {
+        match single_flight::acquire(cache_path) {
+            single_flight::Lease::AlreadyCached => {
+                crate::status::step("cached",
+                    format!("IR for {} ({})", crate::status::concise_path(path), &key[..8.min(key.len())]));
+                return Ok((cache_path.to_string_lossy().into_owned(), None));
+            }
+            single_flight::Lease::Compile(guard) => _compile_lock = Some(guard),
+            // Couldn't coordinate (unwritable lock dir, wedged holder, non-unix
+            // crash): fall through and compile uncoordinated — at worst a
+            // redundant compile, never a hang or a wrong cache.
+            single_flight::Lease::CompileUncoordinated => {}
         }
     }
 

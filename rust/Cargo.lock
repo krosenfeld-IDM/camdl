@@ -570,6 +570,7 @@ dependencies = [
  "indicatif",
  "io",
  "ir",
+ "libc",
  "log",
  "owo-colors",
  "rand 0.8.5",
