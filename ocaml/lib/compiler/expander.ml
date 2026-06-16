@@ -5031,6 +5031,79 @@ let check_shadowing ctx =
         ()
   ) ctx.let_bindings
 
+(** E281: reject a `sum` bound variable that shadows an enclosing index or
+    bound variable. Resolution is first-match-wins (`resolve_expr`'s ESum arm
+    prepends `(v, _) :: env`), so a shadowing `sum` silently rebinds — e.g.
+    `sum(p in patch, …)` inside `infection[p in patch]` becomes a global sum
+    over all patches instead of the per-stratum term, with no diagnostic. This
+    is a silent-wrong result, so it is a hard error. Checked uniformly across
+    every index-binding construct that carries a user expression. *)
+let check_no_shadowing ctx =
+  let report decl v =
+    Diagnostics.error ctx.diags
+      ~code:"E281"
+      ~loc:Diagnostics.no_loc
+      ~message:(Printf.sprintf
+        "%s: sum variable '%s' shadows an enclosing binding of '%s'. \
+         First-match-wins resolution would silently rebind it (turning a \
+         per-stratum term into a global sum). Rename the sum variable."
+        decl v v)
+      ()
+  in
+  let rec walk decl bound (e : expr) =
+    match e with
+    | EConst _ | EUnit _ | EIdent _ -> ()
+    | EIndex (_, items) ->
+      List.iter (function IPosn e | INamed (_, e) -> walk decl bound e) items
+    | EBinOp (_, l, r) -> walk decl bound l; walk decl bound r
+    | EUnOp (_, e) -> walk decl bound e
+    | ESum (v, _, b) ->
+      if List.mem v bound then report decl v;
+      walk decl (v :: bound) b
+    | ECond (p, t, f) -> walk decl bound p; walk decl bound t; walk decl bound f
+    | EFuncCall (_, args) -> List.iter (fun (_, e) -> walk decl bound e) args
+    | EList es            -> List.iter (walk decl bound) es
+    | ERange (lo, hi)     -> walk decl bound lo; walk decl bound hi
+  in
+  List.iter (fun (tr : transition_decl) ->
+    let decl = Printf.sprintf "transition '%s'" tr.trname in
+    let seed = loop_vars_of_indices tr.trindices in
+    walk decl seed tr.trrate;
+    match tr.trdst with
+    | DstBranch branches -> List.iter (fun (_, w) -> walk decl seed w) branches
+    | DstSum _ -> ()
+  ) ctx.transitions;
+  List.iter (fun (lb : let_binding) ->
+    walk (Printf.sprintf "let '%s'" lb.lname)
+      (loop_vars_of_indices lb.lindices) lb.lbody
+  ) ctx.let_bindings;
+  List.iter (fun (ie : init_entry) ->
+    walk (Printf.sprintf "init '%s'" ie.icomp)
+      (loop_vars_of_indices ie.ibindings) ie.ivalue
+  ) ctx.init_entries;
+  List.iter (fun (od : obs_decl) ->
+    let decl = Printf.sprintf "observation '%s'" od.oname in
+    let seed = loop_vars_of_indices od.oindices in
+    (match od.oprojection with
+     | Some (ProjDerived e) -> walk decl seed e
+     | Some (ProjIncidence _) | Some (ProjPrevalence _) | None -> ());
+    (match od.omeasurement with
+     | Some om ->
+       let kwargs = match om.om_lik with
+         | LikNegBinomial a | LikPoisson a | LikNormal a
+         | LikBinomial a | LikBetaBinomial a | LikBernoulli a -> a
+       in
+       List.iter (fun (_, e) -> walk decl seed e) kwargs
+     | None -> ())
+  ) ctx.obs_decls;
+  List.iter (fun (iv : intervention_decl) ->
+    let decl = Printf.sprintf "intervention '%s'" iv.ivname in
+    let seed = loop_vars_of_indices iv.ivindices in
+    match iv.ivaction with
+    | ATransfer kwargs -> List.iter (fun (_, e) -> walk decl seed e) kwargs
+    | ASet (_, _, e) | AAdd (_, _, e) -> walk decl seed e
+  ) ctx.interv_decls
+
 (* ── Surface time-typing (Phase 1 of typed-time proposal) ────────────────── *)
 
 (** Surface-level time-typing pass. Implements rules from the
@@ -5972,6 +6045,8 @@ let expand_detail ?(source_dir = "") ?(filename = "<input>") (name : string) (de
   build_lookup_tables ctx;
   (* W103 shadowing check: let bindings vs stratum values *)
   check_shadowing ctx;
+  (* E281: a sum/binder var must not shadow an enclosing index/bound var *)
+  check_no_shadowing ctx;
   (* E236: hierarchical-prior cycle / self-reference detection (#3 gate 2) *)
   check_hierarchical_cycles ctx;
   (* E217: check that guard expressions only reference dim levels / loop vars *)

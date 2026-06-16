@@ -6638,8 +6638,53 @@ let test_date_feb29_non_leap_year_rejected () =
   compile_expect_error_code ~code:"E223" ~contains:"2021-02-29"
     (date_model ~date:"2021-02-29")
 
+let test_sum_var_shadows_transition_index_rejected () =
+  (* A `sum` bound variable that reuses the enclosing transition's index var
+     silently rebinds (first-match-wins env), turning a per-stratum term into a
+     global sum. Must be rejected (E281). *)
+  let src =
+    "time_unit = 'days\n\
+     compartments { S, I, R }\n\
+     dimensions { patch = [a, b, c] }\n\
+     stratify(by = patch)\n\
+     parameters { beta : rate in [0,2]  gamma : rate in [0,1] }\n\
+     let N[p in patch] = S[p] + I[p] + R[p]\n\
+     transitions {\n\
+     \  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * sum(p in patch, I[p] / N[p])\n\
+     \  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]\n\
+     }\n\
+     init { S[a] = 99  I[a] = 1  S[b] = 100  S[c] = 100 }\n\
+     simulate { from = 0 'days  to = 10 'days }\n"
+  in
+  compile_expect_error_code ~code:"E281" ~contains:"shadow" src
+
+let test_sum_var_distinct_from_index_ok () =
+  (* The normal pattern — sum var distinct from the transition index — compiles. *)
+  let src =
+    "time_unit = 'days\n\
+     compartments { S, I, R }\n\
+     dimensions { patch = [a, b, c] }\n\
+     stratify(by = patch)\n\
+     parameters { beta : rate in [0,2]  gamma : rate in [0,1] }\n\
+     let N[p in patch] = S[p] + I[p] + R[p]\n\
+     transitions {\n\
+     \  infection[p in patch] : S[p] --> I[p] @ beta * S[p] * sum(q in patch, I[q] / N[q])\n\
+     \  recovery[p in patch]  : I[p] --> R[p] @ gamma * I[p]\n\
+     }\n\
+     init { S[a] = 99  I[a] = 1  S[b] = 100  S[c] = 100 }\n\
+     simulate { from = 0 'days  to = 10 'days }\n"
+  in
+  let _ = compile_expect_ok src in
+  ()
+
 let () =
   Alcotest.run "compiler" [
+    "index_shadowing", [
+      Alcotest.test_case "E281 sum var shadows transition index"
+        `Quick test_sum_var_shadows_transition_index_rejected;
+      Alcotest.test_case "distinct sum var still compiles"
+        `Quick test_sum_var_distinct_from_index_ok;
+    ];
     "table_lookup_arity", [
       Alcotest.test_case "E202 under-indexed C_age[a] (rank 2)" `Quick test_table_lookup_under_indexed_e202;
       Alcotest.test_case "E202 over-indexed C_age[a,b,a] (rank 2)" `Quick test_table_lookup_over_indexed_e202;
