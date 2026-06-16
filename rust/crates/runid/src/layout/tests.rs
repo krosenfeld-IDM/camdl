@@ -162,3 +162,59 @@ fn segment_is_label_dash_hash8_with_no_disambiguator() {
     // disambiguator, appended at commit time, not by Layout.
     assert!(!seg.contains('~'));
 }
+
+// ── long-label truncation (gh#169) ───────────────────────────────────────────
+
+/// A `--draws prior` row on a many-parameter stratified model builds a
+/// `param_label` = every drawn `name=value` pair joined by `_` (see
+/// `cli::batch::cell_resolve`). On a 23×2-stratified model that label runs to
+/// hundreds of bytes; rendered as a single on-disk directory segment it
+/// exceeded `NAME_MAX` (255) and `commit` failed with `ENAMETOOLONG` (errno
+/// 63). The segment must be capped so it always fits in one path component.
+#[test]
+fn long_label_segment_fits_in_name_max() {
+    // ~30 `beta_age_i=1.2345` pairs joined by `_` → well over 255 bytes.
+    let long: String = (0..30)
+        .map(|i| format!("beta_age_{i}=1.234567"))
+        .collect::<Vec<_>>()
+        .join("_");
+    assert!(long.len() > NAME_MAX, "test premise: the raw label exceeds NAME_MAX");
+
+    let lvl = level("params", &long, stub(0x11));
+    let seg = segment(&lvl);
+    assert!(
+        seg.len() <= NAME_MAX,
+        "rendered segment must fit in one path component (≤ {NAME_MAX} bytes), got {}",
+        seg.len()
+    );
+}
+
+/// Truncation must stay collision-resistant: two *distinct* over-long labels —
+/// even sharing a long common prefix — must render to *distinct* segments,
+/// because the truncated prefix is disambiguated by a hash of the *full*
+/// label. (The level hashes are identical here so the failure can only come
+/// from the label-truncation logic, not the `hash8` identity suffix.)
+#[test]
+fn distinct_long_labels_render_to_distinct_segments() {
+    let prefix: String = (0..30)
+        .map(|i| format!("beta_age_{i}=1.234567"))
+        .collect::<Vec<_>>()
+        .join("_");
+    let a = format!("{prefix}_tail=0.1");
+    let b = format!("{prefix}_tail=0.2");
+    assert!(a.len() > NAME_MAX && b.len() > NAME_MAX);
+
+    // Same level hash — only the label differs.
+    let sa = segment(&level("params", &a, stub(0x11)));
+    let sb = segment(&level("params", &b, stub(0x11)));
+    assert_ne!(sa, sb, "distinct long labels must map to distinct segments");
+}
+
+/// Short labels are untouched: the segment is byte-identical to the
+/// pre-fix `{path_label}-{hash8}` form, so existing on-disk paths never move.
+#[test]
+fn short_label_segment_is_unchanged() {
+    let lvl = level("params", "base", stub(0x11));
+    let seg = segment(&lvl);
+    assert_eq!(seg, format!("base-{}", stub(0x11).short8()));
+}

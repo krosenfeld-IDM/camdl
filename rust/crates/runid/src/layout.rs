@@ -18,8 +18,29 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::hash::ContentHash;
 use crate::kind::ArtifactKind;
 use crate::record::LevelId;
+
+/// The maximum bytes a single path component may occupy. POSIX `NAME_MAX` is
+/// 255 on every filesystem camdl targets (ext4, APFS, XFS); a segment longer
+/// than this fails `mkdir` with `ENAMETOOLONG`.
+pub const NAME_MAX: usize = 255;
+
+/// Conservative cap on the *label* portion of a segment, in bytes. A segment
+/// is `{label}-{hash8}` (label + `-` + 8 hex). Capping the label at 200 leaves
+/// ample headroom under `NAME_MAX` (255) for the `-{hash8}` suffix, the
+/// truncation marker, and the store's `~{disambiguator}` it may later append.
+const LABEL_CAP: usize = 200;
+
+/// Marker inserted between a truncated label prefix and its full-label hash,
+/// so a truncated label reads as deliberately-shortened, not merely cut off.
+const TRUNC_MARKER: &str = "..";
+
+/// Hex chars of the full-label digest appended after truncation. 16 hex = 8
+/// bytes of SHA-256 — collision-resistant enough to disambiguate two labels
+/// that share the same 200-byte prefix.
+const TRUNC_HASH_HEX: usize = 16;
 
 impl ArtifactKind {
     /// The top-level store partition directory for this kind — the "type"
@@ -44,8 +65,17 @@ impl ArtifactKind {
 /// and dots are preserved so readable compound labels survive intact
 /// (`chain_binomial-dt1`, `01-scout`, `seed_42`). The label is provenance,
 /// so this is purely cosmetic — identity rides in the `hash8` suffix.
+///
+/// An over-long label (a `--draws` row on a many-parameter model joins every
+/// `name=value` pair into one string — easily hundreds of bytes) would
+/// overflow `NAME_MAX` when rendered as a single directory component, so the
+/// result is capped at [`LABEL_CAP`] bytes: a long sanitized label is
+/// truncated to a prefix and suffixed with `..{hash16}`, the first 16 hex of
+/// the full sanitized label's SHA-256. Two distinct long labels that share a
+/// 200-byte prefix still render distinctly via that hash. Identity is
+/// unaffected — the label is provenance, never part of the level hash.
 pub fn path_label(label: &str) -> String {
-    label
+    let sanitized: String = label
         .to_lowercase()
         .chars()
         .map(|c| {
@@ -55,10 +85,28 @@ pub fn path_label(label: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+
+    if sanitized.len() <= LABEL_CAP {
+        return sanitized;
+    }
+
+    // Truncate the sanitized prefix and disambiguate with a hash of the FULL
+    // sanitized label, so distinct long labels stay distinct on disk.
+    let hash = ContentHash::digest_bytes(sanitized.as_bytes());
+    let tag = &hash.to_hex()[..TRUNC_HASH_HEX];
+    let prefix_len = LABEL_CAP - TRUNC_MARKER.len() - TRUNC_HASH_HEX;
+    let mut prefix_end = prefix_len;
+    // `sanitized` is ASCII (lowercase alnum + `_-.`), so byte == char index
+    // and any cut lands on a boundary — but clamp defensively.
+    while prefix_end > 0 && !sanitized.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
+    format!("{}{}{}", &sanitized[..prefix_end], TRUNC_MARKER, tag)
 }
 
-/// One path segment for a level: `{path_label(label)}-{hash8}`.
+/// One path segment for a level: `{path_label(label)}-{hash8}`. The label is
+/// capped (see [`path_label`]) so the whole segment fits in `NAME_MAX`.
 pub fn segment(level: &LevelId) -> String {
     format!("{}-{}", path_label(&level.label), level.hash.short8())
 }
