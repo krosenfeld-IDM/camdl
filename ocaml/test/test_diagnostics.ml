@@ -477,17 +477,23 @@ let check_error_codes ~filename src : string list =
    array, which we parse for `"code"` fields. An [Ok] compile yields []. *)
 let compile_error_codes ~filename src : string list =
   let codes_of_json (payload : string) : string list =
-    (* payload is a JSON array of diagnostic objects, each with a "code".
-       If it isn't valid JSON (the non-json "compilation failed" sentinel
-       should never appear here since we set json mode), fall back to []. *)
+    (* payload is a JSON array of diagnostic objects, each with a "code" and a
+       "severity". The compile payload carries EVERY diagnostic — errors,
+       warnings (e.g. W104), and infos — so we filter to "error" severity to
+       compare like-for-like with [check_error_codes] above, which likewise
+       keeps only Error-severity codes. Accept/reject (error-set) parity is the
+       property under test; a warning that fires alongside an error must not
+       register as a divergence. If it isn't valid JSON (the non-json
+       "compilation failed" sentinel should never appear here since we set json
+       mode), fall back to []. *)
     match Yojson.Safe.from_string payload with
     | exception _ -> []
     | `List items ->
       List.filter_map (fun item ->
         match item with
         | `Assoc fields ->
-          (match List.assoc_opt "code" fields with
-           | Some (`String c) -> Some c
+          (match List.assoc_opt "severity" fields, List.assoc_opt "code" fields with
+           | Some (`String "error"), Some (`String c) -> Some c
            | _ -> None)
         | _ -> None) items
       |> List.sort_uniq String.compare

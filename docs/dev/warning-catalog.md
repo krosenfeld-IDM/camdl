@@ -92,6 +92,7 @@ documented at each emit site in `ocaml/lib/compiler/`.)
 | ---- | -------- | ---------- | -------------------------------------------------------------------------------------------- |
 | W100 | Warning  | model-file | inconsistent digit grouping in a numeric literal (drained from the lexer)                    |
 | W103 | Warning  | model-file | questionable model-file construct                                                            |
+| W104 | Warning  | model-file | `read(...)` uses an absolute path — non-portable model (gh#211)                              |
 | W200 | Warning  | IR         | suspicious IR shape                                                                          |
 | W201 | Warning  | IR         | suspicious IR shape                                                                          |
 | W301 | Warning  | covariate  | periodic range not aligned to step size                                                      |
@@ -116,6 +117,50 @@ a matching OCaml emit. A `[warn Wxxx]` `eprintln!` in the Rust CLI (e.g.
 section below instead of a first-cell table row — otherwise the meta-test flags
 it as a stale catalog row. Do not "fix" the apparent table omission by adding a
 row.
+
+### W104 — absolute path in `read(...)` (non-portable model)
+
+**Fires when:** a `read("...")` data-load (table or any other `read()`-loaded
+file) is given an _absolute_ path — one for which `Filename.is_relative` is
+false (e.g. `read("/home/alice/data/contact.tsv")`). A relative path
+(`read("data/contact.tsv")`, even a `../`-escaping `read("../shared/x.tsv")`)
+does NOT fire — those resolve against the `.camdl` source directory and travel
+with the model.
+
+**Why:** an absolute path bakes one machine's filesystem layout into the model.
+It compiles fine on the author's machine and is silently non-portable — it
+breaks for anyone else, breaks model-repo sharing, and breaks the `camdl mre`
+bundle (which has to detect and rewrite such paths). For software whose outputs
+inform public-health decisions, a model that only runs on one filesystem is a
+latent reproducibility bug. The diagnostic is a _warning_, not an error: an
+absolute path still works locally, so a hard error would block legitimate
+exploratory work. `-Werror` / `--deny` (gh#56) promote it to a hard failure for
+CI; per-site suppression (gh#55) silences the rare deliberate case.
+
+**Where it fires:** at expander time, not at IR-lint time. By IR time the
+`read()` path is gone (inline tables become `{values}`, external becomes
+`{external: name}` — no path field survives serialization), so an `ir/lint.ml`
+pass cannot see it. The check has to live where the path string still exists:
+the single `read()` chokepoint `read_csv_rows` in
+`ocaml/lib/compiler/expander.ml`, beside the existing E200 (file-not-found)
+raise. The warning is checked on the path STRING _before_ the file-existence
+check, so it fires whether or not the absolute file happens to exist on the
+compiling machine — non-portability is a property of the path, not of local
+presence. (Consequently a missing absolute file emits both W104 and E200.)
+
+**Scope:** absolute paths are the clear win and the only thing W104 flags. A
+`../`-escaping _relative_ path is a legitimate multi-model-repo pattern and is
+deliberately left un-flagged. The portability check uses the OCaml stdlib's
+`Filename.is_relative` (the platform-portable predicate), so a Windows-style
+drive-rooted path (`C:\...`) is also classed as non-relative on a Windows host;
+a leading-`~` path is _not_ expanded by camdl and is treated as a relative path
+beginning with the literal `~` directory (it is not flagged — the file simply
+won't resolve and E200 fires).
+
+**Fix / silence:** rewrite the path relative to the `.camdl` source file
+(`read("data/contact.tsv")`), so the model runs on any machine. Pack-time
+counterpart: `docs/dev/proposals/2026-06-09-mre-bundle.md` surfaces the same
+smell at bundle time; W104 is the upstream fix that helps every author.
 
 ### W324 / W325 — bare numeric in an absolute-time position under a date origin
 

@@ -318,6 +318,26 @@ let split_by sep line =
     reporting. Returns [None] if the file is missing; [Some result] from
     [on_done] otherwise. [on_done] is called after all rows, before close. *)
 let read_csv_rows ctx path ~on_header ~on_row ~on_done =
+  (* W104: an absolute `read("/...")` path is non-portable — it bakes one
+     machine's filesystem layout into the model, breaking sharing, model-repo
+     reuse, and `camdl mre` bundling (gh#211). We warn (not error) because an
+     absolute path still works locally, so a hard error would block legitimate
+     exploratory work; `-Werror` / `--deny` (gh#56) make it strict for CI. The
+     check is on the path STRING (before the file-existence check below), so it
+     fires whether or not the absolute file happens to exist on this machine —
+     non-portability is a property of the path, not of local presence. We use
+     [Filename.is_relative] (the stdlib portable predicate); a `../`-escaping
+     *relative* path is a legitimate multi-model-repo pattern and is NOT
+     flagged. *)
+  if not (Filename.is_relative path) then
+    Diagnostics.warning ctx.diags
+      ~code:"W104"
+      ~loc:Diagnostics.no_loc
+      ~message:(Printf.sprintf
+        "read() uses an absolute path %S — non-portable model" path)
+      ~hint:"use a path relative to the .camdl source file (e.g. \
+             read(\"data/contact.tsv\")) so the model runs on any machine"
+      ();
   let abs_path = resolve_data_path ctx path in
   if not (Sys.file_exists abs_path) then begin
     Diagnostics.error ctx.diags
