@@ -188,7 +188,7 @@ update-ocaml-golden: build-ocaml
 		$(CAMDLC) "$$src" > "$$out"; \
 	done
 
-update-golden: update-ocaml-golden
+update-golden: update-ocaml-golden update-corner-golden update-regression-golden
 
 # Recompile the corner-case fixtures (params baked via --set) →
 # tests/fixtures/corner_cases/ir/*.ir.json. These pin the off-grid /
