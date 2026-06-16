@@ -6,13 +6,17 @@
 //! chain_binomial alone wires `inject_event_deltas` into its per-substep loop
 //! (chain_binomial.rs:417), so events fire correctly there.
 //!
-//! This test runs a small SIR seeded with I=1 (so the model is non-absorbing
-//! from t=0 — gillespie has a separate pre-existing absorbing-state output-
-//! flushing bug we sidestep here) plus a single event `add(I, 100) at [10]`.
-//! It samples I just before and just after the scheduled event and asserts
-//! that the post-event count jumped by at least the event payload. Pre-fix
-//! the three broken backends never apply the +100, so the jump is purely the
-//! transition dynamics and far below 100; the test fails on those.
+//! This test runs a small SIR seeded with I=1 (non-absorbing from t=0) plus a
+//! single event `add(I, 100) at [10]`. It samples I just before and just after
+//! the scheduled event and asserts that the post-event count jumped by at least
+//! the event payload. Pre-fix the three broken backends never apply the +100, so
+//! the jump is purely the transition dynamics and far below 100; the test fails
+//! on those.
+//!
+//! (The absorbing-from-t=0 + scheduled-event case this test used to step around
+//! — gh#70, gillespie back-filling the event into pre-event output rows — is now
+//! fixed and asserted directly in
+//! `sim/tests/cross_backend_lifecycle_agreement.rs::full_trajectory_no_pre_event_leak_or_time_reversal`.)
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
