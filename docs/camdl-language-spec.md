@@ -3007,9 +3007,10 @@ observation model definitions.
 
 The cadence and the columns can also be set per run, without editing the model
 — useful for exploratory runs and for large stratified/spatial models whose
-`flow_*` columns dominate the output. The `simulate` flags and the `[output]`
-section of `fit.toml` / `batch.toml` are the same option set (one shared
-definition), so the surface is identical:
+`flow_*` columns dominate the output. The `simulate` flags and `batch.toml`'s
+`[output]` section are the same option set (one shared definition), so the
+surface is identical. (Only `simulate` and `batch.toml` write trajectories, so
+the view applies there; `fit.toml` has no trajectory output.)
 
 | Flag                | `[output]` key       | Effect                                                                                                                            |
 | ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -3024,7 +3025,7 @@ camdl simulate polio.camdl --draws prior -n 100 --output-every 7 --no-flows
 ```
 
 ```toml
-# fit.toml / batch.toml
+# batch.toml
 [output]
 every    = 7
 no_flows = true
@@ -3035,8 +3036,10 @@ These overrides participate in run identity. `--output-every` rewrites the
 model schedule (it rides the model digest, re-keying only runs that use it);
 `--no-flows` / `--columns` ride the `config` level, because a column subset is a
 distinct, reproducible artifact — a content-addressed leaf cannot share a
-`run_id` with the full one. A run that sets none of them is unaffected. An
-unknown `--columns` name is a hard error that lists the valid columns. (The
+`run_id` with the full one. (Introducing this view bumps the `config` schema
+version, so all sim `run_id`s shift once — a deliberate, versioned turnover;
+existing cached sims re-run on next use.) An unknown `--columns` name is a hard
+error that lists the valid columns. (The
 `[design.*]` batch path honors `every` but not `no_flows` / `columns` yet, and
 rejects the latter loudly.)
 

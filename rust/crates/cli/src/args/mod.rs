@@ -345,9 +345,10 @@ fn is_false(b: &bool) -> bool { !*b }
 
 /// `--output-every` / `--no-flows` / `--columns` — the trajectory output view
 /// (cadence + which columns are written). One struct backs both the `simulate`
-/// CLI flags (flattened into `SimulateArgs`) and the `[output]` section of
-/// fit.toml / batch.toml (deserialized) — a single definition, both front
-/// doors (the shared clap+serde pattern; see gh#241).
+/// CLI flags (flattened into `SimulateArgs`) and `batch.toml`'s `[output]`
+/// section (deserialized) — a single definition, both front doors (the shared
+/// clap+serde pattern; see gh#241). Only `simulate` and `batch.toml` write
+/// trajectories, so the view applies there; `fit.toml` has no trajectory output.
 ///
 /// `every` overrides the model's `output { every }` schedule, so it rides the
 /// model digest and re-keys only runs that use it. `no_flows` / `columns`

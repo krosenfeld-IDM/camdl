@@ -132,7 +132,13 @@ pub struct ResolvedScenario {
 }
 
 /// Resolved simulation config (the `config` level).
+///
+/// `schema_version = 2` (gh#156): adding the output-view fields (`no_flows` /
+/// `columns`) changes the hashed bytes of every `SimConfig`, re-keying all sim
+/// leaves — a deliberate, versioned turnover (per the re-key policy in the
+/// runid doc), not a collateral churn. Existing cached sims re-run on next use.
 #[derive(Debug, Clone, PartialEq, RunInput)]
+#[run_input(schema_version = 2)]
 pub struct SimConfig {
     pub backend: Backend,
     pub dt: FiniteF64,
