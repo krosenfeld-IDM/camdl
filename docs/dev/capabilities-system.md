@@ -14,8 +14,9 @@ trustworthy." Parameter-level, CLI-flag, and version-handshake gates are real
 but out of scope here; they are listed under [Other axes](#other-axes) with
 pointers.
 
-Verification basis: all citations below were read against the tree on
-2026-06-09. Line numbers drift; the cited **symbol names** are the stable
+Verification basis: citations below were read against the tree on 2026-06-09;
+the `mh`/`ode` row and the axis-2 note were re-verified and corrected
+2026-06-18. Line numbers drift; the cited **symbol names** are the stable
 anchor. When in doubt, grep the symbol, don't trust the line number.
 
 ## The three axes at a glance
@@ -120,9 +121,9 @@ A static table of supported `(algorithm, backend)` pairs in
 the `Capabilities` bitflags (the doc comment on `validate_combo` says so
 explicitly).
 
-The registered (valid) matrix is **block-diagonal** — particle-filter methods
-live on the stochastic backend, deterministic optimizers on the deterministic
-one:
+The registered (valid) matrix is **block-diagonal by backend** — particle-filter
+methods live on the stochastic backend; the deterministic backend carries the
+gradient-free optimizers and a direct-likelihood sampler (`mh`):
 
 | algorithm              | `chain_binomial` | `ode`   |
 | ---------------------- | ---------------- | ------- |
@@ -132,6 +133,7 @@ one:
 | `pfilter` (diagnostic) | ✅ Stable        | ❌      |
 | `nl-sbplx` (MLE)       | ❌               | ✅ Beta |
 | `nl-bobyqa` (MLE)      | ❌               | ✅ Beta |
+| `mh` (Bayesian)        | ❌               | ✅ Beta |
 
 `gillespie` never appears — it is not a fitting backend, and the typed `Backend`
 enum (`run_meta.rs`) has only `ChainBinomial` / `Ode`, so serde rejects anything
@@ -153,9 +155,11 @@ convergence. Examples:
   estimator … the optimizer sees ranking noise that defeats convergence."
   Suggests `if2`.
 
-Note `mh` and `nuts` appear in `rejection_reason` as _suggested_ ODE-Bayesian
-answers but are **not yet registered** (Phase 2/3) — asking for them today hits
-a bespoke rejection too.
+Note `mh` is now **registered** as the ODE-Bayesian method (Beta — direct
+Metropolis-Hastings on the deterministic ODE marginal likelihood; landed
+`590e80da`, dispatched in `fit/mod.rs`). `nuts` (the planned gradient-based
+ODE-Bayesian method) is still only a _suggested_ answer in `rejection_reason`
+and **not yet registered** — asking for it today hits a bespoke rejection.
 
 **Enforcement.** `validate_combo` is called at config-load / pre-flight, both
 hard aborts:
