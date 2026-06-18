@@ -1,8 +1,10 @@
 # Proposal: reactive interventions + EVSI
 
-**Status:** Under consideration — **hold** **Date:** 2026-05-14 **Motivation:**
-Add a `trigger` construct for reactive (state-conditional) vaccination campaigns
-and use it as the missing piece for a native `camdl evsi` workflow over PGAS
+**Status:** Superseded for reactive-intervention design by
+`2026-06-18-reactive-interventions-effect-agenda.md`. Retained as EVSI
+motivation and historical context. **Date:** 2026-05-14 **Motivation:** Add a
+`trigger` construct for reactive (state-conditional) vaccination campaigns and
+use it as the missing piece for a native `camdl evsi` workflow over PGAS
 posteriors. Held because the trigger construct touches inference math (PGAS
 complete-data density, trajectory record format) and warrants a careful,
 post-alpha rollout.
