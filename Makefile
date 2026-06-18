@@ -170,7 +170,7 @@ test-docs: build-ocaml
 #
 # CLI_DOCS is the set of docs verified drift-free / kept-clean. Extend it as
 # other docs are brought to green.
-CLI_DOCS := docs/workflow.md docs/inference.md docs/debugging.md
+CLI_DOCS := docs/workflow.md docs/inference.md docs/debugging.md docs/diagnosing-fits.md
 test-cli-docs: build-rust
 	bash scripts/check_cli_docs.sh --selftest
 	bash scripts/check_cli_docs.sh $(CLI_DOCS)

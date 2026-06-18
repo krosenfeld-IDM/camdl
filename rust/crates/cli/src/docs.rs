@@ -61,6 +61,12 @@ const TOPICS: &[Topic] = &[
         body: include_str!("../../../../docs/inference.md"),
     },
     Topic {
+        slug: "diagnosing-fits",
+        aliases: &["diagnose", "diagnostics", "troubleshoot"],
+        summary: "When a fit won't behave: model vs inference, the synthetic self-consistency test, which diagnostic to read",
+        body: include_str!("../../../../docs/diagnosing-fits.md"),
+    },
+    Topic {
         slug: "workflow",
         aliases: &["calibrate", "pipeline"],
         summary: "The canonical fit workflow: check → simulate → survey → fit → diagnose → refine → validate",
