@@ -618,7 +618,7 @@ pub fn draw_start_in_bounds(
 /// duration of a single chain-init resolution.
 pub struct SurveyFitContext<'a> {
     /// The fit's `runid` model identity (hex, from
-    /// [`crate::resolve::model_identity_hex`]). Must match the survey's
+    /// [`crate::resolve::model_identity_from_ir`]). Must match the survey's
     /// recorded `model_identity` exactly.
     pub model_identity: &'a str,
     /// Per-stream content hashes of the fit's data files. Each stream

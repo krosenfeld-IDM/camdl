@@ -3,7 +3,7 @@
 //! # Not run identity (gh#241)
 //!
 //! Artifact run identity is built exclusively by the `runid`/`resolve` paths
-//! (`resolve::resolve_trajectory`, `resolve::model_identity_hex`,
+//! (`resolve::resolve_trajectory`, `resolve::model_identity_from_ir`,
 //! `cas::fit_level_hash`, the `runid` factored levels). NOTHING in this module
 //! participates in a `run_id`, and there is no longer any "semantic digest"
 //! helper here: the legacy `model_hash` / `fit_content_hash` were retired in
@@ -72,14 +72,16 @@ mod tests {
     // `scen_hash` / `canonical_params` here anymore. A run's identity is the
     // factored `runid` identity (`runid::run_id` over the per-level hashes; see
     // `crate::resolve::resolve_trajectory`), the model identity is
-    // `crate::resolve::model_identity_hex`, and the fit-level identity is
+    // `crate::resolve::model_identity_from_ir`, and the fit-level identity is
     // `crate::fit::cas::fit_level_hash`.
 
     // ── legacy-identity guard (gh#241) ────────────────────────────────────────
 
     /// gh#241 — the legacy semantic digests are retired. Scan every `.rs` under
     /// the cli crate's `src/` (except this module and `args/`) and assert NO
-    /// production call to `model_hash(` / `fit_content_hash(` reappears. Deleting
+    /// production call to any retired identity helper (`model_hash(`,
+    /// `fit_content_hash(`, `sim_hash(`, `scen_hash(`, `canonical_params(`)
+    /// reappears. Deleting
     /// the functions means the compiler already rejects a stray *call*; this
     /// guard additionally catches a re-`fn`-definition or a method of the same
     /// name sneaking back in as a run-identity consumer. Test code
@@ -87,7 +89,13 @@ mod tests {
     #[test]
     fn legacy_identity_helpers_are_gone() {
         let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let banned = ["model_hash(", "fit_content_hash("];
+        let banned = [
+            "model_hash(",
+            "fit_content_hash(",
+            "sim_hash(",
+            "scen_hash(",
+            "canonical_params(",
+        ];
 
         let mut offenders: Vec<String> = Vec::new();
         let mut stack = vec![src_root.clone()];
