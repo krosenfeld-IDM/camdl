@@ -9,10 +9,14 @@ use std::sync::Mutex;
 
 /// Streaming TSV trace writer for MCMC traces.
 ///
-/// Shared columns: `{index_col}`, `log_likelihood`, `log_posterior`.
-/// Method-specific columns (e.g., `trajectory_renewal`, `accepted`)
-/// are passed as `extra_columns` at construction and `extra_values`
-/// at each write.
+/// Shared columns: `{index_col}`, `{loglik_col}`, `log_posterior`. The
+/// loglik column is named by the caller because its *meaning* differs by
+/// method — PMMH writes the marginal/PF estimate (`log_likelihood`), PGAS
+/// writes the complete-data conditional value (`log_complete_data_ll`), which
+/// is many orders of magnitude more negative; a shared bare header would
+/// invite comparing the two (gh#261). Method-specific columns (e.g.,
+/// `trajectory_renewal`, `accepted`) are passed as `extra_columns` at
+/// construction and `extra_values` at each write.
 pub struct TraceWriter {
     file: Mutex<BufWriter<File>>,
     flush_interval: usize,
@@ -27,6 +31,7 @@ impl TraceWriter {
     pub fn new(
         path: &str,
         index_col: &str,
+        loglik_col: &str,
         extra_columns: &[&str],
         param_names: &[String],
         append: bool,
@@ -42,7 +47,7 @@ impl TraceWriter {
                     .unwrap_or_else(|e| panic!("cannot create {}: {}", path, e))
             );
             // Write header
-            write!(f, "{}\tlog_likelihood\tlog_posterior", index_col).unwrap();
+            write!(f, "{}\t{}\tlog_posterior", index_col, loglik_col).unwrap();
             for col in extra_columns {
                 write!(f, "\t{}", col).unwrap();
             }
@@ -108,7 +113,7 @@ mod tests {
         let path = dir.join("trace.tsv");
         let ps = path.to_string_lossy().into_owned();
         {
-            let tw = TraceWriter::new(&ps, "step", &[], &["iota".to_string()], false);
+            let tw = TraceWriter::new(&ps, "step", "log_likelihood", &[], &["iota".to_string()], false);
             tw.write_row(0, -10.0, -11.0, &[], &[1e-7]);
             tw.write_row(1, -10.0, -11.0, &[], &[9.9e-8]);
         } // drop flushes the BufWriter

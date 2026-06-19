@@ -219,6 +219,36 @@ fn pgas_resume_writes_distinct_leaf_with_base_untouched_and_dep() {
         "chained resume must dep on the actual prior {}; deps={}", resumed_id, deps3);
 }
 
+/// gh#261: the PGAS per-sweep trace's log-likelihood column holds the
+/// COMPLETE-DATA conditional value (IVP + transition + observation density
+/// along the conditioned path), not a marginal/PF likelihood. The header must
+/// name it as such (`log_complete_data_ll`), never a bare `log_likelihood` a
+/// reader would mistake for a `camdl pfilter` marginal loglik.
+#[test]
+fn pgas_trace_loglik_column_names_complete_data() {
+    let bin = camdl_bin();
+    if camdlc_bin().is_none() { return }
+    let tmp = tempdir("trace_header");
+    let (ir, data) = write_fixture(tmp.path());
+    let out = tmp.path().join("results");
+
+    let fit8 = write_fit_toml(tmp.path(), &ir, &data, 8, 1);
+    let r = Command::new(&bin)
+        .arg("fit").arg("run").arg(&fit8).arg("--seed").arg("1")
+        .output().expect("spawn");
+    assert!(r.status.success(), "PGAS run failed: {}", String::from_utf8_lossy(&r.stderr));
+
+    let (_, base_dir, _) = post_leaf(&out, &[]);
+    let trace = base_dir.join("chain_1/trace.tsv");
+    let text = std::fs::read_to_string(&trace).expect("read trace.tsv");
+    let header = text.lines().next().expect("trace has a header line");
+    let cols: Vec<&str> = header.split('\t').collect();
+    assert!(cols.contains(&"log_complete_data_ll"),
+        "PGAS trace must name its complete-data loglik column; header was: {header}");
+    assert!(!cols.contains(&"log_likelihood"),
+        "PGAS trace must NOT use a bare `log_likelihood` (mistaken for the marginal); header was: {header}");
+}
+
 /// (3): changing an identity field (chains) between base and resume must reject
 /// with a config-hash mismatch — the copied resume_state's identity hash
 /// (chains=1) won't match the new run (chains=2).

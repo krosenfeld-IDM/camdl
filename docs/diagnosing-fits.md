@@ -180,11 +180,12 @@ Concrete things that trip up real fits, verified against the current code:
   and PMMH are **chain-binomial only** — they need stochastic process variance
   the ODE backend doesn't have, so asking for them on `ode` is a hard error that
   points you at `mh`. Run `camdl fit methods` for the current matrix.
-- **The PGAS trace `log_likelihood` column is the complete-data conditional
-  value** (it conditions on the full sampled latent path: initial + transition +
-  observation density), a large-negative number — **not** the marginal/PF
-  likelihood. Don't compare it to a `camdl pfilter` loglik; they are different
-  quantities by orders of magnitude (gh#261).
+- **The PGAS trace's loglik column is named `log_complete_data_ll`** — the
+  complete-data conditional value (it conditions on the full sampled latent
+  path: initial + transition + observation density), a large-negative number,
+  **not** a marginal/PF likelihood. (PMMH and `mh` report the marginal in their
+  `log_likelihood` column.) Don't compare PGAS's `log_complete_data_ll` to a
+  `camdl pfilter` loglik — they differ by orders of magnitude.
 - **The bootstrap particle filter degenerates with many simultaneous observation
   streams.** Per-stream likelihoods multiply into one weight, so high
   observation dimension collapses ESS and more particles only buy

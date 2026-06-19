@@ -531,7 +531,8 @@ pub fn run_stage(
             let param_names: Vec<String> = config.estimated_params.iter()
                 .map(|s| s.name.clone()).collect();
             let trace_writer = super::trace_writer::TraceWriter::new(
-                &trace_path_str, "sweep", &["trajectory_renewal", "transition_ll", "obs_ll"],
+                &trace_path_str, "sweep", "log_complete_data_ll",
+                &["trajectory_renewal", "transition_ll", "obs_ll"],
                 &param_names, is_resuming,
             );
 
