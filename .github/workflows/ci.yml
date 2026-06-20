@@ -53,16 +53,28 @@ jobs:
       - name: Clippy
         run: cd rust && cargo clippy --all-targets -- -D warnings
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       # make test-rust builds camdlc + the release binaries, symlinks camdlc onto
-      # PATH (so spawned `camdl` finds it), and runs `cargo test --workspace
-      # --exclude sim --no-fail-fast`.
+      # PATH (so spawned `camdl` finds it), and runs the workspace (except sim)
+      # via `cargo nextest run` plus `cargo test --doc` (nextest does not run
+      # doctests). Same surface as before, parallelized.
       - name: Rust tests (workspace except sim)
         run: opam exec -- make test-rust
 
       - name: Golden files unchanged
+        # `make update-golden` regenerates ALL golden corpora in place
+        # (ocaml/corner/regression/reactive); the diff must cover every path it
+        # writes, else compile-drift in the reactive (tests/fixtures/reactive/ir)
+        # or regression (tests/fixtures/regression/ir) goldens slips through —
+        # those live OUTSIDE ir/golden|ocaml/golden. This is the CI equivalent of
+        # `make check-reactive-golden`, which the local full gate also runs.
         run: |
           opam exec -- make update-golden
-          git diff --exit-code ir/golden/ ocaml/golden/
+          git diff --exit-code ir/golden/ ocaml/golden/ \
+            tests/fixtures/reactive/ir/ tests/fixtures/regression/ir/
 
       - name: Integration tests
         run: opam exec -- make test-integration

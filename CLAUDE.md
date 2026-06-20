@@ -211,23 +211,25 @@ make build-rust      # cd rust && cargo build --release
 
 ## Test Commands
 
+The gate is **tiered** (see `docs/dev/testing.md` "Tiered gate"). Run the fast
+tier while iterating; the full `make test` (or CI) is the authoritative gate
+before a change lands. CI mirrors every phase, so what the fast tier skips is
+still caught before merge.
+
 ```bash
-make test            # all levels: unit + golden + integration
-make test-unit       # fast, per-language unit tests only
-make test-golden     # golden IR deserialization + simulation determinism
+make test-fast       # inner loop: whole Rust workspace via nextest + doctests
+                     # (skips OCaml/integration/doc phases — NOT authoritative)
+make test            # authoritative, slow: every phase; mirrors CI
+make test-ocaml      # OCaml compiler + dimcheck + IR round-trip
+make test-rust       # Rust workspace except sim (nextest + doctests)
+make test-inference  # the sim crate (engine + inference stack)
+make test-integration # cross-language CLI shell-out (slow)
 
-# OCaml only
-cd ocaml && dune runtest
+# A single Rust test (nextest filter expression)
+cd rust && cargo nextest run -E 'test(expr_eval)'
 
-# Rust only
-cd rust && cargo test
-
-# Single Rust test file
-cd rust && cargo test --test golden_simulate
-cd rust && cargo test --test expr_eval
-
-# Integration (cross-language, slow — CI only)
-bash tests/test_ocaml_to_rust.sh
+# Setup: `brew install cargo-nextest` (required) and, optionally, `brew install
+# sccache` (compile cache; the Makefile uses it only when on PATH).
 ```
 
 ### camdlc↔camdl version guard ("camdlc version mismatch")
@@ -479,7 +481,7 @@ exponential time.
 1. Update `ir/schema.json` + bump `ir/VERSION`
 2. Update OCaml types in `ocaml/lib/ir/` (ir.ml, serialize.ml, deserialize.ml)
 3. Update Rust types in `rust/crates/ir/src/`
-4. `make test-unit` — fix type errors
+4. `make test-fast` — fix type errors (then full `make test` before the commit)
 5. `make update-golden && make update-expected` — regenerate all golden files
 6. Commit schema + both language changes + updated golden files in one atomic
    commit

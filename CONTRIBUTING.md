@@ -46,9 +46,17 @@ Stable normative docs live at `docs/dev/` root.
 ./install.sh          # OCaml (opam) + Rust (rustup) toolchains, deps, build
 # or follow the manual steps in README.md "Prerequisites"
 
+brew install cargo-nextest   # required test runner (or: cargo install cargo-nextest --locked)
+brew install sccache         # optional compile cache — used only if on PATH
+
 make build            # build OCaml + Rust
-make test             # unit + golden + integration — must be green
+make test-fast        # fast inner loop: Rust workspace via nextest + doctests
+make test             # authoritative gate (every phase; mirrors CI) — green before a PR
 ```
+
+The gate is tiered: `make test-fast` while iterating, full `make test` (or CI)
+before a change lands. CI mirrors every phase, so what the fast tier skips is
+still caught before merge — see `docs/dev/testing.md` "Tiered gate".
 
 If you change the IR schema, follow the atomic-update procedure in `CLAUDE.md`
 ("Changing the IR schema") — schema + both language implementations + golden
@@ -82,7 +90,9 @@ the PR.
 
 ## Before you open a PR
 
-- [ ] `make test` is green locally.
+- [ ] Full `make test` is green locally (or you've let CI run it) —
+      `make
+      test-fast` alone is the inner loop, not the gate.
 - [ ] Commits follow `docs/dev/commit-style.md` (no AI trailers).
 - [ ] One concern per commit; subject is `type(scope):` or `gh#NN:`.
 - [ ] If it touches inference math, the PR explains why it's correct.

@@ -8,31 +8,45 @@ on what you're changing.
 ## TL;DR commands
 
 ```bash
-# Before pushing — mirrors CI; ~30-60 s.
+# Inner loop while iterating — the whole Rust workspace via cargo-nextest
+# (parallel across all test binaries) + doctests. Skips the slow cross-language
+# and doc phases, so it is FAST but NOT authoritative (see "Tiered gate" below).
+make test-fast
+
+# Authoritative gate — every phase; mirrors CI. SLOW (cross-language integration
+# + external pomp/NumPyro validation). Run before a change lands, or let CI run
+# it for you.
 make test
 
-# Just the fast layers:
+# Just one language / layer:
 make test-ocaml       # OCaml compiler + dimcheck + IR round-trip
-make test-rust        # Rust workspace: cargo test --workspace
-
-# Integration (slow — shells out to the built binary):
-make test-integration
+make test-rust        # Rust workspace except sim (nextest + doctests)
+make test-inference   # the sim crate (engine + inference stack)
+make test-integration # cross-language CLI shell-out (slow)
 
 # Statistical tests (slow; skipped by default):
-cd rust && cargo test --release --workspace -- --ignored
+cd rust && cargo nextest run --release --workspace --run-ignored ignored-only
 
-# A single Rust test file:
-cd rust && cargo test --release -p sim --test erlang_distribution
+# A single Rust test (filter expression):
+cd rust && cargo nextest run -p sim -E 'test(erlang)'
 
 # A single Rust test, with println! output visible:
-cd rust && cargo test --release -p sim --test foo test_name -- --nocapture
+cd rust && cargo nextest run -p sim -E 'test(test_name)' --no-capture
 
 # A single OCaml suite (Alcotest):
 cd ocaml && dune runtest test/test_compiler.exe --force
 ```
 
+Setup: `make test-fast`/`make test` use **cargo-nextest**
+(`brew install
+cargo-nextest`, or `cargo install cargo-nextest --locked`) and,
+if present, **sccache** (`brew install sccache`) as a compile cache. sccache is
+optional — the Makefile uses it only when it's on PATH (`RUSTC_WRAPPER`), and it
+shares artifacts across git worktrees, which speeds the worktree-parallel
+workflow.
+
 If you're only changing one language, run just that language's layer during
-iteration; run `make test` before committing.
+iteration; run the full `make test` (or rely on CI) before a change lands.
 
 ## Architecture
 
@@ -318,14 +332,40 @@ without regenerating): the test fails with a clear STALE message and the exact
 
 ## CI / pre-push
 
+### Tiered gate
+
+Tiers, fastest first. The contract: **CI mirrors every phase of `make test`, so
+anything a faster local tier skips is still caught before merge** — `main` is
+branch-protected and CI gates the merge.
+
+- **`make test-fast`** (inner loop, fast): the whole Rust workspace via
+  nextest + doctests. Skips OCaml `dune runtest`, `check-reactive-golden`, the
+  cross-language `test-integration` suite, and the doc gates. Use it while
+  iterating. NOT authoritative.
+- **`make test`** (authoritative, slow): every phase. Run before a change lands,
+  or let the pre-push hook / CI run it.
+- **CI** (`.github/workflows/`): the same surface, split across parallel
+  workflows (faster wall-clock than the sequential local `make test`), on every
+  push to `main` and every PR.
+
+What `test-fast` skips is still gated elsewhere: OCaml unit tests → Compiler
+workflow; reactive/regression golden compile-drift → the golden-diff in CI + the
+pre-push hook (which now diff `tests/fixtures/reactive/ir` and
+`tests/fixtures/regression/ir`, not just `ir/golden`/`ocaml/golden`);
+cross-language integration → `ci.yml`; doc / CLI-doc gates → Doctest / CLI-docs
+workflows. Nothing the fast tier skips is un-gated.
+
 **Pre-push hook (`.githooks/pre-push`, installed via `core.hooksPath`).**
 Mirrors CI — runs locally on every `git push`:
 
 1. OCaml build + tests
-2. Rust `cargo test --workspace --no-fail-fast`
+2. Rust `cargo nextest run --workspace` + `cargo test --doc --workspace`
+   (nextest does not run doctests, so that step is separate)
 3. `cargo clippy --all-targets -- -D warnings`
-4. `make update-golden` + assert `ir/golden/` and `ocaml/golden/` unchanged
-   (catches schema changes you forgot to regenerate goldens for)
+4. `make update-golden` + assert the golden corpora unchanged — `ir/golden/`,
+   `ocaml/golden/`, **and** `tests/fixtures/reactive/ir/` +
+   `tests/fixtures/regression/ir/` (which live outside the first two, so a
+   reactive/regression compile-drift would otherwise slip through)
 5. `make test-integration`
 
 (The book used to be built here via `mdbook`; it now lives in `../camdl-book`
@@ -336,17 +376,20 @@ with its own CI. Remove any stale `.githooks/pre-push` entry that still invokes
 never — see the comment at the top of the hook about the 2026-04-17 commit that
 broke CI because `cargo check --tests` compiled tests without running them.
 
-**GitHub Actions (`.github/workflows/ci.yml`).** Runs on push to `main` and on
-PRs:
+**GitHub Actions (`.github/workflows/`).** The full gate, split across parallel
+workflows, on push to `main` and on PRs:
 
-- OCaml build + `dune runtest`
-- Rust build + clippy + `cargo test --workspace`
-- `make update-golden` + diff check
-- `make test-integration`
-- Build release artifacts (Linux / macOS / Windows)
+- `ci.yml` — clippy, `make test-rust` (workspace except sim; nextest +
+  doctests), the golden-diff (all four corpora), `make test-integration`
+- `inference.yml` — `make test-inference` (the sim crate; nextest + doctests)
+- `compiler.yml` — `make test-ocaml` (`dune runtest`)
+- `doctest.yml` — `make test-docs` (camdlc doctest of the spec set)
+- `cli-docs.yml` — `make test-cli-docs`
+- `release.yml` — release artifacts (Linux / macOS / Windows)
 
-Statistical `#[ignore]` tests are **not** in CI yet. Runs manually before
-releases; nightly CI job planned.
+Statistical `#[ignore]` tests are **not** in CI yet. Run manually before
+releases (`cargo nextest run --release --workspace --run-ignored ignored-only`);
+nightly CI job planned.
 
 ## Writing tests
 

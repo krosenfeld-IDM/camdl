@@ -24,14 +24,21 @@ echo "pre-push: OCaml tests..."
 }
 
 # ── Rust: build + clippy + actual tests (not just --check) ────────────
-# Use `cargo test --workspace` — compiles everything AND runs tests.
-# Previously this step used `cargo check --tests` which compiled tests
-# but never executed them; runtime failures and assertion failures
-# slipped through to CI. `cargo test` is only marginally slower than
-# check because compile is the bottleneck.
+# Run the tests, not just a compile-check: `cargo check --tests` once let
+# runtime/assertion failures slip to CI (2026-04-17). cargo-nextest runs the
+# whole workspace in parallel; the separate `cargo test --doc` runs the doctests
+# nextest does NOT run (omitting it would silently drop doctest coverage). This
+# is the same surface as CI's `make test-rust` + `make test-inference`. sccache,
+# if installed, caches the compile (empty RUSTC_WRAPPER = unset, so it's a no-op
+# without it). Requires cargo-nextest: `brew install cargo-nextest`.
 echo "pre-push: Rust build + tests..."
-(cd rust && cargo test --workspace --no-fail-fast 2>&1) || {
+SCCACHE="$(command -v sccache 2>/dev/null)"
+(cd rust && RUSTC_WRAPPER="$SCCACHE" cargo nextest run --workspace --no-fail-fast 2>&1) || {
     echo "error: Rust tests failed. Fix before pushing."
+    exit 1
+}
+(cd rust && RUSTC_WRAPPER="$SCCACHE" cargo test --doc --workspace --no-fail-fast 2>&1) || {
+    echo "error: Rust doctests failed. Fix before pushing."
     exit 1
 }
 
@@ -42,20 +49,24 @@ echo "pre-push: clippy..."
 }
 
 # ── Golden files: regenerate and check for unintended drift ───────────
-# CI runs `make update-golden && git diff --exit-code ir/golden/ ocaml/golden/`.
-# Mirror it here so a schema change that forgot to update goldens is
-# caught locally, not after push.
+# CI runs `make update-golden` then diffs every path it regenerates. Mirror it
+# here so a schema/grammar change that forgot to update goldens is caught
+# locally. `make update-golden` writes ocaml/corner/regression/reactive corpora;
+# the diff must cover ALL of them — reactive (tests/fixtures/reactive/ir) and
+# regression (tests/fixtures/regression/ir) live OUTSIDE ir/golden|ocaml/golden,
+# so omitting them lets a reactive/regression compile-drift slip through.
+GOLDEN_PATHS="ir/golden/ ocaml/golden/ tests/fixtures/reactive/ir/ tests/fixtures/regression/ir/"
 echo "pre-push: golden files unchanged..."
 make -s update-golden > /dev/null 2>&1 || {
     echo "error: make update-golden failed."
     exit 1
 }
-if ! git diff --quiet ir/golden/ ocaml/golden/ 2>/dev/null; then
+if ! git diff --quiet $GOLDEN_PATHS 2>/dev/null; then
     echo "error: golden files changed after regeneration. Either:"
-    echo "  - commit the intentional update: git add ir/golden/ ocaml/golden/ && git commit"
-    echo "  - or revert: git checkout -- ir/golden/ ocaml/golden/"
+    echo "  - commit the intentional update: git add $GOLDEN_PATHS && git commit"
+    echo "  - or revert: git checkout -- $GOLDEN_PATHS"
     echo ""
-    git --no-pager diff --stat ir/golden/ ocaml/golden/ 2>/dev/null | head -20
+    git --no-pager diff --stat $GOLDEN_PATHS 2>/dev/null | head -20
     exit 1
 fi
 
