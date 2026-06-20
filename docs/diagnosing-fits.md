@@ -106,6 +106,82 @@ latent trajectory rather than marginalizing it out with a noisy filter — so
 noise is killing PMMH/IF2, PGAS is often still viable. (See the
 marginalize-vs-condition contrast in [`camdl docs inference`](inference.md).)
 
+**(c) When the filter can't be rescued in place — scaffold with `ode + mh`, and
+read the dying filter as a signal.** If the particle filter is dying (ESS
+collapsing, particles going extinct) and you are already at a high particle
+count or capped, stop adding particles and switch to the **`ode + mh`** backend.
+It scores the _deterministic_ marginal likelihood directly — there is no
+particle filter, so there is nothing to degenerate — and it explores fast,
+giving a working posterior even where the stochastic filter is hopeless. Treat
+it as a triage scaffold, not a compromise.
+
+And read an _un-fixable_ dying filter as evidence about the model. If more
+particles do not help **and** the filter is healthier on synthetic data than on
+the real data (§1), the model often cannot produce data consistent with what you
+observed — so the filter cannot keep particles alive near the observations. That
+is **observation-model misspecification**, distinct from the structural
+obs-dimension collapse in (a): the cure is to fix the observation process, not
+the sampler. The productive sequence is to get a clean `ode + mh` fit first, let
+its residuals, calibration (§5), and compensation signatures (§6) point at the
+observation-model gap, fix the observation process there, and only then return
+to the stochastic fit — which is often viable again once the model is
+well-specified. This is the exact arc of a 14-stream spatial model whose
+bootstrap PF was dead on the joint streams: `ode + mh` converged in minutes; its
+single shared dispersion `k` pinned at the floor with overconfident intervals (a
+calibration tell, §5/§6); a partially-pooled per-stratum dispersion fixed the
+observation model; and the better-specified, non-centered model then ran under
+PGAS.
+
+### Choosing the backend by regime, up front
+
+Scale selects the tool — you can often skip the failure-mode tree by matching
+the backend to the regime before you start:
+
+- **Large-population, near-deterministic systems → `ode` (`mh` / `nl-sbplx`).**
+  Demographic noise is $O(1/\sqrt{N})$, so the deterministic skeleton ≈ the
+  stochastic mean; and the over-constrained latent makes PF/PGAS choke — the
+  same near-determinism that makes the ODE _accurate_ is what starves the
+  filter.
+- **Small-population / fade-out regimes → `chain_binomial` (`PMMH` / `PGAS`).**
+  Stochasticity is real and the latent is not over-constrained.
+- **Many simultaneous observation streams → not the bootstrap PF, at any scale**
+  (the (a) collapse).
+
+### Diagnosing and fixing a geometry stall (b)
+
+When PGAS-NUTS stalls on geometry rather than noise, three moves, in order.
+
+**Name the bad direction with R̂.** If one parameter's R̂ won't converge but the
+fit reproduces the data fine, suspect a _non-identified combination_, not a bad
+parameter. Look at the posterior correlation matrix; if two parameters are ≈ ±1
+correlated, compute R̂ on the **identified combination** (e.g. the product
+$\rho \cdot D_{50}$) versus the **orthogonal** direction (the ratio): the
+combination converges (R̂ ≈ 1), the sloppy direction does not. That decomposition
+names the non-identifiability in one line. (A sloppy ridge in the sense of
+Gutenkunst et al. 2007; gh#263 proposes to automate this as a post-fit report.)
+
+**Don't be fooled by warm-up.** R̂ ≈ 1.1 with a tail that _looks_ converged is
+usually just too-short burn-in inflating the statistic. Recompute split-R̂
+(Vehtari et al. 2021) after discarding the warm-up transient — 1.12 → ~1.00 from
+exactly this is common. (gh#262's warm-up-aware R̂ surfaces it live.)
+
+**Reparameterize the funnel.** The highest-yield fix for a hierarchical/pooled
+parameter is the **non-centered** form. A centered
+$k_p \sim \mathrm{LogNormal}(\mu, \tau)$ funnels — chains are lost and R̂ is
+hopeless under gradient-free MH. Write it non-centered instead:
+$k_{\text{raw}} \sim \mathrm{Normal}(0, 1)$ and
+$k = \exp(\mu + \tau \cdot k_{\text{raw}})$ via a `let` (Betancourt & Girolami
+2015). Bonus: because the hierarchy now lives in a `let` rather than a _declared
+hierarchical prior_, the non-centered form also sidesteps PGAS's
+hierarchical-prior gate (gh#175) — so it is what lets a pooled model run under
+PGAS at all.
+
+**Reseed a frozen sampler.** If PGAS-NUTS freezes from a cold start (step size
+collapsing to ~$10^{-4}$), seed it at the `nl-sbplx` / `mh`-on-`ode` MLE: clean
+latent trajectories let NUTS navigate locally where it stalled from a bad start.
+(This is the IF2→PGAS warm-start in [`camdl docs inference`](inference.md),
+extended to the deterministic backends.)
+
 ## 4. Pinning parameters helps geometry, not PF noise
 
 Fixing or pinning parameters (`--fixed name=value`) reduces dimension and can
@@ -140,6 +216,16 @@ divergence between the unconditional ribbon and the smoothed ribbon _is_ the
 diagnostic — see the "unconditional vs smoothing" plot in
 [`camdl docs inference`](inference.md).
 
+Separately from _where_ a prediction sits, check whether its **intervals** are
+trustworthy — the calibration question the three views above don't answer. Two
+standard checks: the **PIT histogram** (the probability-integral transform of
+each observation under its predictive distribution — U-shaped ⇒ intervals too
+narrow / overconfident, domed ⇒ too wide; Gneiting et al. 2007) and
+**nominal-vs-empirical coverage** (does the 90% interval actually contain ~90%
+of held-out points?). This is exactly what separated the overconfident
+shared-`k` fit (U-shaped PIT) from the well-calibrated hierarchical-`k` fit in
+§3(c).
+
 ## 6. Read the MLE for "compensation" signatures
 
 A point estimate can be a symptom rather than an answer. Watch for:
@@ -153,6 +239,14 @@ These are the optimizer contorting one parameter to absorb a structural misfit
 elsewhere. When you see one, the estimate is telling you the model is wrong, not
 giving you the answer — go back to §1.
 
+A common specific case: a single negative-binomial dispersion `k` **pinned at
+its floor (maximum overdispersion) across all strata**. The data are burstier
+than one shared `k` can represent, and the fix is not a looser bound but more
+structure — a partially-pooled (hierarchical) per-stratum dispersion, fit
+non-centered (§3(b)). A floor-pinned shared `k` and the overconfident intervals
+it produces (§5) are the paired tell that sent the 14-stream model in §3(c) to a
+hierarchical observation model.
+
 ## 7. The meta-lesson: a fighting sampler is doing model-checking
 
 A framework whose particle filter degenerates and whose sampler stalls on a
@@ -164,12 +258,6 @@ you, suspect the model before the sampler — §1 is how you confirm it.
 
 Concrete things that trip up real fits, verified against the current code:
 
-- **The IR cache does not track files loaded via `read()`.** After editing a
-  file pulled in with `read()` (a `zones.tsv`, contact matrix, or population
-  table) _without_ touching the `.camdl`, camdl can serve stale compiled IR —
-  the cache key currently folds only the model file's own bytes. Pass
-  `--no-ir-cache` after changing a `read()`-loaded file until the cache key
-  learns to track them (gh#260).
 - **PGAS (and PMMH) require a prior on every estimated parameter.** A parameter
   with no `~` in the model and no prior in the fit toml is a **hard error** that
   names the offending parameters and the three remedies — not a silent fallback.
