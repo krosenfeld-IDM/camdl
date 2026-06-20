@@ -554,8 +554,6 @@ pub fn run_stage(
                 .map(|c| c.name.clone()).collect();
             let flow_names: Vec<String> = config.compiled.model.transitions.iter()
                 .map(|t| format!("flow_{}", t.name)).collect();
-            let traj_dt = config.if2_config.dt;
-            let traj_t_start = config.compiled.model.simulation.t_start;
 
             let progress_cb = |sweep: usize, result: &PGASSweep, traj: &PGASTrajectory| {
                 // Stream trace row via shared TraceWriter
@@ -581,31 +579,45 @@ pub fn run_stage(
                 if sweep >= burn_in && (sweep - burn_in).is_multiple_of(traj_stride) {
                     use std::io::Write;
                     let path = traj_dir.join(format!("trajectory_{:06}.tsv", sweep));
-                    if let Ok(f) = std::fs::File::create(&path) {
-                        // BufWriter is essential here: the trajectory is
-                        // ~1455 substeps × ~720 fields, and each `write!`
-                        // below is one field. Unbuffered, that is ~1M
-                        // `write()` syscalls per file — profiling showed this
-                        // dominated PGAS wall time (60% of the fit) entirely in
-                        // blocking I/O. Buffered, it collapses to a few hundred
-                        // syscalls. Explicitly flushed below so a write error on
-                        // the final buffer drain surfaces instead of being
-                        // swallowed by BufWriter's drop.
-                        let mut f = std::io::BufWriter::new(f);
-                        // Header
-                        write!(f, "t").unwrap();
-                        for c in &comp_names { write!(f, "\t{}", c).unwrap(); }
-                        for fl in &flow_names { write!(f, "\t{}", fl).unwrap(); }
-                        writeln!(f).unwrap();
-                        // Rows: one per substep
-                        for (s, rec) in traj.substeps.iter().enumerate() {
-                            let t = traj_t_start + (s + 1) as f64 * traj_dt;
-                            write!(f, "{:.1}", t).unwrap();
-                            for &c in &rec.counts_after { write!(f, "\t{}", c).unwrap(); }
-                            for &fl in &rec.flows { write!(f, "\t{}", fl).unwrap(); }
+                    // gh#264: write the directionally-coherent state path
+                    // (net-delta chained), not the raw per-substep counts_after.
+                    // The CSMC-AS traceback can stitch the reference suffix onto
+                    // a different ancestor prefix at an ancestor-sampling join,
+                    // leaving counts_after[s] != counts_before[s+1] (apparent
+                    // backflow — e.g. S increasing in an SEIRD). The flows are
+                    // per-substep and already coherent.
+                    match traj.coherent_counts_after() {
+                        Err(e) => crate::status::step("pgas-traj",
+                            format!("skipping trajectory {sweep} (incoherent record): {e}")),
+                        Ok(coherent) => if let Ok(f) = std::fs::File::create(&path) {
+                            // BufWriter is essential here: the trajectory is
+                            // ~1455 substeps × ~720 fields, and each `write!`
+                            // below is one field. Unbuffered, that is ~1M
+                            // `write()` syscalls per file — profiling showed this
+                            // dominated PGAS wall time (60% of the fit) entirely in
+                            // blocking I/O. Buffered, it collapses to a few hundred
+                            // syscalls. Explicitly flushed below so a write error on
+                            // the final buffer drain surfaces instead of being
+                            // swallowed by BufWriter's drop.
+                            let mut f = std::io::BufWriter::new(f);
+                            // Header
+                            write!(f, "t").unwrap();
+                            for c in &comp_names { write!(f, "\t{}", c).unwrap(); }
+                            for fl in &flow_names { write!(f, "\t{}", fl).unwrap(); }
                             writeln!(f).unwrap();
+                            // Rows: one per substep (coherent counts + per-substep flows).
+                            // Stamp at the substep's realized END time — read t0/dt_substep
+                            // (the source of truth), not a recomputed t_start + s·dt, so an
+                            // exact/off-grid tiling can't misstamp (gh#264).
+                            for (s, rec) in traj.substeps.iter().enumerate() {
+                                let t = rec.t0 + rec.dt_substep;
+                                write!(f, "{:.1}", t).unwrap();
+                                for &c in &coherent[s] { write!(f, "\t{}", c).unwrap(); }
+                                for &fl in &rec.flows { write!(f, "\t{}", fl).unwrap(); }
+                                writeln!(f).unwrap();
+                            }
+                            f.flush().unwrap();
                         }
-                        f.flush().unwrap();
                     }
                 }
 

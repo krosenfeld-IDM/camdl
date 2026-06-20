@@ -159,6 +159,53 @@ pub struct PGASTrajectory {
     pub substeps: Vec<SubstepRecord>,
 }
 
+impl PGASTrajectory {
+    /// A directionally-coherent per-substep state path: the compartment counts
+    /// at the END of each substep, reconstructed so the path is a single
+    /// continuous lineage (gh#264).
+    ///
+    /// **Why this is needed.** The CSMC-AS traceback can stitch the reference
+    /// trajectory's suffix onto a *different* ancestor lineage's prefix at an
+    /// ancestor-sampling join. Each `SubstepRecord` is internally consistent
+    /// (`counts_after == step_one(counts_before, flows)`), but across a join
+    /// `counts_after[s] != counts_before[s+1]`: the raw `counts_after` sequence
+    /// jumps (apparent backflow — e.g. `S` *increasing* in an SEIRD), and the
+    /// jump compounds as a fixed offset over the suffix.
+    ///
+    /// **Why the net delta is the fix.** The per-substep net delta
+    /// `counts_after[s] - counts_before[s]` is exactly the realized state change
+    /// at substep `s` (it already includes events/balance/clamping, whatever
+    /// `step_one` did). At a join the reference suffix is offset by a constant
+    /// `Δ` in both `counts_before` and `counts_after`, so `Δ` **cancels** in the
+    /// difference. Chaining these deltas from the first substep's pre-state
+    /// therefore yields a path that is continuous, conserves whatever the
+    /// per-substep transitions conserve, and is directionally valid by
+    /// construction — without needing the model stoichiometry here.
+    ///
+    /// On a coherent (join-free) trajectory this reproduces `counts_after`
+    /// exactly. Returns one state vector per substep. `Err` only on a corrupt
+    /// record (mismatched compartment vector lengths).
+    pub fn coherent_counts_after(&self) -> Result<Vec<Vec<i64>>, String> {
+        let mut out = Vec::with_capacity(self.substeps.len());
+        let Some(first) = self.substeps.first() else { return Ok(out) };
+        let n_comp = first.counts_before.len();
+        let mut state = first.counts_before.clone();
+        for (s, rec) in self.substeps.iter().enumerate() {
+            if rec.counts_before.len() != n_comp || rec.counts_after.len() != n_comp {
+                return Err(format!(
+                    "PGASTrajectory::coherent_counts_after: substep {s} has \
+                     {}/{} compartment counts, expected {n_comp}",
+                    rec.counts_before.len(), rec.counts_after.len()));
+            }
+            for i in 0..n_comp {
+                state[i] += rec.counts_after[i] - rec.counts_before[i];
+            }
+            out.push(state.clone());
+        }
+        Ok(out)
+    }
+}
+
 /// Mapping from an IVP parameter to the compartment it controls.
 /// Used to make the initial state stochastic in CSMC-AS and to add
 /// the initial state density to the complete-data LL.
@@ -2516,6 +2563,60 @@ mod grid_tests {
     //! Keystone unit tests for [`build_substep_grid`] — the realized-grid + obs-map
     //! contract every exact-PGAS producer tiles against (Stage 3, 2c).
     use super::*;
+
+    /// gh#264: an ancestor-sampling join leaves the raw `counts_after` sequence
+    /// discontinuous (`S` jumps up — backflow). `coherent_counts_after` must
+    /// chain the offset-free net deltas into a single continuous, monotone,
+    /// flow-reconciling path.
+    #[test]
+    fn coherent_counts_after_removes_as_join_backflow() {
+        // 2 compartments [S, E]; one transition S->E (flow index 0).
+        let mk = |cb: [i64; 2], ca: [i64; 2], inf: u64| SubstepRecord {
+            counts_before: cb.to_vec(),
+            counts_after: ca.to_vec(),
+            flows: vec![inf],
+            gammas: vec![],
+            t0: 0.0,
+            dt_substep: 1.0,
+        };
+        // substeps 0,1 coherent; substep 2 is an AS join whose `counts_before`
+        // is offset HIGH (the reference's own state from a different prefix),
+        // so the RAW counts_after jumps S upward.
+        let traj = PGASTrajectory {
+            initial_counts: vec![100, 0],
+            substeps: vec![
+                mk([100, 0], [90, 10], 10),
+                mk([90, 10], [85, 15], 5),
+                mk([200, 0], [192, 8], 8), // join: counts_before != prev counts_after
+            ],
+        };
+
+        // The raw counts_after exhibits the bug (S non-monotone: 90, 85, 192).
+        let raw_s: Vec<i64> = traj.substeps.iter().map(|r| r.counts_after[0]).collect();
+        assert!(raw_s.windows(2).any(|w| w[1] > w[0]),
+            "raw counts_after must show the backflow, got {raw_s:?}");
+
+        let coh = traj.coherent_counts_after().unwrap();
+        let coh_s: Vec<i64> = coh.iter().map(|st| st[0]).collect();
+        assert_eq!(coh_s, vec![90, 85, 77]);
+        // Monotone non-increasing (S only leaves via infection).
+        assert!(coh_s.windows(2).all(|w| w[1] <= w[0]),
+            "coherent S must be monotone non-increasing, got {coh_s:?}");
+        // Flow reconciliation: S[s-1] - S[s] == infection flow at s.
+        let mut prev = traj.substeps[0].counts_before[0];
+        for (s, st) in coh.iter().enumerate() {
+            assert_eq!(prev - st[0], traj.substeps[s].flows[0] as i64,
+                "substep {s}: S drop must equal infection flow");
+            prev = st[0];
+        }
+        // A join-free trajectory is reproduced exactly.
+        let coherent_only = PGASTrajectory {
+            initial_counts: vec![100, 0],
+            substeps: vec![mk([100, 0], [90, 10], 10), mk([90, 10], [85, 15], 5)],
+        };
+        let c = coherent_only.coherent_counts_after().unwrap();
+        assert_eq!(c, vec![vec![90, 10], vec![85, 15]]);
+    }
 
     fn obs(times: &[f64]) -> Vec<Observation> {
         times.iter().map(|&t| Observation { time: t, value: 0.0 }).collect()
