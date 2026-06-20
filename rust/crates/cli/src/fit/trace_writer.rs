@@ -78,7 +78,10 @@ impl TraceWriter {
                 write!(f, "\t{}", val).unwrap();
             }
             for &v in param_values {
-                write!(f, "\t{:.6}", v).unwrap();
+                // Shortest round-trippable Display — fixed `{:.6}` zeroed any
+                // parameter below ~5e-7 (importation/spark rates), faking a
+                // frozen chain and corrupting R̂/ESS (gh#266).
+                write!(f, "\t{}", v).unwrap();
             }
             writeln!(f).unwrap();
 
@@ -89,4 +92,34 @@ impl TraceWriter {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// gh#266: a small-magnitude parameter (e.g. an importation rate ~1e-7)
+    /// must round-trip through the trace — not be truncated to "0.000000" and
+    /// read back as a frozen 0.0 that corrupts every mixing diagnostic.
+    #[test]
+    fn small_magnitude_param_round_trips_in_trace() {
+        let dir = std::env::temp_dir().join(format!("camdl_tw_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trace.tsv");
+        let ps = path.to_string_lossy().into_owned();
+        {
+            let tw = TraceWriter::new(&ps, "step", &[], &["iota".to_string()], false);
+            tw.write_row(0, -10.0, -11.0, &[], &[1e-7]);
+            tw.write_row(1, -10.0, -11.0, &[], &[9.9e-8]);
+        } // drop flushes the BufWriter
+
+        let txt = std::fs::read_to_string(&path).unwrap();
+        let mut lines = txt.lines();
+        let header: Vec<&str> = lines.next().unwrap().split('\t').collect();
+        let col = header.iter().position(|h| *h == "iota").unwrap();
+        let parse = |line: &str| -> f64 { line.split('\t').nth(col).unwrap().parse().unwrap() };
+        assert_eq!(parse(lines.next().unwrap()), 1e-7, "1e-7 must round-trip, not truncate to 0");
+        assert_eq!(parse(lines.next().unwrap()), 9.9e-8, "9.9e-8 must round-trip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

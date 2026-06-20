@@ -1734,7 +1734,7 @@ fn run_one_chain(
                 let _ = write!(w, "{}\tNA\t{:.2}", iter, loglik);
                 for spec in if2_params {
                     let v = param_means.get(spec.index).copied().unwrap_or(f64::NAN);
-                    let _ = write!(w, "\t{:.6}", v);
+                    let _ = write!(w, "\t{}", v); // round-trippable; gh#266
                 }
                 let _ = writeln!(w);
                 if iter % 10 == 0 || iter + 1 == n_iter { let _ = w.flush(); }
@@ -2454,7 +2454,7 @@ pub fn write_chain_outputs(
             for it in &result.iterations {
                 let loglik_str = if it.loglik.is_finite() { format!("{:.2}", it.loglik) } else { "NA".into() };
                 write!(f, "{}\t{}\t{:.2}", it.iteration, loglik_str, it.if2_perturbed_loglik).unwrap();
-                for spec in if2_params { write!(f, "\t{:.6}", it.param_means[spec.index]).unwrap(); }
+                for spec in if2_params { write!(f, "\t{}", it.param_means[spec.index]).unwrap(); } // gh#266
                 writeln!(f).unwrap();
             }
         }
@@ -2548,7 +2548,7 @@ pub fn write_clean_eval_tsv(
             s.filter_stats.ess_mean, s.filter_stats.ess_min,
             ess_min_step_str, s.filter_stats.n_neg_inf_increments).unwrap();
         for spec in if2_params {
-            write!(f, "\t{:.6}", s.theta[spec.index]).unwrap();
+            write!(f, "\t{}", s.theta[spec.index]).unwrap(); // round-trippable; gh#266
         }
         writeln!(f).unwrap();
     }
@@ -3136,11 +3136,13 @@ mod tests {
             "chain\tloglik\tse\tess_mean\tess_min\tess_min_step\tn_neg_inf_incr\tbeta\tgamma");
         assert!(lines[1].starts_with("1\t-100.000000\t0.500000"),
             "chain 1 prefix: {}", lines[1]);
-        assert!(lines[1].ends_with("\t0.100000\t0.200000"),
+        // Params use shortest round-trippable Display (gh#266), not fixed
+        // `{:.6}` — so a small-magnitude param can't be truncated to 0.
+        assert!(lines[1].ends_with("\t0.1\t0.2"),
             "chain 1 param suffix: {}", lines[1]);
         assert!(lines[2].starts_with("2\t-50.000000\t0.400000"),
             "chain 2 prefix: {}", lines[2]);
-        assert!(lines[2].ends_with("\t0.300000\t0.400000"),
+        assert!(lines[2].ends_with("\t0.3\t0.4"),
             "chain 2 param suffix: {}", lines[2]);
 
         let _ = std::fs::remove_dir_all(&dir);
