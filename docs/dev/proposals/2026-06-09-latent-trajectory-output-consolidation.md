@@ -271,7 +271,10 @@ chain  draw   time   [date]   S   E   I   R   <real cols>   flow_infection ...  
   incidence it already carries via gh#48 projections — `inc_<stream>`).
 - **`inc_<stream>`** model-predicted-observation columns (the gh#48 projections,
   so a user gets posterior-predictive incidence without finite-differencing
-  counts — which is unsafe under events/balance).
+  counts — which is unsafe under events/balance). _See also gh#269:_ these gh#48
+  per-stream projections are the same per-stream predictive density the
+  prequential aggregates, so whoever implements `inc_<stream>` is one step from
+  per-stream prequential output — keep the per-stream layout compatible.
 - A **`# camdl-trajectories vN`** version header (as `simulate` has) carrying
   `method` + `granularity` so a downstream union of mixed outputs can't silently
   blend substep PGAS paths with obs-resolution PMMH paths.
@@ -290,9 +293,16 @@ matches existing practice and needs no derive. Add only a small per-stage
 **`trajectories.json` manifest** (method, granularity, n_chains, n_draws, the
 column list, the degeneracy-caveat flag, the source
 `--save-paths`/`n_trajectories` value) so tooling discovers and interprets a run
-without scraping the header. (`PGASTrajectory`'s existing serde is for
-`resume_state.bin` and stays internal; the long TSV maps cleanly to parquet
-later if national-scale volume demands it — noted as future, not v1.)
+without scraping the header. The manifest also records, when present, a pointer
+to the run's posterior-predictive **observation** file (`simulate --obs`),
+tagged `conditioned: false` (free-forward `p(y | θ)`) against this trajectory
+file's `conditioned: true` smoother `inc_<stream>` (the latent reconstruction).
+One run then surfaces both artifacts and labels which is the conditioned
+smoother vs the free-forward predictive — closing the exact smoother-vs-forward
+confusion that otherwise costs an analyst a silently-wrong figure.
+(`PGASTrajectory`'s existing serde is for `resume_state.bin` and stays internal;
+the long TSV maps cleanly to parquet later if national-scale volume demands it —
+noted as future, not v1.)
 
 **Load it in two lines** (the acceptance test for "easy"):
 
@@ -326,6 +336,20 @@ because all methods now share the type.
 - **PGAS migration: small.** Swap the ad-hoc inline TSV for the shared writer
   via the `SubstepRecord → Snapshot` adapter; preserve the current columns. ~0.5
   day.
+- **Write-time cadence selection (size control): small, v1.** PGAS paths are
+  substep-native, and a national-scale dense substep file (14 strata × hundreds
+  of days × multiple substeps/day × hundreds of saved draws) is hundreds of MB —
+  re-introducing a "read-then-downsample" step the tidy format is meant to
+  remove. The writer honours a `--output-every`-style cadence (default
+  **substep** for fidelity; opt-in **observation** cadence), reusing
+  `simulate`'s existing `--output-every` semantics and the `Granularity` tag
+  (which already distinguishes `Substep` / `Observation`). **Semantics, stated
+  to avoid the finite-difference hazard:** at observation cadence,
+  `inc_<stream>` is the interval **aggregate via the projection** (the sum of
+  flows over each obs interval — the same projection already computed for the
+  column), NOT a subsample of substep rows; compartment/prevalence columns are
+  **sampled** at the cadence. The manifest `granularity` records which was
+  emitted.
 - **Shared `write_trajectories_tsv` (io crate) + the long format + manifest:**
   ~1 day. Collapses the three current writers (`simulate`,
   `pfilter
@@ -362,7 +386,10 @@ the summary band are small add-ons.
    the one `write_trajectories_tsv` (yes — recommend), and should `simulate`'s
    posterior-predictive draws also route through it, or stay a separate wide
    multi-cell format? Recommend unifying the posterior-path writers and leaving
-   `simulate`'s sweep/replicate matrix as-is for now.
+   `simulate`'s sweep/replicate matrix as-is for now — but **cross-linking** it
+   from the `trajectories.json` manifest with a `conditioned` flag (§4b), so a
+   researcher discovers both the conditioned latent paths and the free-forward
+   predictive obs from one run without confusing the two.
 7. **Manifest vs serde:** confirm TSV-as-contract + a small `trajectories.json`
    manifest (recommended), rather than adding `Serialize` to the output path
    types. Parquet as a future scale option.
