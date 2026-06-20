@@ -310,6 +310,17 @@ pub(crate) fn camdlc_checked_flag() -> &'static std::sync::OnceLock<()> {
 /// call. The camdlc error path is unchanged: a non-zero exit still surfaces
 /// camdlc's stderr as `Err`.
 pub(crate) fn run_camdlc(camdl_path: &str) -> Result<String, String> {
+    run_camdlc_compile(camdl_path, None)
+}
+
+/// Compile `camdl_path` to IR JSON. When `emit_deps` is `Some(path)`, camdlc
+/// additionally writes its read-closure depfile there in the SAME compile (one
+/// invocation, IR on stdout + depfile to the path), so the IR cache can key on
+/// the contents of `read()`-loaded files (gh#260).
+pub(crate) fn run_camdlc_compile(
+    camdl_path: &str,
+    emit_deps: Option<&std::path::Path>,
+) -> Result<String, String> {
     let camdlc = find_camdlc()?;
 
     // Friendly model name for the message: just the file's basename.
@@ -340,10 +351,14 @@ pub(crate) fn run_camdlc(camdl_path: &str) -> Result<String, String> {
     spinner.set_message(format!("compiling {model_name}..."));
     spinner.enable_steady_tick(std::time::Duration::from_millis(120));
 
-    // The blocking subprocess call — unchanged from the un-instrumented path.
-    let output = std::process::Command::new(&camdlc)
-        .arg(camdl_path)
-        .output();
+    // The blocking subprocess call. With `emit_deps`, camdlc writes the
+    // read-closure depfile alongside emitting IR on stdout — one compile.
+    let mut cmd = std::process::Command::new(&camdlc);
+    cmd.arg(camdl_path);
+    if let Some(dp) = emit_deps {
+        cmd.arg("--emit-deps").arg(dp);
+    }
+    let output = cmd.output();
 
     spinner.finish_and_clear();
 
@@ -444,6 +459,166 @@ pub(crate) fn ir_cache_key(content: &[u8], camdlc_ver: &str, ir_ver: &str, fold_
     crate::hashing::sha256_hex(&buf)
 }
 
+// ─── read()-input freshness (gh#260) ─────────────────────────────────────────
+//
+// The cache key (above) folds only the `.camdl` bytes, but a model can pull in
+// external files via `read("pop.tsv")` at compile time — and editing one of
+// those, with the `.camdl` untouched, must NOT serve IR built from the stale
+// data. The key can't carry the read()-contents (discovering them needs a
+// compile, which is exactly what the cache skips). So instead each cache entry
+// gets a sidecar recording its read()-closure with content hashes; a cache hit
+// re-hashes those files and recompiles if any changed. Cheap on hits (a few
+// small TSVs), correct under a shared global cache (paths are stored as-written
+// and re-resolved against the *current* model), and needs no compiler change.
+
+/// One `read()`-loaded compile input recorded in a cache sidecar: the path as
+/// written in the model plus a content hash. Stored as-written (not resolved)
+/// so the entry is portable across working trees — a relative path is
+/// re-resolved against the current model's directory on validation, an absolute
+/// path is used as-is.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ReadDep {
+    as_written: String,
+    hash: String,
+}
+
+/// Sidecar schema version. A sidecar tagged with any other value reads as
+/// not-fresh (recompile) rather than mis-parsing — so a format change fails
+/// closed instead of silently serving a misread entry.
+const SIDECAR_SCHEMA: u32 = 1;
+
+/// The on-disk cache sidecar: a schema-tagged wrapper around the read-closure,
+/// not a bare list, so future format changes are detectable and fail closed.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DepsSidecar {
+    schema: u32,
+    reads: Vec<ReadDep>,
+}
+
+/// The subset of camdlc's `--emit-deps` JSON we consume.
+#[derive(serde::Deserialize)]
+struct EmittedDeps {
+    reads: Vec<EmittedRead>,
+}
+#[derive(serde::Deserialize)]
+struct EmittedRead {
+    as_written: String,
+    resolved: String,
+}
+
+/// The cache sidecar path: `<cache_entry>.deps`, colocated with the IR it
+/// guards (same key → same neighbour), mirroring the `.lock` convention.
+fn deps_sidecar_path(cache_path: &std::path::Path) -> std::path::PathBuf {
+    let mut s = cache_path.as_os_str().to_owned();
+    s.push(".deps");
+    std::path::PathBuf::from(s)
+}
+
+/// Resolve a recorded `read()` target for validation: relative paths against
+/// the model file's directory (matching the compiler's resolution), absolute
+/// paths as-is.
+fn resolve_read_target(as_written: &str, model_path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(as_written);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::path::Path::new(model_path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(p)
+    }
+}
+
+/// True iff the cache entry's recorded `read()` inputs all still hash to their
+/// stored values. A missing/unparseable sidecar, a vanished input, or any hash
+/// mismatch ⇒ not fresh (recompile). A model with no `read()`s has an empty
+/// sidecar and is always fresh.
+fn read_deps_fresh(cache_path: &std::path::Path, model_path: &str) -> bool {
+    let sidecar = deps_sidecar_path(cache_path);
+    let Ok(txt) = std::fs::read_to_string(&sidecar) else { return false; };
+    let Ok(sc) = serde_json::from_str::<DepsSidecar>(&txt) else { return false; };
+    if sc.schema != SIDECAR_SCHEMA {
+        return false; // unknown schema → fail closed (recompile)
+    }
+    for d in &sc.reads {
+        let target = resolve_read_target(&d.as_written, model_path);
+        let Ok(bytes) = std::fs::read(&target) else { return false; };
+        if crate::hashing::sha256_hex(&bytes) != d.hash {
+            return false;
+        }
+    }
+    true
+}
+
+/// Build sidecar contents from camdlc's emitted depfile: hash each resolved
+/// `read()` file's current bytes, keyed by its as-written path. `Err` if the
+/// depfile is unreadable/unparseable or an input vanished — the caller then
+/// declines to cache (an entry without a valid sidecar would be unservable).
+fn build_read_deps(depfile: &std::path::Path) -> Result<Vec<ReadDep>, String> {
+    let txt = std::fs::read_to_string(depfile)
+        .map_err(|e| format!("cannot read depfile {}: {e}", depfile.display()))?;
+    let emitted: EmittedDeps = serde_json::from_str(&txt)
+        .map_err(|e| format!("cannot parse depfile {}: {e}", depfile.display()))?;
+    let mut out = Vec::with_capacity(emitted.reads.len());
+    for r in emitted.reads {
+        let bytes = std::fs::read(&r.resolved)
+            .map_err(|e| format!("cannot read read()-input {}: {e}", r.resolved))?;
+        out.push(ReadDep { as_written: r.as_written, hash: crate::hashing::sha256_hex(&bytes) });
+    }
+    Ok(out)
+}
+
+/// Atomically write the cache sidecar (tmp + rename), like the IR write.
+fn write_deps_sidecar(cache_path: &std::path::Path, deps: &[ReadDep]) -> std::io::Result<()> {
+    let sidecar = deps_sidecar_path(cache_path);
+    let payload = DepsSidecar { schema: SIDECAR_SCHEMA, reads: deps.to_vec() };
+    let json = serde_json::to_vec(&payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let mut staging = sidecar.clone().into_os_string();
+    staging.push(format!(".{}.tmp", std::process::id()));
+    let staging = std::path::PathBuf::from(staging);
+    std::fs::write(&staging, &json)?;
+    std::fs::rename(&staging, &sidecar)
+}
+
+/// Persist a freshly-compiled IR and its read-closure sidecar to the cache,
+/// atomically and *together*. Returns `true` if the entry was cached (the
+/// caller serves `cache_path`), `false` if not (the caller falls back to an
+/// uncacheable temp). Invariant: a served entry's IR and sidecar are from the
+/// same compile.
+///
+/// **IR first, then sidecar.** A reader's pre-`acquire` freshness check runs
+/// outside the single-flight lock, so it can observe the moment between our two
+/// writes. With IR-first that moment is (new IR, OLD/absent sidecar): the old
+/// sidecar's hashes are from a different compile and won't match the current
+/// `read()` inputs → not-fresh → a safe miss. The reverse order would expose
+/// (OLD IR, new sidecar) — the new sidecar validates against the current data,
+/// so the reader would serve the *stale* IR as fresh: a wrong cache hit.
+///
+/// If the sidecar write fails after the IR landed, the IR is removed so no
+/// reader can ever pair it with a stale sidecar.
+fn persist_cache_entry(cache_path: &std::path::Path, ir_json: &str, deps: &[ReadDep]) -> bool {
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let ir_staging = cache_path.with_extension(format!("{}.tmp", std::process::id()));
+    let ir_ok = std::fs::write(&ir_staging, ir_json)
+        .and_then(|_| std::fs::rename(&ir_staging, cache_path))
+        .is_ok();
+    if !ir_ok {
+        let _ = std::fs::remove_file(&ir_staging);
+        return false;
+    }
+    if write_deps_sidecar(cache_path, deps).is_ok() {
+        return true;
+    }
+    // Sidecar failed: the IR on disk has no matching sidecar. Remove it (and any
+    // stale sidecar) so nothing can be served, and fall back to a temp.
+    let _ = std::fs::remove_file(cache_path);
+    let _ = std::fs::remove_file(deps_sidecar_path(cache_path));
+    false
+}
+
 /// The compiled-IR cache directory: `$CAMDL_IR_CACHE_DIR` if set (tests /
 /// overrides), else `$XDG_CACHE_HOME/camdl/ir` or `$HOME/.cache/camdl/ir`. A
 /// GLOBAL cache (not under `--output-dir`): the IR is hardware-independent and
@@ -530,7 +705,12 @@ mod single_flight {
     /// Acquire the single-flight lease for `cache_path`. Call only after a
     /// confirmed cache miss; the returned lease tells the caller whether to
     /// compile (holding the lock) or to re-read the cache a peer just wrote.
-    pub fn acquire(cache_path: &Path) -> Lease {
+    ///
+    /// `is_cached` is the caller's freshness predicate (entry present *and* its
+    /// read()-inputs unchanged, gh#260) — not a bare `exists()`, so a
+    /// stale-but-present entry is correctly treated as a miss to recompile, and
+    /// a peer that publishes a fresh entry while we wait is served.
+    pub fn acquire(cache_path: &Path, is_cached: &dyn Fn() -> bool) -> Lease {
         let lock_path = lock_path_for(cache_path);
         if let Some(parent) = lock_path.parent() {
             // Best-effort: if the dir can't be made, coordination is impossible
@@ -544,7 +724,7 @@ mod single_flight {
         loop {
             // Double-checked locking: a peer may have published between the
             // caller's miss and now (or since our last poll). Serve the cache.
-            if cache_path.exists() {
+            if is_cached() {
                 return Lease::AlreadyCached;
             }
 
@@ -692,9 +872,10 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
         }
     };
 
-    // Cache HIT: reuse the compiled IR, skip camdlc entirely.
+    // Cache HIT: reuse the compiled IR, skip camdlc entirely — but only if the
+    // entry's read()-loaded inputs are unchanged (gh#260).
     if let Some((cache_path, key)) = &cache_target {
-        if cache_path.exists() {
+        if cache_path.exists() && read_deps_fresh(cache_path, path) {
             crate::status::step("cached",
                 format!("IR for {} ({})", crate::status::concise_path(path), &key[..8.min(key.len())]));
             return Ok((cache_path.to_string_lossy().into_owned(), None));
@@ -709,7 +890,8 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
     // populated cache.
     let mut _compile_lock: Option<single_flight::LockGuard> = None;
     if let Some((cache_path, key)) = &cache_target {
-        match single_flight::acquire(cache_path) {
+        let is_cached = || cache_path.exists() && read_deps_fresh(cache_path, path);
+        match single_flight::acquire(cache_path, &is_cached) {
             single_flight::Lease::AlreadyCached => {
                 crate::status::step("cached",
                     format!("IR for {} ({})", crate::status::concise_path(path), &key[..8.min(key.len())]));
@@ -723,9 +905,34 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
         }
     }
 
-    // MISS (or caching off): compile once, banner once.
+    // MISS (or caching off): compile once, banner once. When caching, emit the
+    // read-closure depfile in the same compile so we can key the entry on its
+    // read()-inputs (gh#260); build the sidecar contents and drop the tmp.
     let started = std::time::Instant::now();
-    let json = run_camdlc(path)?;
+    // Unique per (pid, cache key) so concurrent compiles of different models
+    // (or an uncoordinated-lease peer) can't clobber each other's depfile.
+    let deps_tmp = cache_target.as_ref().map(|(_, key)| {
+        std::env::temp_dir().join(format!("camdl_deps_{}_{}.json", std::process::id(), key))
+    });
+    let json = run_camdlc_compile(path, deps_tmp.as_deref())?;
+    let read_deps = match deps_tmp.as_ref() {
+        Some(dp) => {
+            let built = build_read_deps(dp);
+            let _ = std::fs::remove_file(dp);
+            match built {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    // Should not happen after a successful compile (camdlc writes
+                    // the depfile before the IR); surface it so a "why is my IR
+                    // cache always missing?" is diagnosable rather than silent.
+                    crate::status::step("ir-cache",
+                        format!("read()-dependency capture failed ({e}); not caching this compile"));
+                    None
+                }
+            }
+        }
+        None => None,
+    };
     let elapsed = started.elapsed();
     // `compiled  model.camdl   5.6MB IR in 8.1s (2545× source)`. The ratio is
     // IR bytes / source bytes — how much the compile blew the model up (big
@@ -740,17 +947,15 @@ pub fn resolve_ir_path(path: &str) -> Result<(String, Option<std::path::PathBuf>
         crate::status::expansion(json.len() as u64, src_bytes),
     ));
 
-    // Persist to the cache (atomic tmp+rename, race-safe) when enabled+writable;
-    // a failure there is non-fatal — fall through to a per-pid temp.
-    if let Some((cache_path, _)) = &cache_target {
-        if let Some(parent) = cache_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let staging = cache_path.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&staging, &json).and_then(|_| std::fs::rename(&staging, cache_path)).is_ok() {
+    // Persist to the cache (IR + sidecar together, atomically) when enabled AND
+    // we captured the read-closure: every cached entry must carry a valid
+    // sidecar from the same compile, else it would read as stale and recompile
+    // forever — or, worse, pair with a foreign sidecar. A failure is non-fatal:
+    // fall through to a per-pid temp.
+    if let (Some((cache_path, _)), Some(deps)) = (&cache_target, &read_deps) {
+        if persist_cache_entry(cache_path, &json, deps) {
             return Ok((cache_path.to_string_lossy().into_owned(), None));
         }
-        let _ = std::fs::remove_file(&staging);
     }
 
     // Un-cacheable fallback: a per-pid temp file, cleaned up by the caller.
@@ -2840,6 +3045,78 @@ pub fn fmt_relative_time(from: std::time::SystemTime, now: std::time::SystemTime
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── IR-cache read()-dependency sidecar (gh#260) ──────────────────────────
+
+    /// Persist writes IR + sidecar together; a hit is fresh against the data it
+    /// was built from, goes stale when that data changes, and is fresh again
+    /// after a recompile persists the new pair.
+    #[test]
+    fn persist_and_read_deps_fresh_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = tmp.path().join("m.camdl");
+        std::fs::write(&model, b"// model").unwrap();
+        let data = tmp.path().join("pop.tsv");
+        std::fs::write(&data, b"old").unwrap();
+        let cache = tmp.path().join("e.ir.json");
+
+        let deps_old = vec![ReadDep {
+            as_written: "pop.tsv".into(),
+            hash: crate::hashing::sha256_hex(b"old"),
+        }];
+        assert!(persist_cache_entry(&cache, "IR-OLD", &deps_old));
+        assert!(cache.exists());
+        assert!(read_deps_fresh(&cache, model.to_str().unwrap()),
+            "fresh against the data it was built from");
+
+        // The read()-input changes: the SAME entry is now stale.
+        std::fs::write(&data, b"new").unwrap();
+        assert!(!read_deps_fresh(&cache, model.to_str().unwrap()),
+            "stale once the read()-input changes (old sidecar hash != new data)");
+
+        // Recompile persists the new IR + new sidecar together → fresh again.
+        let deps_new = vec![ReadDep {
+            as_written: "pop.tsv".into(),
+            hash: crate::hashing::sha256_hex(b"new"),
+        }];
+        assert!(persist_cache_entry(&cache, "IR-NEW", &deps_new));
+        assert!(read_deps_fresh(&cache, model.to_str().unwrap()));
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), "IR-NEW");
+    }
+
+    /// Atomicity invariant: if the sidecar can't be written, the just-written IR
+    /// is removed — never left on disk where a reader could pair it with a
+    /// stale/foreign sidecar and serve it as fresh.
+    #[test]
+    fn persist_removes_ir_when_sidecar_write_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("e.ir.json");
+        // Force the sidecar rename to fail: pre-create `<cache>.deps` as a
+        // non-empty directory, so renaming the staging file onto it errors.
+        let sidecar = deps_sidecar_path(&cache);
+        std::fs::create_dir_all(&sidecar).unwrap();
+        std::fs::write(sidecar.join("x"), b"_").unwrap();
+
+        let deps = vec![ReadDep { as_written: "pop.tsv".into(), hash: "deadbeef".into() }];
+        let cached = persist_cache_entry(&cache, "IR", &deps);
+        assert!(!cached, "sidecar failure must report not-cached");
+        assert!(!cache.exists(),
+            "the IR must be removed when its sidecar can't be written (no stale-pairing)");
+    }
+
+    /// A sidecar with an unknown schema fails closed (recompile), not mis-parse.
+    #[test]
+    fn read_deps_fresh_rejects_unknown_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = tmp.path().join("m.camdl");
+        std::fs::write(&model, b"// model").unwrap();
+        let cache = tmp.path().join("e.ir.json");
+        std::fs::write(&cache, "IR").unwrap();
+        // Hand-write a sidecar from a "future" schema.
+        std::fs::write(deps_sidecar_path(&cache), r#"{"schema":999,"reads":[]}"#).unwrap();
+        assert!(!read_deps_fresh(&cache, model.to_str().unwrap()),
+            "unknown sidecar schema must read as not-fresh");
+    }
 
     // ── apply_integrator_override (gh#166 C4) ────────────────────────────────
 

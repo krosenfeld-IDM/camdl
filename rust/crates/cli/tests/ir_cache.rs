@@ -44,6 +44,37 @@ init { S = 499  I = 1 }
 simulate { from = 0 'days  to = 20 'days }
 "#;
 
+/// A 2-patch SIR whose population table is loaded via `read("pop.tsv")` at
+/// compile time and baked into the IR. Editing `pop.tsv` (without touching the
+/// `.camdl`) must invalidate the cache (gh#260).
+const SIR_PATCHES: &str = r#"
+time_unit = 'days
+dimensions { patch = [north, south] }
+compartments { S, I, R }
+stratify(by = patch)
+tables {
+  N0 : patch = read("pop.tsv")
+}
+parameters {
+  beta  : rate        in [0.001, 1.0]
+  gamma : rate        in [0.01,  1.0]
+  I0    : count       in [1, 100]
+}
+let N[p in patch] = S[p] + I[p] + R[p]
+transitions {
+  infection[p in patch] : S[p] --> I[p]  @ beta * S[p] * I[p] / N[p]
+  recovery[p in patch]  : I[p] --> R[p]  @ gamma * I[p]
+}
+init {
+  S[p in patch] = N0[p] - I0
+  I[p in patch] = I0
+}
+simulate { from = 0 'days  to = 28 'days }
+"#;
+
+const POP_TSV_A: &str = "patch\tN0\nnorth\t50000\nsouth\t30000\n";
+const POP_TSV_B: &str = "patch\tN0\nnorth\t99999\nsouth\t30000\n";
+
 /// A camdlc wrapper that appends a line per *compile* (not the
 /// `--camdl-version` probe) before exec'ing the real camdlc.
 fn counting_shim(dir: &Path, real: &Path, counter: &Path) -> PathBuf {
@@ -120,6 +151,92 @@ fn editing_the_model_invalidates_the_cache() {
     std::fs::write(&model, SIR.replace("to = 20 'days", "to = 40 'days")).unwrap();
     run_simulate(&bin, &shim, &model, &cache, &tmp.path().join("o2"), false);
     assert_eq!(compiles(&counter), 2, "an edited model must recompile (content is in the key)");
+}
+
+/// Run `simulate` on the 2-patch model (params differ from `SIR`; `N0` is a
+/// read() table, not a CLI param).
+fn run_patches(bin: &Path, shim_dir: &Path, model: &Path, cache_dir: &Path, out: &Path) {
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let st = Command::new(bin)
+        .args([
+            "simulate", model.to_str().unwrap(),
+            "--backend", "chain_binomial", "--seed", "1",
+            "--param", "beta=0.3", "--param", "gamma=0.1", "--param", "I0=5",
+            "--output-dir", out.to_str().unwrap(), "--progress", "none",
+        ])
+        .env("PATH", format!("{}:{}", shim_dir.display(), old_path))
+        .env("CAMDL_IR_CACHE_DIR", cache_dir)
+        .env("CAMDL_SKIP_VERSION_CHECK", "1")
+        .status().expect("spawn");
+    assert!(st.success(), "simulate (patches) should succeed");
+}
+
+/// gh#260: a file loaded via `read()` is a compile input. Editing `pop.tsv`
+/// without touching the `.camdl` must invalidate the cache and recompile —
+/// otherwise camdl silently serves IR built from the stale populations.
+#[test]
+fn editing_a_read_loaded_file_invalidates_the_cache() {
+    let Some((bin, real)) = skip_if_unbuilt() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let model = tmp.path().join("patches.camdl");
+    std::fs::write(&model, SIR_PATCHES).unwrap();
+    let pop = tmp.path().join("pop.tsv");
+    std::fs::write(&pop, POP_TSV_A).unwrap();
+    let counter = tmp.path().join("compiles.log");
+    let shim = counting_shim(tmp.path(), &real, &counter);
+    let cache = tmp.path().join("ircache");
+
+    run_patches(&bin, &shim, &model, &cache, &tmp.path().join("o1"));
+    assert_eq!(compiles(&counter), 1, "first run compiles once (cache miss)");
+
+    run_patches(&bin, &shim, &model, &cache, &tmp.path().join("o2"));
+    assert_eq!(compiles(&counter), 1, "unchanged read() file → cache hit, no recompile");
+
+    // Edit the read()-loaded table; the .camdl is byte-identical.
+    std::fs::write(&pop, POP_TSV_B).unwrap();
+
+    run_patches(&bin, &shim, &model, &cache, &tmp.path().join("o3"));
+    assert_eq!(compiles(&counter), 2,
+        "editing the read()-loaded pop.tsv must invalidate the cache and recompile");
+
+    run_patches(&bin, &shim, &model, &cache, &tmp.path().join("o4"));
+    assert_eq!(compiles(&counter), 2,
+        "re-run after the edit hits the cache (now keyed to the new pop.tsv)");
+}
+
+/// gh#260: correctness under the GLOBAL shared cache. Two byte-identical
+/// `.camdl` files (→ identical cache key) in different directories with
+/// DIFFERENT `pop.tsv` contents must not share an IR entry — the read()-inputs
+/// are re-resolved against the *current* model's directory and re-hashed, so B
+/// recompiles rather than serving A's IR built from A's populations.
+#[test]
+fn same_model_different_read_data_do_not_share_a_cache_entry() {
+    let Some((bin, real)) = skip_if_unbuilt() else { return; };
+    let tmp = tempfile::tempdir().unwrap();
+    let shared_cache = tmp.path().join("ircache"); // ONE global cache for both
+    let counter = tmp.path().join("compiles.log");
+    let shim = counting_shim(tmp.path(), &real, &counter);
+
+    // Context A: model + popA.
+    let dir_a = tmp.path().join("a");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    let model_a = dir_a.join("patches.camdl");
+    std::fs::write(&model_a, SIR_PATCHES).unwrap();
+    std::fs::write(dir_a.join("pop.tsv"), POP_TSV_A).unwrap();
+
+    // Context B: BYTE-IDENTICAL model, a DIFFERENT pop.tsv.
+    let dir_b = tmp.path().join("b");
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let model_b = dir_b.join("patches.camdl");
+    std::fs::write(&model_b, SIR_PATCHES).unwrap();
+    std::fs::write(dir_b.join("pop.tsv"), POP_TSV_B).unwrap();
+
+    run_patches(&bin, &shim, &model_a, &shared_cache, &tmp.path().join("oa"));
+    assert_eq!(compiles(&counter), 1, "context A compiles once (cold cache)");
+
+    run_patches(&bin, &shim, &model_b, &shared_cache, &tmp.path().join("ob"));
+    assert_eq!(compiles(&counter), 2,
+        "same model bytes but different pop.tsv → must recompile, not reuse A's IR");
 }
 
 /// Like `run_simulate` but with `CAMDL_NO_CONSTANT_FOLD` set, so camdlc emits
