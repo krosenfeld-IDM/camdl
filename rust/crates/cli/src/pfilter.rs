@@ -661,6 +661,9 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
                 .unwrap_or_else(|e| { eprintln!("cannot create {}: {}", path, e); std::process::exit(1); });
             Box::new(std::io::BufWriter::new(f))
         };
+        // gh#268: the real observed value per union step (cross-stream sum),
+        // not the never-scored 0.0 placeholder carried on the time axis.
+        let observed = obs_model.joint_observed();
         if let Some(ref preds) = result.predictions {
             writeln!(out, "time\tll_increment\tESS\tobs_mean\tobs_q05\tobs_q50\tobs_q95\tstate_mean\tstate_q05\tstate_q50\tstate_q95\tobserved").unwrap();
             for (i, obs) in observations.iter().enumerate() {
@@ -669,14 +672,14 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
                     obs.time, result.ll_increments[i], result.ess_trace[i],
                     p.obs_mean, p.obs_q05, p.obs_q50, p.obs_q95,
                     p.state_mean, p.state_q05, p.state_q50, p.state_q95,
-                    obs.value).unwrap();
+                    observed[i]).unwrap();
             }
         } else {
             writeln!(out, "time\tll_increment\tESS\tobserved").unwrap();
             for (i, obs) in observations.iter().enumerate() {
                 writeln!(out, "{}\t{:.4}\t{:.1}\t{:.0}",
                     obs.time, result.ll_increments[i], result.ess_trace[i],
-                    obs.value).unwrap();
+                    observed[i]).unwrap();
             }
         }
         drop(out);
@@ -761,7 +764,9 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
     if let Some(ref stem) = save_prequential {
         let recorded = result.prequential.as_ref().expect(
             "record_prequential must be true when save_prequential is set");
-        let y_obs: Vec<f64> = observations.iter().map(|o| o.value).collect();
+        // gh#268: score against the real observed values (cross-stream sum on
+        // the union axis), not the never-scored 0.0 placeholder.
+        let y_obs: Vec<f64> = obs_model.joint_observed();
         let mut trace = sim::inference::prequential::build_trace(
             recorded, &y_obs, &result.ess_trace, 0);
         if !save_samples {

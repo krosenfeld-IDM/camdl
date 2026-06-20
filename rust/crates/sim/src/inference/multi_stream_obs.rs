@@ -979,6 +979,36 @@ impl MultiStreamObsModel {
         }
     }
 
+    /// The joint observed value at each union index: the sum, across all bound
+    /// streams scheduled-and-observed there, of the cell value. This is the
+    /// correct `y_obs` for the prequential trace and the `--trace` `observed`
+    /// column — the trace records a single scalar observation per step and
+    /// scores it against the joint (cross-stream sum) predictive sample
+    /// (`sample().filter(finite).sum()`). A stream not scheduled at this index
+    /// (`at_union == None`) or a hole (`observations[local] == None`)
+    /// contributes nothing; mirrors [`score_streams`]'s union/hole handling so
+    /// the recorded observation and the scored predictive share one convention.
+    /// Holes never actually reach here — `--save-prequential` / `--trace` are
+    /// hard-rejected when the data has any hole (`check_holes_output_compat`),
+    /// so on this path scheduled ⇔ observed and the sum is exact. The returned
+    /// vector has length `self.obs_times.len()`.
+    pub fn joint_observed(&self) -> Vec<f64> {
+        (0..self.obs_times.len())
+            .map(|union_idx| {
+                self.streams
+                    .iter()
+                    .map(|s| match s.at_union[union_idx] {
+                        Some(local) => match s.observations[local] {
+                            Some(ObsCell::Scalar(v)) => v,
+                            None => 0.0,
+                        },
+                        None => 0.0,
+                    })
+                    .sum::<f64>()
+            })
+            .collect()
+    }
+
     /// Shared per-stream scoring loop. `project(stream_idx, t)` supplies the
     /// projected value for each stream — the only thing that differs between the
     /// integer (PGAS/PF) and real (ODE) accumulator paths. Hole handling, union
@@ -1589,6 +1619,45 @@ mod hole_scoring_tests {
         );
         MultiStreamObsModel::new(
             BoundObs::bind(vec![spec]).expect("bind").0, compiled).unwrap()
+    }
+
+    /// gh#268: `joint_observed()` is the per-union-index cross-stream sum used as
+    /// the prequential `y_obs` and the `--trace` `observed` column. It must
+    /// mirror `score_streams`'s union/hole handling: a stream not scheduled at a
+    /// union index contributes nothing, and a hole (`None`) contributes nothing.
+    /// Two streams on staggered cadences exercise the `at_union == None` gap that
+    /// the same-cadence integration tests don't reach.
+    #[test]
+    fn joint_observed_sums_scheduled_streams_and_omits_holes() {
+        let compiled = model();
+        let rec = compiled.model.transitions.iter()
+            .position(|t| t.name == "recovery").unwrap();
+        let mut ir_a = compiled.model.observations[0].clone();
+        ir_a.name = "a".into();
+        let mut ir_b = compiled.model.observations[0].clone();
+        ir_b.name = "b".into();
+        // a: t ∈ {1, 3}, value 10 at t=1 and a HOLE at t=3.
+        let spec_a = StreamSpec::dense(
+            StreamProjection::FlowSum(vec![rec]),
+            ir_a,
+            vec![Some(ObsCell::Scalar(10.0)), None],
+            vec![1.0, 3.0],
+        );
+        // b: t ∈ {2}, value 20.
+        let spec_b = StreamSpec::dense(
+            StreamProjection::FlowSum(vec![rec]),
+            ir_b,
+            dense_cells(vec![20.0]),
+            vec![2.0],
+        );
+        let m = MultiStreamObsModel::new(
+            BoundObs::bind(vec![spec_a, spec_b]).expect("bind").0, compiled,
+        ).unwrap();
+        // union axis = [1, 2, 3]:
+        //   t=1: a=10 (scheduled+observed), b not scheduled        -> 10
+        //   t=2: a not scheduled,           b=20                    -> 20
+        //   t=3: a hole (omitted),          b not scheduled         ->  0
+        assert_eq!(m.joint_observed(), vec![10.0, 20.0, 0.0]);
     }
 
     /// (a) A `None` cell contributes EXACTLY 0 to the joint log-likelihood —
