@@ -199,6 +199,16 @@ impl PGASTrajectory {
             }
             for i in 0..n_comp {
                 state[i] += rec.counts_after[i] - rec.counts_before[i];
+                // Directionality guard (gh#264): a coherent compartment count can
+                // never go negative. If chaining the realized deltas produces one,
+                // the record is corrupt — surface it (the writer logs + skips the
+                // file) rather than emitting a physically-impossible trajectory.
+                if state[i] < 0 {
+                    return Err(format!(
+                        "PGASTrajectory::coherent_counts_after: compartment {i} went \
+                         negative ({}) at substep {s} — incoherent trajectory record",
+                        state[i]));
+                }
             }
             out.push(state.clone());
         }
