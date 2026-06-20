@@ -888,6 +888,27 @@ impl MultiStreamObsModel {
         self.interval_slots.len()
     }
 
+    /// The `Interval` (incidence / `FlowSum`) streams as `(name, flow_indices)`,
+    /// in dense `acc` order. The single source of truth for an `inc_<stream>`
+    /// output column: a posterior-trajectory writer sums per-transition flows
+    /// over `flow_indices` (the same `FlowSum(idxs)` set scoring uses), so the
+    /// emitted incidence is the model's declared projection — never a
+    /// finite-difference of compartment counts, which is unsafe under
+    /// event/balance interactions (gh#48 / gh#264). Prevalence/`Instant`
+    /// streams own no incidence column and are absent here.
+    ///
+    /// Kept compatible with a future per-stream prequential (gh#269): the same
+    /// per-stream `FlowSum` density underlies both an `inc_<stream>` column and
+    /// a per-stream score.
+    pub fn incidence_streams(&self) -> Vec<(String, Vec<usize>)> {
+        self.interval_slots.iter()
+            .map(|slot| (
+                self.streams[slot.stream_idx].name.clone(),
+                slot.flow_indices.clone(),
+            ))
+            .collect()
+    }
+
     /// Fold this interval's per-transition `flow_accumulators` into the
     /// per-stream `acc`: for each Interval slot `k`,
     /// `acc[k] += Σ_{i ∈ flow_indices(k)} flow_accumulators[i]`. Once per

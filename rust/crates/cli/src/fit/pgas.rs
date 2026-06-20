@@ -13,6 +13,10 @@ use sim::inference::{
     pgas::{PGASConfig, ChainResumeState, run_pgas, PGASSweep, PGASTrajectory},
     diagnostic::{DiagnosticCollector, DiagnosticKind},
 };
+use io::trajectories::{
+    Granularity, PosteriorDraw, TrajColumnSpec, TrajManifest, write_trajectories_tsv,
+};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -486,6 +490,15 @@ pub fn run_stage(
         .map(|chain_id| reporter.task(n_sweeps as u64, format!("chain {}", chain_id + 1), "sweeps"))
         .collect();
 
+    // Posterior-trajectory output metadata, computed once and shared across the
+    // per-chain writers (the model is shared, so these are chain-invariant).
+    // `model_hash` is the structural model identity (the `# camdl-trajectories`
+    // header + manifest `model_hash`); `date_origin` reuses `simulate`'s
+    // calendar formatting when the model declares an `origin`.
+    let traj_model_hash = crate::resolve::model_identity_from_ir(&config.model_ir_json);
+    let traj_date_origin: Option<(String, String)> = config.model.origin.as_ref()
+        .map(|o| (o.clone(), config.model.time_unit.clone()));
+
     // Run chains in parallel (each chain is independent: own seed, own
     // trajectory, own RNG). Same pattern as PMMH.
     use rayon::prelude::*;
@@ -545,16 +558,27 @@ pub fn run_stage(
             } else {
                 usize::MAX // disabled
             };
-            let traj_dir = chain_dir.join("trajectories");
-            if n_trajectories > 0 {
-                let _ = std::fs::create_dir_all(&traj_dir);
-            }
 
-            // Compartment names for trajectory header
-            let comp_names: Vec<String> = config.compiled.model.compartments.iter()
-                .map(|c| c.name.clone()).collect();
-            let flow_names: Vec<String> = config.compiled.model.transitions.iter()
-                .map(|t| format!("flow_{}", t.name)).collect();
+            // Shared posterior-trajectory output (latent-trajectory-output
+            // consolidation, 2026-06-09). The per-substep reference path of each
+            // saved sweep projects into the `simulate` `Trajectory` type via the
+            // `SubstepRecord → Snapshot` adapter; one tidy/long `trajectories.tsv`
+            // (all draws stacked, leading `chain draw time` id columns) plus a
+            // `trajectories.json` manifest replaces the per-draw wide files.
+            //
+            // `inc_<stream>` columns come from the observation model's `FlowSum`
+            // projection applied to the substep flows (gh#48 safe path) — never a
+            // finite-difference of compartment counts (unsafe under
+            // event/balance, gh#264).
+            let incidence_streams = obs_model.incidence_streams();
+            let incidence_stream_names: Vec<String> =
+                incidence_streams.iter().map(|(n, _)| n.clone()).collect();
+            let traj_columns =
+                TrajColumnSpec::from_model(&config.compiled.model, &incidence_stream_names);
+            // Accumulate saved draws; the callback runs once per sweep, in order,
+            // within this chain (rayon parallelism is across chains), so a
+            // single-threaded RefCell accumulator is sound.
+            let saved_draws: RefCell<Vec<PosteriorDraw>> = RefCell::new(Vec::new());
 
             let progress_cb = |sweep: usize, result: &PGASSweep, traj: &PGASTrajectory| {
                 // Stream trace row via shared TraceWriter
@@ -576,48 +600,25 @@ pub fn run_stage(
                     &[&renewal, &transition_ll_str, &obs_ll_str], &param_vals,
                 );
 
-                // Save posterior trajectory sample
+                // Save posterior trajectory sample. The adapter takes
+                // `counts_after` (via `coherent_counts_after`, gh#264) + the
+                // per-substep flows, stamps each snapshot at `t0 + dt_substep`,
+                // and projects `inc_<stream>` from the substep flows. Drops the
+                // density internals (`counts_before`, `gammas`, `dt_substep` as a
+                // field). On an incoherent record (an AS-join corruption the
+                // adapter can't reconcile) the draw is skipped with a status line
+                // rather than silently emitting a backflowing path.
                 if sweep >= burn_in && (sweep - burn_in).is_multiple_of(traj_stride) {
-                    use std::io::Write;
-                    let path = traj_dir.join(format!("trajectory_{:06}.tsv", sweep));
-                    // gh#264: write the directionally-coherent state path
-                    // (net-delta chained), not the raw per-substep counts_after.
-                    // The CSMC-AS traceback can stitch the reference suffix onto
-                    // a different ancestor prefix at an ancestor-sampling join,
-                    // leaving counts_after[s] != counts_before[s+1] (apparent
-                    // backflow — e.g. S increasing in an SEIRD). The flows are
-                    // per-substep and already coherent.
-                    match traj.coherent_counts_after() {
+                    match traj.to_trajectory(&incidence_streams) {
                         Err(e) => crate::status::step("pgas-traj",
                             format!("skipping trajectory {sweep} (incoherent record): {e}")),
-                        Ok(coherent) => if let Ok(f) = std::fs::File::create(&path) {
-                            // BufWriter is essential here: the trajectory is
-                            // ~1455 substeps × ~720 fields, and each `write!`
-                            // below is one field. Unbuffered, that is ~1M
-                            // `write()` syscalls per file — profiling showed this
-                            // dominated PGAS wall time (60% of the fit) entirely in
-                            // blocking I/O. Buffered, it collapses to a few hundred
-                            // syscalls. Explicitly flushed below so a write error on
-                            // the final buffer drain surfaces instead of being
-                            // swallowed by BufWriter's drop.
-                            let mut f = std::io::BufWriter::new(f);
-                            // Header
-                            write!(f, "t").unwrap();
-                            for c in &comp_names { write!(f, "\t{}", c).unwrap(); }
-                            for fl in &flow_names { write!(f, "\t{}", fl).unwrap(); }
-                            writeln!(f).unwrap();
-                            // Rows: one per substep (coherent counts + per-substep flows).
-                            // Stamp at the substep's realized END time — read t0/dt_substep
-                            // (the source of truth), not a recomputed t_start + s·dt, so an
-                            // exact/off-grid tiling can't misstamp (gh#264).
-                            for (s, rec) in traj.substeps.iter().enumerate() {
-                                let t = rec.t0 + rec.dt_substep;
-                                write!(f, "{:.1}", t).unwrap();
-                                for &c in &coherent[s] { write!(f, "\t{}", c).unwrap(); }
-                                for &fl in &rec.flows { write!(f, "\t{}", fl).unwrap(); }
-                                writeln!(f).unwrap();
-                            }
-                            f.flush().unwrap();
+                        Ok((path_traj, incidence)) => {
+                            saved_draws.borrow_mut().push(PosteriorDraw {
+                                chain: chain_id,
+                                draw: sweep,
+                                path: path_traj,
+                                incidence,
+                            });
                         }
                     }
                 }
@@ -650,6 +651,52 @@ pub fn run_stage(
             let resume_path = chain_dir.join("resume_state.bin");
             if let Ok(encoded) = bincode::serialize(&result.resume_state) {
                 let _ = std::fs::write(&resume_path, encoded);
+            }
+
+            // Write this chain's posterior latent trajectories: one tidy/long
+            // `trajectories.tsv` (all saved draws stacked, leading `chain draw
+            // time [date]` id columns) + a `trajectories.json` manifest. Replaces
+            // the per-draw `trajectory_NNNNNN.tsv` wide files.
+            let draws = saved_draws.into_inner();
+            if !draws.is_empty() {
+                let date_origin = traj_date_origin.as_ref()
+                    .map(|(o, u)| (o.as_str(), u.as_str()));
+                let tsv_path = chain_dir.join("trajectories.tsv");
+                write_trajectories_tsv(
+                    &tsv_path, &draws, &traj_columns, date_origin,
+                    &traj_model_hash, "pgas", Granularity::Substep,
+                ).map_err(|e| format!("pgas chain {}: {}", chain_id + 1, e))?;
+
+                let manifest = TrajManifest {
+                    method: "pgas".to_string(),
+                    granularity: Granularity::Substep,
+                    n_chains: 1,
+                    n_draws: draws.len(),
+                    columns: {
+                        // Id columns + data columns, in emit order.
+                        let mut cols = vec!["chain".to_string(), "draw".to_string(),
+                            "time".to_string()];
+                        if date_origin.is_some() { cols.push("date".to_string()); }
+                        cols.extend(traj_columns.data_column_names());
+                        cols
+                    },
+                    model_hash: traj_model_hash.clone(),
+                    // PGAS draws are conditioned smoother paths X|θ,y; their
+                    // `inc_<stream>` is conditioned incidence, NOT the
+                    // free-forward posterior-predictive a `simulate --obs` run
+                    // produces.
+                    conditioned: true,
+                    // PGAS ancestor sampling mitigates filter-smoother
+                    // degeneracy, so no early-time degeneracy caveat (unlike the
+                    // PF/PMMH paths a later step adds).
+                    degeneracy_caveat: false,
+                    n_trajectories,
+                    // Best-effort: a sibling forward posterior-predictive obs
+                    // file isn't produced by `fit`, so none is recorded here.
+                    // (`simulate --obs` on the posterior draws would produce it.)
+                    predictive_obs_file: None,
+                };
+                let _ = manifest.write(&chain_dir.join("trajectories.json"));
             }
 
             let chain_elapsed = chain_start.elapsed();

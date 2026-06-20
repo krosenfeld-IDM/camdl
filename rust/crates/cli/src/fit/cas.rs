@@ -16,7 +16,7 @@
 //! - **seed level** = [`Seed`] = the resolved fit RNG seed.
 //!
 //! `n_trajectories` (the count of posterior trajectories PGAS writes to
-//! `chain_N/trajectories/` under the leaf) is folded into the stage identity
+//! `chain_N/trajectories.tsv` under the leaf) is folded into the stage identity
 //! ([`Stage::cas_n_trajectories`]). It is an output-shaping knob that
 //! `identity_payload` otherwise omits, but it must be in the key: a count that
 //! changes stored output has to change the `run_id`, else a stage `run_id`

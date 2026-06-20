@@ -1,14 +1,25 @@
-//! gh#264: a saved PGAS trajectory must be a single directionally-coherent
+//! gh#264 + latent-trajectory-output consolidation (2026-06-09): the saved
+//! PGAS posterior trajectories must be (a) a single directionally-coherent
 //! path — `S` monotone non-increasing, each step's `−ΔS` equal to the
-//! infection flow, and population conserved. This is the END-TO-END guard:
-//! it runs a tiny PGAS fit and audits a written `trajectory_*.tsv`. (The
-//! reconstruction logic itself is unit-tested in
-//! `sim::inference::pgas::coherent_counts_after_removes_as_join_backflow`;
-//! this test covers the writer wiring + output coherence so a regression in
-//! the serialization can't slip through.)
+//! infection flow, population conserved — and (b) emitted in the shared
+//! tidy/long `trajectories.tsv` format: a `# camdl-trajectories v1` header,
+//! leading `chain  draw  time` id columns, int/real compartments,
+//! `flow_<transition>`, then `inc_<stream>` columns whose values are the
+//! observation model's `FlowSum` projection of the substep flows (the gh#48
+//! safe path) — NOT a finite-difference of compartment counts.
+//!
+//! This is the END-TO-END guard: it runs a tiny PGAS fit and audits the
+//! written `trajectories.tsv` + `trajectories.json`. (The
+//! `SubstepRecord → Snapshot` adapter and the `inc_<stream>` projection are
+//! unit-tested in
+//! `sim::inference::pgas::grid_tests::to_trajectory_projects_incidence_from_flows_not_count_diff`;
+//! the coherent-path reconstruction in
+//! `coherent_counts_after_removes_as_join_backflow`. This test covers the
+//! writer wiring + the two-line posterior-band load.)
 //!
 //! Skipped when the release binary or camdlc isn't present.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,16 +36,30 @@ fn camdlc_bin() -> Option<PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
-fn find_one_trajectory(dir: &Path) -> Option<PathBuf> {
+/// Find the single per-chain `trajectories.tsv` under the fit results.
+fn find_trajectories_tsv(dir: &Path) -> Option<PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).ok()?.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                n.starts_with("trajectory_") && n.ends_with(".tsv")
-            }) {
+            } else if p.file_name().and_then(|n| n.to_str()) == Some("trajectories.tsv") {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn find_manifest(dir: &Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().and_then(|n| n.to_str()) == Some("trajectories.json") {
                 return Some(p);
             }
         }
@@ -43,14 +68,18 @@ fn find_one_trajectory(dir: &Path) -> Option<PathBuf> {
 }
 
 #[test]
-fn saved_pgas_trajectory_is_directionally_coherent() {
+fn saved_pgas_trajectories_are_coherent_and_tidy() {
     let bin = camdl_bin();
     let Some(camdlc) = camdlc_bin() else { return };
     let tmp = std::env::temp_dir().join(format!("camdl_traj_coh_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp);
 
     // Tiny SIR — S leaves only via infection, so a coherent path has S
-    // monotone non-increasing and −ΔS == flow_infection at every step.
+    // monotone non-increasing and −ΔS == flow_infection at every step. The
+    // `cases` stream uses an INCIDENCE projection (incidence(infection)), so a
+    // per-substep `inc_cases` column appears and must equal flow_infection (the
+    // FlowSum of the infection flow), NOT a count diff like ΔI = infection −
+    // recovery.
     let src = r#"
 time_unit = 'days
 compartments { S, I, R }
@@ -66,7 +95,7 @@ transitions {
 observations {
   cases {
     columns       { time : time, cases : count }
-    projected  = prevalence(I)
+    projected  = incidence(infection)
     emit_schedule = every 1 'days
     cases ~ poisson(rate = projected)
   }
@@ -120,32 +149,119 @@ n_trajectories = 4
         .output().expect("spawn");
     assert!(r.status.success(), "fit run failed: {}", String::from_utf8_lossy(&r.stderr));
 
-    let traj = find_one_trajectory(&tmp.join("results"))
-        .expect("a saved trajectory_*.tsv under the fit results");
+    let traj = find_trajectories_tsv(&tmp.join("results"))
+        .expect("a saved trajectories.tsv under the fit results");
     let text = std::fs::read_to_string(&traj).unwrap();
     let mut lines = text.lines();
-    let header: Vec<&str> = lines.next().expect("header").split('\t').collect();
+
+    // (1) Version header.
+    let version_line = lines.next().expect("version header");
+    assert!(version_line.starts_with("# camdl-trajectories v1"),
+        "expected camdl-trajectories header, got: {version_line}");
+    assert!(version_line.contains("method=pgas"), "header must name method: {version_line}");
+    assert!(version_line.contains("granularity=substep"),
+        "header must name granularity: {version_line}");
+
+    // (2) Tidy/long column header with leading id columns.
+    let header: Vec<&str> = lines.next().expect("col header").split('\t').collect();
+    assert_eq!(&header[0..3], &["chain", "draw", "time"],
+        "tidy format leads with chain/draw/time, got {header:?}");
     let col = |name: &str| header.iter().position(|h| *h == name)
         .unwrap_or_else(|| panic!("column {name} not in header {header:?}"));
-    let (si, ii, ri, fi) = (col("S"), col("I"), col("R"), col("flow_infection"));
+    let (ci, di, ti) = (col("chain"), col("draw"), col("time"));
+    let (si, ii, ri) = (col("S"), col("I"), col("R"));
+    let (fi_inf, fi_rec) = (col("flow_infection"), col("flow_recovery"));
+    let inc_i = col("inc_cases"); // incidence projection ⇒ inc_<stream> column
 
-    let mut prev_s: Option<i64> = None;
-    let mut pop0: Option<i64> = None;
-    let mut rows = 0usize;
-    for line in lines {
-        let c: Vec<i64> = line.split('\t')
-            .map(|v| v.parse::<f64>().unwrap_or(0.0) as i64).collect();
-        let (s, inf) = (c[si], c[fi]);
-        let pop = c[si] + c[ii] + c[ri];
-        if let Some(ps) = prev_s {
-            assert!(s <= ps, "S must be monotone non-increasing, got {ps} -> {s}");
-            assert_eq!(ps - s, inf, "−ΔS must equal flow_infection (coherent path)");
-        }
-        let p0 = *pop0.get_or_insert(pop);
-        assert_eq!(pop, p0, "S+I+R must be conserved across the path");
-        prev_s = Some(s);
-        rows += 1;
+    // (3) Per-draw coherence + the inc_<stream>-is-the-projection property.
+    // Group rows by (chain, draw); within a draw audit S-monotonicity,
+    // population conservation, −ΔS == flow_infection, and
+    // inc_cases == flow_infection (FlowSum of the infection flow — NOT
+    // ΔI = infection − recovery, which a count-diff would give).
+    let rows: Vec<Vec<f64>> = lines
+        .map(|line| line.split('\t')
+            .map(|v| v.parse::<f64>().unwrap_or(0.0))
+            .collect())
+        .collect();
+    assert!(!rows.is_empty(), "trajectories.tsv had no data rows");
+
+    let mut by_draw: BTreeMap<(i64, i64), Vec<&Vec<f64>>> = BTreeMap::new();
+    for r in &rows {
+        by_draw.entry((r[ci] as i64, r[di] as i64)).or_default().push(r);
     }
-    assert!(rows > 0, "the saved trajectory had no rows");
+    assert!(by_draw.len() >= 1, "expected at least one (chain,draw) group");
+
+    let mut total_rows = 0usize;
+    for ((_chain, _draw), draw_rows) in &by_draw {
+        let mut prev_s: Option<i64> = None;
+        let mut pop0: Option<i64> = None;
+        let mut prev_t: Option<f64> = None;
+        for r in draw_rows {
+            let s = r[si] as i64;
+            let inf = r[fi_inf] as i64;
+            let rec = r[fi_rec] as i64;
+            let inc = r[inc_i] as i64;
+            let pop = s + (r[ii] as i64) + (r[ri] as i64);
+
+            // inc_cases is the FlowSum projection of the infection flow.
+            assert_eq!(inc, inf,
+                "inc_cases must equal flow_infection (FlowSum projection), got inc={inc} inf={inf}");
+            // ... and (in this model) is NOT a count-diff ΔI = infection −
+            // recovery. Only assert the distinction when recovery actually fired,
+            // else the two coincide trivially.
+            if rec > 0 {
+                assert_ne!(inc, inf - rec,
+                    "inc_cases must be the projection, not ΔI = infection − recovery");
+            }
+
+            if let Some(ps) = prev_s {
+                assert!(s <= ps, "S must be monotone non-increasing, got {ps} -> {s}");
+                assert_eq!(ps - s, inf, "−ΔS must equal flow_infection (coherent path)");
+            }
+            let p0 = *pop0.get_or_insert(pop);
+            assert_eq!(pop, p0, "S+I+R must be conserved across the path");
+            // Time strictly increasing within a draw.
+            if let Some(pt) = prev_t {
+                assert!(r[ti] > pt, "time must increase within a draw, {pt} -> {}", r[ti]);
+            }
+            prev_s = Some(s);
+            prev_t = Some(r[ti]);
+            total_rows += 1;
+        }
+    }
+    assert!(total_rows > 0, "no trajectory rows audited");
+
+    // (4) The §4b "two-line load" acceptance test, in Rust: load the tidy file
+    // and compute a posterior median band over S grouped by time. This is the
+    // groupby(time) a researcher runs in pandas/readr; if the format is right
+    // it is a few lines here too.
+    let mut s_by_time: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
+    for r in &rows {
+        // bucket time to integer (dt = 1 day) for the band
+        s_by_time.entry(r[ti] as i64).or_default().push(r[si]);
+    }
+    assert!(s_by_time.len() > 1, "band needs more than one time point");
+    // Median S must be non-increasing across the band (SIR: S only decreases).
+    let medians: Vec<f64> = s_by_time.values().map(|v| {
+        let mut vv = v.clone();
+        vv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        vv[vv.len() / 2]
+    }).collect();
+    for w in medians.windows(2) {
+        assert!(w[1] <= w[0] + 1.0, // +1 slack for ties at the median across draws
+            "posterior-median S band should be ~non-increasing, got {:?}", medians);
+    }
+
+    // (5) Manifest discoverability: trajectories.json records the conditioned
+    // flag, method, granularity, and the column list.
+    let manifest_path = find_manifest(&tmp.join("results"))
+        .expect("a trajectories.json manifest");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    assert!(manifest.contains("\"method\": \"pgas\""), "manifest method: {manifest}");
+    assert!(manifest.contains("\"granularity\": \"substep\""), "manifest granularity");
+    assert!(manifest.contains("\"conditioned\": true"),
+        "manifest must mark PGAS smoother paths conditioned: {manifest}");
+    assert!(manifest.contains("inc_cases"), "manifest columns must list inc_cases");
+
     let _ = std::fs::remove_dir_all(&tmp);
 }

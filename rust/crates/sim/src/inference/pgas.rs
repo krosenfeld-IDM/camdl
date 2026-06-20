@@ -214,6 +214,71 @@ impl PGASTrajectory {
         }
         Ok(out)
     }
+
+    /// Project this substep-resolution reference path into the shared
+    /// [`crate::state::Trajectory`] output type — the same type `simulate`
+    /// produces — plus a per-substep, per-incidence-stream `inc_<stream>`
+    /// matrix (`incidence[s][k]`), so one posterior-trajectory writer serves
+    /// `simulate` and PGAS alike.
+    ///
+    /// **Counts.** Each snapshot's integer state is the directionally-coherent
+    /// path from [`coherent_counts_after`](Self::coherent_counts_after) (the
+    /// net-delta-chained counts, not the raw per-substep `counts_after` — see
+    /// that method for why the CSMC-AS join can leave the raw sequence
+    /// incoherent, gh#264). The density internals (`counts_before`, `gammas`,
+    /// `dt_substep` as a stored field) are dropped: an output trajectory carries
+    /// state + flows, not the likelihood machinery.
+    ///
+    /// **Time.** Each snapshot is stamped at the substep's realized END time
+    /// `t0 + dt_substep` — read from the record, never recomputed as
+    /// `t_start + s·dt`, so an off-grid / exact tiling can't misstamp.
+    ///
+    /// **Flows.** The per-substep integer flows ride through as [`Flows::Int`].
+    ///
+    /// **Incidence (`inc_<stream>`).** For each incidence stream (the
+    /// `(name, flow_indices)` pairs from
+    /// [`MultiStreamObsModel::incidence_streams`]), the column value at substep
+    /// `s` is `Σ_{i ∈ flow_indices} flows[s][i]` — the model's declared
+    /// `FlowSum` projection applied to that substep's flows. This is the gh#48
+    /// safe path: it never finite-differences compartment counts (`−ΔS`,
+    /// `diff(flow)`), which is unsafe under event/balance interactions (#264).
+    /// `incidence` is empty (and the writer emits no `inc_*` columns) when the
+    /// model has no incidence streams.
+    pub fn to_trajectory(
+        &self,
+        incidence_streams: &[(String, Vec<usize>)],
+    ) -> Result<(crate::state::Trajectory, Vec<Vec<f64>>), String> {
+        use crate::state::{Flows, IntState, RealState, Snapshot, Trajectory};
+
+        let coherent = self.coherent_counts_after()?;
+        let mut traj = Trajectory::new();
+        let mut incidence: Vec<Vec<f64>> = Vec::with_capacity(self.substeps.len());
+
+        for (s, rec) in self.substeps.iter().enumerate() {
+            let t = rec.t0 + rec.dt_substep;
+            traj.push(Snapshot {
+                t,
+                int_state: IntState::from_vec(coherent[s].clone()),
+                // PGAS runs the chain-binomial backend (integer compartments
+                // only); no real compartments to record.
+                real_state: RealState::from_vec(Vec::new()),
+                flows: Flows::Int(rec.flows.clone()),
+            });
+            // Per-substep incidence = the FlowSum projection over this substep's
+            // flows. Additive across substeps; a downstream consumer cumulates
+            // within an observation interval if it wants interval incidence.
+            if !incidence_streams.is_empty() {
+                incidence.push(
+                    incidence_streams.iter()
+                        .map(|(_, idxs)| idxs.iter()
+                            .map(|&i| rec.flows[i] as f64)
+                            .sum::<f64>())
+                        .collect(),
+                );
+            }
+        }
+        Ok((traj, incidence))
+    }
 }
 
 /// Mapping from an IVP parameter to the compartment it controls.
@@ -2626,6 +2691,82 @@ mod grid_tests {
         };
         let c = coherent_only.coherent_counts_after().unwrap();
         assert_eq!(c, vec![vec![90, 10], vec![85, 15]]);
+    }
+
+    /// The `SubstepRecord → Snapshot` adapter must (a) use the coherent
+    /// net-delta path for counts, (b) stamp each snapshot at `t0 + dt_substep`,
+    /// (c) carry the per-substep flows, and (d) compute `inc_<stream>` as the
+    /// `FlowSum` projection of THOSE FLOWS — never a finite-difference of
+    /// counts. This last point is the gh#48 / #264 correctness requirement.
+    #[test]
+    fn to_trajectory_projects_incidence_from_flows_not_count_diff() {
+        // 2 compartments [S, I]; one transition S->I (flow index 0) plus a
+        // second transition I->R (flow index 1) so the incidence stream sums a
+        // SUBSET of flows (index 0 only) — proving it reads the projection's
+        // flow set, not a count delta.
+        let mk = |cb: [i64; 2], ca: [i64; 2], inf: u64, rec: u64, t0: f64, dt: f64| {
+            SubstepRecord {
+                counts_before: cb.to_vec(),
+                counts_after: ca.to_vec(),
+                flows: vec![inf, rec],
+                gammas: vec![],
+                t0,
+                dt_substep: dt,
+            }
+        };
+        let traj = PGASTrajectory {
+            initial_counts: vec![100, 0],
+            // off-grid times: t0 not a clean s*dt, to catch a recompute-from-s bug.
+            substeps: vec![
+                mk([100, 0], [90, 10], 10, 0, 0.0, 1.0),
+                mk([90, 10], [85, 12], 5, 3, 1.0, 0.5), // dt_substep 0.5 → end 1.5
+            ],
+        };
+
+        // Incidence stream "cases" sums flow index 0 (infection) only.
+        let inc_streams = vec![("cases".to_string(), vec![0usize])];
+        let (out, incidence) = traj.to_trajectory(&inc_streams).unwrap();
+
+        // (a) counts == coherent_counts_after.
+        let coh = traj.coherent_counts_after().unwrap();
+        assert_eq!(out.snapshots.len(), 2);
+        for (s, snap) in out.snapshots.iter().enumerate() {
+            assert_eq!(snap.int_state.counts, coh[s], "snapshot {s} counts");
+        }
+        // (b) times stamped at t0 + dt_substep.
+        assert_eq!(out.snapshots[0].t, 1.0);
+        assert_eq!(out.snapshots[1].t, 1.5);
+        // (c) flows ride through.
+        assert_eq!(out.snapshots[0].flows.as_int(), &[10, 0]);
+        assert_eq!(out.snapshots[1].flows.as_int(), &[5, 3]);
+        // (d) inc_cases == Σ_{i∈{0}} substep.flows[i] = the infection flow per
+        // substep — NOT a count diff (which would be coh S drop: also 10 then 5
+        // here, so to disambiguate we use the SUBSET: recovery flow is excluded).
+        assert_eq!(incidence.len(), 2);
+        assert_eq!(incidence[0], vec![10.0]);
+        assert_eq!(incidence[1], vec![5.0]);
+        // The projection summed ONLY flow 0; had it summed all flows it would be
+        // 10 then 8 (5+3). Confirm it didn't.
+        assert_ne!(incidence[1], vec![8.0]);
+    }
+
+    /// No incidence streams ⇒ empty incidence sidecar (writer emits no `inc_*`).
+    #[test]
+    fn to_trajectory_empty_incidence_when_no_streams() {
+        let traj = PGASTrajectory {
+            initial_counts: vec![100],
+            substeps: vec![SubstepRecord {
+                counts_before: vec![100],
+                counts_after: vec![90],
+                flows: vec![10],
+                gammas: vec![],
+                t0: 0.0,
+                dt_substep: 1.0,
+            }],
+        };
+        let (out, incidence) = traj.to_trajectory(&[]).unwrap();
+        assert_eq!(out.snapshots.len(), 1);
+        assert!(incidence.is_empty());
     }
 
     fn obs(times: &[f64]) -> Vec<Observation> {

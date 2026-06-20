@@ -987,8 +987,22 @@ thin = 5
 n_trajectories = 200 # posterior trajectory samples per chain
 ```
 
-Output per chain: `trace.tsv` (parameters + log-likelihood per sweep),
-`trajectories/trajectory_NNNNNN.tsv` (posterior latent state draws).
+Output per chain: `trace.tsv` (parameters + log-likelihood per sweep) and
+`trajectories.tsv` (posterior latent state draws). The latter is a tidy/long
+file — all saved draws stacked, with leading `chain  draw  time` id columns,
+then the compartment columns, `flow_<transition>` columns, and `inc_<stream>`
+columns (the model's incidence projection of the latent flows, so posterior
+incidence needs no finite-differencing). A sibling `trajectories.json` manifest
+records the method, time granularity, column list, and the `conditioned: true`
+flag (these are smoother paths `X | θ, y`, not the free-forward
+posterior-predictive a `simulate --obs` run produces). Load a posterior band in
+two lines:
+
+```python
+import pandas as pd
+df = pd.read_csv("chain_1/trajectories.tsv", sep="\t", comment="#")
+band = df.groupby("time")[["S", "E", "I", "R"]].quantile([0.05, 0.5, 0.95])
+```
 
 ### IVP parameters (s0, e0)
 
