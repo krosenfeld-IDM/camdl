@@ -1095,6 +1095,20 @@ with only 4 chains can land in the wrong basin (e.g., R0≈28 instead of the tru
 R0≈20), and PGAS initialized there may never cross the barrier. More IF2 scout
 chains is the fix — tempering can't bridge 50+ nat gaps either.
 
+**Where priors live, and what `init = "from_prior"` reads.** Parameter priors
+belong in the **model**, declared with `~`:
+`param : <kind> in [<lo>, <hi>] ~ <dist>(...)`. The fit TOML `[estimate]` block
+_names_ the estimated parameters (with optional `bounds` / start overrides) — it
+is not where you put a prior. This coupling is load-bearing:
+`init = "from_prior"` draws each chain's start from the model's `~` declarations
+**only**. A prior set in `[estimate].<param>.prior` defines the MH **target**
+but is **not** seen by `from_prior`; any parameter with no model `~` falls back
+to **bounds-uniform** starts (you get a single startup `warning:` line naming
+those parameters). The fix is to move the prior into the model `~` clause — then
+`from_prior` draws every parameter from its prior with no warning. (The same
+applies to `init = "from_posterior"` for parameters absent from the posterior
+source.)
+
 ---
 
 ## Diagnostic interpretation guide
