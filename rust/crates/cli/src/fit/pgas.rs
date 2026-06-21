@@ -499,7 +499,7 @@ pub fn run_stage(
     // number. On clean completion we write `Done`; any error/panic drops the
     // heartbeat, leaving the last `Running` to go stale → consumer reads
     // `PresumedDead`.
-    let heartbeat = Heartbeat::start(
+    let heartbeat = Heartbeat::mcmc(
         stage_dir.to_path_buf(),
         burn_in as u64,
         n_sweeps as u64,

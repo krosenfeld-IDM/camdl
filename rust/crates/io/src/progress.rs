@@ -5,19 +5,26 @@
 //! `.lock` PID is same-host-only and reuse-prone, and `trace.tsv` mtime is not
 //! a heartbeat (one sweep is a full particle-filter pass). This module emits a
 //! small `progress.json`, refreshed on a **fixed wall-clock timer independent
-//! of sweep cadence**, so any consumer (a remote dashboard, CI) reads one
-//! contract for liveness + progress instead of reverse-engineering it.
+//! of step cadence**, so any consumer (a remote dashboard, CI) reads one
+//! contract for liveness + progress instead of reverse-engineering it — and can
+//! spot a fit that is broken early and stop it.
+//!
+//! The progress model is **algorithm-agnostic** so EVERY fitting method maps
+//! onto it: a generic `step`/`total` counter plus a [`Phase`] (MCMC
+//! burn-in/sampling, optimizer search, profile grid). The [`Heartbeat`]
+//! constructor picks how the phase is derived ([`Heartbeat::mcmc`] /
+//! [`Heartbeat::optimizing`] / [`Heartbeat::profiling`]); the loop just
+//! [`bump`](Heartbeat::bump)s a step counter.
 //!
 //! The honest model: a SIGKILLed run *cannot* write "I died". So the artifact
 //! records the run's last self-report ([`RunState`]); **deadness is a consumer
 //! inference from staleness**, never a self-claim. [`liveness`] folds the
-//! artifact + the clock into that judgement once ([`RunLiveness`]), so a
-//! consumer never touches a PID or an mtime.
+//! artifact + the clock into that judgement once ([`RunLiveness`]).
 //!
-//! The heartbeat is a **pure observer**: the sweep loop only stores into shared
-//! atomics ([`Heartbeat::set`]); a background thread does the file I/O. It reads
-//! nothing the inference writes and consumes no RNG — it cannot change a single
-//! fit number.
+//! The heartbeat is a **pure observer**: the step loop only stores into a shared
+//! atomic ([`Heartbeat::bump`]); a background thread does the file I/O. It reads
+//! nothing the inference writes and consumes no RNG — it cannot change a fit
+//! number.
 
 use std::fs;
 use std::io;
@@ -32,39 +39,57 @@ use serde::{Deserialize, Serialize};
 /// The artifact filename written into a run's seed/stage directory.
 pub const PROGRESS_FILE: &str = "progress.json";
 
-/// Where in a sampler run the chains currently are.
+/// What kind of work a run is doing — algorithm-agnostic, so every fitting
+/// method maps onto the one progress type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
-    /// Warming up — no trace rows are written yet, so this phase is otherwise
-    /// invisible on disk (gh#278 motivation 3).
+    /// MCMC warmup — no trace rows yet (gh#278 motivation 3). PGAS / PMMH / `mh` on ode.
     BurnIn,
-    /// Post-burn-in sampling — trace rows accrue.
+    /// MCMC sampling — trace rows accrue. PGAS / PMMH / `mh` on ode.
     Sampling,
+    /// Searching for the MLE — IF2's cooling iterations or an NLopt eval loop.
+    Optimizing,
+    /// Stepping a profile-likelihood grid.
+    Profiling,
 }
 
-impl Phase {
-    /// Derive the phase from how far the run has swept. The single source of
-    /// truth is the sweep counter — no separate phase field to drift or race.
-    fn at(sweep: u64, burn_in: u64) -> Phase {
-        if sweep < burn_in { Phase::BurnIn } else { Phase::Sampling }
+/// How a run derives its [`Phase`] from the step counter. A [`Heartbeat`]'s
+/// constructor picks the rule — MCMC splits on `burn_in`; every other algorithm
+/// has a single fixed phase. This is what lets one progress type serve all of
+/// them without a phase that some algorithm can't fill in.
+#[derive(Debug, Clone, Copy)]
+enum PhaseRule {
+    Mcmc { burn_in: u64 },
+    Fixed(Phase),
+}
+
+impl PhaseRule {
+    fn at(&self, step: u64) -> Phase {
+        match self {
+            PhaseRule::Mcmc { burn_in } => {
+                if step < *burn_in { Phase::BurnIn } else { Phase::Sampling }
+            }
+            PhaseRule::Fixed(p) => *p,
+        }
     }
 }
 
-/// The run's last self-report. An ADT, so incoherent combinations
-/// (`done` + `burn_in`, a failure with no reason, `sampling` with no sweep
-/// counter) are unrepresentable. Serializes externally-tagged:
-/// `{"running": {…}}` / `"done"` / `{"failed": {"reason": …}}`.
+/// The run's last self-report. An ADT, so incoherent combinations (a failure
+/// with no reason, `running` with no counter) are unrepresentable. Serializes
+/// externally-tagged: `{"running": {…}}` / `"done"` / `{"failed": {…}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
-    /// Live: a sweep counter + phase. Coherent only while running.
-    Running { phase: Phase, sweep: u64, total_sweeps: u64 },
-    /// Clean completion — carries no sweep counter (it ran to `total_sweeps`).
+    /// Live: `step` of `total` units done. The unit is the algorithm's
+    /// (sweeps / IF2 iterations / NLopt evals / profile grid points); `phase`
+    /// gives the context. Coherent only while running.
+    Running { phase: Phase, step: u64, total: u64 },
+    /// Clean completion.
     Done,
-    /// Clean, caught failure — carries the reason (the flat-JSON proposal
-    /// dropped this). An *un*caught death (SIGKILL/panic) leaves the last
-    /// `Running` on disk going stale instead; see [`RunLiveness`].
+    /// Clean, caught failure — carries the reason. An *un*caught death
+    /// (SIGKILL/panic) instead leaves the last `Running` on disk going stale;
+    /// see [`RunLiveness`].
     Failed { reason: String },
 }
 
@@ -108,8 +133,8 @@ pub enum RunLiveness {
 }
 
 /// Fold a [`Progress`] read + the current time into a [`RunLiveness`].
-/// `now_unix` and `max_stale` are seconds. A clean terminal state short-circuits
-/// the freshness check; only a stale `Running` becomes `PresumedDead`.
+/// `now_unix` and `max_stale_secs` are seconds. A clean terminal state
+/// short-circuits the freshness check; only a stale `Running` is `PresumedDead`.
 pub fn liveness(p: &Progress, now_unix: u64, max_stale_secs: u64) -> RunLiveness {
     match &p.state {
         RunState::Done | RunState::Failed { .. } => RunLiveness::Terminal(p.state.clone()),
@@ -129,7 +154,6 @@ pub fn liveness(p: &Progress, now_unix: u64, max_stale_secs: u64) -> RunLiveness
 pub fn write_progress(dir: &Path, p: &Progress) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(p).map_err(io::Error::other)?;
     let final_path = dir.join(PROGRESS_FILE);
-    // Unique temp name (pid) so two writers in the same dir never collide.
     let tmp = dir.join(format!("{}.{}.tmp", PROGRESS_FILE, std::process::id()));
     fs::write(&tmp, &json)?;
     fs::rename(&tmp, &final_path)?;
@@ -146,34 +170,32 @@ pub fn read_progress(dir: &Path) -> io::Result<Progress> {
 
 struct Shared {
     dir: PathBuf,
-    burn_in: u64,
-    total_sweeps: u64,
-    sweep: AtomicU64, // monotonic (fetch_max) — furthest any chain has reached
+    rule: PhaseRule,
+    total: u64,
+    step: AtomicU64, // monotonic (fetch_max) — furthest any chain has reached
     stop: AtomicBool,
 }
 
-/// A background heartbeat for a run directory. `start` spawns a timer thread
-/// that writes `progress.json` every `interval`; the sweep loop calls
-/// [`Heartbeat::set`] (cheap atomic stores, no I/O); [`Heartbeat::finish`]
-/// writes the clean terminal state and joins the thread. If dropped without
-/// `finish` (panic/early return), the thread stops and the last `Running` state
-/// is left on disk to go stale — a consumer then reads `PresumedDead`.
+/// A background heartbeat for a run directory. The constructor encodes the
+/// algorithm's progress shape ([`mcmc`](Heartbeat::mcmc) /
+/// [`optimizing`](Heartbeat::optimizing) / [`profiling`](Heartbeat::profiling));
+/// the step loop calls [`bump`](Heartbeat::bump) (a cheap atomic, no I/O); a
+/// timer thread writes `progress.json` every `interval`. [`finish`](Heartbeat::finish)
+/// writes the clean terminal state and joins. If dropped without `finish`
+/// (panic/early return), the thread stops and the last `Running` is left to go
+/// stale — a consumer then reads `PresumedDead`.
 pub struct Heartbeat {
     shared: Arc<Shared>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Heartbeat {
-    /// Start the heartbeat. Writes an initial `Running{BurnIn, 0}` immediately,
-    /// then refreshes every `interval`. `interval` should be a fixed wall-clock
-    /// period (5–10 s) — NOT tied to sweep cadence. `burn_in` is the sweep
-    /// boundary below which the phase reads `BurnIn`.
-    pub fn start(dir: PathBuf, burn_in: u64, total_sweeps: u64, interval: Duration) -> Heartbeat {
+    fn spawn(dir: PathBuf, rule: PhaseRule, total: u64, interval: Duration) -> Heartbeat {
         let shared = Arc::new(Shared {
             dir,
-            burn_in,
-            total_sweeps,
-            sweep: AtomicU64::new(0),
+            rule,
+            total,
+            step: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         });
         let s = Arc::clone(&shared);
@@ -183,11 +205,11 @@ impl Heartbeat {
                 // Sleep in short ticks so `stop` is responsive without a condvar.
                 let tick = Duration::from_millis(250).min(interval);
                 loop {
-                    let sweep = s.sweep.load(Ordering::Relaxed);
+                    let step = s.step.load(Ordering::Relaxed);
                     let p = Progress::now(RunState::Running {
-                        phase: Phase::at(sweep, s.burn_in),
-                        sweep,
-                        total_sweeps: s.total_sweeps,
+                        phase: s.rule.at(step),
+                        step,
+                        total: s.total,
                     });
                     let _ = write_progress(&s.dir, &p);
                     let mut waited = Duration::ZERO;
@@ -204,12 +226,29 @@ impl Heartbeat {
         Heartbeat { shared, handle: Some(handle) }
     }
 
-    /// Report the furthest sweep a chain has reached. Cheap (one relaxed
-    /// `fetch_max`) — safe from the hot sweep loop and from multiple parallel
-    /// chains; monotonic, so progress never jitters backward. Does no I/O (the
-    /// background thread writes the file).
-    pub fn bump(&self, sweep: u64) {
-        self.shared.sweep.fetch_max(sweep, Ordering::Relaxed);
+    /// MCMC heartbeat (PGAS / PMMH / `mh` on ode): the phase reads `BurnIn`
+    /// below `burn_in` sweeps and `Sampling` at/after it. `total` is the total
+    /// sweeps/steps. `interval` is a fixed wall-clock period (5–10 s).
+    pub fn mcmc(dir: PathBuf, burn_in: u64, total: u64, interval: Duration) -> Heartbeat {
+        Self::spawn(dir, PhaseRule::Mcmc { burn_in }, total, interval)
+    }
+
+    /// Optimizer heartbeat (IF2 cooling iterations / NLopt eval loop): a single
+    /// `Optimizing` phase. `total` is the iteration / max-eval budget.
+    pub fn optimizing(dir: PathBuf, total: u64, interval: Duration) -> Heartbeat {
+        Self::spawn(dir, PhaseRule::Fixed(Phase::Optimizing), total, interval)
+    }
+
+    /// Profile heartbeat: a single `Profiling` phase. `total` is the grid size.
+    pub fn profiling(dir: PathBuf, total: u64, interval: Duration) -> Heartbeat {
+        Self::spawn(dir, PhaseRule::Fixed(Phase::Profiling), total, interval)
+    }
+
+    /// Report the furthest step reached. Cheap (one relaxed `fetch_max`) — safe
+    /// from the hot loop and from multiple parallel chains; monotonic, so
+    /// progress never jitters backward. Does no I/O.
+    pub fn bump(&self, step: u64) {
+        self.shared.step.fetch_max(step, Ordering::Relaxed);
     }
 
     /// Stop the timer and write the clean terminal state (`Done` / `Failed`).
@@ -229,8 +268,8 @@ impl Heartbeat {
 impl Drop for Heartbeat {
     fn drop(&mut self) {
         // finish() already joined; this only fires on an un-finished drop
-        // (panic/early return). Stop the thread and leave the last Running
-        // state on disk — the consumer infers PresumedDead from its staleness.
+        // (panic/early return). Stop the thread and leave the last Running on
+        // disk — the consumer infers PresumedDead from its staleness.
         self.stop_thread();
     }
 }
@@ -241,28 +280,35 @@ mod tests {
 
     #[test]
     fn run_state_serializes_as_tagged_adt() {
-        let r = RunState::Running { phase: Phase::BurnIn, sweep: 3, total_sweeps: 10 };
+        let r = RunState::Running { phase: Phase::Optimizing, step: 3, total: 10 };
         let j = serde_json::to_string(&r).unwrap();
-        assert!(j.contains("\"running\"") && j.contains("\"burn_in\"") && j.contains("\"sweep\":3"));
+        assert!(j.contains("\"running\"") && j.contains("\"optimizing\"") && j.contains("\"step\":3"));
         assert_eq!(serde_json::to_string(&RunState::Done).unwrap(), "\"done\"");
         let f = serde_json::to_string(&RunState::Failed { reason: "boom".into() }).unwrap();
         assert!(f.contains("\"failed\"") && f.contains("boom"));
-        // round-trip
         let back: RunState = serde_json::from_str(&j).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn phase_rule_covers_every_algorithm_shape() {
+        // MCMC: derived from burn_in.
+        let mcmc = PhaseRule::Mcmc { burn_in: 5 };
+        assert_eq!(mcmc.at(4), Phase::BurnIn);
+        assert_eq!(mcmc.at(5), Phase::Sampling);
+        // Optimizer / profile: fixed phase regardless of step.
+        assert_eq!(PhaseRule::Fixed(Phase::Optimizing).at(999), Phase::Optimizing);
+        assert_eq!(PhaseRule::Fixed(Phase::Profiling).at(0), Phase::Profiling);
     }
 
     #[test]
     fn liveness_distinguishes_alive_stale_terminal() {
         let running = |t: u64| Progress {
             updated_at: t, pid: 1,
-            state: RunState::Running { phase: Phase::Sampling, sweep: 5, total_sweeps: 10 },
+            state: RunState::Running { phase: Phase::Sampling, step: 5, total: 10 },
         };
-        // fresh Running → Alive
         assert!(matches!(liveness(&running(100), 105, 30), RunLiveness::Alive(_)));
-        // stale Running → PresumedDead (the SIGKILL case)
         assert!(matches!(liveness(&running(100), 200, 30), RunLiveness::PresumedDead(_)));
-        // Done/Failed → Terminal regardless of freshness
         let done = Progress { updated_at: 1, pid: 1, state: RunState::Done };
         assert!(matches!(liveness(&done, 9_999_999, 30), RunLiveness::Terminal(_)));
     }
@@ -270,26 +316,23 @@ mod tests {
     #[test]
     fn write_then_read_round_trips_and_is_atomic_named() {
         let dir = tempfile::tempdir().unwrap();
-        let p = Progress::now(RunState::Running { phase: Phase::BurnIn, sweep: 7, total_sweeps: 20 });
+        let p = Progress::now(RunState::Running { phase: Phase::BurnIn, step: 7, total: 20 });
         write_progress(dir.path(), &p).unwrap();
-        // no leftover temp file
         let tmp = dir.path().join(format!("{}.{}.tmp", PROGRESS_FILE, std::process::id()));
         assert!(!tmp.exists(), "temp file should be renamed away");
-        let back = read_progress(dir.path()).unwrap();
-        assert_eq!(back.state, p.state);
+        assert_eq!(read_progress(dir.path()).unwrap().state, p.state);
     }
 
     #[test]
     fn heartbeat_writes_then_finish_marks_terminal() {
         let dir = tempfile::tempdir().unwrap();
-        // burn_in=5, total=30: sweep 12 ⇒ Sampling phase (derived).
-        let hb = Heartbeat::start(dir.path().to_path_buf(), 5, 30, Duration::from_millis(20));
-        // initial write happens immediately
+        // optimizing: fixed phase, step 12 of 30.
+        let hb = Heartbeat::optimizing(dir.path().to_path_buf(), 30, Duration::from_millis(20));
         std::thread::sleep(Duration::from_millis(40));
         hb.bump(12);
         std::thread::sleep(Duration::from_millis(40));
         let mid = read_progress(dir.path()).unwrap();
-        assert!(matches!(mid.state, RunState::Running { sweep: 12, phase: Phase::Sampling, .. }));
+        assert!(matches!(mid.state, RunState::Running { step: 12, phase: Phase::Optimizing, .. }));
         hb.finish(RunState::Done);
         assert_eq!(read_progress(dir.path()).unwrap().state, RunState::Done);
     }
