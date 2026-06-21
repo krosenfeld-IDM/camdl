@@ -46,11 +46,10 @@ Stable normative docs live at `docs/dev/` root.
 ./install.sh          # OCaml (opam) + Rust (rustup) toolchains, deps, build
 # or follow the manual steps in README.md "Prerequisites"
 
-brew install cargo-nextest   # required test runner (or: cargo install cargo-nextest --locked)
 brew install sccache         # optional compile cache — used only if on PATH
 
 make build            # build OCaml + Rust
-make test-fast        # fast inner loop: Rust workspace via nextest + doctests
+make test-fast        # fast inner loop: Rust workspace (cargo test)
 make test             # authoritative gate (every phase; mirrors CI) — green before a PR
 ```
 

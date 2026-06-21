@@ -217,19 +217,20 @@ before a change lands. CI mirrors every phase, so what the fast tier skips is
 still caught before merge.
 
 ```bash
-make test-fast       # inner loop: whole Rust workspace via nextest + doctests
+make test-fast       # inner loop: whole Rust workspace via cargo test
                      # (skips OCaml/integration/doc phases — NOT authoritative)
 make test            # authoritative, slow: every phase; mirrors CI
 make test-ocaml      # OCaml compiler + dimcheck + IR round-trip
-make test-rust       # Rust workspace except sim (nextest + doctests)
+make test-rust       # Rust workspace except sim (cargo test)
 make test-inference  # the sim crate (engine + inference stack)
 make test-integration # cross-language CLI shell-out (slow)
 
-# A single Rust test (nextest filter expression)
-cd rust && cargo nextest run -E 'test(expr_eval)'
+# A single Rust test file
+cd rust && cargo test --test expr_eval
 
-# Setup: `brew install cargo-nextest` (required) and, optionally, `brew install
-# sccache` (compile cache; the Makefile uses it only when on PATH).
+# Setup: optionally `brew install sccache` (compile cache; the Makefile uses it
+# only when on PATH). cargo-nextest is NOT used — its parallel launch burst
+# wedges macOS syspolicyd/code-signing; cargo test is sequential and safe.
 ```
 
 ### camdlc↔camdl version guard ("camdlc version mismatch")

@@ -53,14 +53,9 @@ jobs:
       - name: Clippy
         run: cd rust && cargo clippy --all-targets -- -D warnings
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-
       # make test-rust builds camdlc + the release binaries, symlinks camdlc onto
-      # PATH (so spawned `camdl` finds it), and runs the workspace (except sim)
-      # via `cargo nextest run` plus `cargo test --doc` (nextest does not run
-      # doctests). Same surface as before, parallelized.
+      # PATH (so spawned `camdl` finds it), and runs `cargo test --workspace
+      # --exclude sim --no-fail-fast`.
       - name: Rust tests (workspace except sim)
         run: opam exec -- make test-rust
 

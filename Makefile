@@ -104,23 +104,24 @@ dev-camdlc: build-ocaml
 # engine + the inference stack). Their union is the whole workspace.
 test: test-ocaml check-reactive-golden test-rust test-inference test-integration test-docs test-cli-docs
 
-# Inner-loop gate: the whole Rust workspace via nextest (parallel across all test
-# binaries) + doctests. Deliberately SKIPS the slow cross-language / doc phases
+# Inner-loop gate: the whole Rust workspace (unit + integration + doctests) via
+# `cargo test`. Deliberately SKIPS the slow cross-language / doc phases
 # (test-ocaml's dune runtest, check-reactive-golden, test-integration's OCaml→Rust
 # shell suite, test-docs, test-cli-docs). Use it while iterating; it is NOT the
 # authoritative gate. The full `make test` — and CI, which mirrors every phase
 # (see .github/workflows/ + docs/dev/testing.md "Tiered gate") — must pass before
 # a change lands. Anything test-fast skips is therefore still caught by CI.
+# (cargo-nextest was tried as the runner but its parallel test-list enumeration
+# spawns a burst of process launches that wedges macOS syspolicyd / code-signing,
+# hanging every launch in dyld; `cargo test` runs binaries sequentially and is
+# unaffected. sccache stays — it wraps rustc, no process burst.)
 .PHONY: test-fast
 test-fast: build-ocaml build-rust
 	@mkdir -p $(CAMDLC_BIN)
 	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
 	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 \
 	  CAMDL="$(abspath $(CAMDL))" $(CARGO_WRAP) \
-	  cargo nextest run --no-fail-fast --workspace
-	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 \
-	  CAMDL="$(abspath $(CAMDL))" $(CARGO_WRAP) \
-	  cargo test --doc --no-fail-fast --workspace
+	  cargo test --no-fail-fast --workspace
 
 # build-ocaml regenerates the gitignored ir_version_generated.ml from
 # ir/VERSION; without this dep, `dune runtest` runs against a stale version
@@ -144,10 +145,8 @@ CAMDLC_BIN := $(abspath rust/target/_camdlc_bin)
 # which cargo treats as unset — so CI and contributors without it are unaffected.
 # Shares artifacts across reruns AND across git worktrees (each has its own
 # target/), which directly speeds the worktree-parallel workflow. `brew install
-# sccache` to enable. The Rust test runner is cargo-nextest (parallel across all
-# test binaries — much faster than `cargo test` on this many-binary suite);
-# doctests run as a separate `cargo test --doc` step because nextest does not run
-# them (dropping them silently would be a coverage gap — docs/dev/testing.md).
+# sccache` to enable. (sccache wraps rustc only — no process-spawn burst, so it
+# is safe on macOS, unlike cargo-nextest; see test-fast's note.)
 SCCACHE := $(shell command -v sccache 2>/dev/null)
 CARGO_WRAP := $(if $(SCCACHE),RUSTC_WRAPPER=$(SCCACHE),)
 # build-rust is required: `cargo test` builds debug artifacts, but tests that
@@ -160,10 +159,7 @@ test-rust: build-ocaml build-rust
 	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
 	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 \
 	  CAMDL="$(abspath $(CAMDL))" $(CARGO_WRAP) \
-	  cargo nextest run --no-fail-fast --workspace --exclude sim
-	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 \
-	  CAMDL="$(abspath $(CAMDL))" $(CARGO_WRAP) \
-	  cargo test --doc --no-fail-fast --workspace --exclude sim
+	  cargo test --no-fail-fast --workspace --exclude sim
 
 # The sim crate — simulation engine (Gillespie/tau-leap/ODE/chain-binomial) plus
 # the inference stack (particle filter, IF2, PGAS, PMMH, NUTS, gradient checks)
@@ -174,9 +170,7 @@ test-inference: build-ocaml build-rust
 	@mkdir -p $(CAMDLC_BIN)
 	@ln -sf $(CAMDLC_ABS) $(CAMDLC_BIN)/camdlc
 	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 $(CARGO_WRAP) \
-	  cargo nextest run --no-fail-fast -p sim
-	cd rust && PATH="$(CAMDLC_BIN):$$PATH" CAMDL_SKIP_VERSION_CHECK=1 $(CARGO_WRAP) \
-	  cargo test --doc --no-fail-fast -p sim
+	  cargo test --no-fail-fast -p sim
 
 test-integration: build
 	CAMDLC="$(CAMDLC)" CAMDL="$(CAMDL)" bash tests/test_ocaml_to_rust.sh

@@ -25,20 +25,15 @@ echo "pre-push: OCaml tests..."
 
 # ── Rust: build + clippy + actual tests (not just --check) ────────────
 # Run the tests, not just a compile-check: `cargo check --tests` once let
-# runtime/assertion failures slip to CI (2026-04-17). cargo-nextest runs the
-# whole workspace in parallel; the separate `cargo test --doc` runs the doctests
-# nextest does NOT run (omitting it would silently drop doctest coverage). This
-# is the same surface as CI's `make test-rust` + `make test-inference`. sccache,
-# if installed, caches the compile (empty RUSTC_WRAPPER = unset, so it's a no-op
-# without it). Requires cargo-nextest: `brew install cargo-nextest`.
+# runtime/assertion failures slip to CI (2026-04-17). `cargo test --workspace`
+# compiles AND runs everything (incl. doctests), sequentially per binary.
+# sccache, if installed, caches the compile (empty RUSTC_WRAPPER = unset, a
+# no-op without it). (cargo-nextest was tried but its parallel launch burst
+# wedges macOS syspolicyd / code-signing — see the Makefile test-fast note.)
 echo "pre-push: Rust build + tests..."
 SCCACHE="$(command -v sccache 2>/dev/null)"
-(cd rust && RUSTC_WRAPPER="$SCCACHE" cargo nextest run --workspace --no-fail-fast 2>&1) || {
+(cd rust && RUSTC_WRAPPER="$SCCACHE" cargo test --workspace --no-fail-fast 2>&1) || {
     echo "error: Rust tests failed. Fix before pushing."
-    exit 1
-}
-(cd rust && RUSTC_WRAPPER="$SCCACHE" cargo test --doc --workspace --no-fail-fast 2>&1) || {
-    echo "error: Rust doctests failed. Fix before pushing."
     exit 1
 }
 
