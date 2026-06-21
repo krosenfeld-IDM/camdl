@@ -8,8 +8,12 @@
 //! output and `simulate` output share one format, one writer, and one
 //! downstream toolchain.
 
+pub mod progress;
 pub mod trajectories;
 
+pub use progress::{
+    Heartbeat, Phase, Progress, RunLiveness, RunState, liveness, read_progress, write_progress,
+};
 pub use trajectories::{
     Granularity, PosteriorDraw, TrajManifest, write_trajectories_tsv,
 };

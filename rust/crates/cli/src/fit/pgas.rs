@@ -16,6 +16,7 @@ use sim::inference::{
 use io::trajectories::{
     Granularity, PosteriorDraw, TrajColumnSpec, TrajManifest, write_trajectories_tsv,
 };
+use io::progress::{Heartbeat, RunState};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -490,6 +491,21 @@ pub fn run_stage(
         .map(|chain_id| reporter.task(n_sweeps as u64, format!("chain {}", chain_id + 1), "sweeps"))
         .collect();
 
+    // gh#278: per-run liveness/progress heartbeat. A background thread writes
+    // `progress.json` into the stage dir every 5 s on a FIXED wall-clock timer —
+    // independent of sweep cadence (one spatial PGAS sweep can take minutes, so
+    // a sweep-boundary heartbeat would be as stale as the trace). Each chain
+    // only `bump`s a shared atomic (no I/O), so this cannot affect any fit
+    // number. On clean completion we write `Done`; any error/panic drops the
+    // heartbeat, leaving the last `Running` to go stale → consumer reads
+    // `PresumedDead`.
+    let heartbeat = Heartbeat::start(
+        stage_dir.to_path_buf(),
+        burn_in as u64,
+        n_sweeps as u64,
+        std::time::Duration::from_secs(5),
+    );
+
     // Posterior-trajectory output metadata, computed once and shared across the
     // per-chain writers (the model is shared, so these are chain-invariant).
     // `model_hash` is the structural model identity (the `# camdl-trajectories`
@@ -631,6 +647,11 @@ pub fn run_stage(
                 // branching here.
                 task.set(crate::progress::ll(result.log_complete_data_ll));
                 task.inc(1);
+
+                // gh#278: report progress to the shared heartbeat (monotonic
+                // fetch_max across the parallel chains; phase derived from
+                // burn_in). Cheap atomic — no I/O on the sweep path.
+                heartbeat.bump(sweep as u64);
             };
 
             let result = run_pgas(
@@ -1000,6 +1021,11 @@ pub fn run_stage(
     eprintln!("\npgas complete in {:.1}s: {}/", wall_secs, stage_dir.display());
     eprintln!("  best complete-data ll: {:.1} (chain {})",
         best_sweep.log_complete_data_ll, best_chain.0 + 1);
+
+    // gh#278: clean terminal — all output (pgas_summary.json with R̂/ESS,
+    // diagnostics.json, draws.tsv) is written above, so the heartbeat's `Done`
+    // is the consumer's cue that the final stats are ready to read.
+    heartbeat.finish(RunState::Done);
 
     Ok(())
 }
