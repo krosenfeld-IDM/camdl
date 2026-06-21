@@ -120,6 +120,17 @@ pub trait ObservationModel<S>: Send + Sync {
     /// (PF, IF2, PMMH, PGAS) call this for particle weighting.
     fn log_likelihood(&self, state: &S, obs_idx: usize, params: &[f64]) -> f64;
 
+    /// Per-stream breakdown of [`log_likelihood`]: one log-likelihood
+    /// contribution per stream, whose sum equals the joint `log_likelihood`
+    /// (gh#269). A stream not scheduled at this index or a hole contributes
+    /// `0.0`. Default is empty (impls with no stream breakdown — e.g.
+    /// `NullObsModel` — need not override). Uses no RNG.
+    fn log_likelihood_per_stream(
+        &self, _state: &S, _obs_idx: usize, _params: &[f64],
+    ) -> Vec<f64> {
+        Vec::new()
+    }
+
     /// Number of observation times.
     fn n_observations(&self) -> usize;
 

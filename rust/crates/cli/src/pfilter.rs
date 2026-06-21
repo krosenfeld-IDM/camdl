@@ -767,10 +767,16 @@ pub fn cmd_pfilter(a: &crate::args::PfilterArgs) {
         // gh#268: score against the real observed values (cross-stream sum on
         // the union axis), not the never-scored 0.0 placeholder.
         let y_obs: Vec<f64> = obs_model.joint_observed();
+        // gh#269: per-stream observed values for the per-district breakdown.
+        let per_stream_obs = obs_model.per_stream_observed();
         let mut trace = sim::inference::prequential::build_trace(
-            recorded, &y_obs, &result.ess_trace, 0);
+            recorded, &y_obs, &per_stream_obs, &result.ess_trace, 0);
         if !save_samples {
-            for step in &mut trace.steps { step.y_pred_samples.clear(); }
+            for step in &mut trace.steps {
+                step.y_pred_samples.clear();
+                // gh#269: mirror the clear into each per-stream score.
+                for ss in &mut step.per_stream { ss.y_pred_samples.clear(); }
+            }
             trace.warnings.push(
                 sim::inference::prequential::PrequentialWarning::SamplesNotSaved);
         }
@@ -1401,6 +1407,17 @@ use std::io::Write;
 /// Per-step scalar scores (t, y_obs, log_score, crps, pit, ess) go to
 /// TSV; full typed trace (incl. predictive samples when retained) to
 /// JSON. Downstream tools join on `stem` to avoid re-running the PF.
+/// Write the prequential trace to `{STEM}.tsv` (tidy/long) + `{STEM}.json`
+/// (full trace, serde).
+///
+/// gh#269: the TSV is tidy/long with a `stream` column. Each step writes a
+/// `joint` row (the cross-stream summary scores, `stream="joint"`) FOLLOWED by
+/// one row per scheduled, non-hole stream (`stream=<district>`, its own
+/// `y_obs`/`log_score`/`crps`/`pit`). The `ess` column repeats the step's joint
+/// ESS on every row (ESS is a filter-wide quantity, not per stream). The JSON
+/// carries the full nested structure (per-step `per_stream` array) for tooling.
+///
+/// Columns: `t  stream  y_obs  log_score  crps  pit  ess`.
 fn write_prequential_outputs(
     stem: &str,
     trace: &sim::inference::prequential::PrequentialTrace,
@@ -1409,10 +1426,24 @@ fn write_prequential_outputs(
     let tsv_path = format!("{}.tsv", stem);
     let json_path = format!("{}.json", stem);
     let mut tsv = std::io::BufWriter::new(std::fs::File::create(&tsv_path)?);
-    writeln!(tsv, "t\ty_obs\tlog_score\tcrps\tpit\tess")?;
+    // Tidy/long: one `joint` row per step then one row per scheduled stream.
+    // The y_pred_q* columns are the plot-ready predictive interval (median +
+    // 50%/90% bands) for the forecast-vs-observed panel; they survive
+    // --no-save-samples (computed in build_trace before the samples are cleared).
+    writeln!(tsv, "t\tstream\ty_obs\ty_pred_q05\ty_pred_q25\ty_pred_q50\ty_pred_q75\ty_pred_q95\tlog_score\tcrps\tpit\tess")?;
     for s in &trace.steps {
-        writeln!(tsv, "{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.2}",
-            s.t, s.y_obs, s.log_score, s.crps, s.pit, s.ess)?;
+        let iv = &s.interval;
+        // Joint summary row.
+        writeln!(tsv, "{}\tjoint\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.2}",
+            s.t, s.y_obs, iv.q05, iv.q25, iv.q50, iv.q75, iv.q95,
+            s.log_score, s.crps, s.pit, s.ess)?;
+        // Per-stream rows (ess repeats the joint ESS — filter-wide quantity).
+        for ss in &s.per_stream {
+            let iv = &ss.interval;
+            writeln!(tsv, "{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.2}",
+                s.t, ss.stream, ss.y_obs, iv.q05, iv.q25, iv.q50, iv.q75, iv.q95,
+                ss.log_score, ss.crps, ss.pit, s.ess)?;
+        }
     }
     drop(tsv);
     let json = serde_json::to_string_pretty(trace)

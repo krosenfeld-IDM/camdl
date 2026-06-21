@@ -1030,17 +1030,53 @@ impl MultiStreamObsModel {
             .collect()
     }
 
+    /// Per-stream sibling of [`joint_observed`]: the observed value of EACH
+    /// stream at EACH union index, shape `[obs_idx][stream]` (length
+    /// `obs_times.len()` × `streams.len()`). gh#269: feeds the per-district
+    /// prequential `y_obs` column.
+    ///
+    /// A stream not scheduled at this union index (`at_union == None`) or a hole
+    /// (`observations[local] == None`) yields `f64::NAN` — the honest "no
+    /// observation here" marker, NOT a fictitious 0. `build_trace` skips a
+    /// stream whose `y_obs` is non-finite, so an absent stream contributes no
+    /// per-stream row at that step. (The JOINT path still uses
+    /// [`joint_observed`], whose absent/hole convention is the cross-stream sum
+    /// where absent ⇒ 0.)
+    pub fn per_stream_observed(&self) -> Vec<Vec<f64>> {
+        (0..self.obs_times.len())
+            .map(|union_idx| {
+                self.streams
+                    .iter()
+                    .map(|s| match s.at_union[union_idx] {
+                        Some(local) => match s.observations[local] {
+                            Some(ObsCell::Scalar(v)) => v,
+                            None => f64::NAN,
+                        },
+                        None => f64::NAN,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Shared per-stream scoring loop. `project(stream_idx, t)` supplies the
     /// projected value for each stream — the only thing that differs between the
     /// integer (PGAS/PF) and real (ODE) accumulator paths. Hole handling, union
     /// mapping, and likelihood evaluation are identical, so they live here once.
+    ///
+    /// Returns the PER-STREAM log-likelihood contributions, length
+    /// `self.streams.len()`. A stream not scheduled at this union index
+    /// (a sibling's cadence) or a hole (value missing) yields `0.0` — the
+    /// omitted-factor convention. The JOINT log-likelihood is `.iter().sum()`
+    /// of this vector (gh#269: per-stream prequential reads the breakdown, the
+    /// joint reads the sum; ONE seam, so `joint == Σ per_stream` structurally).
     fn score_streams(
         &self,
         obs_idx: usize,
         counts: &[i64],
         params: &[f64],
         project: impl Fn(usize, f64) -> f64,
-    ) -> f64 {
+    ) -> Vec<f64> {
         let t = self.obs_times[obs_idx];
         (0..self.streams.len()).map(|si| {
             let s = &self.streams[si];
@@ -1074,7 +1110,7 @@ impl MultiStreamObsModel {
                     params, &self.compiled, int_s, &self.real_s,
                 )
             })
-        }).sum()
+        }).collect()
     }
 
     /// Project + score from raw per-particle arrays. Used by PGAS which
@@ -1093,6 +1129,22 @@ impl MultiStreamObsModel {
     ) -> f64 {
         self.score_streams(obs_idx, counts, params, |si, t| {
             self.project_stream_from_acc(si, acc, counts, params, t)
+        }).iter().sum()
+    }
+
+    /// Per-stream sibling of [`log_likelihood_from_flows_and_counts`]: the
+    /// vector of per-stream log-likelihood contributions whose sum IS the joint
+    /// (gh#269). A stream not scheduled here or a hole contributes `0.0`. Used
+    /// by the prequential recorder to expose per-district scores; uses no RNG.
+    pub fn log_likelihood_per_stream_from_flows_and_counts(
+        &self,
+        acc: &[u64],
+        counts: &[i64],
+        obs_idx: usize,
+        params: &[f64],
+    ) -> Vec<f64> {
+        self.score_streams(obs_idx, counts, params, |si, t| {
+            self.project_stream_from_acc(si, acc, counts, params, t)
         })
     }
 
@@ -1108,7 +1160,7 @@ impl MultiStreamObsModel {
     ) -> f64 {
         self.score_streams(obs_idx, counts, params, |si, t| {
             self.project_stream_from_acc_real(si, acc, counts, params, t)
-        })
+        }).iter().sum()
     }
 
     /// Deprecated-shape helper kept for tests that exercise the flow-only
@@ -1184,6 +1236,17 @@ impl ObservationModel<ParticleState> for MultiStreamObsModel {
         // actual-state handling) in ONE seam. `acc` is the per-Interval-stream
         // bin (the filter folds `flow_accumulators` into it before scoring).
         self.log_likelihood_from_flows_and_counts(
+            &state.acc, &state.counts, obs_idx, params,
+        )
+    }
+
+    fn log_likelihood_per_stream(
+        &self, state: &ParticleState, obs_idx: usize, params: &[f64],
+    ) -> Vec<f64> {
+        // gh#269: per-stream breakdown of `log_likelihood`. Routes through the
+        // SAME `score_streams` seam, so `.iter().sum()` of this is byte-equal
+        // to `log_likelihood` (no parallel summation loop to drift).
+        self.log_likelihood_per_stream_from_flows_and_counts(
             &state.acc, &state.counts, obs_idx, params,
         )
     }
@@ -1776,6 +1839,66 @@ mod hole_scoring_tests {
             assert_eq!(flat, via_state,
                 "flat and trait paths must agree on dense cells at idx {idx}: \
                  flat={flat} state={via_state}");
+        }
+    }
+
+    /// gh#269 matrix-drift guard: the joint log-likelihood MUST equal the sum
+    /// of the per-stream contributions — structurally, since both route through
+    /// `score_streams` (`.iter().sum()` is the joint, the Vec is per-stream).
+    /// A 2-stream model with both streams SCHEDULED+OBSERVED at the index makes
+    /// each term nonzero (so the sum is a real check, not 0 == 0).
+    #[test]
+    fn sum_of_per_stream_loglik_equals_joint() {
+        let compiled = model();
+        let rec = compiled.model.transitions.iter()
+            .position(|t| t.name == "recovery").unwrap();
+        let mut ir_a = compiled.model.observations[0].clone();
+        ir_a.name = "a".into();
+        let mut ir_b = compiled.model.observations[0].clone();
+        ir_b.name = "b".into();
+        // Both streams on the SAME cadence so both are scheduled at every union
+        // index — distinct observed values so the two terms differ.
+        let times = vec![7.0, 14.0];
+        let spec_a = StreamSpec::dense(
+            StreamProjection::FlowSum(vec![rec]), ir_a,
+            dense_cells(vec![30.0, 25.0]), times.clone());
+        let spec_b = StreamSpec::dense(
+            StreamProjection::FlowSum(vec![rec]), ir_b,
+            dense_cells(vec![40.0, 55.0]), times.clone());
+        let m = MultiStreamObsModel::new(
+            BoundObs::bind(vec![spec_a, spec_b]).expect("bind").0, compiled,
+        ).unwrap();
+
+        let counts = vec![900i64, 40, 60];
+        // One `acc` slot per Interval stream (two FlowSum streams ⇒ 2 slots).
+        let acc = vec![100u64, 100u64];
+        let params = model().default_params.clone();
+        let state = ParticleState {
+            counts: counts.clone(),
+            flow_accumulators: vec![100u64],
+            acc: acc.clone(),
+        };
+
+        for idx in 0..times.len() {
+            let joint = m.log_likelihood_from_flows_and_counts(&acc, &counts, idx, &params);
+            let per_stream =
+                m.log_likelihood_per_stream_from_flows_and_counts(&acc, &counts, idx, &params);
+            assert_eq!(per_stream.len(), 2, "two streams ⇒ two contributions");
+            // Each stream contributes a real (nonzero, finite) term here.
+            for (si, &v) in per_stream.iter().enumerate() {
+                assert!(v.is_finite() && v != 0.0,
+                    "stream {si} at idx {idx} must contribute a real term, got {v}");
+            }
+            let sum: f64 = per_stream.iter().sum();
+            assert_eq!(sum, joint,
+                "Σ per_stream ({sum}) must equal joint ({joint}) at idx {idx}");
+            // Trait path agrees too (uses the same seam).
+            let via_state = m.log_likelihood_per_stream(&state, idx, &params);
+            assert_eq!(via_state, per_stream,
+                "trait per-stream must match flat per-stream at idx {idx}");
+            assert_eq!(via_state.iter().sum::<f64>(),
+                m.log_likelihood(&state, idx, &params),
+                "trait: Σ per_stream must equal joint log_likelihood at idx {idx}");
         }
     }
 }

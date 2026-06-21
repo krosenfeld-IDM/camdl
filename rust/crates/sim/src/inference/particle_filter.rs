@@ -82,6 +82,19 @@ pub struct PrequentialRecorded {
     pub log_liks: Vec<Vec<f64>>,
     /// `[obs_idx][particle]` = sum across streams of ỹ^(p) ∼ p(y | x_t^(p), θ).
     pub y_pred_samples: Vec<Vec<f64>>,
+    /// Stream (district) names, one per stream; length = n_streams.
+    /// `obs_model.stream_names()` (gh#269).
+    pub stream_names: Vec<String>,
+    /// `[obs_idx][stream][particle]` = per-stream log-likelihood
+    /// contribution log p(y^stream_t | x_t^(p), θ). Sums (over streams) to
+    /// `log_liks[obs_idx][particle]` (gh#269 invariant). Empty per-particle
+    /// vector when `record_prequential` is off.
+    pub per_stream_log_liks: Vec<Vec<Vec<f64>>>,
+    /// `[obs_idx][stream][particle]` = per-stream predictive draw ỹ^stream.
+    /// The per-stream values of the SAME `obs_model.sample(...)` call whose
+    /// NaN-filtered sum is the joint `y_pred_samples` — recorded so the joint
+    /// and per-stream scores share one RNG-consuming draw (gh#269).
+    pub per_stream_samples: Vec<Vec<Vec<f64>>>,
 }
 
 /// Run the bootstrap particle filter.
@@ -236,6 +249,13 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
     let mut preq_samples: Vec<Vec<f64>> = if config.record_prequential {
         Vec::with_capacity(n_obs)
     } else { Vec::new() };
+    // gh#269: per-stream tensors `[obs][stream][particle]`.
+    let mut preq_per_stream_log_liks: Vec<Vec<Vec<f64>>> = if config.record_prequential {
+        Vec::with_capacity(n_obs)
+    } else { Vec::new() };
+    let mut preq_per_stream_samples: Vec<Vec<Vec<f64>>> = if config.record_prequential {
+        Vec::with_capacity(n_obs)
+    } else { Vec::new() };
 
     // gh#audit-C5 / C6. Particles that hit a per-particle-recoverable
     // SimError (NumericalCollapse, NegativeCount{BinomialOvershoot})
@@ -361,16 +381,43 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
         // particles via obs_model.sample and feed CRPS/PIT.
         if config.record_prequential {
             let log_liks: Vec<f64> = swarm.log_weights.clone();
-            // Multi-cadence: drop the not-scheduled streams' NaN before summing
-            // (else the prequential sample poisons CRPS/PIT). Homogeneous is a
-            // no-op (no NaN). See the prediction block above.
-            let y_draws: Vec<f64> = swarm.states.iter().enumerate()
-                .map(|(i, s)| obs_model.sample(s, obs_idx, params, &mut diag_rngs[i])
-                    .into_iter().filter(|v| v.is_finite()).sum::<f64>())
-                .collect();
+            let n_streams = obs_model.n_streams();
+            // gh#269 per-stream tensors, shape [stream][particle]. The joint
+            // `y_draws` / `log_liks` stay byte-identical: the joint sample is
+            // exactly the NaN-filtered sum of the SAME per-stream draw, and the
+            // joint log-lik is `swarm.log_weights` (= joint `log_likelihood`,
+            // unchanged). `obs_model.sample(...)` is still called EXACTLY ONCE
+            // per particle per step — its per-stream Vec is split, not redrawn.
+            let mut ps_samples: Vec<Vec<f64>> =
+                vec![Vec::with_capacity(n_particles); n_streams];
+            let mut ps_log_liks: Vec<Vec<f64>> =
+                vec![Vec::with_capacity(n_particles); n_streams];
+            // SAMPLE loop (consumes RNG, once per particle).
+            let mut y_draws: Vec<f64> = Vec::with_capacity(n_particles);
+            for (i, s) in swarm.states.iter().enumerate() {
+                let per_stream = obs_model.sample(s, obs_idx, params, &mut diag_rngs[i]);
+                // Multi-cadence: a not-scheduled stream is NaN; drop it before
+                // summing (else the prequential sample poisons CRPS/PIT).
+                // Homogeneous is a no-op (no NaN). See the prediction block.
+                y_draws.push(per_stream.iter().copied().filter(|v| v.is_finite()).sum::<f64>());
+                for (si, &v) in per_stream.iter().enumerate() {
+                    ps_samples[si].push(v);
+                }
+            }
+            // LOG-LIK loop (no RNG): per-stream contributions whose sum is the
+            // joint `log_likelihood` (gh#269 invariant, enforced at the
+            // `score_streams` seam).
+            for s in swarm.states.iter() {
+                let per_stream = obs_model.log_likelihood_per_stream(s, obs_idx, params);
+                for (si, &v) in per_stream.iter().enumerate() {
+                    ps_log_liks[si].push(v);
+                }
+            }
             preq_times.push(obs_time);
             preq_log_liks.push(log_liks);
             preq_samples.push(y_draws);
+            preq_per_stream_samples.push(ps_samples);
+            preq_per_stream_log_liks.push(ps_log_liks);
         }
 
         // Record pre-resample filtering state (states + weights) so
@@ -521,6 +568,9 @@ pub fn bootstrap_filter<P: ProcessModel<State = ParticleState>>(
             obs_times: preq_times,
             log_liks: preq_log_liks,
             y_pred_samples: preq_samples,
+            stream_names: obs_model.stream_names(),
+            per_stream_log_liks: preq_per_stream_log_liks,
+            per_stream_samples: preq_per_stream_samples,
         })
     } else {
         None

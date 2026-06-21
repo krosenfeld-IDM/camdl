@@ -64,6 +64,12 @@ fn synth_obs(bin: &Path, model: &Path, tmp: &Path, extra_args: &[&str]) -> PathB
 
 /// Parse a TSV with a header row into time -> value maps for the named columns.
 /// Returns a map keyed by the (rounded) time column for robust alignment.
+///
+/// gh#269: the prequential TSV is now tidy/long with a `stream` column (a
+/// `joint` summary row plus per-stream rows). This reader's intent is the JOINT
+/// score per step, so when a `stream` column is present it keeps only the
+/// `stream == "joint"` rows. Files without a `stream` column (the source obs
+/// TSV) are read unfiltered.
 fn read_tsv_columns(path: &Path, time_col: &str, value_cols: &[&str]) -> BTreeMap<i64, Vec<f64>> {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
@@ -73,6 +79,7 @@ fn read_tsv_columns(path: &Path, time_col: &str, value_cols: &[&str]) -> BTreeMa
         .iter()
         .position(|h| *h == time_col)
         .unwrap_or_else(|| panic!("no '{}' column in {:?}", time_col, header));
+    let stream_idx = header.iter().position(|h| *h == "stream");
     let vidxs: Vec<usize> = value_cols
         .iter()
         .map(|c| {
@@ -88,6 +95,12 @@ fn read_tsv_columns(path: &Path, time_col: &str, value_cols: &[&str]) -> BTreeMa
             continue;
         }
         let f: Vec<&str> = line.split('\t').collect();
+        // Keep only the joint summary row when this is a tidy prequential TSV.
+        if let Some(si) = stream_idx {
+            if f[si] != "joint" {
+                continue;
+            }
+        }
         let t: f64 = f[tidx].parse().expect("time parse");
         let vals: Vec<f64> = vidxs.iter().map(|&i| f[i].parse().expect("value parse")).collect();
         out.insert(t.round() as i64, vals);

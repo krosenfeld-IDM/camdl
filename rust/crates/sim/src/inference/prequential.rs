@@ -27,6 +27,35 @@ pub enum Provenance {
     PlugIn,
 }
 
+/// One stream's (district's) score at a single step (gh#269).
+///
+/// The `--save-prequential` joint score is the cross-stream sum; this
+/// breaks it out per stream so a national fit can be diagnosed
+/// district-by-district. Computed with the SAME proper-scoring-rule
+/// kernels (log score, CRPS, PIT) as the joint, against the stream's own
+/// observed value and predictive sample.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamScore {
+    /// Stream name (the bound observation block / district).
+    pub stream: String,
+    /// This stream's observed value at the step.
+    pub y_obs: f64,
+    /// Per-particle predictive draws for this stream.
+    /// Cleared under `--no-save-samples` (mirrors the joint).
+    pub y_pred_samples: Vec<f64>,
+    /// log p̂(y^stream | y_{1:t}) for this stream.
+    pub log_score: f64,
+    /// Per-stream CRPS.
+    pub crps: f64,
+    /// Per-stream PIT.
+    pub pit: f64,
+    /// This stream's plot-ready predictive interval (median + 50%/90% bands)
+    /// from its predictive samples. The canonical per-district forecast band.
+    /// `#[serde(default)]`: v1 traces (no interval) still deserialize.
+    #[serde(default)]
+    pub interval: PredInterval,
+}
+
 /// A single step's record: observation, predictive samples, and
 /// pointwise scores.
 ///
@@ -51,6 +80,18 @@ pub struct PrequentialStep {
     pub pit: f64,
     /// Effective sample size of the filter at this step.
     pub ess: f64,
+    /// Plot-ready predictive interval (median + 50%/90% bands) of the JOINT
+    /// predictive samples — the equal-tailed central interval to draw against
+    /// the observed point. `#[serde(default)]`: v1 traces still deserialize.
+    #[serde(default)]
+    pub interval: PredInterval,
+    /// Per-stream (per-district) score breakdown (gh#269). One entry per
+    /// SCHEDULED, NON-HOLE stream at this step; `Σ per_stream.log_score`
+    /// need not equal `log_score` (log-of-sum vs sum-of-logs), but each
+    /// uses the same kernels on its own predictive. `#[serde(default)]`:
+    /// v1 traces (no per-stream field) still deserialize.
+    #[serde(default)]
+    pub per_stream: Vec<StreamScore>,
 }
 
 /// Warning attached to a prequential trace — things a reader needs
@@ -203,11 +244,14 @@ pub fn crps_sample(samples: &[f64], y: f64) -> f64 {
 pub fn build_trace(
     recorded: &super::particle_filter::PrequentialRecorded,
     y_obs: &[f64],
+    per_stream_observed: &[Vec<f64>],
     ess_trace: &[f64],
     t0: usize,
 ) -> PrequentialTrace {
     assert_eq!(recorded.obs_times.len(), y_obs.len(),
         "y_obs must align 1:1 with recorded obs_times");
+    assert_eq!(recorded.obs_times.len(), per_stream_observed.len(),
+        "per_stream_observed must align 1:1 with recorded obs_times");
     assert_eq!(recorded.obs_times.len(), ess_trace.len(),
         "ess_trace must align 1:1 with recorded obs_times");
 
@@ -229,11 +273,35 @@ pub fn build_trace(
         let ess = ess_trace[idx];
         if ess < ESS_THRESHOLD { ess_collapse_count += 1; }
 
+        // gh#269: per-stream breakdown. Skip a stream whose observed value is
+        // non-finite (not scheduled at this union index, or a hole) — it has
+        // no term at this step. Each scored stream uses the SAME kernels on its
+        // own predictive sample + observed value.
+        let mut per_stream: Vec<StreamScore> = Vec::new();
+        for si in 0..recorded.stream_names.len() {
+            let y_s = per_stream_observed[idx][si];
+            if !y_s.is_finite() { continue; }
+            let ll_s = &recorded.per_stream_log_liks[idx][si];
+            let samp_s = &recorded.per_stream_samples[idx][si];
+            let n_s = ll_s.len() as f64;
+            per_stream.push(StreamScore {
+                stream: recorded.stream_names[si].clone(),
+                y_obs: y_s,
+                y_pred_samples: samp_s.clone(),
+                log_score: super::types::log_sum_exp(ll_s) - n_s.ln(),
+                crps: crps_sample(samp_s, y_s),
+                pit: pit_sample(samp_s, y_s),
+                interval: PredInterval::from_samples(samp_s),
+            });
+        }
+
         steps.push(PrequentialStep {
             t: recorded.obs_times[idx],
             y_obs: y,
             y_pred_samples: samples.clone(),
             log_score, crps, pit, ess,
+            interval: PredInterval::from_samples(samples),
+            per_stream,
         });
     }
 
@@ -245,7 +313,7 @@ pub fn build_trace(
     }
 
     PrequentialTrace {
-        schema_version: 1,
+        schema_version: 2,
         t0,
         provenance: Provenance::PlugIn,
         steps,
@@ -265,6 +333,51 @@ pub fn pit_sample(samples: &[f64], y: f64) -> f64 {
     if samples.is_empty() { return f64::NAN; }
     let n_leq = samples.iter().filter(|&&x| x <= y).count();
     n_leq as f64 / samples.len() as f64
+}
+
+/// Equal-tailed empirical quantile of an ALREADY-SORTED ascending slice, by
+/// linear interpolation between order statistics (numpy `quantile` / R
+/// `type = 7`, the forecast-hub default). `q ∈ [0, 1]`. NaN on empty.
+pub fn sample_quantile_sorted(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() { return f64::NAN; }
+    if sorted.len() == 1 { return sorted[0]; }
+    let h = (sorted.len() as f64 - 1.0) * q.clamp(0.0, 1.0);
+    let lo = h.floor() as usize;
+    let hi = h.ceil() as usize;
+    sorted[lo] + (h - lo as f64) * (sorted[hi] - sorted[lo])
+}
+
+/// The canonical plot-ready predictive interval: the equal-tailed central
+/// interval of the one-step-ahead predictive (observation-scale), as
+/// median + 50% (q25–q75) + 90% (q05–q95) bands — the forecast-vs-observed
+/// fan chart. These are the standard quantiles every forecast hub reports;
+/// the band the observed point is checked against (and what PIT / 90%-coverage
+/// are defined against). Discrete count predictives use the same empirical
+/// quantiles (the band is a visual envelope; fractional bounds are fine).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PredInterval {
+    pub q05: f64,
+    pub q25: f64,
+    pub q50: f64,
+    pub q75: f64,
+    pub q95: f64,
+}
+
+impl PredInterval {
+    /// Compute the band from predictive samples. NaN-safe: non-finite entries
+    /// (e.g. a not-scheduled stream's NaN placeholder) are dropped first.
+    /// Empty after filtering ⇒ all-NaN interval.
+    pub fn from_samples(samples: &[f64]) -> Self {
+        let mut s: Vec<f64> = samples.iter().copied().filter(|v| v.is_finite()).collect();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        PredInterval {
+            q05: sample_quantile_sorted(&s, 0.05),
+            q25: sample_quantile_sorted(&s, 0.25),
+            q50: sample_quantile_sorted(&s, 0.50),
+            q75: sample_quantile_sorted(&s, 0.75),
+            q95: sample_quantile_sorted(&s, 0.95),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +475,8 @@ mod tests {
             PrequentialStep {
                 t: i as f64, y_obs: 0.0, y_pred_samples: vec![],
                 log_score: 0.0, crps: 0.0, pit: u, ess: 0.0,
+                interval: PredInterval::default(),
+                per_stream: vec![],
             }
         }).collect();
         let trace = PrequentialTrace {
@@ -391,11 +506,23 @@ mod tests {
                 vec![1.0, 2.0, 3.0, 4.0],
                 vec![5.5, 5.0, 4.5, 6.0],
             ],
+            // Single-stream recorded: the stream's per-particle log-liks and
+            // samples ARE the joint ones (one stream ⇒ joint = the stream).
+            stream_names: vec!["s0".to_string()],
+            per_stream_log_liks: vec![
+                vec![vec![-1.0, -2.0, -0.5, -3.0]],
+                vec![vec![-0.1, -0.2, -0.3, -0.4]],
+            ],
+            per_stream_samples: vec![
+                vec![vec![1.0, 2.0, 3.0, 4.0]],
+                vec![vec![5.5, 5.0, 4.5, 6.0]],
+            ],
         };
         let y_obs = vec![2.5, 5.2];
+        let per_stream_observed = vec![vec![2.5], vec![5.2]];
         let ess = vec![100.0, 4.0];  // second step below threshold
 
-        let trace = build_trace(&recorded, &y_obs, &ess, 0);
+        let trace = build_trace(&recorded, &y_obs, &per_stream_observed, &ess, 0);
         assert_eq!(trace.steps.len(), 2);
         assert_eq!(trace.t0, 0);
 
@@ -412,6 +539,18 @@ mod tests {
         // ESS warning fires for the low-ess second step.
         assert_eq!(trace.warnings.len(), 1);
         matches!(trace.warnings[0], PrequentialWarning::EssCollapse { step_count: 1, .. });
+
+        // gh#269: one stream, so the single per-stream score equals the joint
+        // (same per-particle log-liks + samples + observed value).
+        assert_eq!(trace.schema_version, 2);
+        assert_eq!(trace.steps[0].per_stream.len(), 1);
+        assert_eq!(trace.steps[0].per_stream[0].stream, "s0");
+        assert!(approx_eq(trace.steps[0].per_stream[0].log_score,
+            trace.steps[0].log_score, 1e-12));
+        assert!(approx_eq(trace.steps[0].per_stream[0].crps,
+            trace.steps[0].crps, 1e-12));
+        assert!(approx_eq(trace.steps[0].per_stream[0].pit,
+            trace.steps[0].pit, 1e-12));
     }
 
     #[test]
@@ -420,11 +559,15 @@ mod tests {
             obs_times: vec![1.0, 2.0, 3.0],
             log_liks: vec![vec![-1.0; 4]; 3],
             y_pred_samples: vec![vec![0.5, 1.0, 1.5, 2.0]; 3],
+            stream_names: vec!["s0".to_string()],
+            per_stream_log_liks: vec![vec![vec![-1.0; 4]]; 3],
+            per_stream_samples: vec![vec![vec![0.5, 1.0, 1.5, 2.0]]; 3],
         };
         let y_obs = vec![1.25; 3];
+        let per_stream_observed = vec![vec![1.25]; 3];
         let ess = vec![100.0; 3];
 
-        let trace = build_trace(&recorded, &y_obs, &ess, 1);
+        let trace = build_trace(&recorded, &y_obs, &per_stream_observed, &ess, 1);
         assert_eq!(trace.steps.len(), 2);
         assert_eq!(trace.t0, 1);
         assert_eq!(trace.steps[0].t, 2.0);
@@ -435,6 +578,8 @@ mod tests {
         let steps: Vec<PrequentialStep> = (0..50).map(|i| PrequentialStep {
             t: i as f64, y_obs: 0.0, y_pred_samples: vec![],
             log_score: 0.0, crps: 0.0, pit: (i as f64) / 50.0, ess: 0.0,
+            interval: PredInterval::default(),
+            per_stream: vec![],
         }).collect();
         let trace = PrequentialTrace {
             schema_version: 1, t0: 0, provenance: Provenance::PlugIn,
@@ -442,5 +587,25 @@ mod tests {
         };
         let hist = trace.pit_histogram(10);
         assert_eq!(hist.iter().sum::<usize>(), 50);
+    }
+
+    #[test]
+    fn pred_interval_quantiles_are_monotone_and_correct() {
+        // numpy/R type-7 quantiles of 0..=100 (n=101): q = value at index 100*q.
+        let samples: Vec<f64> = (0..=100).map(|i| i as f64).collect();
+        let iv = PredInterval::from_samples(&samples);
+        assert!(approx_eq(iv.q05, 5.0, 1e-9), "q05={}", iv.q05);
+        assert!(approx_eq(iv.q25, 25.0, 1e-9));
+        assert!(approx_eq(iv.q50, 50.0, 1e-9));
+        assert!(approx_eq(iv.q75, 75.0, 1e-9));
+        assert!(approx_eq(iv.q95, 95.0, 1e-9), "q95={}", iv.q95);
+        // Monotone band (the plot-ribbon invariant).
+        assert!(iv.q05 <= iv.q25 && iv.q25 <= iv.q50 && iv.q50 <= iv.q75 && iv.q75 <= iv.q95);
+        // NaN-safe: non-finite entries (not-scheduled stream) are dropped.
+        let with_nan = vec![f64::NAN, 1.0, 2.0, 3.0, f64::NAN];
+        let iv2 = PredInterval::from_samples(&with_nan);
+        assert!(iv2.q50.is_finite() && (1.0..=3.0).contains(&iv2.q50));
+        // All-absent ⇒ all-NaN (no fictitious zeros).
+        assert!(PredInterval::from_samples(&[f64::NAN]).q50.is_nan());
     }
 }

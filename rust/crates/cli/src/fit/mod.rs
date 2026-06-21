@@ -1562,8 +1562,11 @@ pub fn cmd_fit_run_v2(a: &crate::args::FitRunArgs) {
                         if let Some(ref recorded) = result.prequential {
                             let y_obs: Vec<f64> = run_config.observations.iter()
                                 .map(|o| o.value).collect();
+                            // gh#269: per-stream observed values for the
+                            // per-district score breakdown.
+                            let per_stream_obs = obs_model.per_stream_observed();
                             preq_trace = Some(sim::inference::prequential::build_trace(
-                                recorded, &y_obs, &result.ess_trace, 0));
+                                recorded, &y_obs, &per_stream_obs, &result.ess_trace, 0));
                         }
                     }
                     logliks.push(result.log_likelihood);
