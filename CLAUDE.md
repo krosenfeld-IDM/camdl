@@ -154,6 +154,18 @@ needs to either be self-contained (cites all the existing surface relevant to
 its claims) or explicitly state what background the reader is assumed to bring.
 The "read the spec first" rule is for the author, not just the reviewer.
 
+**A shipped proposal has no open questions.** A proposal in
+`docs/dev/proposals/` is the spec an implementer follows — by the time it ships
+(is committed as the decision record and implemented against), every design
+question it raises must be **resolved**: make the call and record it inline. An
+`## Open questions` section with undecided items is the tell that the proposal
+is still a draft, not a spec — it punts the design onto the implementer, who
+then either guesses (a silent-wrong risk) or stalls. So decide each open
+question before shipping, or convert any that genuinely can't be settled yet
+into a named follow-up (a `gh#NN` issue or a separate RFC) with the reason —
+never leave a bare list of undecided questions in a proposal you are treating as
+done. Drafting with open questions is fine; _shipping_ with them is not.
+
 ## docs/dev layout and where work gets tracked
 
 - `docs/dev/notes/` — dated design sketches, investigation logs.
