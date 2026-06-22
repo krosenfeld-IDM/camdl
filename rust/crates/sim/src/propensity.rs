@@ -60,6 +60,15 @@ pub struct EvalCtx<'a> {
     /// instead of casting int_s.counts[] to f64. Avoids the
     /// per-substep rounding that quantized RK4 integration.
     pub int_float_override: Option<&'a [f64]>,
+    /// gh#272 LICM: the per-eval prologue — values of `model.per_eval_bindings`
+    /// computed ONCE for this θ-stable span (a whole trajectory / likelihood
+    /// eval). `ResolvedExpr::PerEvalRef(slot)` reads `per_eval[slot]` directly.
+    /// Owned by whoever holds θ (a backend run / inference particle) and lent in
+    /// as data — so there is no shared mutable cache to alias across particles;
+    /// the value is structurally bound to the θ it was computed at. `None` ⇒
+    /// on-demand eval (byte-identical, just not amortized), so a path that hasn't
+    /// staged the prologue is still correct. Sibling of `int_float_override`.
+    pub per_eval: Option<&'a [f64]>,
 }
 
 /// Evaluate a single expression. No allocations in steady state.
@@ -271,6 +280,15 @@ pub fn eval_expr(expr: &Expr, ctx: &EvalCtx<'_>) -> Result<f64, SimError> {
                     format!("reference to unknown binding '{}'", w.binding_ref)))?;
             eval_expr(&b.expr, ctx)
         }
+        Expr::PerEvalRef(w) => {
+            // gh#272: on-demand by name (the unresolved differential-validation
+            // path, CAMDL_EVAL_UNRESOLVED). Mirrors BindingRef.
+            let b = ctx.model.model.per_eval_bindings.iter()
+                .find(|b| b.name == w.per_eval_ref)
+                .ok_or_else(|| SimError::Validation(
+                    format!("reference to unknown per-eval binding '{}'", w.per_eval_ref)))?;
+            eval_expr(&b.expr, ctx)
+        }
     }
 }
 
@@ -359,6 +377,11 @@ pub fn eval_expr_deriv(expr: &Expr, wrt: usize, ctx: &EvalCtx<'_>) -> f64 {
         }
         // Hoisted bindings are param-free (state-only): d/dp = 0.
         Expr::BindingRef(_) => 0.0,
+        // gh#272: LICM is scoped to forward surfaces, so a PerEvalRef never reaches
+        // this differentiator (it is param-carrying — a silent 0 would drop a real
+        // gradient). Panic enforces the scoping invariant rather than assuming it.
+        Expr::PerEvalRef(_) =>
+            unreachable!("PerEvalRef reached eval_expr_deriv: LICM scoping invariant violated"),
     }
 }
 
@@ -543,6 +566,11 @@ pub fn eval_propensities(
     params: &[f64],
     t: f64,
     dt: f64,
+    // gh#272 LICM: the per-eval prologue for this θ-span, staged once by the
+    // caller (`eval_per_eval_scratch`) and lent into every rate eval. `None` ⇒
+    // on-demand (byte-identical). Forward backends stage it once before their
+    // step loop; inference producer steps pass `None` (Phase 2 wires staging).
+    per_eval: Option<&[f64]>,
     out: &mut Vec<f64>,
 ) -> Result<(), SimError> {
     // gh#81 Phase 2. Detect non-finite parameter values BEFORE rate eval
@@ -565,7 +593,7 @@ pub fn eval_propensities(
         }
     }
 
-    let ctx = EvalCtx { model, int_s, real_s, params, t, dt, projected: None, aux: None, int_float_override: None };
+    let ctx = EvalCtx { model, int_s, real_s, params, t, dt, projected: None, aux: None, int_float_override: None, per_eval };
 
     // gh#209: flat-bytecode propensity path (opt-in `CAMDL_EVAL_FLAT`). Built
     // once at construction; `Some` iff the toggle is on. The flat VM uses its

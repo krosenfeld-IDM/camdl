@@ -39,6 +39,7 @@ fn minimal_model(compartments: Vec<Compartment>, params: Vec<Parameter>) -> Mode
         interventions: vec![],
         observations: vec![],
         bindings: vec![],
+        per_eval_bindings: vec![],
         parameters: params,
         initial_conditions: InitialConditions::Parameterized(HashMap::new()),
         output: OutputConfig {
@@ -85,6 +86,7 @@ fn resolve_ctx_from(model: &CompiledModel) -> ResolveCtx<'_> {
         global_to_int: &model.global_to_int,
         global_to_real: &model.global_to_real,
         binding_index: &model.binding_index,
+        per_eval_index: &model.per_eval_index,
         table_meta,
     }
 }
@@ -109,7 +111,7 @@ fn assert_resolved_matches(expr: &Expr, model: &CompiledModel, int_s: &IntState,
     sim::eval_stats::set_allow_degenerate_rates(true);
     let rctx = resolve_ctx_from(model);
     let resolved = resolve_expr(expr, &rctx).expect("resolve_expr failed");
-    let ctx = EvalCtx { model, int_s, real_s, params, t, dt: 1.0, projected: None, aux: None, int_float_override: None };
+    let ctx = EvalCtx { model, int_s, real_s, params, t, dt: 1.0, projected: None, aux: None, int_float_override: None, per_eval: None };
     let expected = eval_expr(expr, &ctx).expect("eval_expr failed");
     let actual = eval_resolved(&resolved, &ctx);
     sim::eval_stats::set_allow_degenerate_rates(false);
@@ -320,7 +322,7 @@ fn test_derivative_matches() {
 
     let rctx = resolve_ctx_from(&model);
     let resolved = resolve_expr(&expr, &rctx).unwrap();
-    let ctx = EvalCtx { model: &model, int_s: &int_s, real_s: &real_s, params: &params, t: 0.0, dt: 1.0, projected: None, aux: None, int_float_override: None };
+    let ctx = EvalCtx { model: &model, int_s: &int_s, real_s: &real_s, params: &params, t: 0.0, dt: 1.0, projected: None, aux: None, int_float_override: None, per_eval: None };
 
     // beta is param index 0
     let old_deriv = sim::propensity::eval_expr_deriv(&expr, 0, &ctx);
@@ -340,6 +342,54 @@ fn test_derivative_matches() {
 }
 
 #[test]
+fn test_per_eval_ref_resolves_and_evals() {
+    // gh#272: a per-eval binding `w = exp(gamma)` (param-only) referenced by
+    // PerEvalRef resolves by slot and evaluates on-demand to exp(gamma). A second
+    // binding `z = w * w` references the earlier per-eval slot, exercising the
+    // topologically-ordered recursion (the borrow-discipline path).
+    let mut m = minimal_model(vec![int_comp("S")], vec![param("gamma", 0.7)]);
+    m.per_eval_bindings = vec![
+        ir::model::Binding { name: "w".into(), expr: Expr::un_op(UnOp::Exp, Expr::param("gamma")) },
+        ir::model::Binding {
+            name: "z".into(),
+            expr: Expr::bin_op(BinOp::Mul, Expr::per_eval_ref("w"), Expr::per_eval_ref("w")),
+        },
+    ];
+    let model = CompiledModel::new(m).unwrap();
+    let int_s = IntState::new(1);
+    let real_s = RealState::new(0);
+    let params = vec![0.7];
+    let rctx = resolve_ctx_from(&model);
+    let ctx = EvalCtx { model: &model, int_s: &int_s, real_s: &real_s, params: &params, t: 0.0, dt: 1.0, projected: None, aux: None, int_float_override: None, per_eval: None };
+
+    let rw = resolve_expr(&Expr::per_eval_ref("w"), &rctx).unwrap();
+    assert!((eval_resolved(&rw, &ctx) - 0.7_f64.exp()).abs() < 1e-12);
+
+    let rz = resolve_expr(&Expr::per_eval_ref("z"), &rctx).unwrap();
+    let expected = 0.7_f64.exp() * 0.7_f64.exp();
+    assert!((eval_resolved(&rz, &ctx) - expected).abs() < 1e-12);
+}
+
+#[test]
+fn test_per_eval_ref_unknown_name_errors() {
+    let model = CompiledModel::new(minimal_model(vec![int_comp("S")], vec![])).unwrap();
+    let rctx = resolve_ctx_from(&model);
+    assert!(resolve_expr(&Expr::per_eval_ref("nope"), &rctx).is_err());
+}
+
+#[test]
+fn test_per_eval_duplicate_name_rejected() {
+    // gh#272: assert-unique-on-insert in CompiledModel::new — a duplicate per-eval
+    // name would mis-resolve a self-reference.
+    let mut m = minimal_model(vec![int_comp("S")], vec![param("gamma", 0.7)]);
+    m.per_eval_bindings = vec![
+        ir::model::Binding { name: "w".into(), expr: Expr::param("gamma") },
+        ir::model::Binding { name: "w".into(), expr: Expr::param("gamma") },
+    ];
+    assert!(CompiledModel::new(m).is_err());
+}
+
+#[test]
 fn test_projected() {
     let model = CompiledModel::new(minimal_model(vec![int_comp("S")], vec![])).unwrap();
     let int_s = IntState::new(1);
@@ -349,7 +399,7 @@ fn test_projected() {
     let expr = Expr::Projected(ir::expr::ProjectedExpr { projected: () });
     let resolved = resolve_expr(&expr, &rctx).unwrap();
 
-    let ctx = EvalCtx { model: &model, int_s: &int_s, real_s: &real_s, params: &[], t: 0.0, dt: 1.0, projected: Some(42.0), aux: None, int_float_override: None };
+    let ctx = EvalCtx { model: &model, int_s: &int_s, real_s: &real_s, params: &[], t: 0.0, dt: 1.0, projected: Some(42.0), aux: None, int_float_override: None, per_eval: None };
     let val = eval_resolved(&resolved, &ctx);
     assert!((val - 42.0).abs() < 1e-12);
 }

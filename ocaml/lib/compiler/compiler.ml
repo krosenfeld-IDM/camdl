@@ -404,6 +404,19 @@ let maybe_constant_fold (m : Ir.model) : Ir.model =
   if fold_on then Passtime.time "constant_fold" (fun () -> Constant_fold.fold_model m)
   else m
 
+(* gh#272 Loop-invariant code motion. ON by default; CAMDL_NO_LICM forces it off
+   (debugging / A-B comparison), mirroring constant_fold / CAMDL_NO_CONSTANT_FOLD.
+   It is value-preserving (proven byte-identical by gate_licm_ab), so default-on
+   only makes a fittable in-model kernel run at precomputed-kernel speed; it
+   never changes results. Runs AFTER constant_fold (so it hoists already-folded
+   subtrees; constant_fold never sees a PerEvalRef) and is the last transform
+   before serialization, so the pre-LICM passes (autodiff/dimcheck/validate/lint)
+   never encounter the node. *)
+let maybe_licm (m : Ir.model) : Ir.model =
+  if Sys.getenv_opt "CAMDL_NO_LICM" <> None
+  then m
+  else Passtime.time "licm" (fun () -> Licm.licm_model m)
+
 (* The post-expansion pipeline (validate → dimcheck → lint → autodiff →
    constant-fold), factored out of [compile] so [compile_with_reads] can reuse
    it without duplicating the high-risk pipeline. [compile] stays
@@ -446,7 +459,7 @@ let finish_compile (d : compile_detail) : (Ir.model, string) result =
         if Diagnostics.has_any d.ctx.diags then
           ignore (Diagnostics.render d.ctx.diags d.source);
         let m = { d.model with Ir.transitions = transitions } in
-        Ok (maybe_constant_fold m)
+        Ok (maybe_licm (maybe_constant_fold m))
       end
     end
   end

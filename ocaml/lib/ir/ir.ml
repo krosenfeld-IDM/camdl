@@ -37,6 +37,14 @@ and expr =
      (N[l], I_agg[l], spatial force F[l]) are defined once in `model.bindings`
      instead of being inlined into every (patch,age) rate. *)
   | BindingRef of string
+  (* Reference to a model-level PER-EVAL binding by name (gh#272 LICM). Like
+     BindingRef, but the body is param/table-only (loop-invariant within a
+     trajectory) and may be param-CARRYING — so it is cached once per θ-stable
+     scope, not per step. Produced by the LICM pass (post-autodiff; on by
+     default, `CAMDL_NO_LICM` disables); absent only when LICM is disabled or
+     nothing hoists. Resolved to a slot at CompiledModel::new against
+     `model.per_eval_bindings`. *)
+  | PerEvalRef of string
   | Projected                    (* refers to projection output in likelihoods *)
   (* Per-observation auxiliary data column referenced by name in a likelihood
      (e.g. binomial `n = tested`). The Rust binder resolves it against the
@@ -613,6 +621,8 @@ type model = {
   observations:       observation_model list;
   parameters:         parameter list;
   bindings:           binding list;       (* Fix B: shared per-coordinate bindings, topo-ordered *)
+  per_eval_bindings:  binding list;       (* gh#272 LICM: param/table-only loop-invariant bindings,
+                                             topo-ordered; produced by the LICM pass, empty by default *)
   initial_conditions: initial_conditions;
   output:             output_config;
   simulation:         simulation_config;

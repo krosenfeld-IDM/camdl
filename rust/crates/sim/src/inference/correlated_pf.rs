@@ -357,7 +357,7 @@ pub fn bootstrap_filter_correlated(
         let real_s = crate::state::RealState::new(model.real_local_to_global.len());
         let ctx = crate::propensity::EvalCtx {
             model, int_s: &int_s, real_s: &real_s, params,
-            t: 0.0, dt: config.dt, projected: None, aux: None, int_float_override: None,
+            t: 0.0, dt: config.dt, projected: None, aux: None, int_float_override: None, per_eval: None,
         };
         let mut first_sq: Option<f64> = None;
         for re in model.resolved.overdispersion.iter().flatten() {
@@ -386,7 +386,7 @@ pub fn bootstrap_filter_correlated(
                 let real_s = crate::state::RealState::new(model.real_local_to_global.len());
                 let ctx = crate::propensity::EvalCtx {
                     model, int_s: &int_s, real_s: &real_s, params,
-                    t: 0.0, dt, projected: None, aux: None, int_float_override: None,
+                    t: 0.0, dt, projected: None, aux: None, int_float_override: None, per_eval: None,
                 };
                 crate::resolved_expr::eval_resolved(re, &ctx)
             })
@@ -395,6 +395,13 @@ pub fn bootstrap_filter_correlated(
 
     let gamma_shape = dt / sigma_sq;
     let gamma_scale = sigma_sq / dt;
+
+    // gh#272 LICM: stage the per-eval prologue ONCE for this filter (θ = `params`
+    // fixed for the whole correlated-PF / PMMH proposal evaluation) and lend it
+    // into every particle's every substep. `None` ⇒ on-demand (byte-identical).
+    let per_eval_scratch =
+        crate::resolved_expr::stage_per_eval(model, params, config.t_start, dt);
+    let per_eval = per_eval_scratch.as_deref();
 
     for obs_idx in 0..n_obs {
         // The substep walk terminates at this obs via Schedule::substeps (cursor
@@ -499,7 +506,8 @@ pub fn bootstrap_filter_correlated(
                     crate::chain_binomial::step_one(
                         model, &mut state.counts, &mut state.flow_accumulators,
                         &mut real,
-                        params, t_local, step_dt, rng, scratch,
+                        // gh#272 LICM: scratch staged once for this filter, threaded in.
+                        params, t_local, step_dt, per_eval, rng, scratch,
                     )?;
                 }
                 Ok(())

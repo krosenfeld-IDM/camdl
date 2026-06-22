@@ -107,6 +107,8 @@ impl Simulate for ChainBinomialSim {
                 got: config.variant_name(),
             }),
         };
+        // gh#272 LICM: `run_chain_binomial_with_observer` stages the per-eval
+        // prologue once for this θ-stable run and lends it into every `step_one`.
         run_chain_binomial(model, params, seed, cfg)
     }
 
@@ -180,6 +182,16 @@ pub fn run_chain_binomial_with_observer(
     let mut rng = StatefulRng::new(seed);
     let mut scratch = StepScratch::new(model);
     let mut flows = vec![0u64; n_transitions];
+
+    // gh#272 LICM: stage the per-eval prologue ONCE for this θ-stable run. `params`
+    // is fixed for the whole run, so the param/table-only `per_eval_bindings` are
+    // evaluated here and lent into every `step_one` rate eval — not recomputed per
+    // step. Owned here and passed as data (no shared cache to alias). `None` for
+    // models without per-eval bindings (`PerEvalRef` falls through to on-demand).
+    // `t`/`dt` are inert (a per-eval body reads no `Time`/`Dt`).
+    let per_eval_scratch =
+        crate::resolved_expr::stage_per_eval(model, params, cfg.t_start, cfg.dt);
+    let per_eval = per_eval_scratch.as_deref();
 
     // Merged timeline spine. chain_binomial is the SNAP policy: it steps a full
     // dt every substep (never clipped to a boundary) and emits outputs at grid
@@ -268,7 +280,7 @@ pub fn run_chain_binomial_with_observer(
                 scratch.effect_batch.intervention_idx.push(iv_idx);
             }
         }
-        step_one(model, &mut int_s.counts, &mut flows, &mut real_s, params, t_grid, dt, &mut rng, &mut scratch)?;
+        step_one(model, &mut int_s.counts, &mut flows, &mut real_s, params, t_grid, dt, per_eval, &mut rng, &mut scratch)?;
 
         // Lineage observer: feed each transition's per-step flow count against
         // the frozen start-of-step state. step_one has already drawn from the
@@ -382,6 +394,12 @@ pub fn step_one(
     params: &[f64],
     t: f64,
     dt: f64,
+    // gh#272 LICM: the per-eval prologue for this θ-span (param/table-only
+    // invariants), staged once by the caller and lent into the rate eval below.
+    // Forward chain-binomial stages it once before its step loop; inference
+    // producer steps pass `None` (on-demand, byte-identical; per-particle θ means
+    // staging here is a Phase 2 wiring, not a correctness requirement).
+    per_eval: Option<&[f64]>,
     rng: &mut StatefulRng,
     scratch: &mut StepScratch,
 ) -> Result<(), SimError> {
@@ -407,12 +425,12 @@ pub fn step_one(
     scratch.gamma_used.clear();
 
     eval_propensities(model, &scratch.int_s, &scratch.real_s, params, t, dt,
-                      &mut scratch.propensities)?;
+                      per_eval, &mut scratch.propensities)?;
 
     // Pre-evaluate draw methods from start-of-step state
     scratch.draws.clear();
     {
-        let ctx = EvalCtx { model, int_s: &scratch.int_s, real_s: &scratch.real_s, params, t, dt, projected: None, aux: None, int_float_override: None };
+        let ctx = EvalCtx { model, int_s: &scratch.int_s, real_s: &scratch.real_s, params, t, dt, projected: None, aux: None, int_float_override: None, per_eval };
         for (i, tr) in model.model.transitions.iter().enumerate() {
             scratch.draws.push(match &tr.draw_method {
                 ir::transition::DrawMethod::Poisson => ResolvedDraw::Poisson,

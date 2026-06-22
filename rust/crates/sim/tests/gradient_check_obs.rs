@@ -119,6 +119,7 @@ fn project_trajectory_to_obs(
                 time_func_index: &compiled.time_func_index,
                 table_index: &compiled.table_index,
                 binding_index: &compiled.binding_index,
+                per_eval_index: &compiled.per_eval_index,
                 global_to_int: &compiled.global_to_int,
                 global_to_real: &compiled.global_to_real,
                 table_meta: &table_meta,
@@ -193,6 +194,7 @@ fn project_trajectory_to_obs_shifted(
                 time_func_index: &compiled.time_func_index,
                 table_index: &compiled.table_index,
                 binding_index: &compiled.binding_index,
+                per_eval_index: &compiled.per_eval_index,
                 global_to_int: &compiled.global_to_int,
                 global_to_real: &compiled.global_to_real,
                 table_meta: &table_meta,
@@ -248,7 +250,7 @@ fn obs_sd_for_likelihood(
     use sim::resolved_expr::{ResolvedLikelihood, eval_resolved};
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0,
-        projected: Some(proj), aux: None, int_float_override: None,
+        projected: Some(proj), aux: None, int_float_override: None, per_eval: None,
     };
     match lh {
         ResolvedLikelihood::NegBinomial { mean, dispersion } => {
@@ -295,7 +297,7 @@ fn obs_mean_for_likelihood(
     use sim::resolved_expr::{ResolvedLikelihood, eval_resolved};
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0,
-        projected: Some(proj), aux: None, int_float_override: None,
+        projected: Some(proj), aux: None, int_float_override: None, per_eval: None,
     };
     match lh {
         ResolvedLikelihood::NegBinomial { mean, .. } => eval_resolved(mean, &ctx(projected)),

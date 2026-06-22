@@ -82,6 +82,11 @@ pub enum ResolvedExpr {
     /// Fix B: reference to a model-level binding by slot. Evaluated on-demand
     /// from `ctx.model.resolved.bindings[slot]`.
     BindingRef(usize),
+    /// gh#272 LICM: reference to a model-level per-eval binding by slot.
+    /// Param/table-only and loop-invariant; evaluated on-demand from
+    /// `ctx.model.resolved.per_eval_bindings[slot]` (a later increment adds the
+    /// per-eval cache tier). Produced only by the LICM pass.
+    PerEvalRef(usize),
 }
 
 /// Returns true if the expression references compartment state (Pop, PopSum).
@@ -103,6 +108,11 @@ pub fn references_state(expr: &ResolvedExpr) -> bool {
         ResolvedExpr::Reduce(terms) => terms.iter().any(references_state),
         // Hoisted bindings are state-derived (N/I_agg/F read compartments).
         ResolvedExpr::BindingRef(_) => true,
+        // gh#272: per-eval bindings are param/table-only by construction (the
+        // constructor validation rejects any state reference), so they never
+        // reference state. The contrast with BindingRef above is the keystone
+        // invariant boundary.
+        ResolvedExpr::PerEvalRef(_) => false,
         _ => false,
     }
 }
@@ -123,6 +133,9 @@ pub struct ResolveCtx<'a> {
     /// Fix B: model-level binding name → slot. `BindingRef(name)` resolves to
     /// `ResolvedExpr::BindingRef(slot)`, like Param/Pop/TableLookup.
     pub binding_index: &'a HashMap<String, usize>,
+    /// gh#272 LICM: per-eval binding name → slot. `PerEvalRef(name)` resolves to
+    /// `ResolvedExpr::PerEvalRef(slot)`, the sibling of `binding_index`.
+    pub per_eval_index: &'a HashMap<String, usize>,
 }
 
 /// Resolve an `Expr` tree into a `ResolvedExpr` tree.
@@ -250,6 +263,12 @@ pub fn resolve_expr(expr: &Expr, ctx: &ResolveCtx<'_>) -> Result<ResolvedExpr, S
                 .ok_or_else(|| SimError::Validation(
                     format!("reference to unknown binding '{}'", w.binding_ref)))?;
             Ok(ResolvedExpr::BindingRef(slot))
+        }
+        Expr::PerEvalRef(w) => {
+            let slot = *ctx.per_eval_index.get(w.per_eval_ref.as_str())
+                .ok_or_else(|| SimError::Validation(
+                    format!("reference to unknown per-eval binding '{}'", w.per_eval_ref)))?;
+            Ok(ResolvedExpr::PerEvalRef(slot))
         }
     }
 }
@@ -620,6 +639,93 @@ pub fn eval_resolved(expr: &ResolvedExpr, ctx: &EvalCtx<'_>) -> f64 {
                 }
             }
         }
+        // gh#272 LICM: a per-eval binding body is param/table/const-only and
+        // constant within a θ-stable span. When the caller has staged the
+        // prologue (`ctx.per_eval == Some(scratch)` — set once per span by
+        // `eval_per_eval_scratch`), read the precomputed value by index; that
+        // hoist out of the integration loop is the whole optimization. When no
+        // scratch is staged (`None` — every non-LICM eval site, and any span the
+        // caller chose not to stage), fall through to on-demand eval,
+        // byte-identical to the no-LICM path. Bodies are topologically ordered (a
+        // body references only earlier slots), so the fallback recursion
+        // terminates; correctness does not depend on staging.
+        ResolvedExpr::PerEvalRef(slot) => match ctx.per_eval {
+            Some(scratch) => scratch[*slot],
+            None => eval_resolved(&ctx.model.resolved.per_eval_bindings[*slot], ctx),
+        },
+    }
+}
+
+/// gh#272 LICM: stage the per-eval prologue for one θ-stable span.
+///
+/// Evaluate every `model.resolved.per_eval_bindings[i]` once, in topological
+/// order, into a scratch `Vec`. Each body is param/table/const-only (the
+/// keystone invariant, enforced at `CompiledModel::new`), so its value is
+/// constant for the whole span the caller is about to loop over (one trajectory
+/// / likelihood eval at a fixed θ). The caller lends the returned slice into
+/// every loop iteration via `EvalCtx::per_eval`, turning each `PerEvalRef` into a
+/// single array index instead of a re-evaluation of the body.
+///
+/// Body `i` may reference earlier slots (`< i`); we lend the already-filled
+/// prefix `&scratch[..i]`, so those `PerEvalRef(j)` reads hit the staged value
+/// rather than recursing. The scratch is owned by the caller and passed as data
+/// — there is no shared mutable cache, so nothing can alias across particles or
+/// serve a value computed at a different θ.
+///
+/// `t`/`dt` satisfy the one `EvalCtx` type but cannot be read by a per-eval body
+/// (no `Time`/`Dt`/state/forcing/`BindingRef`), so their values do not affect the
+/// result.
+pub fn eval_per_eval_scratch(
+    model: &crate::CompiledModel,
+    params: &[f64],
+    t: f64,
+    dt: f64,
+) -> Vec<f64> {
+    let bindings = &model.resolved.per_eval_bindings;
+    // A per-eval body reads no compartment/forcing state (keystone invariant), so
+    // these empty states are never indexed; they exist only to satisfy `EvalCtx`.
+    let int_s = crate::state::IntState::new(0);
+    let real_s = crate::state::RealState::new(0);
+    let mut scratch: Vec<f64> = Vec::with_capacity(bindings.len());
+    for i in 0..bindings.len() {
+        let v = {
+            let ctx = EvalCtx {
+                model,
+                int_s: &int_s,
+                real_s: &real_s,
+                params,
+                t,
+                dt,
+                projected: None,
+                aux: None,
+                int_float_override: None,
+                // Lend the prefix already filled, so `PerEvalRef(j<i)` reads the
+                // staged value instead of recursing.
+                per_eval: Some(&scratch[..i]),
+            };
+            eval_resolved(&bindings[i], &ctx)
+        };
+        scratch.push(v);
+    }
+    scratch
+}
+
+/// gh#272 LICM: stage the per-eval prologue for one θ-stable span, or `None` when
+/// the model has no per-eval bindings (LICM off, or nothing hoistable). The
+/// single seam every backend/inference θ-stable boundary routes through: `Some`
+/// is computed once and lent into the span's rate evals; `None` falls through to
+/// on-demand eval. `t`/`dt` are inert (a per-eval body reads no `Time`/`Dt`).
+#[inline]
+pub fn stage_per_eval(
+    model: &crate::CompiledModel,
+    params: &[f64],
+    t: f64,
+    dt: f64,
+) -> Option<Vec<f64>> {
+    if model.resolved.per_eval_bindings.is_empty() {
+        None
+    } else {
+        Some(eval_per_eval_scratch(model, params, t, dt))
     }
 }
 
@@ -755,5 +861,11 @@ pub fn eval_resolved_deriv(expr: &ResolvedExpr, wrt: usize, ctx: &EvalCtx<'_>) -
             terms.iter().map(|t| eval_resolved_deriv(t, wrt, ctx)).sum(),
         // Hoisted bindings are param-free (state-only): d/dp = 0.
         ResolvedExpr::BindingRef(_) => 0.0,
+        // gh#272: LICM is scoped to the `eval_resolved` (forward) surfaces, so a
+        // PerEvalRef never reaches this secondary forward-mode differentiator (it
+        // is param-carrying — a silent 0 would drop a real gradient). The panic
+        // enforces the scoping invariant rather than assuming it.
+        ResolvedExpr::PerEvalRef(_) =>
+            unreachable!("PerEvalRef reached eval_resolved_deriv: LICM scoping invariant violated"),
     }
 }

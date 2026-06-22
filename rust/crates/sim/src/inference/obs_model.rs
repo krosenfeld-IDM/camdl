@@ -46,6 +46,7 @@ pub(crate) fn resolve_likelihood_from_model(
         global_to_real: &compiled.global_to_real,
         table_meta: &table_meta,
         binding_index: &compiled.binding_index,
+        per_eval_index: &compiled.per_eval_index,
     };
     resolve_likelihood(likelihood, &ctx)
 }
@@ -73,7 +74,7 @@ pub(crate) fn eval_likelihood_resolved(
 ) -> f64 {
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0, projected: Some(proj),
-        aux: Some(aux), int_float_override: None,
+        aux: Some(aux), int_float_override: None, per_eval: None,
     };
 
     match likelihood {
@@ -170,7 +171,7 @@ pub(crate) fn eval_likelihood_resolved_grad(
 ) {
     let ctx_at = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0,
-        projected: Some(proj), aux: Some(aux), int_float_override: None,
+        projected: Some(proj), aux: Some(aux), int_float_override: None, per_eval: None,
     };
     let ctx = ctx_at(projected);
 
@@ -320,7 +321,7 @@ pub(crate) fn sample_obs_resolved(
 ) -> f64 {
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0, projected: Some(proj),
-        aux: Some(aux), int_float_override: None,
+        aux: Some(aux), int_float_override: None, per_eval: None,
     };
 
     match likelihood {
@@ -384,7 +385,7 @@ pub(crate) fn eval_obs_mean_resolved(
 ) -> f64 {
     let ctx = |proj: f64| EvalCtx {
         model: compiled, int_s, real_s, params, t, dt: 0.0, projected: Some(proj),
-        aux: Some(aux), int_float_override: None,
+        aux: Some(aux), int_float_override: None, per_eval: None,
     };
 
     match likelihood {
