@@ -1,8 +1,10 @@
 # Claude Code — keep local settings and worktrees out of git, but DO track
-# shared, version-controlled skills and slash-commands so the team gets them.
+# shared, version-controlled skills, slash-commands, and the team settings
+# (settings.json = shared policy; settings.local.json stays personal/ignored).
 .claude/*
 !.claude/skills/
 !.claude/commands/
+!.claude/settings.json
 
 # Rust
 rust/target/

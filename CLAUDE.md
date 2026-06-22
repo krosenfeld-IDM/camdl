@@ -174,6 +174,16 @@ Now that camdl is alpha:
   cross-cutting) → a `docs/dev/proposals/` doc first, then implement against it.
 - Commit/PR conventions: `docs/dev/commit-style.md`. Contributor onboarding:
   `CONTRIBUTING.md`.
+- **No AI/Claude trailers in commit messages — ever.** A commit message (and a
+  squash-merge body, which becomes one) must never contain `Claude-Session:`,
+  `Co-Authored-By: Claude…`, `Generated with Claude Code`, a `🤖` line, a
+  `claude.ai/code/session_…` URL, or any equivalent assistant attribution. This
+  applies to commits authored by agents too — strip the trailer before
+  committing, and when merging a PR whose commit/body carries one, rewrite the
+  message clean rather than landing it. The `commit-msg` hook
+  (`scripts/check_commit_trailers.sh`) rejects these; do not `--no-verify` past
+  it. Provenance belongs in git history and the PR thread, not stamped into the
+  permanent commit log.
 - **Format Markdown with `mdfmt` (`dprint fmt`) before committing any `.md`.**
   Run it as the last step on any Markdown you touch, so formatting never rides
   in on the next substantive commit (or forces an amend after a push — `main` is
