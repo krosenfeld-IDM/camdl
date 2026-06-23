@@ -7,6 +7,52 @@ held-out eval), #276 / #267 (latent-trajectory consolidation), gh#269
 Supersedes: the "unify the two predictive objects under one `kind` key" comment
 on #279
 
+## Background: predicted-vs-observed, and the three predictive objects
+
+_For a reader new to the workflow; skip if you live in it._
+
+A fit takes a model and the **observed data** — the numbers actually recorded
+(say, the count of new Ebola onsets reported in district _Bo_ in week 7) — and
+returns a **posterior**: a probability distribution over the model's unknown
+parameters given that data.
+
+The first thing anyone does with a posterior is ask: _does the model actually
+reproduce the data?_ The universal way to answer is **predicted-vs-observed** —
+overlay the observed points on the model's **predictive distribution**, the
+range of counts the fitted model says it _would_ produce. Observed points inside
+the predicted band mean the model is consistent with the data; points outside
+mean it is not. One value over time, observed dots on a predicted ribbon, one
+panel per place: this is the workhorse diagnostic, and it is the _same shape_
+for every model.
+
+Two terms recur:
+
+- a **stream** is one observed quantity the model is fit to (`onset`, `deaths`);
+  a model may have several.
+- a stream is indexed by **dimensions** — here `patch` (district) — and each
+  combination of levels is a **stratum** (district _Bo_). "Per-district onset"
+  is the `onset` stream with `index_dims = [patch]`; a single national series is
+  the same stream with no index dims.
+
+"Predictive" is not one object. There are **three**, all the same shape — a
+distribution per `(time, stratum)` — differing only in _which_ question they
+answer:
+
+1. **Free-forward posterior predictive** — _run the fitted model forward from
+   the start; what data would it generate?_ The generative check: left to its
+   own dynamics, does the model look like reality?
+2. **One-step-ahead (prequential)** — _given everything observed up to last
+   week, what is predicted for this week?_ The honest short-horizon forecast: it
+   is told the real past at each step, a fairer test than the free-forward run.
+3. **Posterior latent state** — not an observable at all, but the _hidden_
+   quantity behind the data: the true infection incidence that the reported,
+   under-counted cases are a noisy shadow of. Often the scientifically
+   interesting output — the real epidemic, not the reported one.
+
+Because all three are "a predictive distribution per `(time, stratum)`," one
+artifact can carry all of them (§3) — and, today, an analyst rebuilds the same
+machinery three times to get them.
+
 ## The shape of the problem
 
 A camdl fit produces a posterior. Almost everything an analyst does _next_ —
@@ -223,6 +269,28 @@ observed/<stream>.tsv            # kind-independent, content-addressed from sour
 predictive_samples/<stream>.parquet   # OPT-IN (--save-samples)
   time | <dims...> | kind | draw | value
 ```
+
+What each file holds, in words:
+
+- **`observed/<stream>.tsv`** — the data the fit was given, in one tidy place:
+  the recorded value for each `(time, stratum)`. Mirrored (content-addressed)
+  from the source so a panel renders without chasing the original data path, and
+  independent of predictive kind — the data is the data.
+- **`predictive/<stream>.tsv`** — the model's distribution over that _same_
+  observable, summarized as quantiles per `(time, stratum)`: `q50` is the
+  predicted median, `q05…q95` the 5–95% band a consumer draws as a ribbon. The
+  `kind` column says _which_ predictive (free-forward `postpred` vs one-step
+  `onestep`), so both live in one file. `log_score`/`crps`/`pit` are per-point
+  calibration scores — how well the prediction matched the actual value — left
+  empty for `postpred` (which is not conditioned on the data point) and filled
+  for the data-conditioned kinds.
+- **`predictive_samples/<stream>.parquet`** — opt-in: the raw per-draw values
+  behind the quantiles, for anyone computing their own intervals.
+
+To draw the canonical figure a consumer reads two files, joins them on
+`(time, <dims>)`, and plots `observed` as points over the `predictive` ribbon,
+one facet per stratum — no model knowledge, no likelihood math, no run-store
+spelunking.
 
 The shape choices:
 
