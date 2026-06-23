@@ -528,11 +528,17 @@ pub struct SimulateArgs {
     #[arg(long, conflicts_with = "seeds")]
     pub replicates: Option<usize>,
 
-    /// Parameter draw source: path to params TSV, "uniform", or "prior"
+    /// Parameter draw source: path to a params TSV, "uniform", "prior", or
+    /// "posterior". "posterior" reads a completed fit's canonical post-warm-up
+    /// draws cloud — requires `--fit <fit results dir>`.
     #[arg(long)]
     pub draws: Option<String>,
 
-    /// fit.toml supplying priors for --draws prior
+    /// Companion for `--draws`. With `--draws prior`, a fit.toml supplying
+    /// priors. With `--draws posterior`, the fit results directory to read the
+    /// posterior draws from. With `--draws <file.tsv>`, a fit.toml (or results
+    /// dir) whose `[fixed]` block backfills parameters absent from the file's
+    /// columns — never overwriting a column the file provides (#273).
     #[arg(long, requires = "draws")]
     pub fit: Option<PathBuf>,
 
@@ -1090,6 +1096,71 @@ pub struct FitSummaryArgs {
     /// cargo / pytest convention. See proposal §1, §6.
     #[arg(long)]
     pub strict: bool,
+}
+
+#[derive(Args)]
+#[command(after_help = colored_help!("\
+Examples:
+  # Write the free-forward posterior predictive for a completed fit
+  camdl fit predict --fit fit.toml
+
+  # Just one stream (logical name or an expanded leaf name)
+  camdl fit predict --fit fit.toml --stream onset
+
+  # Point at a run directory directly (instead of the config)
+  camdl fit predict results/fits/sle-8a3f12b4/
+
+Outputs, under the run directory:
+  predictive/<stream>.tsv   time | <dims...> | horizon | treatment | rhat_max | q05..q95
+  observed/<stream>.tsv     time | <dims...> | value
+Read both, join on (time, <dims>), plot observed over the predictive ribbon."))]
+pub struct FitPredictArgs {
+    /// The fit: a `fit.toml` config (resolved to its unique run) OR a fit
+    /// results directory. A config that maps to several runs errors and lists
+    /// them — pass a run directory to disambiguate.
+    #[arg(long = "fit", value_name = "FIT")]
+    pub fit_flag: Option<PathBuf>,
+
+    /// Positional form of the fit reference (a run directory or config), so
+    /// `camdl fit predict results/fits/<run>/` works like `fit summary`.
+    #[arg(value_name = "FIT", conflicts_with = "fit_flag")]
+    pub fit_pos: Option<PathBuf>,
+
+    /// Restrict to one logical stream. Accepts the logical name (`onset`) or an
+    /// expanded leaf name (`onset_Bo`), which maps up to its logical stream.
+    #[arg(long, value_name = "STREAM")]
+    pub stream: Option<String>,
+
+    /// Use this stage's posterior cloud instead of the terminal one.
+    #[arg(long, value_name = "STAGE")]
+    pub stage: Option<String>,
+
+    /// Which predictive horizon(s) to emit. Omitted = all applicable for the
+    /// fit's backend (chain-binomial → `free_forward` + `one_step`; ODE →
+    /// `free_forward` only). `--horizon one_step` on an ODE fit is a hard error.
+    #[arg(long, value_name = "HORIZON")]
+    pub horizon: Option<crate::args::types::HorizonArg>,
+
+    /// Cap the posterior cloud subsample for the one-step horizon (default 200).
+    /// The one-step band pools `draws × particles` samples per cell, so a few
+    /// hundred draws is plenty for q05…q95; a larger cloud is evenly subsampled
+    /// (never silently run at full size). Ignored by the free-forward horizon.
+    #[arg(long, value_name = "N")]
+    pub n_draws: Option<usize>,
+
+    /// RNG seed for the y_rep observation sampling (default 1).
+    #[arg(long)]
+    pub seed: Option<u64>,
+}
+
+impl FitPredictArgs {
+    /// The resolved fit reference (`--fit` or the positional form).
+    pub fn fit(&self) -> Result<&PathBuf, String> {
+        self.fit_flag
+            .as_ref()
+            .or(self.fit_pos.as_ref())
+            .ok_or_else(|| "a fit reference is required: `--fit fit.toml` or a run directory".into())
+    }
 }
 
 #[derive(Args)]
