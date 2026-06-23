@@ -263,7 +263,7 @@ predictive/<stream>.tsv          # tidy, plot-ready, DEFAULT
   # kind ∈ { postpred, onestep }   extensible: kstep, lodo (#277 held-out)
   # scores NULL where undefined (postpred); populated for data-conditioned kinds
 
-observed/<stream>.tsv            # kind-independent, content-addressed from source
+observed/<stream>.tsv            # the observed half of the panel; kind-independent
   time | <dims...> | value
 
 predictive_samples/<stream>.parquet   # OPT-IN (--save-samples)
@@ -272,10 +272,11 @@ predictive_samples/<stream>.parquet   # OPT-IN (--save-samples)
 
 What each file holds, in words:
 
-- **`observed/<stream>.tsv`** — the data the fit was given, in one tidy place:
-  the recorded value for each `(time, stratum)`. Mirrored (content-addressed)
-  from the source so a panel renders without chasing the original data path, and
-  independent of predictive kind — the data is the data.
+- **`observed/<stream>.tsv`** — the observed half of the panel: the recorded
+  value for each `(time, stratum)`, emitted by the verb in the same tidy keys as
+  `predictive` (a _derived_ series from the bound data, not a copy of the source
+  file), so a panel renders from the leaf without chasing the original data
+  path. Independent of predictive kind — the data is the data.
 - **`predictive/<stream>.tsv`** — the model's distribution over that _same_
   observable, summarized as quantiles per `(time, stratum)`: `q50` is the
   predicted median, `q05…q95` the 5–95% band a consumer draws as a ribbon. The
@@ -308,6 +309,11 @@ The shape choices:
   retires the 35 MB-JSON-by-default of the prequential path.
 - **Scores in-row, nullable** — they are per `(time, stream, kind)`; keep them
   on the row rather than re-splitting one observation across two tables.
+- **Strata are rows, not files.** A stratified stream's index dims are key
+  columns (`<dims...>`), so `deaths[patch, age]` is one file with `patch` and
+  `age` columns. `--stream` selects at the _logical_ stream level (see
+  Decisions), never a file per stratum — which also resolves the fit side's
+  per-expanded-stream enumeration (F9).
 
 ### 4. `camdl fit latent <run> --stream <s>` — the third object (deferred)
 
@@ -466,35 +472,40 @@ the point at which the consumer's twelve scripts collapse to one command.
   overlap is two documented entry points over one predictive path — not a forked
   obs-output path (the §A2 hazard the model-criticism proposal flags).
 - **Convergence gate: hard error by default**, `--allow-nonconverged` escapes
-  and stamps `converged=false` + R̂/ESS into the artifact (§2).
+  and stamps `converged=false` + R̂/ESS into the artifact (§2). The gate **reuses
+  the fit's existing R̂ test** — `max(Â) < gate.a_thresh` (default 1.01,
+  per-fit-configurable; `config_v2.rs`) — not a new threshold or a second
+  "converged" verdict.
 - **Schema and parameter roles live in `fit.meta.json`** (§1) — one file,
   already read by consumers; no separate `schema.json`.
+- **Run reference.** `--fit fit.toml` is primary; a run id (`sle-8a3f12b4`) is
+  also accepted, matching `fit summary` / `show`.
+- **Artifact location.** The artifacts sit in the **stage dir alongside
+  `draws.tsv`** (`<stage>/predictive/<stream>.tsv`,
+  `<stage>/observed/<stream>.tsv`, opt-in `predictive_samples/`) — the same
+  scheme the posterior draws already use.
+- **Quantile set.** Fixed `{05, 25, 50, 75, 95}` by default (schema-stable
+  across runs), with an opt-in override.
+- **`observed/<stream>.tsv` is a _derived_ series, not a mirror.** It is the
+  panel's observed half, emitted by the verb in the same `(time, <dims>, value)`
+  keys as `predictive` — needed because the panel needs observed points and the
+  verb has them from the bound data. (For contrast: `fit.toml` is archived as
+  `fit.toml.original`; the model is _not_ copied into the leaf, being
+  hash-pinned and recompilable. The observed series is emitted, not copied.)
+- **Stream selection.** `--stream` names the **logical** stream and accepts
+  several; bare `fit predict <run>` emits **all** logical streams. A stratified
+  stream is **one** file with its index dims as key columns — `deaths[patch]` →
+  `time | patch | kind | q…`, `deaths[patch, age]` →
+  `time | patch | age | kind | q…` — never a file per stratum. This relies on
+  §1's schema to map a logical stream to its expanded members (the IR is fully
+  expanded), and resolves the fit-side asymmetry where `[data.observations]`
+  must enumerate `cases_Bunia, …` by hand (F9).
 - **Latent (`camdl fit latent`) is deferred** until trajectory coherence (#270 /
   #267) lands (§4).
 
 ## Still open
 
-1. **The convergence-gate threshold.** What R̂/ESS trips the refusal, and whether
-   it is per-parameter or aggregate. Strong preference: reuse the fit summary's
-   _existing_ convergence verdict if it already computes one, rather than
-   inventing a second threshold (a second source of truth for "converged").
-2. **Run reference form.** Does `camdl fit predict` take a run id
-   (`sle-8a3f12b4`), a store path, or `--fit fit.toml`? Should match how the
-   rest of the `camdl fit` subcommands name a run (`summary`, `show`).
-3. **Artifact paths and naming.** `predictive/<stream>.tsv`,
-   `observed/<stream>.tsv`, `predictive_samples/<stream>.parquet` are proposed,
-   not locked — confirm they sit in the run leaf and play with the CAS/run-spec
-   layout.
-4. **Quantile set.** Fixed `{05,25,50,75,95}` (what `fill_between` wants) vs.
-   configurable. Recommend fixed by default with an opt-in override, to keep the
-   common artifact schema-stable across runs.
-5. **`observed/<stream>.tsv` content-addressing.** Mirror the source
-   observations into the leaf (content-addressed, like `fit.toml.original`) so a
-   panel renders offline/cross-host — in scope for step 4, or a follow-up? (The
-   friction log's cross-host/path pain, F11/F17, argues for in-scope.)
-6. **Stream selection default.** `--stream onset` names one; should bare
-   `camdl fit predict <run>` emit _all_ streams by default, or require the flag?
-
-Deferred by decision (not open): geometry (#279 Part 3, orthogonal), `latent`
-(§4, gated on #270/#267), and the scoring metrics (#277, downstream consumer of
-this artifact).
+The design is settled; what remains is implementation detail — the
+override-quantile syntax and the per-draw samples file format. Deferred by
+decision: geometry (#279 Part 3, orthogonal), `latent` (§4, gated on #270 /
+#267), and the scoring metrics (#277, a downstream consumer of this artifact).
