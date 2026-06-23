@@ -128,12 +128,14 @@ and the impossible-states fall out.
 ### The core types
 
 ```rust
-// What a fit actually produced. Parsed ONCE, at the boundary (which file the
-// stage wrote: a draws cloud vs a single-point estimate).
+// What a fit actually produced. Resolved ONCE, at the boundary — by ARTIFACT
+// (does the chosen stage have a draws cloud?), not by method name.
 enum FitResult {
-    Posterior(PosteriorDraws),   // PGAS, PMMH — a cloud of parameter draws
+    Posterior(PosteriorDraws),   // PGAS, PMMH, Mh — a draws.tsv exists
     PointEstimate(Theta),        // IF2, NLopt — one best answer, no cloud
 }
+// A stage with neither — a stand-alone PFilter, which scores at a fixed point and
+// writes no draws — is not a FitResult; predict errors, same as the MLE case.
 
 // How a predictive treats parameter uncertainty. The safety-critical axis.
 enum ParamTreatment {
@@ -143,12 +145,21 @@ enum ParamTreatment {
 
 enum Horizon { FreeForward, OneStepAhead /* , KStepAhead, … */ }
 
-// The output object. You cannot build one without stating its horizon and how it
-// treated parameters. Neither is optional, so neither can be guessed downstream.
+// The output object. You cannot build one without stating its horizon, how it
+// treated parameters, AND its convergence — none optional, so none can be guessed
+// downstream.
 struct Predictive {
     horizon: Horizon,
     treatment: ParamTreatment,
+    convergence: ConvergenceStatus,   // every band carries its own R̂/ESS
     // … the per-(time, stratum) quantiles
+}
+
+// The NUMBER travels with the band in v1; there is NO refusal policy in v1 — that
+// judgment (what threshold, refuse or warn) is the deferred guardrail below.
+enum ConvergenceStatus {
+    Reported { rhat_max: f64, ess_min: f64 },  // copied from the stage's own summary
+    NotAssessed,                               // no per-stage R̂ available
 }
 ```
 
@@ -176,10 +187,14 @@ fn predict(fit: FitResult, horizon: Horizon) -> Predictive {
    band from a posterior fit (the legitimate "just run it at the mean, I know
    what I'm doing" case) is _representable_ but requires writing `PlugIn`
    explicitly, and the output carries that label. Honest, never accidental.
-3. **`FitResult` already exists implicitly** — a Bayesian stage writes a draws
-   file; an optimizer stage writes a single-point file. We are naming a
-   distinction camdl already makes in which artifact it wrote, and parsing it
-   into a type at the boundary so downstream never re-checks it.
+3. **`FitResult` already exists implicitly, and is resolved by artifact.** A
+   Bayesian stage (PGAS/PMMH/Mh) writes a draws file; an optimizer stage
+   (IF2/NLopt) writes a single-point file; a stand-alone PFilter writes neither.
+   Because a fit is multi-stage, `predict` resolves **the terminal stage that
+   produced draws** (overridable with `--stage`), and errors loudly when there
+   is none or the choice is ambiguous — never silently picking one. We name a
+   distinction camdl already makes in which artifact it wrote, and parse it once
+   at the boundary so downstream never re-checks it.
 
 ### v1 scope (minimal)
 
@@ -189,10 +204,13 @@ and the types accommodate them, but they land later:
 
 - `OneStepAhead × PlugIn` already exists separately (gh#269); folding it into
   the same artifact is a later step.
-- `PointEstimate` fits (IF2/NLopt) get a **clear error** in v1 ("this verb needs
-  a posterior; an MLE fit has none — see `simulate --params`"), not a silent
-  plug-in. Labeled plug-in support for them is a future cell the types already
-  allow.
+- `PointEstimate` fits (IF2/NLopt) and a stand-alone `PFilter` stage (no draws)
+  get a **clear, actionable error** in v1 — _"IF2 is an optimizer: it returns a
+  single best-fit parameter set, not a distribution, so there is no band to
+  draw. Get those parameters with `camdl fit summary <run> --params-only` and
+  run `camdl simulate model.camdl --params … --obs-only-dir out/`."_ Not a
+  silent plug-in. Labeled plug-in support for them is a future cell the types
+  already allow.
 - `Latent` is deferred (it depends on trajectory coherence, #270/#267).
 
 ### 1. The run's observation/dimension schema
@@ -227,28 +245,36 @@ It lives in the run's `fit.meta.json` — consumers already read that file (it
 already carries the `estimated`/`fixed` parameter roles, so the pairplot
 role-marking is half-built; `streams`/`dimensions` are the new fields).
 
-**Honest caveat: this is a new _derivation_, not a reuse.** The IR is fully
-expanded — after expansion the logical stream `onset[patch]` is gone, surviving
-only as per-leaf records `onset_Bo`, `onset_Bombali`, …. The descriptor must
-_reconstruct_ the logical stream and its `index_dims` by grouping those expanded
-leaves. To avoid a second source of truth, it must be derived from the **same**
-bound-observation structure the filter uses (so the schema cannot disagree with
-what was actually fit), with a test pinning that agreement.
+**The logical structure is retained, so this is a mechanical projection — not a
+fragile reconstruction.** Expansion turns `onset[patch]` into per-leaf records,
+but each leaf keeps its logical name (`source = "onset"`) and its stratum
+(`[{dim: patch, level: Bo}]`), and the filter's bound stream already holds that
+whole IR record. So the descriptor is a pure fold over the bound streams: group
+by `source`; `index_dims` = the stratum's dims; `levels` = the union of stratum
+levels; `value_kind` and `likelihood` straight off the record. Deriving it from
+the **same** bound-observation structure the filter uses means the schema cannot
+disagree with what was fit — pinned by a cheap equality test. (This is the
+safest of the new pieces, not the riskiest.)
 
 ### 2. `camdl fit predict` — the verb
 
 One verb owns the reconstruction:
 
 - **Resolves the posterior from the run.** Reads the canonical post-warm-up
-  draws the stage already wrote (burn-in already applied — it does _not_
-  re-apply `burn_in` and double-discard), across chains, from the stable store
-  path.
+  draws the terminal Bayesian stage already wrote (burn-in already applied — it
+  does _not_ re-apply `burn_in` and double-discard), across chains, from the
+  stable store path. On a multi-stage fit it takes the last stage that produced
+  draws, overridable with `--stage`, and errors on ambiguity rather than
+  guessing.
 - **Fills missing parameters from the fit (#273).** Backfills any parameter
   _absent_ from the draws source from `[fixed]`, never overwriting a present
-  column. Precedence, stated explicitly to avoid a silent-wrong vector: an
-  explicit `--param` / `--scenario` override > a column present in the draws >
-  the `[fixed]` backfill; a parameter both estimated _and_ in `[fixed]` is a
-  hard error, not a silent "present wins."
+  column. Precedence follows the existing `simulate --draws` engine (so the two
+  verbs don't diverge): `--scenario` > a column present in the draws > `[fixed]`
+  backfill — i.e. a posterior draw wins over a bare `--param`, which is what you
+  want for a posterior predictive. A parameter that is both estimated (present
+  in the draws) _and_ in `[fixed]` is a hard error — a genuine contradiction —
+  distinct from the existing fit.toml `[fixed]`∩`[estimate]` overlap, which only
+  warns.
 - **Samples `y_rep`, never the projected mean.** Each draw produces a _sampled_
   replicate through the real observation model (process + observation noise),
   not the expected value. This is load-bearing for ODE backends, where the
@@ -267,9 +293,11 @@ per-run path** so a consumer never re-enters the hash maze:
 
 ```
 results/fits/<run>-<hash>/predictive/<stream>.tsv      # tidy, plot-ready, DEFAULT
-  time | <dims...> | horizon | treatment | q05 | q25 | q50 | q75 | q95
-  # v1 emits horizon=free_forward, treatment=posterior only.
-  # the two columns are schema-stable so one_step / plug_in / latent rows join later.
+  time | <dims...> | horizon | treatment | rhat_max | q05 | q25 | q50 | q75 | q95
+  # horizon=free_forward (generative replay from t0); treatment=posterior (averaged
+  #   over the draw cloud). rhat_max = the fit's convergence number, carried not gated.
+  # v1 emits free_forward/posterior only; the columns are schema-stable so
+  #   one_step / plug_in / latent rows join later.
 
 results/fits/<run>-<hash>/observed/<stream>.tsv        # the observed half of the panel
   time | <dims...> | value
@@ -319,23 +347,22 @@ here only so the verb family is designed as a whole; not a landed stub.
 
 Bugs 1 and 2 above (bands over non-stationary / hand-picked draws) are
 convergence problems: a predicted band drawn from a fit that has not settled
-down reads as final when it isn't. The tempting fix is to have `predict`
-**refuse** on a non-converged fit. We are **deferring** any such guardrail to a
-future iteration — v1 just produces the predictive — because it needs more
-thought, and a hasty version would be both wrong and paternalistic. Recording
-the considerations so they are not lost:
+down reads as final when it isn't. What's deferred is the **refusal policy** — a
+gate that blocks or demands an `--allow-…` flag. What ships in v1 is the
+**recorded number** (the `convergence: ConvergenceStatus` field above), because
+deferring _that_ would re-open the exact bug. Splitting it this way:
 
-- **Blocking is probably the wrong instrument.** The fit _already_ runs and
-  reports convergence diagnostics; a separate downstream `predict` that refuses
-  (forcing an `--allow-…` flag for the routine mid-run look) is friction for
-  little gain, and such flags get pasted reflexively. The original bug was not
-  "the analyst didn't know" — it was "the figure didn't show it."
-- **The better shape is structural, not a gate.** Give `Predictive` a mandatory
-  `convergence: ConvergenceStatus` field (never optional), so a band cannot
-  exist without carrying its own R̂/ESS, and the default rendering surfaces it.
-  That makes the status impossible to drop, without refusing to produce
-  anything. The type is designed so this field slots in without reshaping the
-  artifact.
+- **v1 carries the number, never gates.** Every `Predictive` carries its own
+  R̂/ESS (copied from the stage's existing summary), so the band is never silent
+  about whether its fit converged — the original bug was "the figure didn't show
+  it," and this shows it. v1 does not refuse, warn-flag, or threshold; it just
+  records. (Meanwhile, the thing for a user to check is the fit's own
+  convergence report from `camdl fit summary` before trusting the band.)
+- **Blocking is probably the wrong instrument anyway.** A downstream `predict`
+  that refuses (forcing an `--allow-…` flag for the routine mid-run look) is
+  friction for little gain, and such flags get pasted reflexively. Carrying the
+  number un-droppably is a stronger property than refusing — it travels
+  correctly through every downstream script.
 - **It needs a real convergence verdict, which does not yet exist uniformly.** A
   naïve "reuse the fit's R̂ gate" does **not** work: the fit's compound gate
   threshold (`gate.a_thresh`) is an IF2 chain-agreement statistic and is _inert_
@@ -360,9 +387,9 @@ wrote results/fits/sle-8a3f12b4/predictive/onset.tsv   (horizon=free_forward, tr
 wrote results/fits/sle-8a3f12b4/observed/onset.tsv
 
 $ head -3 results/fits/sle-8a3f12b4/predictive/onset.tsv
-time  patch    horizon       treatment  q05  q25  q50  q75   q95
-7     Bo       free_forward  posterior  0.0  1.0  3.0  6.0   12.0
-7     Bombali  free_forward  posterior  0.0  0.0  1.0  3.0   7.0
+time  patch    horizon       treatment  rhat_max  q05  q25  q50  q75   q95
+7     Bo       free_forward  posterior  1.01      0.0  1.0  3.0  6.0   12.0
+7     Bombali  free_forward  posterior  1.01      0.0  0.0  1.0  3.0   7.0
 ```
 
 A consumer (a plot script, an agent, the watcher) reads **one file** and never
@@ -373,6 +400,11 @@ import polars as pl
 pred = pl.read_csv("…/predictive/onset.tsv", separator="\t")   # facet by index_dims (from schema), ribbon from q-cols
 obs  = pl.read_csv("…/observed/onset.tsv",   separator="\t")   # overlay; join on (time, patch)
 ```
+
+Rendering the figure is **out of scope** — the tidy artifact is the deliverable,
+and any plotting layer (a script, the watcher, an agent) draws it from these two
+files. The loop is closed up to the artifact: `fit run` prints the `fit predict`
+command, `fit predict` prints the two paths it wrote.
 
 Re-simulating a raw trace standalone (#273 fill-missing — _future_
 `--draws posterior` resolver, step 2):
@@ -423,12 +455,14 @@ Steps 1–3 ship in parallel; step 4 is the design-bearing one.
   question (§A2 of `2026-06-20-model-criticism-outputs.md`) is about unifying —
   not a fourth format. This proposal _depends on_ that decision; it does not
   assume it solved.
-- **Run reference.** `--fit fit.toml` is the friendly primary form. A run
-  reference (hash prefix or path) is also accepted — matching `camdl show` /
-  `camdl
-  cat`, which resolve a hash prefix; note `fit summary` currently takes
-  a directory path, so the `fit` family is not yet uniform and should be
-  reconciled.
+- **Run reference (needs a resolution rule).** `--fit fit.toml` is the friendly
+  form, but `--fit` already means "a config TOML" on `camdl profile`, and one
+  config maps to **many** runs (per seed, per stage) — so `--fit fit.toml` is
+  ambiguous the moment you re-run. Rule: if a config resolves to exactly one
+  run, use it; if more than one, **error and list them**, requiring a run
+  reference (hash prefix or path, matching `camdl show` / `cat`). `fit summary`
+  currently takes a directory path, so the `fit` family is not yet uniform and
+  should be reconciled to the hash-prefix form.
 - **`--stream` accepts either name.** It names the _logical_ stream (`onset`),
   but since the fit side trained users on the expanded names (`onset_Bo`),
   `predict` should accept an expanded name too and map it up to the logical
