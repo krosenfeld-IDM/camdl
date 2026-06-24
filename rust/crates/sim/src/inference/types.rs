@@ -70,7 +70,7 @@ impl EstimatedParam {
         match &self.transform {
             Transform::Log { lo, hi } => x.clamp(*lo, *hi).max(LOG_PROB_FLOOR).ln(),
             Transform::Logit { lo, hi } => {
-                let p = ((x - lo) / (hi - lo)).clamp(1e-10, 1.0 - 1e-10);
+                let p = ((x - lo) / (hi - lo)).clamp(PROB_FRACTION_EPS, 1.0 - PROB_FRACTION_EPS);
                 (p / (1.0 - p)).ln()
             }
             Transform::None => x,
@@ -143,7 +143,7 @@ impl EstimatedParam {
             Transform::Log { .. } => natural_sd / current_value.max(LOG_PROB_FLOOR),
             Transform::Logit { lo, hi } => {
                 let range = hi - lo;
-                let p = ((current_value - lo) / range).clamp(1e-10, 1.0 - 1e-10);
+                let p = ((current_value - lo) / range).clamp(PROB_FRACTION_EPS, 1.0 - PROB_FRACTION_EPS);
                 natural_sd / (range * p * (1.0 - p))
             }
             Transform::None => natural_sd,
@@ -164,6 +164,14 @@ impl EstimatedParam {
 /// Do NOT reduce below `f64::MIN_POSITIVE` (≈ 5×10⁻³²⁴), which would
 /// produce −∞ and defeat the purpose.
 pub const LOG_PROB_FLOOR: f64 = 1e-300;
+
+/// Interior clamp keeping an IVP / logit-transform probability strictly inside
+/// (0, 1), so the transform and the Binomial(N, p) draw stay finite. Shared by
+/// the logit transform here and the PGAS IVP density/gradient (`pgas.rs`,
+/// `pgas_grad.rs`) — value and gradient MUST use the same value. Distinct in
+/// concept from the correlated-PF base-uniform clamp (`BASE_UNIFORM_EPS`),
+/// which shares the magnitude.
+pub const PROB_FRACTION_EPS: f64 = 1e-10;
 
 /// Reserved stream index for the per-algorithm resampling RNG.
 ///
@@ -332,13 +340,26 @@ impl ParticleSwarm {
     /// produce informative draws — a stronger signal than the
     /// uniform-weight fallback used by `normalize_log_weights`.
     pub fn ess(&self) -> f64 {
-        let max_lw = self.log_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        if !max_lw.is_finite() { return 0.0; }
-        let sum_w: f64 = self.log_weights.iter().map(|&lw| (lw - max_lw).exp()).sum();
-        let sum_w2: f64 = self.log_weights.iter().map(|&lw| (2.0 * (lw - max_lw)).exp()).sum();
-        if !sum_w.is_finite() || !sum_w2.is_finite() || sum_w2 <= 0.0 { return 0.0; }
-        (sum_w * sum_w) / sum_w2
+        ess_from_log_weights(&self.log_weights)
     }
+}
+
+/// Effective sample size from log-weights: `ESS = (Σw)² / Σw²` on max-shifted
+/// weights. The single source for [`ParticleSwarm::ess`] and IF2's
+/// per-iteration degeneracy watchdog, which holds a `Vec<f64>` of log-weights
+/// rather than a `ParticleSwarm`.
+///
+/// **Degenerate-case contract:** returns 0.0 if the maximum log-weight is
+/// non-finite (every weight is `-∞` or `NaN`-poisoned), or if the post-shift
+/// sum is non-positive or non-finite — a stronger collapse signal than the
+/// uniform-weight fallback used by [`normalize_log_weights`].
+pub fn ess_from_log_weights(log_weights: &[f64]) -> f64 {
+    let max_lw = log_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if !max_lw.is_finite() { return 0.0; }
+    let sum_w: f64 = log_weights.iter().map(|&lw| (lw - max_lw).exp()).sum();
+    let sum_w2: f64 = log_weights.iter().map(|&lw| (2.0 * (lw - max_lw)).exp()).sum();
+    if !sum_w.is_finite() || !sum_w2.is_finite() || sum_w2 <= 0.0 { return 0.0; }
+    (sum_w * sum_w) / sum_w2
 }
 
 /// Numerically stable log-sum-exp.
