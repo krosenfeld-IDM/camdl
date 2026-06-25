@@ -184,6 +184,58 @@ reduction.
 `fit predict` with an empty `quantities {}` writes no quantity files (not an
 error); quantities band over **all** posterior draws.
 
+## Expressivity — worked surveillance questions
+
+Two v1 idioms carry most real questions: `time_of_max` of a step function yields
+any **threshold-crossing time** (the step is 0 before the crossing, 1 after, and
+`time_of_max` returns the first time the max is hit), and the **band over draws
+is the distribution**. Against eleven polio-surveillance questions:
+
+**Direct v1** (`i_thresh` a declared `count` param; `I_total` the patch sum):
+
+```
+quantities {
+  peak_month     = time_of_max(I_total)                                   # Time reduction → a date when anchored
+  takeoff_time   = time_of_max(if I_total > i_thresh then 1.0 else 0.0)   # first threshold crossing
+  outbreak_size  = final(N0 - S)                                          # final size; the band IS the size distribution
+  peak_time[p in patch] = time_of_max(I[p])                              # per-patch timing (raw material below)
+}
+```
+
+— so peak month, epidemic takeoff timing, the outbreak-size distribution, and
+per-patch timing are clean v1. Every "when does X first happen" is
+`time_of_max(if … then 1 else 0)`.
+
+**v1 endpoints + one downstream step.** Silent-circulation duration,
+ES-before-AFP lead time, and extinction probability each reduce to v1 quantities
+plus a trivial post-step on the banded TSVs:
+
+```
+quantities {
+  introduction_time = time_of_max(if I_total > 0 then 1.0 else 0.0)   # silent circulation =
+  detection_time    = time_of_max(if afp     > 0 then 1.0 else 0.0)   #   detection − introduction
+  es_first  = time_of_max(if es  > 0 then 1.0 else 0.0)               # ES lead = afp_first − es_first
+  afp_first = time_of_max(if afp > 0 then 1.0 else 0.0)
+  peak_prev = max(I_total)                                            # P(extinct) = fraction with peak_prev < threshold
+}
+```
+
+The differences / tail-fractions are one-liners on the output today; inline once
+reduction arithmetic lands (roadmap below).
+
+**Cross-patch statistics.** Spatial ordering and synchrony give the per-patch
+`peak_time[p]` in v1; the ordering (argsort over patches) and the spread
+(variance over patches) are reductions over **strata**, not time — downstream
+today, a new cross-stratum axis as a follow-up.
+
+**New machinery.** Number of distinct waves and inter-wave gaps need **peak
+detection** (count local maxima above a prominence); persistence after SIAs
+needs a **windowed** quantity (`max(I) over [last_sia, end]`). Genuine
+follow-ups.
+
+The v1 primitives cover ~7 of the eleven fully or as banded raw-material; the
+misses cluster into exactly the follow-ups below, ordered by value.
+
 ## Dimensional checking
 
 Each quantity's projection expression runs through the existing `dimcheck` (a
@@ -216,14 +268,27 @@ in an unanchored model and is rendered as a **date** in an anchored model (the
 manifest records which); a quantity name that collides with a
 compartment/param/observation is a duplicate-name error.
 
-## Staging
+## Staging and follow-up roadmap
 
-- **v1.** The `quantities {}` block, `StockProjection`, typed `TemporalReduce`,
-  whole-horizon output-cadence reductions, evaluation over data /
-  prior-predictive / posterior, the manifest. No re-key.
-- **Fast-follow.** Substep recorder → resolution-honest `peak` / `time_of_max` /
-  `integral`. Windowed quantities (`over [X, Y]`, instant endpoints). Flow
-  `cumulative` + flow arithmetic. `at_time(series, t)`.
+**v1.** The `quantities {}` block, `StockProjection`, typed `TemporalReduce`,
+whole-horizon output-cadence reductions, evaluation over data / prior-predictive
+/ posterior, the manifest. No re-key.
+
+Follow-ups, ordered by how many real questions each unlocks (from the
+walkthrough):
+
+1. **Reduction arithmetic** — difference/ratio of two reductions and `Cond` on a
+   reduced scalar. Unlocks silent-circulation duration, ES-AFP lead, and inline
+   extinction indicators. Cheapest, highest leverage — do first.
+2. **Cross-stratum reductions** — rank / variance / correlation over strata (a
+   new axis complementing over-time). Unlocks spatial ordering and synchrony.
+3. **Waveform reductions** — peak counting with a prominence threshold. Unlocks
+   number-of-waves and inter-wave gaps. Genuinely new, non-trivial.
+4. **Substep recorder** — resolution-honest `max` / `time_of_max` / `integral`
+   (orthogonal; sharpens every timing/peak quantity).
+5. **Windowed quantities** — `over [X, Y]` with instant endpoints. Unlocks
+   after-SIA persistence; shared with the counterfactual proposal.
+6. **Flow `cumulative`** + flow arithmetic; `at_time(series, t)`.
 
 ## Decisions recorded
 
