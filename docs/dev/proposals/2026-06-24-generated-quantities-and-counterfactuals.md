@@ -1,13 +1,18 @@
 # Generated quantities and counterfactual contrasts
 
-Status: **Draft (v3)** — design converged across two adversarial review rounds.
-The decisions below are made here, not open questions. Carries one owned cost
-(an `ir/VERSION` re-key) and one tiny, non-breaking lexer addition (a `.`
-member-access token).
+Status: **Superseded** — split into two proposals after a third review round
+showed the counterfactual half is a real fit-output + engine build, not
+buildable from today's artifacts, while the quantities half is independent and
+shippable now:
 
-Supersedes: `2026-06-04-output-trajectory-customization.md` (Phase 2 only —
-Phase 1 cadence/format is shipped and stays) and
-`2026-06-04-experiment-compare.md`.
+- Quantities →
+  [`2026-06-25-generated-quantities.md`](2026-06-25-generated-quantities.md)
+  (ships first).
+- Counterfactual contrasts →
+  [`2026-06-25-counterfactual-contrasts.md`](2026-06-25-counterfactual-contrasts.md)
+  (deferred behind its prerequisites).
+
+Retained as the design-history record of how the two converged.
 
 ## Summary
 
