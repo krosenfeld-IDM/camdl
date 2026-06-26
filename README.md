@@ -6,39 +6,174 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](VERSIONING.md)
 
-**Compartmental Model Description Language** — a DSL and toolchain for
-stochastic compartmental epidemic models. Write the math, not the code.
+Write a compartmental epidemic model the way you'd write it on a whiteboard —
+compartments, transitions, rates — and camdl simulates it, fits it to real
+surveillance data, and tells you when a fit hasn't converged. The math is the
+program; the units are checked; the runs are reproducible.
 
 Developed at the [Institute for Disease Modeling](https://www.idmod.org/) (IDM),
 Gates Foundation.
 
-An OCaml compiler expands `.camdl` model specifications into a flat JSON
-intermediate representation. A Rust backend simulates, fits, and analyzes them.
+## A model, start to finish
 
+This is a complete, runnable SIR model:
+
+```camdl
+time_unit = 'days
+
+compartments { S, I, R }
+let N = S + I + R
+
+parameters {
+  #' transmission rate (contacts × per-contact transmission probability)
+  #' @symbol β
+  beta  : rate  in [0.001, 2.0]
+  #' recovery rate — the mean infectious period is 1/γ
+  #' @symbol γ
+  gamma : rate  in [0.001, 1.0]
+}
+
+transitions {
+  infection : S --> I  @ beta * S * (I / N)
+  recovery  : I --> R  @ gamma * I
+}
+
+init { S = 999  I = 1 }
+
+simulate { from = 0 'days  to = 120 'days }
 ```
+
+Type-check it (the dimensions are real types — `rate` is `time⁻¹`, `S`, `I` are
+counts), then simulate it:
+
+```bash
+camdl check sir.camdl                                    # compiles + dimension-checks
+camdl simulate sir.camdl --param beta=0.3 --param gamma=0.1 --stdout
+```
+
+The unit check is not decoration. Drop the `/ N` that makes transmission
+per-capita — a classic modelling slip — and camdl rejects it at compile time
+instead of silently simulating the wrong dynamics:
+
+```text
+error[E300]: transition 'infection' rate has wrong dimension
+  = note: rate = ((beta * S) * I)
+```
+
+## Fit it to data
+
+Add priors and an observation model, and the same file is ready to fit. The
+observation block says how the latent epidemic maps to what you actually
+measured — here, weekly case counts that are a reported fraction of incidence,
+with negative-binomial noise:
+
+```camdl
+parameters {
+  beta  : rate         in [0.001, 2.0]  ~ log_normal(mu = -1.0, sigma = 0.5)
+  gamma : rate         in [0.001, 1.0]  ~ half_normal(sigma = 0.3)
+  rho   : probability  in [0.0, 1.0]    ~ beta(alpha = 2.0, beta = 5.0)   # reporting fraction
+  k     : real         in [0.1, 100.0]                                    # NB dispersion
+}
+
+observations {
+  cases {
+    columns   { time : time, cases : count }
+    projected = incidence(infection)
+    cases     ~ neg_binomial(mean = rho * projected, r = k)
+  }
+}
+```
+
+A `fit.toml` declares the data, what to estimate, and the fitting stages:
+
+```toml
+[model]
+camdl = "sir.camdl"
+
+[data]
+file = "cases.tsv" # a `time` column and a `cases` column
+
+[estimate.beta]
+bounds = [0.001, 2.0]
+start = 0.3
+[estimate.gamma]
+bounds = [0.001, 1.0]
+start = 0.1
+
+[fixed]
+rho = 0.5
+k = 10
+
+[stages.fit]
+algorithm = "if2" # iterated filtering → MLE
+backend = "chain_binomial"
+chains = 4
+particles = 1000
+iterations = 50
+cooling = 0.7
+```
+
+```bash
+camdl fit run fit.toml --seed 1
+```
+
+The fit lands in a content-addressed store keyed by its exact inputs (model,
+data, config, seed), so re-running an identical fit is instant and every result
+is traceable back to what produced it. Browse it with `camdl list --kind fit`,
+`camdl fit summary <dir>`, `camdl cat <id>`. Swap the stage to
+`algorithm = "pgas"` for a full Bayesian posterior with NUTS, or chain stages
+(IF2 to find the mode, PGAS to characterise the posterior around it).
+
+## Why camdl
+
+- **Dimensions are types.** Every parameter carries a unit (`rate`, `count`,
+  `probability`, …); every rate expression is dimension-checked at compile time.
+  The missing-`/N` bug above is a compile error with a source location, not a
+  plausible-looking wrong answer — and for a tool meant to inform public-health
+  decisions, that distinction is the point.
+- **Three backends, three inference methods — no silent gaps.** Forward:
+  Gillespie SSA, chain-binomial (Euler-multinomial), ODE (RK4, or adaptive
+  RK4(5)). Inference: iterated filtering (IF2, MLE), Particle Gibbs with
+  Ancestor Sampling + NUTS (Bayesian), PMMH, and a bootstrap particle filter.
+  Every backend × method combination either works and is tested, or fails loudly
+  through a capability check that names the limitation — never a silent wrong
+  answer.
+- **Exact gradients, no autodiff tape.** The compiler differentiates rate
+  expressions symbolically (source-to-source) and emits the gradient as ordinary
+  IR. NUTS gets exact ∇ log ℒ from one expression-tree walk per step — no finite
+  differences, no runtime autodiff.
+- **Reproducible by construction.** Runs are content-addressed by their inputs;
+  paired scenarios share random numbers so a counterfactual differs only where
+  the intervention does. Fits ship convergence gates between stages and a
+  Richardson dt-convergence audit, so "it ran" and "it converged" are different
+  claims.
+- **One readable IR, two languages.** An OCaml frontend expands the DSL
+  (stratification, contact matrices, Erlang stages, forcing, interventions) into
+  a flat JSON intermediate representation; a Rust backend simulates and fits it.
+  A version envelope makes a frontend/backend mismatch a hard error, not a
+  wrong-but-parseable run.
+
+```text
 model.camdl ──→ camdlc ──→ model.ir.json
                                 │
-          ┌──────────┬──────────┼──────────┐
-          ▼          ▼          ▼          ▼
+          ┌──────────┬──────────┼───────────┐
+          ▼          ▼          ▼           ▼
     camdl simulate  camdl fit  camdl batch  camdl compare
           │          │          │           │
           ▼          ▼          ▼           ▼
-    trajectory  mle_params   sweep/CAS   elpd table
-                profiles     manifest
+     trajectory   MLE / posterior  sweep   elpd table
 ```
 
-## Capabilities
+More, in one table:
 
-| Domain               | What camdl does                                                                                                                                                                                                                                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Modelling**        | Compartments, stratification (age, space, risk), contact matrices, Erlang staging, forcing functions, interventions, events, balance constraints, scenarios                                                                                                                                                                           |
-| **Simulation**       | Gillespie SSA, chain-binomial (Euler-multinomial), ODE (RK4). Extra-demographic stochasticity via `overdispersed()`. Deterministic flows via `deterministic()`.                                                                                                                                                                       |
-| **Inference**        | IF2 (MLE), PGAS with NUTS (Bayesian posterior), bootstrap particle filter, 1D/2D profiles. Source-to-source autodiff: compiler emits gradient expressions, enabling HMC.                                                                                                                                                              |
-| **Fitting workflow** | Declarative `fit.toml` (named stages → `camdl fit run`). IF2 finds the MLE; PGAS+NUTS characterises the Bayesian posterior with exact complete-data likelihood + analytical gradients from the compiler. Mandatory convergence gates between stages, Richardson dt-convergence audit after every fit, content-addressable provenance. |
-| **Experiments**      | Multi-scenario seed ensembles, Sobol sensitivity analysis, parameter sweeps. Content-addressable output with caching.                                                                                                                                                                                                                 |
-| **Model comparison** | Prequential scoring (elpd, CRPS, PIT) + paired Δ table via `camdl compare`.                                                                                                                                                                                                                                                           |
-
----
+| Domain               | What camdl does                                                                                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Modelling**        | Compartments; stratification (age, space, risk); contact matrices; Erlang staging; forcing functions; scheduled and reactive interventions; events; balance constraints; scenarios     |
+| **Simulation**       | Gillespie SSA, chain-binomial (Euler-multinomial), ODE (RK4 / adaptive RK4(5)). Extra-demographic noise via `overdispersed()`; deterministic flows via `deterministic()`               |
+| **Inference**        | IF2 (MLE), PGAS + NUTS (Bayesian posterior), PMMH, bootstrap particle filter, 1D/2D profile likelihood. Compiler-emitted analytic gradients                                            |
+| **Fitting workflow** | Declarative `fit.toml` (named stages → `camdl fit run`); convergence gates between stages; dt-convergence audit; calendar-dated data; sparse / irregular / missing (`NA`) observations |
+| **Diagnostics**      | Particle-filter health (ESS, τ²), prequential scoring (elpd, CRPS, PIT), paired model comparison via `camdl compare`, posterior-predictive checks via `camdl fit predict`              |
+| **Reproducibility**  | Content-addressed runs with caching; common-random-number scenario coupling; version-locked offline docs (`camdl docs <topic>`)                                                        |
 
 ## Install
 
@@ -46,8 +181,7 @@ model.camdl ──→ camdlc ──→ model.ir.json
 
 For a fresh machine, the `install.sh` script at the repo root installs both
 toolchains (OCaml ≥ 5.2 via opam, Rust stable via rustup), fetches OCaml package
-dependencies, and runs `make build && make
-install`:
+dependencies, and runs `make build && make install`:
 
 ```bash
 ./install.sh
@@ -67,7 +201,7 @@ For per-branch testing (e.g. installing a feature branch alongside your default
 install for comparison), override the install prefix with the `PREFIX` env var:
 
 ```bash
-PREFIX=$HOME/.local-camdl-feat ./install.sh   # binaries → $PREFIX/bin
+PREFIX=$HOME/.local-camdl-feat ./install.sh        # binaries → $PREFIX/bin
 PATH=$HOME/.local-camdl-feat/bin:$PATH camdl ...   # use the feature build
 camdl ...                                          # back to the default install
 ```
@@ -78,14 +212,13 @@ The script initializes opam with sandboxing enabled (via `bubblewrap` on Linux,
 `sandbox-exec` on macOS). If sandboxed init fails — typically because
 `bubblewrap` isn't installed or your kernel disallows unprivileged user
 namespaces — the script will abort with instructions. You can re-run with
-`NO_SANDBOX=1
-./install.sh` to disable sandboxing, but this reduces supply-chain
+`NO_SANDBOX=1 ./install.sh` to disable sandboxing, but this reduces supply-chain
 protection on every package installed via opam in this switch and is recommended
 only when installing `bubblewrap` isn't an option.
 
 If you'd rather wire the toolchain by hand, follow the manual steps below.
 
-### Prerequisites
+### Prerequisites (manual install)
 
 camdl has two language runtimes. You need both available before `make build`
 will work:
@@ -107,7 +240,7 @@ will work:
 - **Make + git + python3** (only needed for `make update-golden` and the
   integration test driver — usually already installed).
 
-Once-after-cloning, install the OCaml package dependencies declared in
+Once after cloning, install the OCaml package dependencies declared in
 `ocaml/*.opam`:
 
 ```bash
@@ -117,8 +250,7 @@ cd ..
 ```
 
 This fetches `dune`, `menhir`, `yojson`, `fmt`, `alcotest`, and the qcheck
-stack. Skipping it produces errors like `Library "yojson" not
-found` or
+stack. Skipping it produces errors like `Library "yojson" not found` or
 `Program menhir not found in the tree or in PATH` — those mean the opam install
 step hasn't run, not that the build is broken.
 
@@ -138,395 +270,23 @@ on PATH.
 Make sure `~/.local/bin` is on your PATH; on most shells that means adding
 `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` or `~/.bashrc`.
 
-## Quick start
-
-These run as written from a fresh clone:
-
-```bash
-# Compile + dim-check a model
-camdl check ocaml/golden/sir_basic.camdl
-
-# Simulate it
-camdl simulate ocaml/golden/sir_basic.camdl \
-  --param beta=0.3 --param gamma=0.1 --param N0=1000 --param I0=10 \
-  --output traj.tsv
-
-# Inspect compiled structure
-camdl inspect ocaml/golden/sir_basic.camdl --summary
-```
-
-To go beyond the goldens — fitting your own model to data, mapping the
-likelihood surface with `camdl survey`, running scenario sweeps with
-`camdl batch run` — see the canonical workflow in
-[`AGENTS.md`](AGENTS.md#canonical-workflow-follow-this-order). The typical loop
-is:
-
-```bash
-camdl check model.camdl                   # dim-check
-camdl simulate model.camdl --param ...    # sanity-check trajectory
-camdl survey model.camdl --fit fit.toml   # likelihood landscape
-camdl fit run fit.toml                    # all inference stages
-camdl fit summary <fit-dir>               # R̂ / ESS / MLE table
-```
-
----
-
-## The camdl language
-
-A `.camdl` file defines model structure. Parameter values are supplied at
-runtime via `--param` flags or `--params file.toml`.
-
-### SIR
-
-```
-time_unit = 'days
-
-compartments { S, I, R }
-let N = S + I + R
-
-parameters {
-  beta  : rate     in [0.001, 2.0]
-  gamma : rate     in [0.001, 1.0]
-  N0    : count    in [100, 100000]
-  I0    : count    in [1, 1000]
-}
-
-transitions {
-  infection : S --> I  @ beta * S * (I / N)
-  recovery  : I --> R  @ gamma * I
-}
-
-init {
-  S = N0 - I0
-  I = I0
-}
-
-simulate {
-  from = 0 'days
-  to   = 120 'days
-}
-```
-
-### Age-structured SEIR with contact matrix
-
-Stratification expands compartments and transitions at compile time. The IR
-contains only flat compartments and fully-resolved rates.
-
-```
-compartments { S, E, I, R }
-dimensions { age = [child, adult] }
-stratify(by = age)
-
-let N_local[a in age] = S[a] + E[a] + I[a] + R[a]
-
-tables {
-  C_age : age × age = [[12.0, 4.0], [4.0, 8.0]]
-}
-
-transitions {
-  infection[a in age] : S[a] --> E[a]
-    @ beta * S[a] * sum(b in age, C_age[a, b] * I[b] / N_local[b])
-
-  progression[a in age] : E[a] --> I[a]  @ sigma * E[a]
-  recovery[a in age]    : I[a] --> R[a]  @ gamma * I[a]
-}
-```
-
-### Seasonal forcing and stochastic rates
-
-```
-forcing {
-  seasonal : sinusoidal {
-    amplitude = amplitude
-    period    = 365.25
-    phase     = 0.0
-    baseline  = 1.0
-  }
-}
-
-let beta = R0 * gamma * seasonal(t)
-
-transitions {
-  infection : S --> E  @ overdispersed(beta * S * I / N, sigma_se)
-  recovery  : I --> R  @ gamma * I
-  birth     : --> S    @ deterministic(mu * N)
-}
-
-observations {
-  cases : {
-    projected  = incidence(recovery)
-    every      = 7 'days
-    likelihood = neg_binomial(mean = rho * projected, r = k)
-  }
-}
-```
-
-`overdispersed(rate, sigma)` adds extra-demographic stochasticity
-(Gamma-Poisson, He et al. 2010). `deterministic(rate)` uses rounding instead of
-Poisson draws. `t` is the current simulation time.
-
-Forcing function types: `sinusoidal`, `periodic` (range-based schedules
-`on = [7:100, 115:199]`), `piecewise`, `interpolated` (linear or cubic spline),
-`fourier` (truncated Fourier series), `periodic_spline` (periodic B-spline via
-de Boor — cross-validated bit-identical against pomp 6.4 and
-`scipy.interpolate.BSpline`).
-
-### More language features
-
-- **Stratification**: `stratify(by = dim, values = [...])` with partial
-  `only = [COMP]`
-- **Indexed transitions**: `[a in age]` binds index variables
-- **Erlang staging**: `consecutive(dim)` for linear chain trick
-- **Guards**: `where src != dst` for compile-time filtering
-- **Coupling**: `coupling(age) = C_age` for contact-matrix mixing
-- **Let bindings**: `let name[i] = expr` (inlined at use sites)
-- **Math functions**: `exp`, `log`, `sqrt`, `abs`, `floor`, `ceil`, `mod`
-- **Interventions**: `transfer(fraction=..., from=..., to=...)` with `at [...]`
-  or `every E from F to T` schedules
-- **Scenarios**: named parameter/intervention presets for comparison
-
-Full reference: [`docs/camdl-language-spec.md`](docs/camdl-language-spec.md)
-
----
-
-## Simulation
-
-```bash
-camdl simulate MODEL [--backend gillespie|chain_binomial|ode]
-    [--dt DT] [--seed N] [--params P.toml] [--param K=V] [--output FILE]
-```
-
-| Backend        | Flag                                | Notes                                           |
-| -------------- | ----------------------------------- | ----------------------------------------------- |
-| Gillespie SSA  | `--backend gillespie`               | Exact stochastic; default                       |
-| Chain-binomial | `--backend chain_binomial --dt 1.0` | Euler-multinomial (multinomial competing risks) |
-| ODE (RK4)      | `--backend ode --dt 0.1`            | Deterministic                                   |
-
-Same seed + same backend = identical trajectory (Common Random Numbers).
-`overdispersed()` requires chain-binomial. The backend capability system
-enforces this at dispatch time.
-
----
-
-## Inference
-
-### Particle filter
-
-```bash
-camdl pfilter MODEL --params P.toml --data cases.tsv \
-    --particles 5000 --dt 1 --seed 1 \
-    --flow recovery --trace diag.tsv --output ll.txt
-```
-
-Bootstrap particle filter with systematic resampling. Reports log-likelihood,
-per-observation ESS, and one-step-ahead prediction quantiles.
-`--save-final-state particles.tsv` exports the particle ensemble for prediction
-workflows.
-
-### IF2 (iterated filtering)
-
-```bash
-# Explicit rw_sd — the list IS the partition
-camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
-    --rw-sd "R0=5,sigma=0.01" --regime refine --flow recovery
-
-# Auto rw_sd from parameter bounds; pin extras at explicit values
-camdl if2 MODEL --init from_params --params P.toml --data cases.tsv \
-    --rw-sd auto --fixed N0=1000 --fixed mu=0.0 --fixed k=10 --regime scout
-```
-
-Multi-chain IF2 with per-chain indicatif progress bars, Rhat convergence
-diagnostics, and regime presets (scout/refine/validate). Auto rw_sd computes
-`(hi-lo)/6` on the transformed scale from parameter bounds.
-
-### Profile likelihood
-
-```bash
-camdl profile MODEL --init from_params --params P.toml --data cases.tsv \
-    --focal R0 --grid "20,30,40,50,60,70,80" \
-    --rw-sd "sigma=0.01,gamma=0.01" \
-    --output profile_R0.tsv --parallel 8
-```
-
-Parallel 1D and 2D profile likelihoods with indicatif progress bars.
-
-### Fit workflow
-
-The fitting pipeline is one declarative file (`fit.toml`) driven by
-`camdl fit run`. Stages are named and chained inside the TOML; the CLI runs them
-all by default, or one at a time via `--stage`:
-
-```bash
-camdl fit run fit.toml                    # all stages, in order
-camdl fit run fit.toml --stage scout      # one stage only
-camdl fit run fit.toml --resume --stage pgas  # extend a completed PGAS run
-camdl fit status fit.toml                 # colored summary of all stages
-camdl fit summary <fit-dir>               # Â / gate verdict / MLE table
-```
-
-Stage entries declare `algorithm` + `backend` explicitly:
-
-```toml
-[stages.scout]
-algorithm = "if2" # iterated filtering MLE
-backend = "chain_binomial"
-init = "lhs" # Latin-hypercube starts (scale-aware)
-
-[stages.refine]
-algorithm = "pgas" # Bayesian posterior via PGAS+NUTS
-backend = "chain_binomial"
-init = "from_mle" # warm-start from a prior MLE-shape fit dir
-init_mle = "scout" # the stage to chain off of
-
-[stages.validate]
-algorithm = "pfilter" # held-out predictive log-likelihood
-particles = 4000
-replicates = 8
-```
-
-`camdl fit methods` lists the supported `(algorithm, backend)` pairs.
-
-**IF2** ([Ionides et al. 2015](https://doi.org/10.1073/pnas.1410597112)) finds
-the MLE via iterated filtering with cooled perturbations.
-
-**PGAS+NUTS**
-([Lindsten et al. 2014](https://jmlr.org/papers/v15/lindsten14a.html);
-[Hoffman & Gelman 2014](https://jmlr.org/papers/v15/hoffman14a.html))
-characterises the Bayesian posterior. Each Gibbs sweep alternates exact
-parameter updates (complete-data log-likelihood — no PF noise) with CSMC-AS
-trajectory updates. NUTS proposes parameters jointly using **analytical
-gradients** the OCaml compiler emits source-to-source as `rate_grad` IR fields.
-No autodiff tape, no JAX dependency.
-
-PGAS features: parallel chains, Robbins-Monro adaptive MH, diagonal mass-matrix
-adaptation, R-hat/ESS convergence diagnostics, per-sweep trajectory renewal
-tracking, posterior trajectory output (`n_trajectories` in fit.toml).
-
-**Convergence gates** sit between stages and fail the pipeline rather than
-passing a bad fit through. Scout's gate is two-legged: per-parameter chain
-agreement (Gelman–Rubin-style on IF2 per-iteration parameter means) plus a
-decibans-spread check on chain-level log-likelihoods at high particle count.
-Both legs must pass.
-
-**Richardson dt-convergence check** runs after every fit: re-evaluate the loglik
-on a halving ladder of integrator steps (`dt`, `dt/2`, `dt/4`) and refuse to
-bless a fit whose likelihood is still drifting. Catches integration-step
-pathology that synthetic-recovery tests miss (the same `dt` on both sides
-cancels the bias).
-
-**Out-of-sample validation:** add `[holdout]` to fit.toml with holdout data
-files. Scout / refine never see holdout data; validate reports separate train /
-holdout logliks. Use `camdl data split cases.tsv
---at-time 5474` to produce
-train/holdout files.
-
-Specification: [`docs/camdl-inference-spec.md`](docs/camdl-inference-spec.md)
-
----
-
-## Batch sweeps
-
-```bash
-camdl batch run sweep.toml        # multi-scenario × multi-seed sweep
-camdl batch run sweep.toml --dry-run   # preview resolved sweep grid
-camdl batch status sweep.toml     # completion / live file count
-```
-
-Scenario × sweep-point × seed cartesian products with content-addressable output
-in `./results/sims/`. Re-runs skip cached results automatically; `--force`
-re-runs anyway. `[design]` blocks in `sweep.toml` generate Sobol, LHS, or random
-samples for sensitivity analysis — downstream analysis (Sobol indices, etc.)
-reads the resulting `outputs.tsv` from any tool you prefer.
-
-Specification: [`docs/camdl-run-spec.md`](docs/camdl-run-spec.md)
-
-## Model comparison
-
-```bash
-camdl compare fits/a/pfilter fits/b/pfilter --baseline a
-```
-
-Prequential out-of-sample scoring (elpd, CRPS, PIT coverage, paired Δelpd + se,
-E_T = exp(Δelpd) Bayes factor). Consumes `prequential.json` written by `fit run`
-pfilter stages or `camdl pfilter --save-prequential`.
-
----
-
-## Compiler
-
-### Compile
-
-```bash
-camdlc model.camdl > model.ir.json
-```
-
-### Check
-
-```bash
-$ camdlc check model.camdl
-
-model
-  compartments   4 base × 2 age = 8 expanded
-  transitions     3 base → 6 expanded
-  parameters      3 declared
-  ✓ no errors, 0 warnings
-```
-
-Errors show source locations:
-
-```
-error[E100]: undeclared name 'R'
-
-  ┌─ model.camdl:7:37
-7 │   recovery  : I --> R @ gamma * I * R
-  │                                    ^
-  = hint: check spelling, or add a declaration
-```
-
-### Inspect
-
-```bash
-camdlc inspect model.camdl --transitions
-camdlc inspect model.camdl --transition infection_child
-camdlc inspect model.camdl --summary
-```
-
----
-
-## Testing
-
-```bash
-make test          # OCaml + Rust + integration (~800 tests in this repo)
-make build         # build both languages
-```
-
-CI runs on every push: OCaml compiler tests, Rust unit tests, clippy (warnings =
-errors), golden file regeneration + diff check, and the full integration suite.
-
-**External oracles run as CI gates.** Where camdl overlaps with reference
-implementations, regression matters: the periodic-B-spline forcing agrees with
-both pomp 6.4 (R) and `scipy.interpolate.BSpline` (Python) within 10⁻¹² across a
-200-point grid; the He et al. (2010) London measles MLE recovers pomp's
-published values within particle-filter Monte Carlo error; the bare SIR
-final-size hits the Kermack–McKendrick closed form. CI blocks merges if camdl
-drifts.
-
----
-
-## Documentation
+## Learn more
+
+Every camdl binary ships its own version-matched guides offline — run
+`camdl docs` for the topic list (`workflow`, `fit-toml`, `concepts`,
+`diagnosing-fits`, `language`, …). The longer-form references:
 
 | Document                                                       | Contents                                         |
 | -------------------------------------------------------------- | ------------------------------------------------ |
-| [`docs/commands.md`](docs/commands.md)                         | Command taxonomy and workflows                   |
+| [`docs/intro.md`](docs/intro.md)                               | DSL tutorial                                     |
 | [`docs/camdl-language-spec.md`](docs/camdl-language-spec.md)   | Full DSL reference                               |
+| [`docs/user-features.md`](docs/user-features.md)               | Feature catalog with pomp comparison             |
+| [`docs/inference.md`](docs/inference.md)                       | Inference guide (PF, IF2, PGAS, NUTS)            |
+| [`docs/commands.md`](docs/commands.md)                         | Command taxonomy and workflows                   |
+| [`docs/runtimes.md`](docs/runtimes.md)                         | Simulation backend details                       |
 | [`docs/camdl-data-spec.md`](docs/camdl-data-spec.md)           | IR schema and data model                         |
 | [`docs/camdl-inference-spec.md`](docs/camdl-inference-spec.md) | Fitting workflow specification                   |
 | [`docs/camdl-run-spec.md`](docs/camdl-run-spec.md)             | Run-system / batch / CAS specification           |
-| [`docs/inference.md`](docs/inference.md)                       | Inference guide (PF, IF2, PGAS, NUTS)            |
-| [`docs/runtimes.md`](docs/runtimes.md)                         | Simulation backend details                       |
-| [`docs/user-features.md`](docs/user-features.md)               | Feature catalog with pomp comparison             |
-| [`docs/intro.md`](docs/intro.md)                               | DSL tutorial                                     |
-| [`docs/debugging.md`](docs/debugging.md)                       | Debugging with `camdl eval`                      |
 | [`AGENTS.md`](AGENTS.md)                                       | Briefing for AI coding agents working with camdl |
 
 **Using camdl from a downstream project with an AI coding agent?** Start with
@@ -544,7 +304,12 @@ cd .camdl-source && git sparse-checkout set docs ocaml/golden && cd ..
 Add `.camdl-source/` to your project's `.gitignore`; sync with
 `git -C .camdl-source pull`.
 
----
+## Status
+
+camdl is **alpha**: the public surface (DSL, CLI, output formats) is documented
+and usable for real fits, but breaking changes are still expected before 1.0.
+See [`VERSIONING.md`](VERSIONING.md) for what the version number promises and
+[`docs/language-changes.md`](docs/language-changes.md) for the migration log.
 
 ## Repository layout
 
@@ -558,32 +323,25 @@ ocaml/
   test/                Compiler unit + golden tests
 rust/
   crates/ir/           IR types + serde + envelope (version handshake)
-  crates/sim/          Simulation backends (Gillespie, tau-leap,
-                       chain-binomial, ODE) + propensity evaluator
-                       + inference (PF, IF2, PGAS+NUTS, PMMH,
-                       obs_loglik, prequential)
+  crates/sim/          Simulation backends (Gillespie, chain-binomial,
+                       ODE) + propensity evaluator + inference
+                       (PF, IF2, PGAS+NUTS, PMMH, obs_loglik, prequential)
   crates/io/           TSV read/write
-  crates/cli/          camdl: simulate, batch, fit, pfilter, if2,
-                       profile, survey, eval, data, list, show, cat,
-                       compare, label, compile, check, inspect
+  crates/cli/          camdl: simulate, batch, fit, pfilter, profile,
+                       survey, eval, data, lineage, list, show, cat,
+                       compare, label, compile, check, inspect, docs, mre
 ir/
-  VERSION              Canonical IR schema version. Single source of
-                       truth: Rust reads it via include_str! at compile
-                       time; OCaml reads it via a Makefile-generated
-                       constant module (ocaml/lib/ir/ir_version_generated.ml,
-                       gitignored). Bump this and `make build` to break
-                       the IR contract.
-  schema.json          IR schema reference (note: documents the inner
-                       Model only — the on-wire shape is wrapped in the
-                       envelope { ir_version, validated_by, model }
-                       defined by rust/crates/ir/src/envelope.rs).
-                       Currently stale relative to v0.4; the proposal
-                       to generate it from OCaml is open (see C8).
-  golden/              Canonical IR files (Rust test surface,
-                       envelope-wrapped)
+  VERSION              Canonical IR schema version. Single source of truth:
+                       Rust reads it via include_str! at compile time; OCaml
+                       reads it via a Makefile-generated constant module. Bump
+                       this and `make build` to break the IR contract.
+  schema.json          IR schema reference for the inner Model (the on-wire
+                       shape is wrapped in the envelope
+                       { ir_version, validated_by, model } defined by
+                       rust/crates/ir/src/envelope.rs).
+  golden/              Canonical IR files (Rust test surface, envelope-wrapped)
 docs/                  Specifications and guides
-examples/              Complete worked examples with params + data
-benches/               Criterion benchmarks + performance lab notebook
+benches/              Criterion benchmarks + performance lab notebook
 ```
 
 ## Architecture
@@ -592,10 +350,10 @@ The **IR is fully expanded**: the OCaml compiler performs all stratification,
 coupling expansion, and let-binding inlining. The Rust backend sees only flat
 compartments, transitions, and expression ASTs.
 
-The **expression language** is pure, total, and first-order:
-`Const | Param | Pop | PopSum | Time | Dt | BinOp | UnOp | Cond | TimeFunc | TableLookup | Projected`.
-Evaluated in bounded time at each simulation step. Same property that makes
-dim-checking tractable also makes source-to-source autodiff a ~30-line OCaml
+The **expression language** is pure, total, and first-order
+(`Const | Param | Pop | PopSum | Time | Dt | BinOp | UnOp | Cond | TimeFunc | TableLookup | Projected | Reduce | BindingRef | …`),
+evaluated in bounded time at each simulation step. The same property that makes
+dimension-checking tractable makes source-to-source autodiff a compact OCaml
 pattern match — exact ∇ log ℒ at one expression-tree walk per step, no autodiff
 tape.
 
@@ -604,14 +362,19 @@ The **IR contract** is enforced via a version envelope
 schemas at the boundary, so OCaml/Rust drift fails CI rather than producing
 wrong-but-parseable simulations.
 
-**Common Random Numbers**: same seed → identical trajectory. Used for
-counterfactual scenario comparisons where pre-intervention trajectories are
-byte-identical.
+**Common random numbers**: the same seed yields an identical trajectory, so
+paired scenarios differ only where the intervention does — the basis for
+counterfactual comparisons.
 
 **Strict-mode runtime.** Rate-evaluation degeneracies (division by zero, NaN/Inf
-from `Pow`, sqrt of negative, binomial overshoot) produce typed errors by
-default — `SimError::NumericalCollapse` and `NegativeCount`. Inference layers
-catch per-particle-recoverable errors and convert to −Inf log-likelihood for the
-offending particle (resampling kills it, the chain continues). Forward
+from `Pow`, sqrt of a negative, binomial overshoot) produce typed errors by
+default (`SimError::NumericalCollapse`, `NegativeCount`). Inference layers catch
+per-particle-recoverable errors and convert them to a −Inf log-likelihood for
+the offending particle (resampling kills it, the chain continues); forward
 simulation halts. Pass `--allow-degenerate-rates` to restore the legacy
-silent-zero on rare legitimate cases.
+silent-zero for the rare legitimate case.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE). Developed at the
+[Institute for Disease Modeling](https://www.idmod.org/), Gates Foundation.
