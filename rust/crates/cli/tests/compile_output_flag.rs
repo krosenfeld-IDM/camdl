@@ -75,7 +75,7 @@ fn camdl_compile_dash_o_writes_to_file_byte_identical_to_stdout() {
 
     // (1) Stdout path: capture command stdout.
     let stdout_out = Command::new(&camdl)
-        .arg("compile")
+        .arg("dev").arg("compile")
         .arg(&model)
         .output()
         .expect("camdl compile must invoke");
@@ -95,7 +95,7 @@ fn camdl_compile_dash_o_writes_to_file_byte_identical_to_stdout() {
     // (2) -o FILE: writes IR JSON to the file.
     let dash_o_path = tmp.join("dash_o.ir.json");
     let dash_o_status = Command::new(&camdl)
-        .arg("compile").arg(&model)
+        .arg("dev").arg("compile").arg(&model)
         .arg("-o").arg(&dash_o_path)
         .status()
         .expect("camdl compile -o must invoke");
@@ -117,7 +117,7 @@ fn camdl_compile_dash_o_writes_to_file_byte_identical_to_stdout() {
     // (4) --output FILE long form: same bytes as -o.
     let long_path = tmp.join("long.ir.json");
     let long_status = Command::new(&camdl)
-        .arg("compile").arg(&model)
+        .arg("dev").arg("compile").arg(&model)
         .arg("--output").arg(&long_path)
         .status()
         .expect("camdl compile --output must invoke");

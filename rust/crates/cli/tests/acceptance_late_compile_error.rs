@@ -89,7 +89,7 @@ fn late_compile_error_exits_clean_no_fatal_trace() {
     // through. CAMDL_SKIP_VERSION_CHECK so a stale ~/.local/bin camdlc can't
     // turn this into a version-mismatch failure instead of the E507 we want.
     let out = Command::new(&bin)
-        .args(["compile", &model.to_string_lossy()])
+        .args(["dev", "compile", &model.to_string_lossy()])
         .env("CAMDL_SKIP_VERSION_CHECK", "1")
         .output()
         .expect("spawn camdl compile");

@@ -67,11 +67,11 @@ fn missing_required_positional_is_not_drift() {
 
 #[test]
 fn camdlc_passthrough_subcommands_accept_their_own_flags() {
-    // compile/check/inspect forward verbatim to camdlc, so clap accepts any
-    // tail after them. Documented scope limit: those flags are camdlc's
-    // surface, not camdl's. Must parse OK here.
+    // check/inspect (and `camdl dev compile`/`dev doctest`) forward verbatim to
+    // camdlc, so clap accepts any tail after them. Documented scope limit: those
+    // flags are camdlc's surface, not camdl's. Must parse OK here.
     assert_eq!(check(&["check", "model.camdl"]), 0);
-    assert_eq!(check(&["compile", "model.camdl", "--set", "beta=0.3",
+    assert_eq!(check(&["dev", "compile", "model.camdl", "--set", "beta=0.3",
                        "--json-errors"]), 0);
     assert_eq!(check(&["inspect", "model.camdl", "--tables"]), 0);
 }

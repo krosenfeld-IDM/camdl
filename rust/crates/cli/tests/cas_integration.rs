@@ -1087,7 +1087,7 @@ fn reindex_builds_index_and_show_still_resolves() {
     assert!(!output.join("index.json").exists(), "no index before reindex");
 
     let out = Command::new(&bin)
-        .args(["reindex", &output.to_string_lossy()])
+        .args(["dev", "reindex", &output.to_string_lossy()])
         .output().expect("spawn");
     assert!(out.status.success(), "reindex should succeed: {}",
         String::from_utf8_lossy(&out.stderr));
@@ -1125,7 +1125,7 @@ fn out_of_band_leaf_is_found_via_walk_fallback() {
                "-o", &tmp.path().join("t.tsv").to_string_lossy()])
         .status().expect("spawn");
     let st = Command::new(&bin)
-        .args(["reindex", &output.to_string_lossy()])
+        .args(["dev", "reindex", &output.to_string_lossy()])
         .status().expect("spawn");
     assert!(st.success());
 
@@ -1173,7 +1173,7 @@ fn removed_leaf_does_not_resolve_to_dead_path() {
                "-o", &tmp.path().join("t.tsv").to_string_lossy()])
         .status().expect("spawn");
     let st = Command::new(&bin)
-        .args(["reindex", &output.to_string_lossy()])
+        .args(["dev", "reindex", &output.to_string_lossy()])
         .status().expect("spawn");
     assert!(st.success());
 
@@ -1457,7 +1457,7 @@ simulate { from = 0 'days  to = 60 'days }
     std::fs::write(&model, SIR_LINEAGE).unwrap();
     let ir = tmp.join("sir_lineage.ir.json");
     let compiled = Command::new(bin)
-        .args(["compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()])
+        .args(["dev", "compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()])
         .env("CAMDL_SKIP_VERSION_CHECK", "1")
         .output().expect("spawn compile");
     if !compiled.status.success() {

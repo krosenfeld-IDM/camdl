@@ -84,7 +84,7 @@ fn lineage_end_to_end_tsv_and_parquet() {
     let ir = tmp.join("sir.ir.json");
     let compiled = run(
         &camdl,
-        &["compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()],
+        &["dev", "compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()],
     );
     if !compiled.status.success() {
         eprintln!(
@@ -293,7 +293,7 @@ fn lineage_on_ode_is_rejected() {
     let ir = tmp.join("sir.ir.json");
     let compiled = run(
         &camdl,
-        &["compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()],
+        &["dev", "compile", model.to_str().unwrap(), "-o", ir.to_str().unwrap()],
     );
     if !compiled.status.success() {
         return; // camdlc unavailable

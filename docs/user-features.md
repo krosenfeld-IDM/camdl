@@ -335,12 +335,12 @@ surface.
 
 ## Inspect without simulating
 
-`camdl eval` evaluates time-dependent expressions at a grid without running a
+`camdl dev eval` evaluates time-dependent expressions at a grid without running a
 simulation. Useful for verifying forcing curves, covariates, and parameter
 formulas:
 
 ```bash
-camdl eval model.camdl --params p.toml --expr "school,seas" --from 0 --to 365 --every 1
+camdl dev eval model.camdl --params p.toml --expr "school,seas" --from 0 --to 365 --every 1
 ```
 
 Output is TSV — pipe to a file, load in polars/R, plot. If an expression

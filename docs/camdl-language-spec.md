@@ -3648,7 +3648,7 @@ experiments, and inference. All commands accept `.camdl` files directly
 ### 21.1 Compilation and Inspection
 
 ```bash
-camdl compile MODEL.camdl              # compile to IR JSON (stdout)
+camdl dev compile MODEL.camdl          # compile to IR JSON (stdout)
 camdl check   MODEL.camdl              # validate structure (no output)
 camdl inspect MODEL.camdl [OPTIONS]    # inspect compartments, transitions, etc.
 ```
@@ -3676,8 +3676,8 @@ transition.
 ### 21.3 Expression Evaluation
 
 ```bash
-camdl eval MODEL --params P.toml --expr "school,seas,R0" --from 0 --to 365 --every 1
-camdl eval MODEL --params P.toml --expr "school" --at 0,100,200,300
+camdl dev eval MODEL --params P.toml --expr "school,seas,R0" --from 0 --to 365 --every 1
+camdl dev eval MODEL --params P.toml --expr "school" --at 0,100,200,300
 ```
 
 Evaluates time-dependent expressions (forcing functions, parameters, math

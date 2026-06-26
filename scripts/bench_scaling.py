@@ -94,7 +94,7 @@ def run(out_tsv: Path, only_slice: str | None) -> None:
 
         print(f"[{i}/{len(pts)}] {p['slice']:8s} {tag} ... ", end="", file=sys.stderr, flush=True)
         compile_s, _, rc = _timed(
-            [str(CAMDL), "compile", str(camdl_f), "--no-dim-check", "-o", str(ir_f)], env)
+            [str(CAMDL), "dev", "compile", str(camdl_f), "--no-dim-check", "-o", str(ir_f)], env)
         if rc != 0 or not ir_f.exists():
             print("COMPILE FAIL", file=sys.stderr)
             continue

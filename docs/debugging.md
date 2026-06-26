@@ -4,7 +4,7 @@ Tools for inspecting what the simulator computes without guessing.
 
 ---
 
-## `camdl eval` — Evaluate Expressions at a Time Grid
+## `camdl dev eval` — Evaluate Expressions at a Time Grid
 
 Evaluate time-dependent expressions without running a simulation. No compartment
 state, no RNG, no trajectories. Useful for inspecting forcing curves,
@@ -14,16 +14,16 @@ covariates, and parameter-derived quantities.
 
 ```bash
 # Forcing function over one year
-camdl eval model.ir.json --params p.toml --expr "school" --from 0 --to 365 --every 1
+camdl dev eval model.ir.json --params p.toml --expr "school" --from 0 --to 365 --every 1
 
 # Multiple expressions
-camdl eval model.ir.json --params p.toml --expr "school,R0,gamma" --from 0 --to 730 --every 7
+camdl dev eval model.ir.json --params p.toml --expr "school,R0,gamma" --from 0 --to 730 --every 7
 
 # Specific time points
-camdl eval model.ir.json --params p.toml --expr "school" --at 0,100,200,300,365
+camdl dev eval model.ir.json --params p.toml --expr "school" --at 0,100,200,300,365
 
 # Parameter override
-camdl eval model.ir.json --params p.toml --expr "school" --from 0 --to 365 --every 1 --param amplitude=0.8
+camdl dev eval model.ir.json --params p.toml --expr "school" --from 0 --to 365 --every 1 --param amplitude=0.8
 ```
 
 ### Output
@@ -53,7 +53,7 @@ Anything that depends only on `t`, parameters, and forcing functions:
 Expressions referencing compartment populations:
 
 ```bash
-camdl eval model.ir.json --params p.toml --expr "S"
+camdl dev eval model.ir.json --params p.toml --expr "S"
 # error: expression 'S' references compartment state.
 #   Compartment state requires a running simulation.
 #   Use 'camdl simulate --trace' instead.
@@ -65,7 +65,7 @@ To validate that camdl's cubic spline matches pomp's `smooth.spline()`:
 
 ```bash
 # Dump camdl's interpolated population at weekly points
-camdl eval model.ir.json --params p.toml --expr "pop" --from 0 --to 7665 --every 7 > camdl_pop.tsv
+camdl dev eval model.ir.json --params p.toml --expr "pop" --from 0 --to 7665 --every 7 > camdl_pop.tsv
 
 # Compare against pomp output in R/Python
 ```
@@ -93,5 +93,5 @@ t   S       E     I     R     flow_infection  flow_progression  flow_recovery
 
 The planned `--trace` flag would add the remaining traced columns (forcing
 functions and let bindings, e.g. `school`, `beta_base`). It is **not yet
-implemented**. Until then, use `camdl eval` for time-dependent quantities and
+implemented**. Until then, use `camdl dev eval` for time-dependent quantities and
 post-hoc trajectory analysis for state-dependent quantities.

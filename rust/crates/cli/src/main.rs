@@ -87,8 +87,9 @@ Common workflows:
 
 Run `camdl <command> --help` for any subcommand.
 
-Model compilation is handled by `camdlc`; compile/check/inspect/doctest wrap it.
-Run `camdlc --help` for the raw compiler interface."),
+Model compilation is handled by `camdlc`; `check`/`inspect` wrap it (and
+`camdl dev compile`/`camdl dev doctest`). Run `camdlc --help` for the raw
+compiler interface."),
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -165,9 +166,6 @@ pub(crate) enum Command {
     /// the output and the known limitations.
     Survey(args::SurveyArgs),
 
-    /// Evaluate time-dependent expressions against a model
-    Eval(args::EvalArgs),
-
     /// Data utilities
     #[command(subcommand)]
     Data(DataCmd),
@@ -181,33 +179,11 @@ pub(crate) enum Command {
     /// Emit trajectory or observation output from a cached run
     Cat(args::CatArgs),
 
-    /// Rebuild the derived run index (`<root>/index.json`)
-    Reindex(args::ReindexArgs),
-
     /// Compare fits by prequential scores (elpd, CRPS, PIT)
     Compare(args::CompareArgs),
 
     /// Set or update the user-display label on any run (sim, fit, profile, …)
     Label(args::LabelArgs),
-
-    /// Compile a .camdl model to IR JSON (delegates to camdlc)
-    #[command(after_help = colored_help!("\
-This subcommand forwards all arguments verbatim to the OCaml compiler
-`camdlc`. Flags shown above belong to camdl; camdlc's own flags (e.g.
-`--set NAME=VALUE`, `--json-errors`, `--no-dim-check`) are parsed by
-camdlc itself. Run `camdlc --help` for the authoritative flag set.
-
-Examples:
-  # Compile a .camdl source to IR JSON (stdout)
-  camdl compile sir.camdl > sir.ir.json
-
-  # Override a parameter during compilation
-  camdl compile sir.camdl --set beta=0.3
-
-  # Machine-readable diagnostics
-  camdl compile sir.camdl --json-errors
-"))]
-    Compile(Passthrough),
 
     /// Parse and type-check a .camdl model (delegates to camdlc)
     #[command(after_help = colored_help!("\
@@ -223,22 +199,6 @@ Examples:
   camdl check sir.camdl --no-dim-check
 "))]
     Check(Passthrough),
-
-    /// Compile the camdl code blocks in Markdown docs (delegates to camdlc)
-    #[command(after_help = colored_help!("\
-Forwards all arguments verbatim to `camdlc doctest`. Run `camdl doctest` with
-no arguments for usage, or `camdlc --help` for the compiler interface. Extracts
-the ```camdl fenced blocks from Markdown and compiles each against the real
-compiler — classifying pass / skip / fail — so documented examples can't drift.
-
-Examples:
-  # Audit a doc's camdl blocks (pass / skip / fail report, with line numbers)
-  camdl doctest docs/spec.md
-
-  # Gate: exit nonzero if any complete-model block fails to compile
-  camdl doctest --gate docs/spec.md
-"))]
-    Doctest(Passthrough),
 
     /// Offline lineage projections (transmission tree, …) over a line list
     #[command(subcommand)]
@@ -279,6 +239,58 @@ Examples:
 
     /// Check whether a newer camdl release is available (queries GitHub)
     CheckUpdate,
+
+    /// Developer & maintenance commands (rarely needed in the modeling workflow)
+    #[command(subcommand)]
+    Dev(DevCmd),
+}
+
+/// `camdl dev <subcommand>` — developer & maintenance commands kept out of the
+/// top-level surface. Rarely needed in the modeling workflow.
+#[derive(Subcommand)]
+#[command(arg_required_else_help = true)]
+pub(crate) enum DevCmd {
+    /// Rebuild the derived run index (`<root>/index.json`)
+    Reindex(args::ReindexArgs),
+
+    /// Evaluate time-dependent expressions against a model
+    Eval(args::EvalArgs),
+
+    /// Compile a .camdl model to IR JSON (delegates to camdlc)
+    #[command(after_help = colored_help!("\
+This subcommand forwards all arguments verbatim to the OCaml compiler
+`camdlc`. Flags shown above belong to camdl; camdlc's own flags (e.g.
+`--set NAME=VALUE`, `--json-errors`, `--no-dim-check`) are parsed by
+camdlc itself. Run `camdlc --help` for the authoritative flag set.
+
+Examples:
+  # Compile a .camdl source to IR JSON (stdout)
+  camdl dev compile sir.camdl > sir.ir.json
+
+  # Override a parameter during compilation
+  camdl dev compile sir.camdl --set beta=0.3
+
+  # Machine-readable diagnostics
+  camdl dev compile sir.camdl --json-errors
+"))]
+    Compile(Passthrough),
+
+    /// Compile the camdl code blocks in Markdown docs (delegates to camdlc)
+    #[command(after_help = colored_help!("\
+Forwards all arguments verbatim to `camdlc doctest`. Run `camdl dev doctest`
+with no arguments for usage, or `camdlc --help` for the compiler interface.
+Extracts the ```camdl fenced blocks from Markdown and compiles each against the
+real compiler — classifying pass / skip / fail — so documented examples can't
+drift.
+
+Examples:
+  # Audit a doc's camdl blocks (pass / skip / fail report, with line numbers)
+  camdl dev doctest docs/spec.md
+
+  # Gate: exit nonzero if any complete-model block fails to compile
+  camdl dev doctest --gate docs/spec.md
+"))]
+    Doctest(Passthrough),
 }
 
 /// `camdl mre <fit|simulate>` — bundle a reproduction. See
@@ -540,7 +552,6 @@ fn main() {
         Command::If2(a)                 => if2::cmd_if2(&a),
         Command::Profile(a)             => profile::cmd_profile(&a),
         Command::Survey(a)              => survey::cmd_survey(&a),
-        Command::Eval(a)                => eval::cmd_eval(&a),
         Command::Data(DataCmd::Split(a))=> data::cmd_data_split(&a),
         Command::Lineage(LineageCmd::Realize(a)) => lineage::cmd_lineage_realize(&a),
         Command::Lineage(LineageCmd::Tree(a)) => lineage::cmd_lineage_tree(&a),
@@ -549,14 +560,7 @@ fn main() {
         Command::List(a)                => browse::cmd_list(&a),
         Command::Show(a)                => browse::cmd_show(&a),
         Command::Cat(a)                 => browse::cmd_cat(&a),
-        Command::Reindex(a)             => cmd_reindex(&a),
         Command::Compare(a)             => compare::cmd_compare(&a),
-        Command::Compile(a) => {
-            let refs: Vec<&str> = a.args.iter().map(String::as_str).collect();
-            util::delegate_to_camdlc(&refs).unwrap_or_else(|e| {
-                eprintln!("error: {}", e); std::process::exit(1);
-            });
-        }
         Command::Check(a) => {
             let mut refs = vec!["check"];
             refs.extend(a.args.iter().map(String::as_str));
@@ -571,17 +575,25 @@ fn main() {
                 eprintln!("error: {}", e); std::process::exit(1);
             });
         }
-        Command::Doctest(a) => {
+        Command::Docs(a)                => docs::cmd_docs(&a),
+        Command::Mre(MreCmd::Fit(a))      => mre::cmd_mre_fit(&a),
+        Command::Mre(MreCmd::Simulate(a)) => mre::cmd_mre_simulate(&a),
+        Command::CheckUpdate            => check_update::cmd_check_update(),
+        Command::Dev(DevCmd::Reindex(a)) => cmd_reindex(&a),
+        Command::Dev(DevCmd::Eval(a))    => eval::cmd_eval(&a),
+        Command::Dev(DevCmd::Compile(a)) => {
+            let refs: Vec<&str> = a.args.iter().map(String::as_str).collect();
+            util::delegate_to_camdlc(&refs).unwrap_or_else(|e| {
+                eprintln!("error: {}", e); std::process::exit(1);
+            });
+        }
+        Command::Dev(DevCmd::Doctest(a)) => {
             let mut refs = vec!["doctest"];
             refs.extend(a.args.iter().map(String::as_str));
             util::delegate_to_camdlc(&refs).unwrap_or_else(|e| {
                 eprintln!("error: {}", e); std::process::exit(1);
             });
         }
-        Command::Docs(a)                => docs::cmd_docs(&a),
-        Command::Mre(MreCmd::Fit(a))      => mre::cmd_mre_fit(&a),
-        Command::Mre(MreCmd::Simulate(a)) => mre::cmd_mre_simulate(&a),
-        Command::CheckUpdate            => check_update::cmd_check_update(),
     }
 }
 

@@ -2070,7 +2070,7 @@ resolved parameter value came from (`fixed` / `scenario` / `fit-toml` /
 There is no batch-level `manifest.json`. Each completed cell is independently a
 content-addressed `run.json` leaf under `sims/` (the system of record). To
 enumerate a sweep, walk those leaves or read the derived `index.json` (`§9.6` /
-`camdl reindex`); `camdl list` and `camdl batch status` both do this live.
+`camdl dev reindex`); `camdl list` and `camdl batch status` both do this live.
 `batch status` re-plans the sweep from the batch TOML and counts which cells
 already have a committed leaf.
 
