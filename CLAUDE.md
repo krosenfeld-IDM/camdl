@@ -209,6 +209,33 @@ Now that camdl is alpha:
     its formatting alone. (Any other `.md` with embedded doctest preambles is
     the same hazard — check before formatting.)
 
+## Releasing
+
+Releases follow [`VERSIONING.md`](VERSIONING.md) (policy — what a version
+promises a user) and [`RELEASING.md`](RELEASING.md) (the runbook). The
+load-bearing rules:
+
+- **Tags are `vMAJOR.MINOR.PATCH`, always annotated** (`git tag -a`);
+  pre-releases are dot-numbered (`v0.2.0-rc.1`, never bare `-alpha`). Pre-1.0:
+  MINOR (`0.x.0`) may break the DSL/CLI/output-format surface, PATCH (`0.x.y`)
+  is fixes-only. The version covers DSL + CLI + output/file formats; the IR
+  schema (`ir/VERSION`) and `fit.toml` are versioned separately and _reported_
+  in the notes, not folded into the release number.
+- **Never hand-tag or hand-`gh release`.** Cut through the tooling (the `make`
+  targets are thin wrappers over `scripts/release.sh`):
+  1. `make release-suggest` — commits since the last tag + the suggested bump.
+  2. `make release-prep VERSION=x.y.z` — bumps every manifest, regenerates
+     `CHANGELOG.md`.
+  3. Draft `RELEASE_NOTES-x.y.z.md` with the `/release-notes` skill; edit it.
+  4. `make test` green + CI green.
+  5. `make release-publish VERSION=x.y.z` — the only irreversible step; prompts
+     before it commits, tags, pushes, and publishes.
+- **Publishing is maintainer-gated.** An agent may run suggest/prep and draft
+  notes; tagging and publishing are the maintainer's call, never an agent's.
+- The first published release is `v0.2.0` (the `v0.1.0-alpha` tag was never
+  published); cut it **explicitly** — the auto-bump continues the bare alpha tag
+  to `v0.1.0-alpha.1`, which is wrong.
+
 ## Project Overview
 
 `camdl` is a monorepo for stochastic compartmental epidemic modelling. It has
