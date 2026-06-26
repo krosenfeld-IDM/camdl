@@ -34,6 +34,8 @@ rand = "0.8"
 rand_distr = "0.4"
 rayon = "1"
 runid = { path = "../runid" }
+# Semver parse + compare for `camdl check-update` (release tag vs this binary).
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -43,6 +45,10 @@ tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 toml = { version = "0.8", features = ["parse", "display"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
+# HTTP client for `camdl check-update` (and the future binary updater).
+# rustls backend = no system OpenSSL to locate at build/runtime, serving the
+# no-admin / self-contained-binary goals; blocking, so no async runtime.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [target.'cfg(unix)'.dependencies]
 # Process-liveness check (kill(pid, 0)) for the single-flight IR-compile lock:

@@ -12,6 +12,7 @@ mod posterior_draws; // resolve a fit run's canonical posterior draws (--draws p
 mod run_paths;      // canonical output-path helpers
 mod cas;
 mod browse;
+mod check_update;   // `camdl check-update` — GitHub release-availability check
 mod sampling;
 mod sim_job;       // SimulateJob / ParamSource / Seeds / ScenarioRef / ObsOutput (run-spec §3)
 mod engine;        // run_job: the single engine behind simulate + batch run (run-spec §3.1)
@@ -272,6 +273,9 @@ Examples:
     /// Package a minimal reproducible example (model + data + config) to share
     #[command(subcommand)]
     Mre(MreCmd),
+
+    /// Check whether a newer camdl release is available (queries GitHub)
+    CheckUpdate,
 }
 
 /// `camdl mre <fit|simulate>` — bundle a reproduction. See
@@ -574,6 +578,7 @@ fn main() {
         Command::Docs(a)                => docs::cmd_docs(&a),
         Command::Mre(MreCmd::Fit(a))      => mre::cmd_mre_fit(&a),
         Command::Mre(MreCmd::Simulate(a)) => mre::cmd_mre_simulate(&a),
+        Command::CheckUpdate            => check_update::cmd_check_update(),
     }
 }
 
