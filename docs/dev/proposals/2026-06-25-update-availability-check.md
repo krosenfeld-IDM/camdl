@@ -1,185 +1,153 @@
 # Update-availability check
 
-Status: **Proposed** — implementable as specified. Establishes `CAMDL_HOME`
-(`~/.camdl`) as camdl's user-side home. No `run_id` / IR / golden impact.
+Status: **Proposed** — implementable as specified. No `run_id` / IR / golden
+impact. Adds one dependency (`ureq`, shared with the future updater).
 
 ## Summary
 
-A non-blocking, fail-silent check that tells a user when a newer camdl
-**release** is available, run on every subcommand via the central dispatch. The
-defining constraint: **the network is never on the command's critical path.** A
-`camdl simulate` must never wait on github.com, never hang on a dead network,
-and never corrupt its output. The check therefore adds sub-millisecond latency,
-works offline, and degrades to a silent no-op when there's no network.
+An **explicit** `camdl update --check` that tells the user whether a newer camdl
+release exists. It is _synchronous_ (the user ran it deliberately, so a network
+round-trip with a tight timeout is acceptable and a visible failure is fine), so
+it needs **no cache, no detached child, no per-command dispatch hook, and no
+on-by-default network call** — which is what makes it small and safe.
 
-It also establishes `~/.camdl/` (overridable via `CAMDL_HOME`) as camdl's home —
-the same home the future versioned installer/updater will use.
+This is the lowest-risk slice of the "camdl moves fast → users on stale binaries
+silently get wrong answers" problem (e.g. the forcing-ISO bug a stale user would
+hit). A _passive_ per-command nudge is a deliberately deferred follow-up — every
+hard problem in the earlier auto-check design (detached-process survival, a hot-
+path cache, recursion, an on-by-default phone-home from a possibly-sensitive
+ministry network) is a property of the _automatic_ check, not of _checking_; the
+explicit command has none of them.
 
-## The non-negotiable: cache-and-detach
+## Why explicit, not a per-command auto-check
 
-Every invocation consults a **local cache**; only a throttled, **detached**
-child ever touches the network.
+An adversarial review found that the automatic, detached, per-command design
+dragged in: an unprecedented detached-process survival requirement (a naive
+`Command::spawn` does not detach on Unix; `main()` exits via `process::exit`), a
+recursion guard, a single-flight lock, clock-skew/offline-backoff handling, an
+stderr-contract collision risk, and a default-on outbound call — for, in an
+alpha with a small engaged user base who already run `git pull && make install`,
+the marginal value of _passive_ nudges over a deliberate check. The explicit
+command delivers the safety value (a stale user who runs it learns they're
+behind) at a fraction of the surface. So: ship the explicit check; defer the
+passive nudge.
 
-1. On dispatch, read `$CAMDL_HOME/cache/update-check.json`.
-2. **Cache fresh** (checked < `TTL` ago, default 24h): decide the nudge from the
-   cached value. **Zero network.**
-3. **Cache stale**: do _not_ fetch inline. Spawn a fully **detached** child
-   (`camdl __update-refresh`, a hidden subcommand) that does the fetch and
-   rewrites the cache, then the foreground command returns immediately. The
-   _next_ invocation reads the fresh cache.
-
-The network round-trip thus happens in a process that outlives the command. The
-command never blocks on it.
-
-## The app home: `~/.camdl/` (`CAMDL_HOME`)
+## The command
 
 ```
-$CAMDL_HOME/                    # default ~/.camdl, overridable via CAMDL_HOME
-├── cache/
-│   └── update-check.json       # this feature — disposable, regenerable
-├── versions/                   # FUTURE (updater): managed binary pairs
-└── config.toml                 # FUTURE: user config
+camdl update --check     # synchronous: fetch latest release → compare → print
 ```
 
-One namespace (precedent: `~/.cargo`, `~/.rustup`, `~/.npm`),
-`CAMDL_HOME`-overridable (precedent: `CARGO_HOME`/`RUSTUP_HOME`) so shared
-systems and tests can redirect, and **subdivided by purpose** so the disposable
-`cache/` never sits next to a precious `versions/` install (clearing the cache
-can't nuke an install). Strict XDG is deliberately not pursued — it scatters
-camdl across `~/.cache`, `~/.local/share`, `~/.config`; the single
-`CAMDL_HOME`-overridable home is simpler and covers the shared-system case.
-(Optional nicety: if `$XDG_CACHE_HOME` is set _and_ `$CAMDL_HOME` is not, the
-cache may live there — not required.)
+`update` is a new subcommand namespace reserved for the future binary updater
+(`camdl update` with no `--check` will _perform_ an update once that lands). For
+now only `--check` exists. Flow:
 
-This feature creates only `cache/`; `versions/`/`config.toml` are named so the
-home is designed for them, not built here.
+1. `ureq` GET the releases list with a **tight timeout** (connect+read ≈ 3 s).
+2. Parse out the newest tag (see "What it compares against").
+3. Semver-compare to this binary's version; print one of:
+   - `camdl 0.3.0 is available (you have 0.2.0). https://github.com/vsbuffalo/camdl/releases`
+   - `camdl 0.2.0 is up to date.`
+   - `couldn't reach GitHub to check for updates (offline?).` — exit 0, this is
+     not an error; the user asked and we simply couldn't answer.
+   - `no camdl releases published yet.` — when the repo has no releases.
 
-## Types and flow
+Because the user invoked it, a visible "couldn't reach GitHub" line is correct
+(not the silent-fail an automatic check requires).
 
-```rust
-/// Cached result of the last update probe. Atomic-written by the detached
-/// refresher; read by the dispatch hook. Schema-versioned so a future field
-/// can't mis-parse an old file (treat a parse failure as "no cache").
-struct UpdateCache {
-    schema:          u32,
-    checked_at:      i64,            // unix seconds; the TTL gate
-    latest_version:  Option<String>, // latest release tag, e.g. "0.3.0"; None = unknown
-    latest_url:      Option<String>, // release html_url, for the nudge line
-    last_attempt_ok: bool,           // false after a failed fetch — don't retry-storm
-    last_notified:   Option<String>, // version we already nudged about; nudge once per version
-}
+## The HTTP client: `ureq` (rustls)
 
-/// Called once at the top of dispatch, for every subcommand. Pure aside from a
-/// cache read, an optional detached spawn, and an optional stderr line. Never
-/// returns an error, never blocks, never touches stdout or `run_id`.
-fn maybe_notify_update(stderr_is_tty: bool);
-```
+camdl has **no HTTP client today** (the `axum`/`tokio` in `cli/Cargo.toml` are
+unused server deps). This adds one: `ureq` with the rustls TLS backend.
 
-`maybe_notify_update`:
-
-- returns immediately if `CAMDL_NO_UPDATE_CHECK=1`, or `CI` is set, or
-  `!stderr_is_tty`;
-- reads the cache (a parse failure → treat as empty, no panic);
-- if fresh and `latest_version` is newer than this binary and
-  `!= last_notified`: print **one line to stderr** and record `last_notified`;
-- if stale: spawn the detached refresher (under a lock so concurrent commands
-  don't storm it) and return — never wait on it.
-
-The refresher (`camdl __update-refresh`) is fully detached (Unix: `setsid` /
-double-fork so it survives the parent), fetches with a tight timeout (≈3s), and
-**atomic-writes** the cache (temp + rename). On any failure (no network, DNS
-timeout, GitHub down, non-2xx) it writes `last_attempt_ok=false` and exits 0 —
-silently. It holds a lockfile (`cache/refresh.lock`, atomic create) so only one
-refresher runs at a time; a stale lock (> a few minutes) is reclaimable.
-
-## Latency and no-network guarantees
-
-- **Cache hit** (the ~always case): one small file read + a semver compare →
-  **sub-millisecond**, effectively free.
-- **Cache miss** (≤ once per TTL): read + spawn a detached child + return →
-  **~1–3 ms** foreground; the DNS/TLS/HTTP (50 ms–seconds) is entirely in the
-  background child.
-- **No network:** cache hit unaffected; cache miss → the detached child fails
-  silently and the foreground already returned. **Zero impact, no hang, no
-  error.**
-
-Contrast: a synchronous probe per command would be 100 ms–to–multi-second-hang
-on slow DNS / no network. The detach is mandatory, not an optimization.
-
-## Guards (so "every subcommand" is safe, not annoying)
-
-- **stderr only, TTY-gated** — never corrupts piped / `--json` output; auto-skip
-  when stderr isn't a TTY or `CI` is set.
-- **Opt-out** `CAMDL_NO_UPDATE_CHECK=1`.
-- **Nudge once per version** (`last_notified`) — the cheap cache read runs every
-  command, but the line prints at most once per newer release, not every call.
-- **Throttled** by `checked_at` + `TTL` (24h default); **atomic** cache write;
-  **single-flight** lock on the refresher.
-- **`run_id`-neutral and output-neutral** — a stderr cosmetic; never affects the
-  command's result, so reproducibility and tests are untouched.
-
-## The seam
-
-A single call from the central dispatch (`main.rs`, before the matched
-subcommand runs), so coverage is by construction, not copy-paste. camdl already
-carries its own version (`version.rs`:
-`CARGO_PKG_VERSION + "+" + CAMDL_GIT_HASH`) and a version-awareness path (the
-camdlc↔camdl guard, `util.rs`); this extends that awareness outward (latest
-_release_) rather than adding a parallel version system.
+- **Blocking**, so it fits the synchronous command with no async runtime
+  (reqwest's blocking mode still pulls tokio; ureq doesn't).
+- **rustls** = no system OpenSSL to locate at build or runtime — serves camdl's
+  no-admin / cross-platform / self-contained-binary goals. (The `curl` crate /
+  `isahc` link the C libcurl, worse for cross-compile; a `curl` _shell-out_ adds
+  a runtime-binary dependency and stringly error handling.)
+- Footprint note: the bulk of the weight is the **TLS stack (rustls)**, which
+  any `https://` client needs — it is not ureq-specific. `minreq` is a smaller
+  wrapper but pulls the same rustls for HTTPS, so it's a wash; `ureq` has more
+  community mass and a cleaner API.
+- **Shared with the future updater**, which must download _and verify_ signed
+  release binaries — so this dependency is a forward investment, not notify-only
+  weight.
 
 ## What it compares against
 
-The **latest release tag**, not raw `main`. The refresher fetches
-`…/releases/latest` (unauthenticated; the 24h throttle keeps it far under the
-60/hr/IP rate limit) and stores the tag + `html_url`. The dispatch hook compares
-this binary's `CARGO_PKG_VERSION` (semver) to the latest release tag; newer →
-nudge. A dev build between releases reports the last release's version and so
-reads as "current" — correct, since the feature answers "is there a newer
-**release**," not "are you behind `main`" (a dev who wants the latter checks
-git). The git-hash is shown in the nudge for context, not used for the
-comparison.
+GitHub's `/releases/latest` **excludes pre-releases**, and camdl is alpha-tagged
+(`v0.1.0-alpha`), so `/releases/latest` returns 404 until a stable release
+exists — it would nudge nobody through all of alpha, the opposite of the goal.
+So the check queries **`GET /repos/<o>/<r>/releases`** (or `/tags`) — which
+_includes_ pre-releases — and takes the newest by semver. The empty case (no
+releases) is a **first-class outcome** (`no releases published yet`), distinct
+from a network failure.
 
-The nudge line (illustrative):
+Comparison rules (no implementer guess):
 
-```
-camdl: 0.3.0 is available (you have 0.2.0). Update: https://github.com/vsbuffalo/camdl/releases/latest
-```
+- Parse both sides with a semver crate; **strip a leading `v`** (tags are
+  `vMAJOR.MINOR.PATCH`, `CARGO_PKG_VERSION` is not).
+- **Pre-release ordering** per SemVer §11 (`0.2.0-rc.1 < 0.2.0`).
+- Nudge **iff `latest > binary`**; equal or lower → "up to date" (a dev build
+  ahead of the newest release reads as up to date — correct).
+- The binary's version is `CARGO_PKG_VERSION` (bumped at release time by
+  `scripts/release.sh`); the git-hash is shown for context, not used in the
+  compare.
+
+## Cache, home directory, seams
+
+- **No cache.** The explicit command fetches every time it's run; there is
+  nothing to throttle and no hot path to protect. (A cache only matters for the
+  deferred passive nudge — it belongs with that follow-up, under the
+  **existing** `~/.cache/camdl/` that `util.rs:663` `ir_cache_dir` already
+  establishes, _not_ a new `~/.camdl/`. The `~/.camdl` home question defers to
+  the updater RFC.)
+- **Reuse existing seams**, don't reinvent: `std::io::IsTerminal` for any
+  colorization (precedent `style.rs:46`, `main.rs:501`) and `NO_COLOR`. No
+  per-command hook means no TTY/CI/`--no-progress` gating is needed for v1 (the
+  command is deliberate and prints to stdout/stderr as the user expects).
+
+## Privacy
+
+Explicit-only means **no default-on phone-home**: camdl contacts GitHub only
+when the user runs `camdl update --check`. That removes the privacy concern that
+made an automatic check questionable for a health-ministry user on a sensitive
+network. (The deferred passive nudge would reopen the on-by-default question —
+to be decided _with_ that follow-up, leaning opt-in or first-run consent.)
 
 ## Sequencing
 
-This feature needs a release _tag_ to compare against — **not** binary assets.
+1. Build `camdl update --check` (ureq, `/releases`-incl-prereleases, semver
+   compare).
+2. **Mint a release** so the check has something to report. Because the check
+   uses `/releases` (not `/releases/latest`), an alpha/pre-release tag (e.g.
+   `v0.2.0` or `v0.2.0-alpha`) works as the baseline — no need to wait for a
+   "stable" tag.
 
-1. Build the checker (release-aware, as above).
-2. **Mint `v0.2.0`** (notes-only is sufficient) — the baseline the checker
-   reports against; from then on every release nudges anyone on an older build.
-3. _(Phase 2, separate proposals)_ a tag-triggered **binary release pipeline**
-   (per-platform `camdl`+`camdlc` + checksums + signature) and
-   **`camdl update`** (the versioned installer under `$CAMDL_HOME/versions/`).
-   The nudge points at `camdl update` once it exists; until then it points at
-   the releases page / `git pull && make install`.
+## Deferred follow-ups (named, not built here)
 
-## Out of scope (separate)
-
-The actual updater (`camdl update`), the binary release pipeline, and a
-binary-download `curl|bash` fast path. This proposal is _notify only_ — the
-lowest-risk, highest-value slice (it's what turns "camdl moves fast → stale
-users get silent-wrong answers" into a visible nudge).
-
-## Privacy and security
-
-The detached fetch reveals the user's IP and check timing to GitHub. That is the
-only outbound contact; it is opt-out (`CAMDL_NO_UPDATE_CHECK=1`), CI-suppressed,
-and never sends usage data. Because notify only _reads_ a version string and
-never downloads or executes anything, the supply-chain surface of `camdl update`
-(signature verification, etc.) does **not** apply here — that risk lands in the
-Phase-2 updater proposal.
+1. **Passive per-command nudge** — the cache-and-detach design, _only if_ the
+   explicit check proves insufficient at keeping users current. It carries the
+   real costs the review flagged (detached-process survival + a test proving it,
+   a `~/.cache/camdl/` cache with single-flight + offline backoff, the
+   on-by-default privacy decision); not worth them for v1.
+2. **A documented `.bashrc` / `.zshrc` snippet** — a shell one-liner users opt
+   into that reminds them on shell start. Opt-in by construction (zero in-binary
+   surface, no privacy default), so it's the lightweight passive option; ship it
+   as docs, not code, when wanted.
+3. **The binary updater** (`camdl update` to download + verify signed binaries)
+   and the `~/.camdl/versions/` home — a separate RFC; it reuses this proposal's
+   `ureq`.
 
 ## Decisions recorded
 
-- `~/.camdl/` (`CAMDL_HOME`-overridable), subdivided; not strict XDG.
-- Cache-and-detach: the network is never synchronous; fail-silent offline.
-- Wired into every subcommand via one dispatch hook; stderr + TTY-gated;
-  opt-out; nudge once per version; 24h throttle.
-- Compares to the latest **release** (semver), not `main`.
-- Notify only; the updater + binary pipeline are separate, and the checker ships
-  with `v0.2.0` as its baseline.
+- **Explicit `camdl update --check`**, synchronous; no cache / no detach / no
+  per-command hook / no default-on network call.
+- **`ureq` + rustls** as the client (shared with the future updater); not a
+  shell-out, not reqwest, not a libcurl binding.
+- Query **`/releases`** (includes pre-releases) so an alpha-tagged project
+  nudges; the no-release case is a first-class outcome.
+- Semver compare with `v`-strip + pre-release ordering; equal/lower → up to
+  date.
+- Cache + `~/.camdl` home are deferred to the passive nudge / updater, which use
+  the existing `~/.cache/camdl/` and a separate RFC respectively.
