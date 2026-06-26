@@ -5,7 +5,7 @@ impact. Adds one dependency (`ureq`, shared with the future updater).
 
 ## Summary
 
-An **explicit** `camdl update --check` that tells the user whether a newer camdl
+An **explicit** `camdl update check` that tells the user whether a newer camdl
 release exists. It is _synchronous_ (the user ran it deliberately, so a network
 round-trip with a tight timeout is acceptable and a visible failure is fine), so
 it needs **no cache, no detached child, no per-command dispatch hook, and no
@@ -35,12 +35,16 @@ passive nudge.
 ## The command
 
 ```
-camdl update --check     # synchronous: fetch latest release → compare → print
+camdl update check     # synchronous: fetch latest release → compare → print
 ```
 
-`update` is a new subcommand namespace reserved for the future binary updater
-(`camdl update` with no `--check` will _perform_ an update once that lands). For
-now only `--check` exists. Flow:
+`update` is a subcommand **group**, matching camdl's house style (`fit run` /
+`batch run` / `data split` / `lineage realize`). Today it has one verb, `check`;
+bare `camdl update` requires a subcommand (like bare `camdl fit`), so there is
+no do-nothing verb and no flag hanging off an empty verb. The future binary
+updater is a _sibling verb_ — `camdl update apply` (download + verify + replace)
+— added later without renaming anything; the group reads fine whether or not it
+ships. Flow of `update check`:
 
 1. `ureq` GET the releases list with a **tight timeout** (connect+read ≈ 3 s).
 2. Parse out the newest tag (see "What it compares against").
@@ -110,14 +114,14 @@ Comparison rules (no implementer guess):
 ## Privacy
 
 Explicit-only means **no default-on phone-home**: camdl contacts GitHub only
-when the user runs `camdl update --check`. That removes the privacy concern that
+when the user runs `camdl update check`. That removes the privacy concern that
 made an automatic check questionable for a health-ministry user on a sensitive
 network. (The deferred passive nudge would reopen the on-by-default question —
 to be decided _with_ that follow-up, leaning opt-in or first-run consent.)
 
 ## Sequencing
 
-1. Build `camdl update --check` (ureq, `/releases`-incl-prereleases, semver
+1. Build `camdl update check` (ureq, `/releases`-incl-prereleases, semver
    compare).
 2. **Mint a release** so the check has something to report. Because the check
    uses `/releases` (not `/releases/latest`), an alpha/pre-release tag (e.g.
@@ -135,14 +139,15 @@ to be decided _with_ that follow-up, leaning opt-in or first-run consent.)
    into that reminds them on shell start. Opt-in by construction (zero in-binary
    surface, no privacy default), so it's the lightweight passive option; ship it
    as docs, not code, when wanted.
-3. **The binary updater** (`camdl update` to download + verify signed binaries)
-   and the `~/.camdl/versions/` home — a separate RFC; it reuses this proposal's
-   `ureq`.
+3. **The binary updater** (`camdl update apply` — download + verify signed
+   binaries) and the `~/.camdl/versions/` home — a separate RFC; it reuses this
+   proposal's `ureq`.
 
 ## Decisions recorded
 
-- **Explicit `camdl update --check`**, synchronous; no cache / no detach / no
-  per-command hook / no default-on network call.
+- **Explicit `camdl update check`** (an `update` subcommand group, not a flag),
+  synchronous; no cache / no detach / no per-command hook / no default-on
+  network call.
 - **`ureq` + rustls** as the client (shared with the future updater); not a
   shell-out, not reqwest, not a libcurl binding.
 - Query **`/releases`** (includes pre-releases) so an alpha-tagged project
