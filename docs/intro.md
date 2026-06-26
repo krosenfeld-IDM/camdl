@@ -543,10 +543,6 @@ that indexes tables but doesn't expand compartments. This supports per-patch
 scheduling tables like `sia_day : patch × round`. Table-only dimensions are
 declared the same way as stratification dimensions.
 
-**Observation block not yet exercised in golden tests.** The syntax compiles but
-end-to-end inference (scoring, particle filter) is not yet implemented.
-Observations currently generate synthetic data during forward simulation.
-
 **String literals in scenarios are fragile.** `label = "multi word"` may not
 parse correctly for all token patterns. Labels are cosmetic and don't affect
 simulation.

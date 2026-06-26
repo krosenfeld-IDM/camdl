@@ -3706,9 +3706,7 @@ Run Specification (`camdl-run-spec.md` §5) for details.
 camdl pfilter MODEL --params P.toml --data cases.tsv \
     --particles 5000 --dt 1 --seed 42 --trace diag.tsv
 
-# Iterated filtering (MLE) also has a standalone subcommand:
-#   camdl if2 MODEL --data cases.tsv --particles 2000 ...   (alias: camdl mif2)
-# More commonly it is run as a one-stage fit. Write a fit.toml with a
+# Iterated filtering (MLE) is run as a one-stage fit. Write a fit.toml with a
 # single `algorithm = "if2"` stage and run it through `camdl fit run`:
 #
 #   [model]

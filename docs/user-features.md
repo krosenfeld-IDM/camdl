@@ -129,7 +129,7 @@ raw arrays. The compiler generates the values.
 ```camdl
 forcing {
   # UK school calendar (He et al. 2010)
-  school : periodic {
+  school : periodic 'ratio {
     period = 365.25 'days
     step   = 1 'days
     on     = [7:100, 115:199, 252:300, 308:356]
@@ -291,8 +291,8 @@ trajectories. Pre-intervention trajectories are byte-identical.
 
 ## Reactive interventions (state-triggered policy)
 
-A fixed `at [...]` schedule says *when* a campaign happens. A **reactive
-intervention** says *what triggers it* — the campaign fires as a function of
+A fixed `at [...]` schedule says _when_ a campaign happens. A **reactive
+intervention** says _what triggers it_ — the campaign fires as a function of
 what surveillance has detected, which is how real outbreak response works ("run
 an SIA after AFP detections cross a threshold") and the only way native EVSI —
 the value of expanded surveillance — is meaningful, since under a fixed schedule
@@ -309,25 +309,27 @@ reactive_interventions {
 }
 ```
 
-The `when` predicate reads **observed data**, not latent truth: `observed(stream)`
-is the latest reported value and `sum_observed(stream, window = D)` the trailing
-sum — the distinction matters because a health ministry acts on reported cases,
-not on the model's hidden infection count. The reported value is the *realized*
-random draw from the observation model (e.g. a Poisson report count), the same
-number a `--obs` file would contain — not its expectation — so the trigger
-behaves exactly as surveillance would. Like `interventions {}`, a reactive
-policy is scenario-toggleable, so a `with_response` scenario `enable`s it and a
-`baseline` omits it.
+The `when` predicate reads **observed data**, not latent truth:
+`observed(stream)` is the latest reported value and
+`sum_observed(stream, window = D)` the trailing sum — the distinction matters
+because a health ministry acts on reported cases, not on the model's hidden
+infection count. The reported value is the _realized_ random draw from the
+observation model (e.g. a Poisson report count), the same number a `--obs` file
+would contain — not its expectation — so the trigger behaves exactly as
+surveillance would. Like `interventions {}`, a reactive policy is
+scenario-toggleable, so a `with_response` scenario `enable`s it and a `baseline`
+omits it.
 
 Forward simulation on the **chain-binomial** backend executes the agenda: the
 policy fires when its trigger crosses, `after` the lag elapses, honouring
 `once`/`cooldown`. Every firing is recorded in the run's `reactive_log.tsv`
 artifact (`trigger_time`, `policy`, `trigger_value`, `threshold`, `fire_time`,
 `action`); `camdl cat <id> --stream reactive_log.tsv` reads it, and
-`--reactive-log PATH` mirrors it. Inference (IF2/PGAS/PMMH) and the Gillespie/ODE
-forward backends do not yet run reactive policies — an active reactive policy
-there stops with a clear capability error rather than silently ignoring the
-policy. See the spec (`camdl docs language`, §13.9) for the full surface.
+`--reactive-log PATH` mirrors it. Inference (IF2/PGAS/PMMH) and the
+Gillespie/ODE forward backends do not yet run reactive policies — an active
+reactive policy there stops with a clear capability error rather than silently
+ignoring the policy. See the spec (`camdl docs language`, §13.9) for the full
+surface.
 
 ---
 
@@ -359,8 +361,7 @@ time  ll_increment  ESS    pred_mean  pred_q05  pred_q50  pred_q95  observed
 ```
 
 See exactly where the model predicts well (data inside the 90% interval) and
-where it fails. Supports both NegBinomial and discretized Normal observation
-models (`--obs-model discretized_normal`).
+where it fails.
 
 ---
 
@@ -443,7 +444,7 @@ else if ((t-floor(t)) >= 308.0/365.0 && (t-floor(t)) <= 356.0/365.0)
 
 ```camdl
 forcing {
-  school : periodic {
+  school : periodic 'ratio {
     period = 365.25 'days
     step   = 1 'days
     on     = [7:100, 115:199, 252:300, 308:356]
