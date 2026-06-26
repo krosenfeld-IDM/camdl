@@ -35,7 +35,11 @@ cmd="${1:-}"; ver="${2:-}"
 case "$cmd" in
   suggest)
     git fetch -q origin 2>/dev/null || true
-    last="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+    # Match only release tags (vMAJOR.MINOR…); a bare `git describe` picks up
+    # backup tags like `cas-overhaul` that sit nearer on the history, anchoring
+    # the "commits since" range on a non-release. Mirrors cliff.toml's
+    # tag_pattern so the display and git-cliff's version detection agree.
+    last="$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || true)"
     echo "last release tag: ${last:-<none>}"
     echo "commits since:"
     if [ -n "$last" ]; then git log --oneline "$last"..HEAD; else git log --oneline | head -50; fi
