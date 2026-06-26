@@ -147,8 +147,11 @@ pub(crate) enum Command {
     /// Standalone bootstrap particle filter at fixed parameters
     Pfilter(args::PfilterArgs),
 
-    /// Standalone iterated filtering (IF2 / MIF2)
-    #[command(alias = "mif2")]
+    /// (removed) IF2 is now a one-stage fit — see `camdl fit run`
+    ///
+    /// Hidden from the command list: kept only so `camdl if2` / `camdl mif2`
+    /// print an actionable migration message instead of a bare clap error.
+    #[command(alias = "mif2", hide = true)]
     If2(args::If2Args),
 
     /// Profile likelihood via parallel IF2 over a parameter grid
