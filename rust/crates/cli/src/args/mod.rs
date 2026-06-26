@@ -476,7 +476,7 @@ Examples:
   camdl simulate sir.camdl --params p.toml --seeds 1:100
 
   # Posterior predictive check from a fit's draws
-  camdl simulate sir.camdl --draws posterior.tsv --replicates 10 --obs ppc.tsv
+  camdl simulate sir.camdl --draws draws.tsv --replicates 10 --obs ppc.tsv
 "))]
 pub struct SimulateArgs {
     /// IR JSON or .camdl model file
@@ -2163,9 +2163,10 @@ pub struct LineageCohortArgs {
     #[arg(long, default_value_t = 1.0)]
     pub window: f64,
 
-    /// Align windows to t=0 (default) rather than to the first matching event.
-    #[arg(long, default_value_t = true)]
-    pub align_zero: bool,
+    /// Align each cohort window to its first matching event instead of t=0
+    /// (the default is t=0, the model origin).
+    #[arg(long)]
+    pub align_first_event: bool,
 
     /// Output TSV path (required).
     #[arg(short, long)]
@@ -2426,6 +2427,18 @@ pub struct MreFitArgs {
 /// its trajectory-output meaning). No `--no-data`: a forward sim has no observed
 /// data, and its tables/params can't be dropped without breaking the run.
 #[derive(Args)]
+#[command(after_help = colored_help!("\
+Bundles a model + its read() tables + params into a shareable `.tar.gz` that
+reproduces a forward simulation. Takes every `camdl simulate` flag; `-b/--bundle`
+names the output (`-o` keeps its trajectory-mirror meaning).
+
+Examples:
+  # Bundle a forward-sim reproduction (default name <model>.mre.tar.gz)
+  camdl mre simulate sir.camdl --params p.toml --seed 42
+
+  # Name the bundle explicitly
+  camdl mre simulate sir.camdl --params p.toml --seed 42 -b sir-repro.mre.tar.gz
+"))]
 pub struct MreSimulateArgs {
     #[command(flatten)]
     pub sim: SimulateArgs,

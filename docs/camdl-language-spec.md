@@ -153,7 +153,7 @@ expressions, table values, and parameter bounds. The dacca SIRS configuration
 entirely composed of calendar-named _affine_ constructs and works unchanged.
 
 See [`docs/dates.md`](dates.md) and the typed-time proposal
-([`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md))
+([`docs/dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md))
 §3 for the full statement of the rule, the LUB propagation table, and the
 classifier-from-leaves invariant.
 
@@ -368,7 +368,7 @@ In unanchored mode, a reference to `origin` is **E327**.
 A `date_range(...)` compile-time generator produces a list of Instants from a
 start, an end-or-count, and a cadence — see [`docs/dates.md`](dates.md) for the
 surface and
-[`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
+[`docs/dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md)
 §4 for the full signature and diagnostics.
 
 ### 2.4 Three tiers of dimensional information
@@ -3809,7 +3809,7 @@ The two replacements are:
   expressed "freeze at default" as an explicit gesture; the new spelling
   expresses it as the absence of one. See `docs/camdl-run-spec.md §1.3` for the
   full precedence chain and
-  `docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md` §"`--fixed`
+  `docs/dev/proposals/archive/post-alpha/2026-05-25-cli-init-and-params-ux.md` §"`--fixed`
   semantics, defined once" for the rationale.
 
 ### 21.6 Fit Workflow

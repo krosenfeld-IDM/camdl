@@ -454,7 +454,8 @@ pub fn cmd_lineage_cohort(a: &LineageCohortArgs) {
         }
     };
 
-    let bins = sim::lineage::project::cohort(&entries, event, a.window, a.align_zero);
+    // `cohort` takes `align_zero`; the CLI flag is its inverse opt-in.
+    let bins = sim::lineage::project::cohort(&entries, event, a.window, !a.align_first_event);
 
     let mut out = open_required_output("cohort", a.output.as_deref());
     writeln!(out, "window_start\twindow_end\tincidence\tcumulative").ok();

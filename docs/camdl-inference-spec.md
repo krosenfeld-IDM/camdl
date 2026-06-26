@@ -364,7 +364,7 @@ Config validation rejects the degenerate case:
 I0 = { bounds = [1, 500], ivp = true } # required under ic_free
 ```
 
-See `docs/dev/proposals/2026-04-18-ic-free-inference.md` for the mathematical
+See `docs/dev/proposals/archive/pre-alpha/2026-04-18-ic-free-inference.md` for the mathematical
 derivation, references (King Nguyen Ionides 2016 JSS, Ionides et al. 2015 PNAS,
 King et al. 2008 Nature, Bretó He Ionides King 2009 AOAS), and the
 epistemic-laundering motivation.

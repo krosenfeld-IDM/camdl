@@ -36,23 +36,25 @@ transform. A few commands delegate to the compiler.
 
 ### Read, display, compare
 
-| Command                                                     | Does                                                                                                                                                            |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`                                                      | Browse cached runs as a table.                                                                                                                                  |
-| `show`                                                      | Full metadata for one cached run.                                                                                                                               |
-| `cat`                                                       | Emit a cached run's trajectory or observations as TSV.                                                                                                          |
-| `compare`                                                   | Paired prequential comparison (elpd, CRPS, PIT) across fits. Scores are plug-in + in-sample-optimistic (caveat printed); not a leave-future-out forecast score. |
-| `label`                                                     | Set a display label on any run.                                                                                                                                 |
-| `fit {status,summary,predict,diff,table,new,where,methods}` | Inspect, summarize, predict-vs-observe, and aggregate fits; scaffold new `fit.toml`s.                                                                           |
-| `batch status`                                              | Completion of a sweep.                                                                                                                                          |
-| `eval`                                                      | Evaluate model expressions (parameters, forcings) on a time grid — pure inspection, no simulation.                                                              |
-| `data split`                                                | Split a data TSV into train/holdout.                                                                                                                            |
-| `lineage {realize,tree,sojourn,cohort}`                     | Offline projections over an event log — transmission tree, dwell times, cohort incidence.                                                                       |
+| Command                                            | Does                                                                                                                                                            |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`                                             | Browse cached runs as a table.                                                                                                                                  |
+| `show`                                             | Full metadata for one cached run.                                                                                                                               |
+| `cat`                                              | Emit a cached run's trajectory or observations as TSV.                                                                                                          |
+| `compare`                                          | Paired prequential comparison (elpd, CRPS, PIT) across fits. Scores are plug-in + in-sample-optimistic (caveat printed); not a leave-future-out forecast score. |
+| `label`                                            | Set a display label on any run.                                                                                                                                 |
+| `fit {run,summary,predict,diff,table,new,methods}` | Run a fit; inspect, summarize, predict-vs-observe, and aggregate fits; scaffold new `fit.toml`s.                                                                |
+| `batch status`                                     | Completion of a sweep.                                                                                                                                          |
+| `dev eval`                                         | Evaluate model expressions (parameters, forcings) on a time grid — pure inspection, no simulation.                                                              |
+| `data split`                                       | Split a data TSV into train/holdout.                                                                                                                            |
+| `lineage {realize,tree,sojourn,cohort}`            | Offline projections over an event log — transmission tree, dwell times, cohort incidence.                                                                       |
 
 ### Compiler passthrough
 
-`compile`, `check`, and `inspect` delegate to `camdlc` — compile a `.camdl`
-model to IR, type- and dimension-check it, and print its compiled structure.
+`check` and `inspect` (and `camdl dev compile`) delegate to `camdlc` — type- and
+dimension-check a `.camdl` model, print its compiled structure, and compile it
+to IR. `check` reports diagnostics (errors / warnings / lints);
+`inspect --summary` prints the structural overview.
 
 ## Which methods go through `fit run`
 

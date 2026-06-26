@@ -493,7 +493,7 @@ The second case is pedagogically important and easy to misread. A reader seeing
 alone track the data will conclude "the fit is good." Neither is right. The
 divergence between them _is_ the diagnostic — teach it that way.
 
-Background: `docs/dev/proposals/2026-04-19-pf-latent-trajectories.md`.
+Background: `docs/dev/proposals/archive/pre-alpha/2026-04-19-pf-latent-trajectories.md`.
 
 ---
 
@@ -800,7 +800,7 @@ camdl fit run fits/synth.toml --seed 0 --stage posterior
 2026-05-25 CLI UX revision; see
 [`docs/camdl-run-spec.md §1.3`](camdl-run-spec.md) for the authoritative tier
 list and
-[`docs/dev/proposals/2026-05-25-cli-init-and-params-ux.md`](dev/proposals/2026-05-25-cli-init-and-params-ux.md)
+[`docs/dev/proposals/archive/post-alpha/2026-05-25-cli-init-and-params-ux.md`](dev/proposals/archive/post-alpha/2026-05-25-cli-init-and-params-ux.md)
 §"Precedence (last wins)" for the design rationale). Each tier overrides the
 tier above it:
 

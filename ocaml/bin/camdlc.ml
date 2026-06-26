@@ -21,6 +21,7 @@ Run `camdl --help`.
 
 let () =
   let args = Array.to_list Sys.argv |> List.tl in
+  try
   match args with
   | [] ->
     print_string usage_text;
@@ -234,3 +235,9 @@ let () =
          (* Env-gated per-pass timing breakdown to stderr (no-op unless
             CAMDL_TIME_PASSES is set); never touches the IR on stdout/-o. *)
          Passtime.dump ())
+  with Sys_error msg ->
+    (* A bad input/output path (e.g. a misspelled .camdl) raises Sys_error from
+       open_in / open_out; surface it as a clean diagnostic instead of an
+       uncaught "Fatal error: exception …" trace. *)
+    Printf.eprintf "error: %s\n" msg;
+    exit 1

@@ -25,7 +25,7 @@ camdl models come in two modes, distinguished by a single bit: whether
 The two modes share most of the language. Three constructs behave differently
 across them — see the **anchor-only primitives** and the **constant-day axis
 rule** below. The vocabulary mirrors
-[`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
+[`docs/dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md)
 §1 (also referred to in some older docs as "calendar-anchored" /
 "indexed-time").
 
@@ -49,7 +49,7 @@ everything else is `Exact`. A `Calendar`-classified duration **cannot translate
 an `Instant`** in anchored mode — that's a hard error (**E321**) with the hint
 pointing at `add_calendar_months` for calendar-exact stepping or an explicit
 `'days` literal for an affine offset. See the proposal's
-[§3](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md#3-the-two-rules)
+[§3](dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md#3-the-two-rules)
 for the full statement, including the LUB propagation rule and the
 classifier-from-leaves invariant that keeps a `'months`-spelled parameter
 _bound_ from contaminating uses of the parameter.
@@ -267,7 +267,7 @@ number is computed straight from `(Y, M, D)`, with no timezone. So:
 
 > Reference: this section describes the surface introduced by the typed-time
 > proposal
-> ([`docs/dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)).
+> ([`docs/dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md)).
 > Phases 1 (rules) and 2 (calendar primitives) have shipped:
 > `time_unit = 'months` with `origin` declared is **E320**; the hint below
 > points at the migration.
@@ -405,4 +405,4 @@ table values don't get added to dates. They all stay legal.
   diagnostic. With neither set, the step defaults to 1 (`time_unit`). Omit `dt`
   from the model only when you intend the run to pick it.
 - **Design rationale and test plan:**
-  `docs/dev/proposals/2026-05-22-calendar-time.md`.
+  `docs/dev/proposals/archive/post-alpha/2026-05-22-calendar-time.md`.

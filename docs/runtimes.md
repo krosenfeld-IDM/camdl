@@ -1,9 +1,9 @@
 # Simulation Backends
 
 `compartmental` ships three simulation backends for the same IR model: Gillespie
-(exact SSA), chain-binomial, and ODE (RK4). They all take the same compiled model
-and parameter vector and return the same `Trajectory` type. The choice is a
-tradeoff between fidelity, speed, and what the downstream analysis requires.
+(exact SSA), chain-binomial, and ODE (RK4). They all take the same compiled
+model and parameter vector and return the same `Trajectory` type. The choice is
+a tradeoff between fidelity, speed, and what the downstream analysis requires.
 
 ```
 camdl simulate model.ir.json --params base.toml --backend gillespie
@@ -20,8 +20,8 @@ camdl simulate model.ir.json --params base.toml --backend ode          --dt 0.1
 The IR distinguishes two compartment kinds:
 
 - **Integer** (`CompartmentKind::Integer`) — the standard epidemic compartment.
-  Head-counted; must be a non-negative integer. The stochastic/discrete
-  backends maintain these as `i64`. The ODE backend promotes them to `f64`.
+  Head-counted; must be a non-negative integer. The stochastic/discrete backends
+  maintain these as `i64`. The ODE backend promotes them to `f64`.
 
 - **Real** (`CompartmentKind::Real`) — a continuous-valued auxiliary variable,
   typically a pathogen concentration, waning immunity index, or environmental
@@ -356,12 +356,12 @@ conversion:
 
 1. Evaluate propensity λ and overdispersion σ² from the current state
 2. Draw a Gamma-distributed rate multiplier: G ~ Gamma(dt/σ², σ²/dt)
-3. Convert to probability and draw: the expected count n·p (where
-   p = 1 − exp(−G·per_capita·Δt)) is sampled, capped at the source population
+3. Convert to probability and draw: the expected count n·p (where p = 1 −
+   exp(−G·per_capita·Δt)) is sampled, capped at the source population
 
-This is equivalent to a NegBinomial event count with mean = λΔt and size = λΔt/σ².
-When σ² → 0, the Gamma concentrates at its mean and the draw converges to the
-plain Poisson/binomial limit.
+This is equivalent to a NegBinomial event count with mean = λΔt and size =
+λΔt/σ². When σ² → 0, the Gamma concentrates at its mean and the draw converges
+to the plain Poisson/binomial limit.
 
 **Backend capability system.** Each model declares required capabilities
 (derived from the IR at compile time). Each backend declares what it supports.
@@ -369,7 +369,7 @@ Mismatch produces a hard error before simulation starts — no silent wrong
 answers.
 
 ```
-$ camdl model.ir.json --backend gillespie --seed 42
+$ camdl simulate model.ir.json --backend gillespie --seed 42
 error: model requires capabilities not supported by backend 'gillespie':
   - OVERDISPERSION: transitions with overdispersion require --backend chain_binomial
 ```

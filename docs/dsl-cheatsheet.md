@@ -11,7 +11,7 @@ proposing DSL changes.
 
 > **Status conventions.** This cheatsheet reflects the language as of typed-time
 > Phases 1 and 2 (the
-> [`2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/2026-05-22-typed-time-and-dsl-ergonomics.md)
+> [`2026-05-22-typed-time-and-dsl-ergonomics.md`](dev/proposals/archive/post-alpha/2026-05-22-typed-time-and-dsl-ergonomics.md)
 > proposal): the Exact/Calendar split, `add_calendar_months/_years`,
 > `date_range`, the constant-day axis rule, and the anchored-mode diagnostics
 > (E320–E323, E327–E329, W324–W328) have all shipped.
