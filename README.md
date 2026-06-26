@@ -6,17 +6,47 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](VERSIONING.md)
 
-Write a compartmental epidemic model the way you'd write it on a whiteboard —
-compartments, transitions, rates — and camdl simulates it, fits it to real
-surveillance data, and tells you when a fit hasn't converged. The math is the
-program; the units are checked; the runs are reproducible.
+
+camdl is a small domain-specific language (DSL), simulation runtime, and
+statistical inference stack for compartmental infectious disease models. The
+goal of camdl is to make writing compartmental models easy --- the mechanics of
+a model are expressed in the camdl DSL just as you'd write the math on a
+whiteboard. Inspired by Stan, camdl supports multiple runtime backends (ODE,
+chain-binomial, Gillespie) and inference methods (iterated filtering, Particle
+Marginal Metropolis--Hastings, Particle Gibbs with Ancestral Sampling).
+
+Each model is written in terms of compartments, transitions, rates,
+observations, and fitting configuration. Each model is then run through a
+compiler that runs extensive checks and validations, catching modeling mistakes
+like unit and dimensional mismatches before the model is even run. The camdl
+compiler also optimizes the model using tricks like loop-invariant code motion
+and binding caches so that it will run faster during simulations and inference.
+All of this happens under the hood, automatically --- the researcher does not
+need to run these extra steps themselves. As scientific computational workflows
+are increasingly done by coding agents, camdl is explicitly forward-looking:
+the compiler helps ensure the model agents write is sound, and camdl has
+doc-tested documentation integrated into command-line tooling for maximal
+discoverability of never-stale info for agents fitting models with camdl.
+
+In a well-posed infectious disease model, the observation process is part of
+the model itself --- in camdl, the link between input data and the model's
+latent process is linked declaratively in an `observations { }` block, which
+supports multiple observation streams (e.g. time-series age-stratified
+incidence, *and* environmental surveillance). The mapping between input data
+and the observation likelihood is declarative --- camdl automatically takes
+care of everything else.
+
+A central design goal of camdl is to make fitting multiple model variants and
+model comparisons easy and reproducible. Every camdl run is fully provenanced
+and stored in an *input-addressed storage* system, that ensures reproducibility
+and automatically caches to prevent accidental overwrites of expensive runs.
 
 Developed at the [Institute for Disease Modeling](https://www.idmod.org/) (IDM),
 Gates Foundation.
 
-## A model, start to finish
+## A Simple SIR camdl Model
 
-This is a complete, runnable SIR model:
+Here's a simple SIR model in camdl:
 
 ```camdl
 time_unit = 'days
@@ -38,27 +68,67 @@ transitions {
   recovery  : I --> R  @ gamma * I
 }
 
-init { S = 999  I = 1 }
+init {
+  S = 999
+  I = 1
+}
 
-simulate { from = 0 'days  to = 120 'days }
+simulate {
+  from = 0 'days
+  to = 120 'days
+}
 ```
 
-Type-check it (the dimensions are real types — `rate` is `time⁻¹`, `S`, `I` are
-counts), then simulate it:
+This is all that is needed to simulate an SIR model with camdl; note that camdl
+supports optional [roxygen](https://roxygen2.r-lib.org/)-style comment
+documentation (the lines starting with `#'`) embedded in the model, so parameter 
+descriptions are automatically stored alongside the model and surface in 
+downstream commands like `camdl fit summary` to remind users what's what,
+as well as can be used in automatic plotting, etc.
+
+The dimensions in camdl are real types --- `rate` is `time⁻¹`, `S`, `I` are
+counts --- which ensures models are valid at their core. These parameter types
+also allow camdl's inference stack to automatically transform variables to the
+appropriate scale, e.g. probabilities are fit on a logit scale, rates on a
+log-scale, etc. After drafting a model like this, users/agents can optionally
+type-check it:
 
 ```bash
-camdl check sir.camdl                                    # compiles + dimension-checks
-camdl simulate sir.camdl --param beta=0.3 --param gamma=0.1 --stdout
+camdl check sir.camdl  # compiles + dimension-checks
 ```
 
-The unit check is not decoration. Drop the `/ N` that makes transmission
-per-capita — a classic modelling slip — and camdl rejects it at compile time
-instead of silently simulating the wrong dynamics:
+Had a researcher or coding agent accidentally dropped the `/ N` that makes
+transmission per-capita (a classic modelling slip), camdl would reject it at
+compile time instead of silently simulating the wrong dynamics:
 
 ```text
 error[E300]: transition 'infection' rate has wrong dimension
-  = note: rate = ((beta * S) * I)
+= note: rate = ((beta * S) * I)
 ```
+
+All of these checks are done automatically though each time a user runs a camdl
+command on a `.camdl` file. More often a user would just rely on this automatic
+checking happening behind the scenes when they run a command like `camdl
+simulate`:
+
+```console
+$ camdl simulate sir.camdl --param beta=0.3 --param gamma=0.1
+compiling sir.camdl...
+ compiled sir.camdl   1.9KB IR in 0.0s (6.1× source)
+simulate · chain_binomial: running …
+   stored ./results/sims/sir-c6bf78fe/…/seed_1-06cbd6b3
+          camdl cat 5ed416f2…
+```
+
+Every run is stored under `results/` keyed by its exact inputs (model, config,
+parameters, scenario, seed), so an identical re-run is instant and the
+`camdl cat <id>` line retrieves the trajectory.
+
+![camdl syntax mirrors the math you'd write on a whiteboard](docs/assets/math-vs-dsl.png)
+
+_The age-stratified force of infection in two notations — standard math (top)
+and camdl (bottom). The target-age index `a`, the source-age index `b`, and the
+shared `age` dimension are colour-matched across both._
 
 ## Fit it to data
 
@@ -328,8 +398,9 @@ rust/
                        (PF, IF2, PGAS+NUTS, PMMH, obs_loglik, prequential)
   crates/io/           TSV read/write
   crates/cli/          camdl: simulate, batch, fit, pfilter, profile,
-                       survey, eval, data, lineage, list, show, cat,
-                       compare, label, compile, check, inspect, docs, mre
+                       survey, data, lineage, list, show, cat, compare,
+                       label, check, inspect, docs, mre, dev (compile,
+                       doctest, eval, reindex)
 ir/
   VERSION              Canonical IR schema version. Single source of truth:
                        Rust reads it via include_str! at compile time; OCaml
@@ -377,4 +448,3 @@ silent-zero for the rare legitimate case.
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE). Developed at the
-[Institute for Disease Modeling](https://www.idmod.org/), Gates Foundation.
