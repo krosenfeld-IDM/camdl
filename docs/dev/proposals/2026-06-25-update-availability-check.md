@@ -5,7 +5,7 @@ impact. Adds one dependency (`ureq`, shared with the future updater).
 
 ## Summary
 
-An **explicit** `camdl update check` that tells the user whether a newer camdl
+An **explicit** `camdl check-update` that tells the user whether a newer camdl
 release exists. It is _synchronous_ (the user ran it deliberately, so a network
 round-trip with a tight timeout is acceptable and a visible failure is fine), so
 it needs **no cache, no detached child, no per-command dispatch hook, and no
@@ -35,16 +35,16 @@ passive nudge.
 ## The command
 
 ```
-camdl update check     # synchronous: fetch latest release → compare → print
+camdl check-update     # synchronous: fetch latest release → compare → print
 ```
 
-`update` is a subcommand **group**, matching camdl's house style (`fit run` /
-`batch run` / `data split` / `lineage realize`). Today it has one verb, `check`;
-bare `camdl update` requires a subcommand (like bare `camdl fit`), so there is
-no do-nothing verb and no flag hanging off an empty verb. The future binary
-updater is a _sibling verb_ — `camdl update apply` (download + verify + replace)
-— added later without renaming anything; the group reads fine whether or not it
-ships. Flow of `update check`:
+A single top-level verb, like `camdl simulate` or `camdl fit` — not a subcommand
+group. It is deliberately **not** named `camdl update`: a bare `update` reads as
+"perform an update," and that name should stay reserved for a future binary
+updater (download + verify + replace), which is a different and riskier
+operation. `check-update` says exactly what it does — checks, never mutates the
+binary — so the two coexist later (`camdl check-update` to look, `camdl update`
+to act) with no rename. Flow:
 
 1. `ureq` GET the releases list with a **tight timeout** (connect+read ≈ 3 s).
 2. Parse out the newest tag (see "What it compares against").
@@ -114,14 +114,14 @@ Comparison rules (no implementer guess):
 ## Privacy
 
 Explicit-only means **no default-on phone-home**: camdl contacts GitHub only
-when the user runs `camdl update check`. That removes the privacy concern that
+when the user runs `camdl check-update`. That removes the privacy concern that
 made an automatic check questionable for a health-ministry user on a sensitive
 network. (The deferred passive nudge would reopen the on-by-default question —
 to be decided _with_ that follow-up, leaning opt-in or first-run consent.)
 
 ## Sequencing
 
-1. Build `camdl update check` (ureq, `/releases`-incl-prereleases, semver
+1. Build `camdl check-update` (ureq, `/releases`-incl-prereleases, semver
    compare).
 2. **Mint a release** so the check has something to report. Because the check
    uses `/releases` (not `/releases/latest`), an alpha/pre-release tag (e.g.
@@ -139,15 +139,17 @@ to be decided _with_ that follow-up, leaning opt-in or first-run consent.)
    into that reminds them on shell start. Opt-in by construction (zero in-binary
    surface, no privacy default), so it's the lightweight passive option; ship it
    as docs, not code, when wanted.
-3. **The binary updater** (`camdl update apply` — download + verify signed
-   binaries) and the `~/.camdl/versions/` home — a separate RFC; it reuses this
-   proposal's `ureq`.
+3. **The binary updater** (`camdl update` — download + verify signed binaries +
+   replace) and the `~/.camdl/versions/` home — a separate RFC; it reuses this
+   proposal's `ureq`. Naming the checker `check-update` leaves `update` free for
+   this verb.
 
 ## Decisions recorded
 
-- **Explicit `camdl update check`** (an `update` subcommand group, not a flag),
-  synchronous; no cache / no detach / no per-command hook / no default-on
-  network call.
+- **Explicit `camdl check-update`** (a single top-level verb, not a flag and not
+  a subcommand group), synchronous; no cache / no detach / no per-command hook /
+  no default-on network call. `update` stays reserved for the future binary
+  updater.
 - **`ureq` + rustls** as the client (shared with the future updater); not a
   shell-out, not reqwest, not a libcurl binding.
 - Query **`/releases`** (includes pre-releases) so an alpha-tagged project
