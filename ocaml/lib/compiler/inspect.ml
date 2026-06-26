@@ -1348,7 +1348,9 @@ let run_inspect path opts =
      | CostReport ->
        run_cost_report ppf model ctx)
 
-(** Run 'camdl check': run the FULL front-end pipeline and show the summary.
+(** Run 'camdl check': the linter. Run the FULL front-end pipeline and report
+    the actionable diagnostics — errors (exit 1), warnings, and lints (L4xx) —
+    plus a verdict. The structural summary is `camdl inspect --summary`.
 
     Routed through [Compiler.collect_detail] — the single non-aborting core
     that [compile] and [collect_diagnostics] also use — so `check` runs the
@@ -1373,17 +1375,15 @@ let run_check path =
     exit 1
   | Some d ->
     let ctx = d.Compiler.ctx in
-    let model = d.Compiler.model in
-    let summary = d.Compiler.summary in
     if Diagnostics.has_errors ctx.diags then (
       Diagnostics.render_all ctx.diags source Fmt.stderr;
       exit 1
     );
-    (* Show any warnings *)
+    (* `check` is the linter: report the actionable diagnostics — warnings and
+       lints (L4xx) — and the verdict, nothing else. The structural summary
+       (compartments / transitions / …) is `camdl inspect --summary`'s job. *)
     if ctx.diags.diags <> [] then
       Diagnostics.render_all ctx.diags source Fmt.stdout;
-    (* Show summary *)
-    run_summary Fmt.stdout model ctx summary;
     let n_warn = List.length (List.filter
       (fun d -> d.Diagnostics.severity = Diagnostics.Warning) ctx.diags.diags) in
     Fmt.pf Fmt.stdout "@\n  ";
