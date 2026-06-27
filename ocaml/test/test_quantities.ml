@@ -352,6 +352,54 @@ let test_e289_qref_to_series () =
   compile_expect_error_code ~code:"E289" ~contains:"series"
     (model_with body)
 
+(* A model `let` mixed with a reduced scalar quantity is a shape mismatch (a
+   `let` is a per-instant series value, the reduced quantity a whole-trajectory
+   scalar). It must report that clearly — NOT the misleading "unknown name '…'
+   in reduction arithmetic" — and the hint must correct the misconception that
+   lets are out of scope inside quantities. *)
+let let_mix_src = {|
+  time_unit = 'days
+  compartments { S, I, R }
+  let M = S + I + R
+  parameters { beta : rate  gamma : rate }
+  transitions {
+    infection : S --> I @ beta * S * I / M
+    recovery  : I --> R @ gamma * I
+  }
+  quantities {
+    peak = max(I)
+    bad  = peak * M
+  }
+  init { S = 990  I = 10 }
+  simulate { from = 0 to = 100 }
+|}
+
+let test_e289_let_mixed_with_scalar () =
+  compile_expect_error_code ~code:"E289"
+    ~contains:"cannot combine `let` binding 'M'" let_mix_src
+
+let test_e289_let_mix_hint_corrects_scope () =
+  compile_expect_error_code ~code:"E289"
+    ~contains:"in scope in series quantities" let_mix_src
+
+(* A quantity may not share a `let`'s name (names kept distinct); the hint must
+   teach the distinct-name pattern (e.g. `R0_hat = R0`). *)
+let test_e289_quantity_let_collision_hint () =
+  compile_expect_error_code ~code:"E289" ~contains:"distinct name"
+    {|
+  time_unit = 'days
+  compartments { S, I, R }
+  let R0 = 2.0
+  parameters { beta : rate  gamma : rate }
+  transitions {
+    infection : S --> I @ beta * S * I / (S + I + R)
+    recovery  : I --> R @ gamma * I
+  }
+  quantities { R0 = max(I) }
+  init { S = 990  I = 10 }
+  simulate { from = 0 to = 100 }
+|}
+
 let () =
   Alcotest.run "quantities" [
     "series_and_reductions", [
@@ -381,6 +429,9 @@ let () =
       Alcotest.test_case "E289 total(x) deferred" `Quick test_e289_total;
       Alcotest.test_case "E289 forward QRef" `Quick test_e289_forward_qref;
       Alcotest.test_case "E289 QRef to a series quantity" `Quick test_e289_qref_to_series;
+      Alcotest.test_case "E289 let mixed with a reduced scalar (clear, not 'unknown name')" `Quick test_e289_let_mixed_with_scalar;
+      Alcotest.test_case "E289 let-mix hint says lets ARE in scope in series" `Quick test_e289_let_mix_hint_corrects_scope;
+      Alcotest.test_case "E289 quantity/let name collision hint teaches distinct-name pattern" `Quick test_e289_quantity_let_collision_hint;
       Alcotest.test_case "E289 undeclared observation stream" `Quick test_e289_obs_undeclared;
       Alcotest.test_case "E289 stratified observation source" `Quick test_e289_obs_stratified;
       Alcotest.test_case "E289 observation source mixed into arithmetic" `Quick test_e289_obs_mixed;

@@ -5631,7 +5631,18 @@ let classify_quantity_body ctx env
   in
   (* Build a reduction-arithmetic ScalarExpr: leaves are prior scalar QRefs,
      params, or consts. A series QRef, forward QRef, cross-stratum QRef, or a
-     mixed-in compartment is E289. *)
+     mixed-in compartment/let is E289. *)
+  (* Shared hint for the "series value mixed into reduction arithmetic" errors
+     (compartment or `let`). Corrects the common misconception that lets are out
+     of scope in quantities: they are in scope in *series* quantities; the clash
+     here is a shape mismatch (whole-trajectory scalar vs per-instant series). *)
+  let series_mix_hint =
+    "`let` bindings and compartments ARE in scope in series quantities (a \
+     quantity with no top-level reduction); they only clash here, mixed with a \
+     reduced scalar, because the shapes differ. If the scalar factor is a model \
+     constant (e.g. `let R0 = beta / gamma`), keep it a `let` so the whole \
+     expression stays a series."
+  in
   let scalar_leaf name =
     let matches = List.filter (fun (n, _, _) -> n = name) declared in
     if matches <> [] then
@@ -5659,10 +5670,17 @@ let classify_quantity_body ctx env
             || is_expanded_indexed_param_name ctx name then
       Some (Ir.SParam name)
     else if Hashtbl.mem ctx.comp_tbl name || Hashtbl.mem ctx.expanded_comp_tbl name then
-      err (Printf.sprintf
+      err ~hint:series_mix_hint
+        (Printf.sprintf
         "cannot combine compartment '%s' with reduced scalar quantities; a \
          per-instant state value and a whole-trajectory scalar have different \
          shapes" name)
+    else if Hashtbl.mem ctx.let_tbl name then
+      err ~hint:series_mix_hint
+        (Printf.sprintf
+        "cannot combine `let` binding '%s' with reduced scalar quantities; a \
+         `let` is a per-instant series value and a reduced quantity is a \
+         whole-trajectory scalar, so the shapes differ" name)
     else
       err (Printf.sprintf "unknown name '%s' in reduction arithmetic" name)
   in
@@ -5852,7 +5870,9 @@ let expand_quantities ctx =
       Diagnostics.error ctx.diags ~code:"E289" ~loc:qd_loc
         ~message:(Printf.sprintf
           "quantity '%s' collides with a %s of the same name" name kind)
-        ~hint:"rename the quantity so its reported name is unambiguous"
+        ~hint:"give the quantity a distinct name; to report the colliding \
+               value, reference it in the body under the new name \
+               (e.g. `R0_hat = R0` reports the `let R0` as `R0_hat`)"
         ();
       []
     | None ->
