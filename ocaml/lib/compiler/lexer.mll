@@ -68,6 +68,7 @@
       "forcing",       FORCING;
       "transitions",   TRANSITIONS;
       "observations",  OBSERVATIONS;
+      "quantities",    QUANTITIES;
       "interventions", INTERVENTIONS;
       "reactive_interventions", REACTIVE_INTERVENTIONS;  (* gh#204 *)
       "when",          WHEN;                             (* gh#204 trigger head *)
@@ -213,7 +214,7 @@ rule token = parse
   | '='     { EQ }
   | ':'     { COLON }
   | ','     { COMMA }
-  | '.'     { raise (LexError ("unexpected character: '.'")) }
+  | '.'     { DOT }
   | '{'     { LBRACE }
   | '}'     { RBRACE }
   | '['     { LBRACKET }

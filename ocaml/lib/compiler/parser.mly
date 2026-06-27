@@ -127,6 +127,7 @@
 %token EQ          (* = *)
 %token COLON       (* : *)
 %token COMMA       (* , *)
+%token DOT         (* . — observations.<stream> accessor (v1.1 quantities) *)
 %token LBRACE RBRACE
 %token LBRACKET RBRACKET
 %token LPAREN RPAREN
@@ -145,6 +146,7 @@
 %token INSTANT DURATION
 %token AND OR NOT IF THEN ELSE EVERY UNTIL AT_KW FORMAT DESCRIPTION NULL TRANSFER LIKELIHOOD ORIGIN BALANCE EVENTS ADD AT_DAY
 %token COLUMNS EMIT_SCHEDULE
+%token QUANTITIES   (* proposal 2026-06-25: generated quantities *)
 %token REACTIVE_INTERVENTIONS WHEN ACTION   (* gh#204 *)
 %token PIPE
 
@@ -196,6 +198,8 @@ declaration:
       { DTransitions trs }
   | OBSERVATIONS LBRACE obs = obs_list RBRACE
       { DObservations obs }
+  | QUANTITIES LBRACE qs = quantity_list RBRACE
+      { DQuantities qs }
   | INTERVENTIONS LBRACE ivs = intervention_list RBRACE
       { DInterventions ivs }
   | EVENTS LBRACE evs = intervention_list RBRACE
@@ -891,6 +895,20 @@ ode_decl:
   | comp = IDENT EQ e = expr
       { { ocomp = comp; oderiv = e } }
 
+(* ── Quantities block (proposal 2026-06-25) ──────────────────────────────────
+   A decl is `IDENT index_bindings_opt EQ expr` — the same shape as an ODE
+   equation plus the shared `[p in dim]` index bindings. The body is a plain
+   `expr`; the expander's quantity classifier (not `resolve_expr`) decides what
+   it means. Reduction function names (`final`, `max`, `time_of_max`, …) are NOT
+   keywords; they lex as IDENT and dispatch by name in the classifier. *)
+quantity_list:
+  | qs = list(quantity_decl) { qs }
+
+quantity_decl:
+  | name = IDENT ibs = index_bindings_opt EQ body = expr
+      { { qd_name = name; qd_indices = ibs; qd_body = body;
+          qd_loc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
+
 (* ── Output block ────────────────────────────────────────────────────────── *)
 
 output_body:
@@ -1132,6 +1150,19 @@ atom_expr:
             end_col  = $endpos.pos_cnum - $endpos.pos_bol + 1 }
         in
         EIdent (name, l) }
+  (* observations.<stream> — the v1.1 generated-quantity observation source.
+     `observations` is the OBSERVATIONS keyword; the classifier lowers this to
+     Ir.QSObservation. Valid only inside a `quantities { }` body. *)
+  | OBSERVATIONS DOT stream = IDENT
+      { let l =
+          let open Lexing in
+          { file     = $startpos.pos_fname;
+            line     = $startpos.pos_lnum;
+            col      = $startpos.pos_cnum - $startpos.pos_bol + 1;
+            end_line = $endpos.pos_lnum;
+            end_col  = $endpos.pos_cnum - $endpos.pos_bol + 1 }
+        in
+        EObsAccess (stream, l) }
   (* `origin` as a referenceable identifier — Phase 2 of the
      2026-05-22 typed-time proposal §1.1. The ORIGIN keyword is
      consumed by the top-level `origin = date("...")` declaration

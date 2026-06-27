@@ -9,6 +9,7 @@ mod hashing;
 mod resolve;        // Resolve bridge: CLI inputs → runid identity (CAS run-identity refactor, gh#147)
 mod run_meta;       // cross-cutting run-metadata value types (FitAlgorithm, Backend, provenance records, FitSidecar)
 mod posterior_draws; // resolve a fit run's canonical posterior draws (--draws posterior, fit predict)
+mod quantity_output; // generated-quantities banding + tidy-TSV rendering (shared by fit predict + simulate)
 mod run_paths;      // canonical output-path helpers
 mod cas;
 mod browse;
@@ -1203,7 +1204,41 @@ fn run_simulate(a: &args::SimulateArgs) {
         n_draws: 1,
     };
 
-    let mut sink = SimSink { cas: cas_sink, stream, skip_cas: a.stdout };
+    // ── Generated quantities (proposal 2026-06-25) ──────────────────────────
+    // Build the accumulator iff the model declares a `quantities {}` block. With
+    // `--quantities-out` it emits a regenerated sidecar (never in the CAS leaf,
+    // never in the run identity); without it, a one-line note and skip. Point vs
+    // band is keyed by the param-source kind (fixed params + single cell → point;
+    // a `--draws`/multi-cell run → band), not the cell count alone.
+    let quant: Option<SimQuantities> = {
+        let (q_model, _) = util::load_model(&ir_path_compiled).unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        });
+        if q_model.quantities.is_empty() {
+            None
+        } else if let Some(out_dir) = a.quantities_out.clone() {
+            let banded = draws_path.is_some() || total_runs > 1;
+            Some(SimQuantities {
+                quantities: q_model.quantities.clone(),
+                banded,
+                out_dir,
+                compiled: None,
+                eval: None,
+                draws: Vec::new(),
+                times: Vec::new(),
+            })
+        } else {
+            let n = q_model.quantities.len();
+            eprintln!(
+                "note: model declares {n} quantit{}; pass --quantities-out <dir> to emit them",
+                if n == 1 { "y" } else { "ies" }
+            );
+            None
+        }
+    };
+
+    let mut sink = SimSink { cas: cas_sink, stream, skip_cas: a.stdout, quant };
     // The `--event-log` branch drives the sink's `RunSink` methods directly
     // (one recorded cell), so the trait must be in scope here.
     use engine::RunSink as _;
@@ -1317,6 +1352,42 @@ fn run_simulate(a: &args::SimulateArgs) {
     // ── Write the combined observation mirror ───────────────────────────────
     sink.stream.write_obs_output();
 
+    // ── Write generated quantities (regenerated sidecar, NOT in the CAS leaf) ─
+    if let Some(q) = &sink.quant {
+        if !q.draws.is_empty() {
+            let mode = if q.banded {
+                crate::quantity_output::Mode::Banded
+            } else {
+                crate::quantity_output::Mode::Point
+            };
+            let (outs, manifest) =
+                crate::quantity_output::render_quantities(&q.quantities, &q.draws, &q.times, mode)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error rendering quantities: {}", e);
+                        std::process::exit(1);
+                    });
+            std::fs::create_dir_all(&q.out_dir).unwrap_or_else(|e| {
+                eprintln!("error: cannot create quantities dir {}: {}", q.out_dir.display(), e);
+                std::process::exit(1);
+            });
+            for (name, content) in &outs {
+                match crate::fit::predict::write_tsv(&q.out_dir, "quantities", name, content) {
+                    Ok(p) => eprintln!("quantities: wrote {}", p.display()),
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            let manifest_path = q.out_dir.join("quantities.json");
+            std::fs::write(&manifest_path, &manifest).unwrap_or_else(|e| {
+                eprintln!("error: cannot write {}: {}", manifest_path.display(), e);
+                std::process::exit(1);
+            });
+            eprintln!("quantities: wrote {}", manifest_path.display());
+        }
+    }
+
     // ── Event-log mirror + realize hint (Layer 1 → Layer 2) ─────────────────
     // The canonical event log is the `event_log.tsv` artifact in the leaf;
     // `--event-log PATH` additionally mirrors it to PATH. Either way, point
@@ -1375,6 +1446,137 @@ struct SimSink {
     /// entirely — only the `stream` mirror runs, and the caller writes its
     /// buffer to stdout. The store is otherwise the system of record.
     skip_cas: bool,
+    /// Generated quantities (proposal 2026-06-25), `Some` iff the model declares
+    /// a `quantities {}` block AND `--quantities-out <dir>` was given. The
+    /// evaluator is compiled lazily on the first cell (from that cell's
+    /// fully-resolved model) and reused; per cell the trajectory is folded into
+    /// the leaf's quantity values. Never part of the run identity — a regenerated
+    /// sidecar.
+    quant: Option<SimQuantities>,
+}
+
+/// The per-run generated-quantities accumulator carried on [`SimSink`].
+struct SimQuantities {
+    /// The model's quantity IR (cloned once), used to build the evaluator and to
+    /// render the output.
+    quantities: Vec<ir::quantity::Quantity>,
+    /// Banded (`--draws`/multi-cell) vs point (single fixed-params cell). Keyed
+    /// by the param-source kind, not the cell count alone.
+    banded: bool,
+    /// The directory to write `quantities/<name>.tsv` + `quantities.json` into.
+    out_dir: std::path::PathBuf,
+    /// Built lazily on the first `merge_cell` from that cell's resolved model —
+    /// the compile happens once per run, never per cell.
+    compiled: Option<std::sync::Arc<sim::CompiledModel>>,
+    eval: Option<sim::quantity::QuantityEvaluator>,
+    /// One inner `Vec` per cell: each quantity leaf's value, in `quantities`
+    /// order. Retains derived values, never the trajectory.
+    draws: Vec<Vec<sim::quantity::QuantityResult>>,
+    /// The trajectory snapshot times, captured once (every cell shares the output
+    /// cadence) — the time axis a series quantity is rendered against.
+    times: Vec<f64>,
+}
+
+/// Materialize the per-draw `y_sim` for the streams an `observations.<stream>`
+/// quantity reduces. Samples every schedule-bearing stream in DECLARATION order
+/// with the cell's `obs_seed` — the same RNG walk `simulate --obs` performs — so
+/// the quantity reduces exactly the draws `--obs` would emit (no redraw). A
+/// referenced stream that is fit-only (no `emit_schedule`) is a hard error.
+fn materialize_obs_for_quantities(
+    referenced: &[&str],
+    model: &ir::Model,
+    traj: &sim::Trajectory,
+    compiled: &std::sync::Arc<sim::CompiledModel>,
+    params: &[f64],
+    obs_seed: u64,
+) -> Result<sim::quantity::ObsSeriesSet, String> {
+    let mut obs_rng = sim::rng::StatefulRng::new(obs_seed);
+    let mut out: std::collections::HashMap<String, (Vec<f64>, Vec<f64>)> =
+        std::collections::HashMap::new();
+    for obs_ir in &model.observations {
+        let times = match &obs_ir.emit_schedule {
+            Some(s) => obs_schedule_times(s),
+            None => continue, // fit-only — consumes no RNG, mirroring `--obs`
+        };
+        let sampler =
+            sim::inference::obs_model::compile_obs_sample_pf(obs_ir, compiled.clone(), params);
+        let projected = project_all_obs_times(traj, obs_ir, model, &times);
+        let mut vals = Vec::with_capacity(times.len());
+        for (ti, &t) in times.iter().enumerate() {
+            let snap = snap_at(traj, t);
+            vals.push(sampler(projected[ti], t, &snap.int_state.counts, &mut obs_rng));
+        }
+        out.insert(obs_ir.name.clone(), (times, vals));
+    }
+    for &name in referenced {
+        if !out.contains_key(name) {
+            return Err(if model.observations.iter().any(|o| o.name == name) {
+                format!(
+                    "quantity reduces observations.{name}, but stream '{name}' is fit-only \
+                     (no `emit_schedule`); add `emit_schedule = every N 'unit` to generate \
+                     y_sim for the quantity"
+                )
+            } else {
+                format!(
+                    "quantity reduces observations.{name}, but no observation stream \
+                     named '{name}' is declared"
+                )
+            });
+        }
+    }
+    Ok(sim::quantity::ObsSeriesSet { streams: out })
+}
+
+impl SimQuantities {
+    /// Fold one cell's trajectory into its quantity values, compiling the
+    /// evaluator on the first call. The per-cell parameter vector is read by
+    /// name from the cell's fully-resolved model (every cell shares the param
+    /// set, so this is exact for any param source: fixed params, `--params`
+    /// files, `--draws`, scenario overrides).
+    fn push_cell(&mut self, cell: &engine::CellResult) -> Result<(), String> {
+        if self.eval.is_none() {
+            let compiled = std::sync::Arc::new(
+                sim::CompiledModel::new(cell.model.clone())
+                    .map_err(|e| format!("compiling model for quantities: {e:?}"))?,
+            );
+            let eval = sim::quantity::QuantityEvaluator::new(&self.quantities, compiled.as_ref())
+                .map_err(|e| format!("building quantity evaluator: {e}"))?;
+            self.compiled = Some(compiled);
+            self.eval = Some(eval);
+        }
+        let compiled = self.compiled.as_ref().expect("compiled set above");
+        let eval = self.eval.as_ref().expect("eval set above");
+        let mut params = vec![f64::NAN; compiled.param_index.len()];
+        for p in &cell.model.parameters {
+            if let Some(&idx) = compiled.param_index.get(p.name.as_str()) {
+                if let Some(v) = p.value.resolved_value() {
+                    params[idx] = v;
+                }
+            }
+        }
+        // `observations.<stream>` quantities reduce the per-draw y_sim — sampled
+        // here with the cell's obs_seed (the same draws `--obs` would emit). Only
+        // built when a quantity actually references an observation stream.
+        let obs_streams = eval.obs_streams();
+        let obs_set = if obs_streams.is_empty() {
+            None
+        } else {
+            Some(materialize_obs_for_quantities(
+                &obs_streams,
+                &cell.model,
+                &cell.traj,
+                compiled,
+                &params,
+                cell.spec.obs_seed,
+            )?)
+        };
+        let results = eval.eval_draw(&params, &cell.traj, compiled, obs_set.as_ref());
+        if self.times.is_empty() {
+            self.times = cell.traj.snapshots.iter().map(|s| s.t).collect();
+        }
+        self.draws.push(results);
+        Ok(())
+    }
 }
 
 impl engine::RunSink for SimSink {
@@ -1389,7 +1591,14 @@ impl engine::RunSink for SimSink {
         if !self.skip_cas {
             self.cas.merge_cell(cell)?;
         }
-        self.stream.merge_cell(cell)
+        self.stream.merge_cell(cell)?;
+        // Generated quantities: fold this cell's trajectory alongside the leaf +
+        // mirror, using the cell's own resolved params. Composed here (not a
+        // second RunSink) so it sees the same per-cell trajectory.
+        if let Some(q) = &mut self.quant {
+            q.push_cell(cell)?;
+        }
+        Ok(())
     }
 }
 

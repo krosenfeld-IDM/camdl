@@ -439,7 +439,7 @@ fn level_for<'a>(stratum: &'a [(String, String)], dim: &str) -> &'a str {
 }
 
 /// Format a time: integral times as integers (`7`), else minimal decimal.
-fn fmt_time(t: f64) -> String {
+pub(crate) fn fmt_time(t: f64) -> String {
     if t.fract() == 0.0 && t.abs() < 1e15 {
         format!("{}", t as i64)
     } else {
@@ -450,7 +450,7 @@ fn fmt_time(t: f64) -> String {
 /// Format a value: integral values as integers (count data reads cleanly),
 /// else a decimal trimmed to ≤6 places (so an interpolated count quantile is
 /// `204.9`, not `204.89999999999995`).
-fn fmt_value(v: f64) -> String {
+pub(crate) fn fmt_value(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         format!("{}", v as i64)
     } else {
@@ -651,6 +651,16 @@ struct PredictiveSink {
     leaf_times: Vec<Vec<f64>>,
     /// `samples[leaf][time_idx]` = the `y_rep` values across draws.
     samples: Vec<Vec<Vec<f64>>>,
+    /// The generated-quantities evaluator, `Some` iff the model declares a
+    /// `quantities {}` block. Composed alongside the obs-sample accumulator (same
+    /// draw, same params) — not a second [`RunSink`].
+    quant_eval: Option<sim::quantity::QuantityEvaluator>,
+    /// One inner `Vec` per draw (= cell): each quantity leaf's value, in
+    /// `model.quantities` order. Retains derived values, never the trajectory.
+    quant_draws: Vec<Vec<sim::quantity::QuantityResult>>,
+    /// The trajectory snapshot times, captured once (every draw shares the output
+    /// cadence) — the time axis a series quantity bands against.
+    quant_times: Vec<f64>,
 }
 
 impl crate::engine::RunSink for PredictiveSink {
@@ -666,6 +676,15 @@ impl crate::engine::RunSink for PredictiveSink {
                 params[idx] = *value;
             }
         }
+        // Capture the per-draw y_sim per stream for `observations.<stream>`
+        // quantities — the SAME draws the predictive output uses, no redraw.
+        // Skip the capture entirely when only state quantities are present.
+        let want_obs = self
+            .quant_eval
+            .as_ref()
+            .is_some_and(|e| e.references_observations());
+        let mut obs_set =
+            sim::quantity::ObsSeriesSet { streams: std::collections::HashMap::new() };
         let mut obs_rng = sim::rng::StatefulRng::new(cell.spec.obs_seed);
         for (si, obs_ir) in model.observations.iter().enumerate() {
             let times = &self.leaf_times[si];
@@ -678,11 +697,32 @@ impl crate::engine::RunSink for PredictiveSink {
                 &params,
             );
             let projected = crate::project_all_obs_times(&cell.traj, obs_ir, model, times);
+            let mut stream_vals: Vec<f64> =
+                if want_obs { Vec::with_capacity(times.len()) } else { Vec::new() };
             for (ti, &t) in times.iter().enumerate() {
                 let snap = crate::snap_at(&cell.traj, t);
                 let y = sampler(projected[ti], t, &snap.int_state.counts, &mut obs_rng);
                 self.samples[si][ti].push(y);
+                if want_obs {
+                    stream_vals.push(y);
+                }
             }
+            if want_obs {
+                // Key by the stream's declared `name` — what `observations.<name>`
+                // in the DSL references (v1.1 is unstratified, so name == base).
+                obs_set.streams.insert(obs_ir.name.clone(), (times.clone(), stream_vals));
+            }
+        }
+
+        // Generated quantities: fold this draw's trajectory + the just-drawn y_sim
+        // into its per-quantity values, using the SAME resolved params + draws as
+        // the predictive output above.
+        if let Some(eval) = &self.quant_eval {
+            let results = eval.eval_draw(&params, &cell.traj, &self.compiled, Some(&obs_set));
+            if self.quant_times.is_empty() {
+                self.quant_times = cell.traj.snapshots.iter().map(|s| s.t).collect();
+            }
+            self.quant_draws.push(results);
         }
         Ok(())
     }
@@ -819,6 +859,21 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     let schema = crate::run_meta::read_fit_sidecar(&segment).and_then(|s| s.schema);
     let seed = args.seed.unwrap_or(1);
 
+    // Build the generated-quantities evaluator once (the IR is fixed across draws);
+    // `None` when the model declares no `quantities {}` block. The evaluator drives
+    // the free-forward sink — the always-fresh path that has a trajectory in hand.
+    let quant_eval: Option<sim::quantity::QuantityEvaluator> = if !model.quantities.is_empty() {
+        Some(
+            sim::quantity::QuantityEvaluator::new(&model.quantities, compiled.as_ref())
+                .map_err(|e| format!("building quantity evaluator: {e}"))?,
+        )
+    } else {
+        None
+    };
+    // The rendered quantity sidecars + manifest, filled after the free-forward pass.
+    let mut quantity_outputs: Vec<(String, String)> = Vec::new();
+    let mut quantity_manifest: Option<String> = None;
+
     // ── Free-forward horizon: drive the engine over the draws; sample y_rep at
     // the observed times. Run only when free-forward is requested.
     let free_forward: Option<Vec<StreamBands>> = if want_free_forward {
@@ -839,8 +894,14 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
             .iter()
             .map(|ts| vec![Vec::new(); ts.len()])
             .collect();
-        let mut sink =
-            PredictiveSink { compiled: compiled.clone(), leaf_times, samples: samples_init };
+        let mut sink = PredictiveSink {
+            compiled: compiled.clone(),
+            leaf_times,
+            samples: samples_init,
+            quant_eval,
+            quant_draws: Vec::new(),
+            quant_times: Vec::new(),
+        };
 
         let job = crate::sim_job::SimulateJob {
             model: compiled_ir.clone(),
@@ -871,6 +932,18 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
             parallel: 1,
         };
         crate::engine::run_job(&job, &mut sink)?;
+
+        // Band the accumulated per-draw quantity values into sidecars + a manifest.
+        if !model.quantities.is_empty() {
+            let (outs, manifest) = crate::quantity_output::render_quantities(
+                &model.quantities,
+                &sink.quant_draws,
+                &sink.quant_times,
+                crate::quantity_output::Mode::Banded,
+            )?;
+            quantity_outputs = outs;
+            quantity_manifest = Some(manifest);
+        }
 
         Some(assemble_predictive(&model, &sink, &leaves, schema.as_ref())?)
     } else {
@@ -954,6 +1027,18 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     for (source, index_dims, rows) in observed_by_stream(&leaves, schema.as_ref()) {
         let obs_tsv = render_observed_tsv(&index_dims, &rows);
         written.push(write_tsv(&segment, "observed", &source, &obs_tsv)?);
+    }
+    // Generated quantities: one sidecar TSV per logical quantity + a manifest.
+    // These are NOT in the run_id-keyed CAS leaf — a regenerated sidecar beside
+    // `predictive/`/`observed/`, overwritten in place.
+    for (name, content) in &quantity_outputs {
+        written.push(write_tsv(&segment, "quantities", name, content)?);
+    }
+    if let Some(manifest) = &quantity_manifest {
+        let path = segment.join("quantities.json");
+        std::fs::write(&path, manifest)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        written.push(path);
     }
     let method_label = posterior.method.map(|m| m.as_str()).unwrap_or("posterior");
     let mut horizons: Vec<String> = Vec::new();
