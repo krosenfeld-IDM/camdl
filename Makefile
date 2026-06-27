@@ -62,6 +62,9 @@ install: build
 	install -m 755 $(CAMDLC) $(INSTALL_DIR)/camdlc-$(GIT_HASH)
 	install -m 755 $(CAMDL)  $(INSTALL_DIR)/camdl
 	@echo "Installed to $(INSTALL_DIR)  [camdlc-$(GIT_HASH)]"
+	@# Prune stale hash-named camdlc copies (keeps the just-installed live hash
+	@# + a recent buffer); without this they accumulate one-per-commit forever.
+	@INSTALL_DIR=$(INSTALL_DIR) scripts/gc_camdlc.sh
 	@echo "Make sure $(INSTALL_DIR) is on your PATH."
 	@# Postflight: detect when another `camdl` (typically a leftover
 	@# `cargo install --path crates/cli` in ~/.cargo/bin/) wins on PATH
@@ -83,7 +86,12 @@ uninstall:
 	rm -f $(INSTALL_DIR)/camdlc-$(GIT_HASH)
 	@echo "Removed from $(INSTALL_DIR)"
 
-.PHONY: install-camdlc dev-camdlc
+.PHONY: install-camdlc dev-camdlc clean-camdlc
+
+# Manually prune stale hash-named camdlc copies from the install dir (the same
+# GC that `install` runs automatically). `make clean-camdlc DRY=1` previews.
+clean-camdlc:
+	@INSTALL_DIR=$(INSTALL_DIR) scripts/gc_camdlc.sh $(if $(DRY),--dry-run,)
 
 # Sync ONLY camdlc to the current HEAD (rebuilds OCaml, not Rust; does not
 # install camdl). Use when the installed/`cargo run` camdl reports a camdlc
@@ -93,6 +101,7 @@ install-camdlc: build-ocaml
 	install -m 755 $(CAMDLC) $(INSTALL_DIR)/camdlc
 	install -m 755 $(CAMDLC) $(INSTALL_DIR)/camdlc-$(GIT_HASH)
 	@echo "Installed camdlc to $(INSTALL_DIR)  [camdlc-$(GIT_HASH)]"
+	@INSTALL_DIR=$(INSTALL_DIR) scripts/gc_camdlc.sh
 
 # Branch dev loop: drop a hash-matched camdlc beside the cargo-built camdl so
 # `cargo run -p cli -- ...` resolves it via the exact-match path (find_camdlc
