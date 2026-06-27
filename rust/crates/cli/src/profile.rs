@@ -114,7 +114,8 @@ pub fn cmd_profile(a: &crate::args::ProfileArgs) {
             std::process::exit(1);
         }
     };
-    // Registry-driven caveat for Beta/Experimental methods (e.g. pmmh, nl-*).
+    // Registry-driven caveat for methods carrying a status_note (Beta methods,
+    // plus Stable methods with usage guidance — e.g. pmmh, nl-*).
     crate::fit::methods::emit_status_banner(method.algorithm, method.backend);
     let profile_algo = match method.algorithm {
         crate::run_meta::FitAlgorithm::If2      => ProfileAlgo::If2,

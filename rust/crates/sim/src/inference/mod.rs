@@ -8,8 +8,8 @@
 //! Architecture:
 //!   ParticleFilter    — bootstrap filter using ProcessModel + ObservationModel
 //!   IF2               — iterated filtering (MLE via perturbed PF)
-//!   PGAS              — Particle Gibbs with Ancestor Sampling (Bayesian)
-//!   PMMH              — Particle Marginal Metropolis-Hastings (experimental)
+//!   PGAS              — Particle Gibbs with Ancestor Sampling (default Bayesian path)
+//!   PMMH              — Particle Marginal Metropolis-Hastings (Bayesian; prefer PGAS for long series)
 
 pub mod numerics;  // gh#audit-H3
 pub mod degeneracy;  // gh#110

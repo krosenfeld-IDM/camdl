@@ -470,12 +470,13 @@ surface documented, breaking changes still expected.
 The inference stack lives in `rust/crates/sim/src/inference/`:
 
 - `if2.rs` — Iterated filtering for maximum likelihood estimation
-- `pgas.rs` — Particle Gibbs with Ancestor Sampling (production Bayesian method)
+- `pgas.rs` — Particle Gibbs with Ancestor Sampling (default Bayesian method)
 - `pgas_grad.rs` — Gradient evaluation for PGAS (uses compiler-emitted
   `rate_grad`)
 - `nuts.rs` — No-U-Turn Sampler for gradient-based parameter proposals within
   PGAS
-- `pmmh.rs` — Particle Marginal Metropolis-Hastings (experimental, gated)
+- `pmmh.rs` — Particle Marginal Metropolis-Hastings (production; prefer PGAS for
+  long observation series)
 - `particle_filter.rs` — Bootstrap particle filter
 - `dmeasure.rs` — Observation likelihood compilation
 - `obs_loglik.rs` — Distribution log-PMFs + analytical gradients (incl. digamma)

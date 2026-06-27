@@ -25,9 +25,6 @@ pub enum MethodStatus {
     /// Shipped and exercised but downstream validation still accumulating.
     /// Surfaced as `[beta]`; runtime banner names the caveat.
     Beta,
-    /// Known limitations that affect correctness in some regime.
-    /// Surfaced as `[experimental]`; runtime banner is loud.
-    Experimental,
 }
 
 impl MethodStatus {
@@ -35,7 +32,6 @@ impl MethodStatus {
         match self {
             Self::Stable => "stable",
             Self::Beta => "beta",
-            Self::Experimental => "experimental",
         }
     }
 }
@@ -60,7 +56,10 @@ pub struct InferenceMethod {
     pub one_liner: &'static str,
     /// "Use for:" sub-line in `camdl fit methods` rendering. May be empty.
     pub use_for: &'static str,
-    /// Banner text for Beta / Experimental methods. Empty for Stable.
+    /// Runtime caveat banner text — surfaced for any method that carries one
+    /// (drives `emit_status_banner`). Beta methods name their limitation here;
+    /// a Stable method may carry usage guidance (e.g. PMMH's "prefer PGAS for
+    /// long series"). Empty = no banner.
     pub status_note: &'static str,
 }
 
@@ -82,7 +81,7 @@ pub const METHODS: &[InferenceMethod] = &[
         backend: InferenceBackend::ChainBinomial,
         category: MethodCategory::Inference,
         status: MethodStatus::Stable,
-        one_liner: "Particle Gibbs + NUTS-on-θ; production Bayesian path.",
+        one_liner: "Particle Gibbs + NUTS-on-θ; default Bayesian path.",
         use_for: "Bayesian posteriors on stochastic models.",
         status_note: "",
     },
@@ -90,13 +89,15 @@ pub const METHODS: &[InferenceMethod] = &[
         algorithm: FitAlgorithm::Pmmh,
         backend: InferenceBackend::ChainBinomial,
         category: MethodCategory::Inference,
-        status: MethodStatus::Experimental,
+        status: MethodStatus::Stable,
         one_liner: "Pseudo-marginal MH; PF-inside-MH Bayesian sampler.",
-        use_for: "small-T posterior sampling when PGAS isn't a fit.",
+        use_for: "Bayesian posteriors on stochastic models; \
+                  short-to-moderate series and freeze-then-sample workflows.",
         status_note:
-            "PMMH acceptance rates degrade for T > 500 observations. \
-             Correlated pseudo-marginal (rho config) helps but has limits \
-             on discrete-state models. PGAS is the production Bayesian path.",
+            "Acceptance rates degrade for long observation series \
+             (T > 500); prefer PGAS — the default Bayesian path — on long \
+             chain-binomial series. Correlated pseudo-marginal (rho config) \
+             helps but has limits on discrete-state models.",
     },
     InferenceMethod {
         algorithm: FitAlgorithm::Pfilter,
@@ -222,11 +223,12 @@ pub fn status_note(algorithm: FitAlgorithm, backend: InferenceBackend) -> Option
         .filter(|s| !s.is_empty())
 }
 
-/// Print the registry caveat banner to stderr when the chosen method is
-/// Beta/Experimental (non-empty `status_note`). No-op for Stable methods and
-/// for unregistered pairs (those fail earlier in `validate_combo`). Driven
-/// entirely by the registry so the banner text and `camdl fit methods` stay in
-/// lockstep — this replaces the previously hand-coded, PMMH-only banner.
+/// Print the registry caveat banner to stderr when the chosen method carries
+/// a caveat (non-empty `status_note` — every Beta method, plus any Stable
+/// method with usage guidance). No-op for methods without a note and for
+/// unregistered pairs (those fail earlier in `validate_combo`). Driven entirely
+/// by the registry so the banner text and `camdl fit methods` stay in lockstep
+/// — this replaces the previously hand-coded, PMMH-only banner.
 pub fn emit_status_banner(algorithm: FitAlgorithm, backend: InferenceBackend) {
     use owo_colors::OwoColorize;
     if let Some(note) = status_note(algorithm, backend) {
@@ -301,8 +303,8 @@ fn rejection_reason(
              Bayesian sampler on the chain_binomial backend.\n\n  \
              If you want Bayesian inference on the chain_binomial \
              backend, use:\n    \
-             algorithm = \"pgas\"   Particle Gibbs (production Bayesian path)\n    \
-             algorithm = \"pmmh\"   Pseudo-marginal MH (experimental)",
+             algorithm = \"pgas\"   Particle Gibbs (default Bayesian path)\n    \
+             algorithm = \"pmmh\"   Pseudo-marginal MH",
         ),
         _ => None,
     }
@@ -1006,7 +1008,7 @@ mod tests {
         // registry text, and Beta methods can't silently lack a runtime caveat.
         assert!(
             status_note(FitAlgorithm::Pmmh, InferenceBackend::ChainBinomial).is_some_and(|n| n.contains("T > 500")),
-            "experimental PMMH must surface its caveat at runtime"
+            "PMMH (stable, production) must still surface its prefer-PGAS-for-long-series guidance at runtime"
         );
         // The bug this closes: Beta NLopt caveats never reached runtime before
         // — only PMMH had a hand-coded banner.

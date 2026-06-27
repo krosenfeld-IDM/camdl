@@ -129,9 +129,9 @@ pub fn run_stage(
     // wired on the IF2 path). The bool is `--dt-check-strict`.
     dt_check_opt: Option<(super::config_v2::DtCheckConfig, bool)>,
 ) -> Result<(), String> {
-    // The experimental-PMMH caveat banner is emitted by the dispatch
-    // chokepoint (`methods::emit_status_banner`), driven by the registry
-    // `status_note` so it can't drift from `camdl fit methods`.
+    // The PMMH prefer-PGAS-for-long-series caveat banner is emitted by the
+    // dispatch chokepoint (`methods::emit_status_banner`), driven by the
+    // registry `status_note` so it can't drift from `camdl fit methods`.
     let collector = DiagnosticCollector::new("pmmh");
     let estimate = &fit.estimate;
 

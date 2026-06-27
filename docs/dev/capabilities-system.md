@@ -129,7 +129,7 @@ gradient-free optimizers and a direct-likelihood sampler (`mh`):
 | ---------------------- | ---------------- | ------- |
 | `if2` (MLE)            | ✅ Stable        | ❌      |
 | `pgas` (Bayesian)      | ✅ Stable        | ❌      |
-| `pmmh` (Bayesian)      | ✅ Experimental  | ❌      |
+| `pmmh` (Bayesian)      | ✅ Stable        | ❌      |
 | `pfilter` (diagnostic) | ✅ Stable        | ❌      |
 | `nl-sbplx` (MLE)       | ❌               | ✅ Beta |
 | `nl-bobyqa` (MLE)      | ❌               | ✅ Beta |

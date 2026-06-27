@@ -57,7 +57,7 @@ camdl/
 │   │   │           ├── pgas.rs              # Particle Gibbs with Ancestor Sampling
 │   │   │           ├── pgas_grad.rs         # PGAS gradient evaluation
 │   │   │           ├── nuts.rs              # No-U-Turn Sampler (HMC)
-│   │   │           ├── pmmh.rs              # Particle Marginal MH (experimental)
+│   │   │           ├── pmmh.rs              # Particle Marginal MH (prefer PGAS, long series)
 │   │   │           ├── dmeasure.rs          # Observation likelihood compilation
 │   │   │           ├── obs_loglik.rs        # Distribution log-PMFs + gradients
 │   │   │           └── resampling.rs        # Systematic resampling

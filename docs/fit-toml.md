@@ -193,7 +193,7 @@ purpose" without the warning.
 | ----------- | ------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `if2`       | iterated filtering → MLE                          | `chains`, `particles`, `iterations`, `cooling` (+ `cooling_target_iters`, default 50) |
 | `pgas`      | particle Gibbs + NUTS → posterior                 | `chains`, `particles`, `sweeps` (+ `burn_in`, `thin`, `tempering`, `max_tree_depth`)  |
-| `pmmh`      | particle marginal MH → posterior (experimental)   | `chains`, `particles`, `iterations`                                                   |
+| `pmmh`      | particle marginal MH → posterior                  | `chains`, `particles`, `iterations`                                                   |
 | `pfilter`   | particle filter at fixed θ → log-likelihood + ESS | `particles`, `replicates`                                                             |
 
 Common to every stage:
