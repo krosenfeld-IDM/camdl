@@ -205,8 +205,11 @@ S[child, north]
 # Named: order doesn't matter, intent is clear
 S[patch = north, age = child]
 
-# Omit a dimension to sum over it
-S[age = child]    # = S[child, north] + S[child, south] + S[child, east]
+# To marginalize a dimension, sum over it explicitly — there is no
+# implicit summation. A partial index (some dimensions given, others
+# omitted) is an error (E287); spell the sum out:
+sum(p in patch, S[age = child, patch = p])
+#   = S[child, north] + S[child, south] + S[child, east]
 ```
 
 ---
