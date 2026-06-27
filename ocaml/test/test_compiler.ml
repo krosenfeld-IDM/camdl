@@ -7546,6 +7546,10 @@ observations {
     cases     ~ poisson(rate = rho * projected)
   }
 }
+quantities {
+  #' peak prevalence
+  peak_prev = max(I / N)
+}
 init { S = 1000  I = 10 }
 simulate { from = 0 'days to = 90 'days }
 |}
@@ -7658,7 +7662,9 @@ let test_doc_nonparam_reaches_ir () =
   Alcotest.(check bool) "transition doc in the dictionary" true
     (List.mem_assoc "infection" m.doc_index.di_transitions);
   Alcotest.(check bool) "observation doc in the dictionary" true
-    (List.mem_assoc "cases" m.doc_index.di_observations)
+    (List.mem_assoc "cases" m.doc_index.di_observations);
+  Alcotest.(check bool) "quantity doc in the dictionary" true
+    (List.mem_assoc "peak_prev" m.doc_index.di_quantities)
 
 let () =
   Alcotest.run "compiler" [

@@ -52,6 +52,8 @@ observations {
 quantities {
   prevalence[p in patch] = I[p] / (S[p] + I[p] + R[p])
   total_prev             = I_total / N_tot
+  #' Peak prevalence — the largest infectious fraction reached over the run.
+  #' @symbol π_max
   peak_prev   = max(I_total / N_tot)
   trough_prev = min(I_total / N_tot)
   mean_prev   = mean(I_total / N_tot)
@@ -71,6 +73,9 @@ quantities {
   half_dur     = outbreak_dur / 2
 
   # v1.1 observation source — reduce the simulated y_sim of `cases`
+  #' Peak reported incidence — the largest simulated weekly case count.
+  #' @symbol ŷ_peak
+  #' @ref Keeling & Rohani (2008), Modeling Infectious Diseases, Ch. 6
   peak_cases  = max(observations.cases)
   total_cases = integral(observations.cases)
   cases_onset = first_above(observations.cases, thr)

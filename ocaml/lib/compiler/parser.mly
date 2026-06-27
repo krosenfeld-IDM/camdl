@@ -905,9 +905,9 @@ quantity_list:
   | qs = list(quantity_decl) { qs }
 
 quantity_decl:
-  | name = IDENT ibs = index_bindings_opt EQ body = expr
-      { { qd_name = name; qd_indices = ibs; qd_body = body;
-          qd_loc = Parser_errors.ast_loc_of ~sp:$startpos ~ep:$endpos } }
+  | d = doc_opt name = IDENT ibs = index_bindings_opt EQ body = expr
+      { { qd_name = name; qd_indices = ibs; qd_body = body; qd_doc = d;
+          qd_loc = Parser_errors.ast_loc_of ~sp:$startpos(name) ~ep:$endpos } }
 
 (* ── Output block ────────────────────────────────────────────────────────── *)
 

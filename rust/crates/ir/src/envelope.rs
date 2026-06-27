@@ -47,6 +47,8 @@ pub struct ModelDocs {
     pub observations: BTreeMap<String, DocBlock>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dimensions: BTreeMap<String, DocBlock>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub quantities: BTreeMap<String, DocBlock>,
 }
 
 impl ModelDocs {
@@ -56,6 +58,7 @@ impl ModelDocs {
             && self.transitions.is_empty()
             && self.observations.is_empty()
             && self.dimensions.is_empty()
+            && self.quantities.is_empty()
     }
 }
 
@@ -130,9 +133,15 @@ mod doc_dict_tests {
             DocBlock { text: Some("rate".into()), symbol: Some("β".into()), reference: None },
         );
         assert!(!docs.is_empty());
+        // A generated quantity carries docs too (gh#318) — same DocBlock shape.
+        docs.quantities.insert(
+            "peak_prev".into(),
+            DocBlock { text: Some("peak prevalence".into()), symbol: Some("π_max".into()), reference: None },
+        );
         let json = serde_json::to_string(&docs).unwrap();
-        // Only the populated category appears (skip_serializing_if on each map).
+        // Only the populated categories appear (skip_serializing_if on each map).
         assert!(json.contains("parameters"), "{json}");
+        assert!(json.contains("quantities"), "{json}");
         assert!(!json.contains("compartments"), "{json}");
         let back: ModelDocs = serde_json::from_str(&json).unwrap();
         assert_eq!(docs, back);

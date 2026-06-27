@@ -324,6 +324,7 @@ type quantity_decl = {
   qd_name    : string;
   qd_indices : index_binding list;   (* [] for an unstratified quantity *)
   qd_body    : expr;
+  qd_doc     : doc option;   (* `#'` doc block (non-semantic; inspect + doc_index) *)
   qd_loc     : loc;
 }
 

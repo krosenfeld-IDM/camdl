@@ -51,4 +51,4 @@
 {"name":"peak_cases","body":{"reduced":{"source":{"observation":{"stream":"cases"}},"reduce":{"value":"max"}}}},
 {"name":"total_cases","body":{"reduced":{"source":{"observation":{"stream":"cases"}},"reduce":"integral"}}},
 {"name":"cases_onset","body":{"reduced":{"source":{"observation":{"stream":"cases"}},"reduce":{"time":{"first_above":{"param":"thr"}}}}}}
-]}}
+]},"docs":{"quantities":{"peak_prev":{"text":"Peak prevalence — the largest infectious fraction reached over the run.","symbol":"π_max"},"peak_cases":{"text":"Peak reported incidence — the largest simulated weekly case count.","symbol":"ŷ_peak","ref":"Keeling & Rohani (2008), Modeling Infectious Diseases, Ch. 6"}}}}

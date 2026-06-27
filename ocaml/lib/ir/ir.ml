@@ -508,11 +508,12 @@ type doc_index = {
   di_transitions:  (string * doc) list;
   di_observations: (string * doc) list;
   di_dimensions:   (string * doc) list;
+  di_quantities:   (string * doc) list;
 }
 
 let empty_doc_index = {
   di_parameters = []; di_compartments = []; di_transitions = [];
-  di_observations = []; di_dimensions = [];
+  di_observations = []; di_dimensions = []; di_quantities = [];
 }
 
 type parameter = {

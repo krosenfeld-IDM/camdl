@@ -3631,6 +3631,8 @@ let build_doc_index ctx : Ir.doc_index =
       collect (fun (o : Ast.obs_decl) -> o.oname) (fun o -> o.odoc) ctx.obs_decls;
     Ir.di_dimensions =
       collect (fun (d : Ast.dimensions_entry) -> d.dename) (fun d -> d.dedoc) ctx.dim_decls;
+    Ir.di_quantities =
+      collect (fun (q : Ast.quantity_decl) -> q.qd_name) (fun q -> q.qd_doc) ctx.quantity_decls;
   }
 
 let expand_parameters ctx =

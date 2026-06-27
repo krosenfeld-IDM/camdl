@@ -515,11 +515,11 @@ pub struct FitSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<ObsSchema>,
     /// The model's `#'` documentation dictionary ([`ir::ModelDocs`]): params /
-    /// compartments / transitions / observations / dimensions → `{symbol, text,
-    /// ref}`, keyed by base declaration name. A downstream consumer labels any
-    /// output column (posterior-draw parameter names, trajectory compartments,
-    /// predict streams) by joining its name against this. Empty (and omitted)
-    /// when the model documents nothing.
+    /// compartments / transitions / observations / dimensions / quantities →
+    /// `{symbol, text, ref}`, keyed by base declaration name. A downstream
+    /// consumer labels any output column (posterior-draw parameter names,
+    /// trajectory compartments, predict streams, generated quantities) by joining
+    /// its name against this. Empty (and omitted) when the model documents nothing.
     #[serde(default, skip_serializing_if = "ir::ModelDocs::is_empty")]
     pub docs: ir::ModelDocs,
 }

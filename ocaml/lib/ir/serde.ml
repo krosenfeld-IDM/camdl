@@ -1211,7 +1211,8 @@ let doc_index_to_json (di : doc_index) : Yojson.Safe.t =
     category "compartments" di.di_compartments @
     category "transitions"  di.di_transitions @
     category "observations" di.di_observations @
-    category "dimensions"   di.di_dimensions)
+    category "dimensions"   di.di_dimensions @
+    category "quantities"   di.di_quantities)
 
 let doc_index_of_json j : doc_index =
   let category name = match member_opt name j with
@@ -1222,11 +1223,12 @@ let doc_index_of_json j : doc_index =
     di_compartments = category "compartments";
     di_transitions  = category "transitions";
     di_observations = category "observations";
-    di_dimensions   = category "dimensions"; }
+    di_dimensions   = category "dimensions";
+    di_quantities   = category "quantities"; }
 
 let doc_index_is_empty (di : doc_index) : bool =
   di.di_parameters = [] && di.di_compartments = [] && di.di_transitions = []
-  && di.di_observations = [] && di.di_dimensions = []
+  && di.di_observations = [] && di.di_dimensions = [] && di.di_quantities = []
 
 let parameter_to_json (p : parameter) : Yojson.Safe.t =
   obj [
