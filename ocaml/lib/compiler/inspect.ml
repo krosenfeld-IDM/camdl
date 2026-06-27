@@ -777,7 +777,7 @@ let collect_let_refs_ast ctx ast_rate =
     | EIdent (name, _) ->
       (match List.find_opt (fun lb -> lb.lname = name) ctx.Expander.let_bindings with
        | Some lb -> add lb | None -> ())
-    | EIndex (name, _) ->
+    | EIndex (name, _, _) ->
       (match List.find_opt (fun lb -> lb.lname = name) ctx.Expander.let_bindings with
        | Some lb -> add lb | None -> ())
     | EBinOp (_, l, r) -> walk l; walk r
@@ -1025,7 +1025,7 @@ let run_let ppf ctx name =
       let rec expr_refs_name e =
         match e with
         | EIdent (n, _) when n = lb.lname -> true
-        | EIndex (n, _) when n = lb.lname -> true
+        | EIndex (n, _, _) when n = lb.lname -> true
         | EBinOp (_, l, r) -> expr_refs_name l || expr_refs_name r
         | EUnOp (_, e) -> expr_refs_name e
         | ESum (_, _, _, body) -> expr_refs_name body

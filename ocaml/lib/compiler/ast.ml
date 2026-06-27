@@ -71,7 +71,7 @@ and expr =
   | EConst  of float
   | EUnit   of float * unit_lit
   | EIdent  of string * loc                  (* unresolved name + source loc *)
-  | EIndex  of string * index_item list      (* S[child] *)
+  | EIndex  of string * index_item list * loc (* S[child] + source loc *)
   | EBinOp  of bin_op * expr * expr
   | EUnOp   of un_op * expr
   | ESum    of string * string * guard option * expr  (* sum(i in dim [where P], body) *)

@@ -813,12 +813,20 @@ Positional and named indexing can be mixed: `S[child, sex = female]` is valid
 (first positional = age, second named = sex). But for clarity, use one style
 consistently.
 
-**Omitting a dimension sums over it.** The compiler knows each compartment's
-arity and checks every access.
+**Omitting ALL dimensions sums over them; a partial index is an error.** The
+compiler knows each compartment's arity and checks every access.
 
-**In rate expressions** (right of `@`): omitting dimensions is valid — it
-produces a sum (a scalar read). `R[a]` when R has `[age, immunity]` means
-`R[a, natural] + R[a, vaccine]`.
+**In rate expressions** (right of `@`):
+
+- The **bare name** (no brackets) sums over *every* dimension — a global scalar
+  read. `R` when R has `[age, immunity]` means
+  `R[child, natural] + R[child, vaccine] + R[adult, natural] + R[adult, vaccine]`.
+- A **fully-indexed** access resolves to one cell: `R[a, natural]`.
+- A **partial index** — some dimensions supplied, some dropped — is an
+  **error** (`E287`). `R[a]` when R has `[age, immunity]` has no defined cell:
+  the compiler cannot tell whether you meant the `[a, natural]` cell, the
+  `[a, vaccine]` cell, or their sum. To sum over a dimension while fixing
+  another, marginalize it **explicitly**: `sum(m in immunity, R[a, m])`.
 
 **In stoichiometry** (left of `@`, source/destination of `-->`): **all
 dimensions of the compartment must be specified.** You cannot write into a
@@ -857,16 +865,21 @@ per-compartment based on each compartment's actual arity.
 Example: `E` has `[age, latent_stage]`, `S` has `[age]`.
 
 ```camdl
-S + E                # both are global sums: PopSum(all S) + PopSum(all E). Valid.
-S[a] + E[a]          # S in age=a + E in age=a (summed over latent_stage). Valid.
-S[a] + E[a, e1]      # S in age=a + E in age=a and stage=e1. Valid.
-S[a, e1]             # ERROR: S has no latent_stage dimension.
+S + E                          # both are global sums: PopSum(all S) + PopSum(all E). Valid.
+S[a] + sum(s in latent_stage, E[a, s])
+                               # S in age=a + E in age=a (summed over latent_stage). Valid.
+S[a] + E[a, e1]                # S in age=a + E in age=a and stage=e1. Valid.
+S[a] + E[a]                    # ERROR (E287): E has [age, latent_stage] — `E[a]` is a partial index.
+S[a, e1]                       # ERROR: S has no latent_stage dimension.
 ```
 
-The omitted-dimension-sums rule applies per-compartment: `E[a]` sums over
-`latent_stage` because `E` has that dimension, while `S[a]` is fully resolved
-because `S` has only `[age]`. The compiler tracks each compartment's dimensions
-independently.
+The bare-name-sums rule applies per-compartment: `E` (no brackets) sums over
+both `age` and `latent_stage`, while `S` sums over `age` only. But once you
+index *any* dimension you must index *all* of them, per compartment: `S[a]` is
+fully resolved because `S` has only `[age]`, whereas `E[a]` is a partial index
+(it drops `latent_stage`) and is rejected — to fix `age` and sum over
+`latent_stage`, write `sum(s in latent_stage, E[a, s])`. The compiler tracks
+each compartment's dimensions independently.
 
 ---
 

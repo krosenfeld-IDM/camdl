@@ -6810,6 +6810,111 @@ let test_table_lookup_correct_arity_ok () =
   let _ = compile_expect_ok (arity_model ~lookup:"C_age[a, b]") in
   ()
 
+(* ── E287: partial dimension omission in a rate read ─────────────────────────
+   A compartment stratified over 2+ dimensions (E has [age, latent_stage])
+   referenced in a rate with *some but not all* dimensions dropped (`E[a]`) has
+   no defined cell. It previously fell through to name-mangling (`E_adult`) and
+   E100'd against a synthetic compartment the user never wrote — no source loc,
+   a name they can't act on. It must now be a located E287 that names the real
+   compartment and points at the explicit-marginalization fix.
+
+   Regression-guarded alongside: bare name `E` (sums ALL dims), full index
+   `E[a, s]`, explicit `sum(s in latent_stage, E[a, s])`, and the single-dim
+   FOI contact pattern `sum(b in age, C[a,b]*I[b]/N[b])` — none of which must
+   trip the new guard. *)
+
+(* `rate` is spliced into the recovery transition's rate body; `E` has
+   [age, latent_stage], `I`/`S`/`R` have [age]. *)
+let partial_omit_model ~rate = Printf.sprintf {|
+time_unit = 'days
+compartments { S, E, I, R }
+dimensions {
+  age = [child, adult]
+  latent_stage = [e1, e2]
+}
+stratify(by = age)
+stratify(by = latent_stage, only = [E])
+parameters {
+  beta : rate in [0.001, 0.5]
+  sigma : rate in [0.01, 1.0]
+  gamma : rate in [0.01, 1.0]
+}
+transitions {
+  infection[a in age] : S[a] --> E[a, e1] @ beta * S[a] * I[a]
+  progression[a in age] : E[a, e1] --> E[a, e2] @ sigma * E[a, e1]
+  onset[a in age] : E[a, e2] --> I[a] @ sigma * E[a, e2]
+  recovery[a in age] : I[a] --> R[a] @ %s
+}
+init { S[child] = 100  I[child] = 1 }
+simulate { from = 0 'days  to = 10 'days }
+|} rate
+
+let test_partial_dimension_omission_e287_with_loc () =
+  (* RED before the fix: `E[a]` produced E100 'undeclared name E_adult' with no
+     source loc. GREEN: a located E287 naming the real compartment 'E'. *)
+  let src = partial_omit_model ~rate:"gamma * E[a]" in
+  let diags = Compiler.collect_diagnostics ~name:"partial_omit" src in
+  (match List.find_opt (fun (d : Diagnostics.diagnostic) -> d.code = "E100") diags with
+   | Some _ -> Alcotest.failf "partial index must NOT fall through to E100 (synthetic name)"
+   | None -> ());
+  match List.find_opt (fun (d : Diagnostics.diagnostic) -> d.code = "E287") diags with
+  | None -> Alcotest.failf "expected E287 for partial dimension omission E[a]"
+  | Some d ->
+    (* the diagnostic must carry a real source location, not no_loc *)
+    Alcotest.(check bool) "E287 points at the index node (line > 0)"
+      true (d.loc.Diagnostics.line > 0);
+    (* and name the real compartment + its dimensions *)
+    Alcotest.(check bool) "E287 names compartment 'E'"
+      true (contains_substring ~needle:"'E'" d.message);
+    Alcotest.(check bool) "E287 lists the dimensions"
+      true (contains_substring ~needle:"latent_stage" d.message)
+
+let test_bare_name_sums_all_dims_ok () =
+  (* Omitting ALL dimensions (bare `E`) sums over them — the existing PopSum
+     path. Must not trip the partial-index guard. *)
+  let _ = compile_expect_ok (partial_omit_model ~rate:"gamma * I[a] * E") in
+  ()
+
+let test_full_index_resolves_ok () =
+  (* Fully-indexed `E[a, e1]` resolves to the concrete cell. *)
+  let _ = compile_expect_ok (partial_omit_model ~rate:"gamma * E[a, e1]") in
+  ()
+
+let test_explicit_marginalization_sum_ok () =
+  (* The blessed marginalization form `sum(s in latent_stage, E[a, s])`. *)
+  let _ = compile_expect_ok
+    (partial_omit_model ~rate:"gamma * sum(s in latent_stage, E[a, s])") in
+  ()
+
+(* The single-dimension FOI contact pattern: I is [age] (one dim), so the
+   indexed reads C[a,b] (table), I[b], N[b] are all full — no partial omission.
+   Must compile (the guard must not misfire on single-dim compartments). *)
+let foi_model = {|
+time_unit = 'days
+compartments { S, I, R }
+dimensions {
+  age = [child, adult]
+}
+stratify(by = age)
+let N[a in age] = S[a] + I[a] + R[a]
+parameters {
+  beta : rate in [0.001, 0.5]
+  gamma : rate in [0.01, 1.0]
+}
+tables { C : age × age = [[12.0, 4.0], [4.0, 8.0]] }
+transitions {
+  infection[a in age] : S[a] --> I[a]
+    @ beta * S[a] * sum(b in age, C[a, b] * I[b] / N[b])
+  recovery[a in age] : I[a] --> R[a] @ gamma * I[a]
+}
+init { S[child] = 100  I[child] = 1 }
+simulate { from = 0 'days  to = 10 'days }
+|}
+
+let test_single_dim_foi_pattern_ok () =
+  let _ = compile_expect_ok foi_model in
+  ()
+
 (* ── gh#117: duplicate / cross-namespace declaration names ───────────────────
    build_lookup_tables used Hashtbl.replace (silent last-wins). A duplicate
    within a namespace, or the same name in two namespaces (e.g. a parameter and
@@ -7598,6 +7703,13 @@ let () =
       Alcotest.test_case "E202 under-indexed C_age[a] (rank 2)" `Quick test_table_lookup_under_indexed_e202;
       Alcotest.test_case "E202 over-indexed C_age[a,b,a] (rank 2)" `Quick test_table_lookup_over_indexed_e202;
       Alcotest.test_case "correct-arity C_age[a,b] still compiles" `Quick test_table_lookup_correct_arity_ok;
+    ];
+    "partial_dimension_omission", [
+      Alcotest.test_case "E287 partial omit E[a] (rank 2) is located" `Quick test_partial_dimension_omission_e287_with_loc;
+      Alcotest.test_case "bare name E sums all dims" `Quick test_bare_name_sums_all_dims_ok;
+      Alcotest.test_case "full index E[a, e1] resolves" `Quick test_full_index_resolves_ok;
+      Alcotest.test_case "explicit sum(s in latent_stage, E[a, s])" `Quick test_explicit_marginalization_sum_ok;
+      Alcotest.test_case "single-dim FOI sum(b, C[a,b]*I[b]/N[b])" `Quick test_single_dim_foi_pattern_ok;
     ];
     "declaration_names", [
       Alcotest.test_case "E278 duplicate parameter beta" `Quick test_duplicate_parameter_rejected;

@@ -1861,7 +1861,7 @@ let rec body_refs_param_or_let ctx (e : expr) : bool =
   match e with
   | EConst _ | EUnit _ -> false
   | EIdent (n, _)      -> bad n
-  | EIndex (n, items)  ->
+  | EIndex (n, items, _)  ->
     bad n
     || List.exists (function IPosn e | INamed (_, e) -> body_refs_param_or_let ctx e) items
   | EBinOp (_, l, r) -> body_refs_param_or_let ctx l || body_refs_param_or_let ctx r
@@ -1886,7 +1886,7 @@ let free_index_var_clean (lb : let_binding) : bool =
     | IComp v            -> [v]) lb.lindices in
   let rec ok bound (e : expr) = match e with
     | EConst _ | EUnit _ | EIdent _ -> true
-    | EIndex (_, items) ->
+    | EIndex (_, items, _) ->
       List.for_all (function
         | IPosn (EIdent (v, _)) | INamed (_, EIdent (v, _)) -> List.mem v bound
         | IPosn e | INamed (_, e) -> ok bound e) items
@@ -2051,7 +2051,8 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
     | Some concrete -> resolve_ident_name ctx concrete ~loc
     | None          -> resolve_ident_name ctx name ~loc
   )
-  | EIndex (name, items) -> (
+  | EIndex (name, items, l) -> (
+    let idx_loc = diag_loc_of_ast_ctx ctx l in
     let base_name =
       match List.assoc_opt name env with Some n -> n | None -> name
     in
@@ -2158,10 +2159,43 @@ let rec resolve_expr ctx (env : (string * string) list) (e : expr) : Ir.expr =
          let concrete = String.concat "_" (base_name :: idx_vals) in
          resolve_ident_name ctx concrete ~loc:Diagnostics.no_loc)
     else
-    (* 4. Compartment with indices → concatenate to concrete name *)
+    (* 4. Compartment with indices → concatenate to concrete name.
+       Partial index guard (E287): a compartment stratified over 2+ dimensions
+       referenced with *some but not all* dimensions dropped (e.g. `E[a]` when
+       `E` has `[age, latent_stage]`) has no well-defined cell. Omitting *all*
+       dimensions (the bare name `E`) sums over them — that path is handled in
+       `resolve_ident_name` and never reaches here. But a partial index used to
+       fall through to name-mangling (`E_adult`), then E100'd against a synthetic
+       compartment the user never wrote — no source loc, a name they can't act
+       on. Reject it here with a located diagnostic that names the real
+       compartment, its dimensions, and the explicit-marginalization fix. *)
+    let comp_dim_list = comp_dims ctx base_name in
+    let n_dims  = List.length comp_dim_list in
+    let n_items = List.length items in
+    if Hashtbl.mem ctx.comp_tbl base_name && n_items > 0 && n_items < n_dims then begin
+      let dims_str = String.concat ", " comp_dim_list in
+      (* the dropped dimensions are the suffix beyond what the user indexed *)
+      let dropped = List.filteri (fun i _ -> i >= n_items) comp_dim_list in
+      let one_dropped = match dropped with [d] -> d | _ -> List.hd comp_dim_list in
+      Diagnostics.error ctx.diags
+        ~code:"E287" ~loc:idx_loc
+        ~message:(Printf.sprintf
+          "compartment '%s' has dimensions [%s] but only %d of %d were indexed; \
+           a partial index has no defined cell"
+          base_name dims_str n_items n_dims)
+        ~hint:(Printf.sprintf
+          "index all dimensions (e.g. `%s[%s]`), or marginalize a dimension \
+           explicitly with `sum(s in %s, %s[%s, s])`"
+          base_name dims_str
+          one_dropped base_name
+          (String.concat ", " (List.filteri (fun i _ -> i < n_items) comp_dim_list)))
+        ();
+      Ir.Const 0.0  (* placeholder — keep collecting diagnostics this pass *)
+    end
+    else
     let idx_vals = List.map (index_item_to_str env) items in
     let concrete = String.concat "_" (base_name :: idx_vals) in
-    resolve_ident_name ctx concrete ~loc:Diagnostics.no_loc
+    resolve_ident_name ctx concrete ~loc:idx_loc
   )
   | EBinOp (op, l, r) ->
     let ir_l = resolve_expr ctx env l in
@@ -4750,7 +4784,7 @@ let lower_obs_quantity ctx env ~name ~loc (e : expr) : Ir.trigger_quantity =
       | [ (_, se) ] ->
         (match se with
          | EIdent (s, _) | EFuncCall (s, []) -> s
-         | EIndex (base, items) ->
+         | EIndex (base, items, _) ->
            let parts = List.map (index_item_to_str env) items in
            if parts = [] then base else String.concat "_" (base :: parts)
          | _ ->
@@ -5040,7 +5074,7 @@ let expand_observations ctx =
       let rhs_names =
         let rec names_of = function
           | EIdent (n, _) -> [n]
-          | EIndex (n, items) -> n :: List.concat_map (function
+          | EIndex (n, items, _) -> n :: List.concat_map (function
               | IPosn e -> names_of e | INamed (_, e) -> names_of e) items
           | EBinOp (_, a, b) -> names_of a @ names_of b
           | EUnOp (_, e) -> names_of e
@@ -5182,13 +5216,13 @@ let expand_observations ctx =
       | ProjDerived (EFuncCall ("incidence", args)) ->
         (match List.assoc_opt "" args with
          | Some (EIdent (n, _))    -> incidence_projection n
-         | Some (EIndex (n, idxs)) ->
+         | Some (EIndex (n, idxs, _)) ->
            Ir.CumulativeFlow (String.concat "_" (n :: List.map (index_item_to_str env) idxs))
          | _ -> Ir.CumulativeFlow "?")
       | ProjDerived (EFuncCall ("prevalence", args)) ->
         (match List.assoc_opt "" args with
          | Some (EIdent (n, _))    -> prevalence_projection n []
-         | Some (EIndex (n, idxs)) ->
+         | Some (EIndex (n, idxs, _)) ->
            prevalence_projection n (List.map (index_item_to_str env) idxs)
          | _ -> Ir.CurrentPop "?")
       | ProjDerived (EIdent (name, _) as e) ->
@@ -5206,7 +5240,7 @@ let expand_observations ctx =
           prevalence_projection name []
         else
           Ir.CumulativeFlow name
-      | ProjDerived (EIndex (name, idxs)) ->
+      | ProjDerived (EIndex (name, idxs, _)) ->
         let idx_vals = List.map (index_item_to_str env) idxs in
         let concrete = String.concat "_" (name :: idx_vals) in
         if Hashtbl.mem ctx.expanded_comp_tbl concrete then
@@ -5225,9 +5259,9 @@ let expand_observations ctx =
          the generic DerivedExpr arm below.) *)
       | ProjDerived (ESum (loop_var, dim, _, EFuncCall ("incidence", iargs)))
         when (match List.assoc_opt "" iargs with
-              | Some (EIndex (_, _)) -> true | _ -> false) ->
+              | Some (EIndex (_, _, _)) -> true | _ -> false) ->
         let inner = match List.assoc_opt "" iargs with
-          | Some (EIndex (tr, idxs)) -> Some (tr, idxs) | _ -> None in
+          | Some (EIndex (tr, idxs, _)) -> Some (tr, idxs) | _ -> None in
         (match inner with
          | Some (tr, idxs) ->
            let levels = match List.assoc_opt dim ctx.dim_registry with
@@ -5402,7 +5436,7 @@ let rec collect_param_refs known_params acc = function
   | EConst _ | EUnit _ -> acc
   | EIdent (name, _) when List.mem name known_params -> name :: acc
   | EIdent (_, _) -> acc
-  | EIndex (_, items) ->
+  | EIndex (_, items, _) ->
     List.fold_left (fun a item ->
       match item with
       | IPosn e | INamed (_, e) -> collect_param_refs known_params a e
@@ -5550,7 +5584,7 @@ let check_no_shadowing ctx =
   let rec walk decl bound (e : expr) =
     match e with
     | EConst _ | EUnit _ | EIdent _ -> ()
-    | EIndex (_, items) ->
+    | EIndex (_, items, _) ->
       List.iter (function IPosn e | INamed (_, e) -> walk decl bound e) items
     | EBinOp (_, l, r) -> walk decl bound l; walk decl bound r
     | EUnOp (_, e) -> walk decl bound e
@@ -5623,7 +5657,7 @@ let check_quadratic_coupling ctx =
   let rec mentions v = function
     | EConst _ | EUnit _ -> false
     | EIdent (n, _) -> n = v
-    | EIndex (n, items) ->
+    | EIndex (n, items, _) ->
       n = v || List.exists (function IPosn e | INamed (_, e) -> mentions v e) items
     | EBinOp (_, l, r) -> mentions v l || mentions v r
     | EUnOp (_, e) -> mentions v e

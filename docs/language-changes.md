@@ -13,6 +13,35 @@ How to read an entry: **what changed**, the **migration** (old → new), and the
 
 ---
 
+## 2026-06-26 — partial dimension omission in a rate read is now an error
+
+**What.** Indexing a compartment with _some but not all_ of its dimensions in a
+rate expression is now a hard error. A compartment stratified over 2+ dimensions
+— e.g. `E` declared over `[age, latent_stage]` — referenced as `E[a]` (dropping
+`latent_stage`) has no defined cell: the compiler cannot tell whether you meant
+a specific stage or their sum. Previously this silently fell through to
+name-mangling and produced a confusing `E100` against a synthetic compartment
+the user never wrote (`undeclared name 'E_adult'`), with no source location.
+
+Unchanged: the **bare name** `E` (no brackets) still sums over _all_ dimensions,
+and a **full index** `E[a, e1]` still resolves to one cell. Only the
+partial-index middle case is newly rejected.
+
+**Migration.** Index every dimension (`E[a, e1]`), or — to fix one dimension and
+sum over another — marginalize **explicitly**:
+
+```
+# old (now E287):  gamma * E[a]
+# new:             gamma * sum(s in latent_stage, E[a, s])
+```
+
+**Diagnostic.** A partial index in a rate read → **E287** ("compartment 'E' has
+dimensions [age, latent_stage] but only 1 of 2 were indexed; a partial index has
+no defined cell"), located at the index node, with a hint giving both the
+full-index and explicit-`sum(...)` forms.
+
+---
+
 ## 2026-06-18 — `scope` key removed from `reactive_interventions {}` (gh#204)
 
 **What.** The `scope = exogenous | particle` reactive key is removed. A reactive

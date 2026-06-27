@@ -138,7 +138,7 @@ let rec classify env (e : expr) : tclass =
        | Some `Instant  -> TInstant
        | Some `Duration -> TExact
        | None           -> TOther)
-  | EIndex (name, _) ->
+  | EIndex (name, _, _) ->
     (* Indexed param/let — kind doesn't depend on the index. *)
     (match Hashtbl.find_opt env.let_tbl name with
      | Some lb -> classify env lb.lbody
@@ -211,7 +211,7 @@ let rec walk_rule1 env ~on_hit (e : expr) : unit =
 and walk_subexprs env ~on_hit (e : expr) : unit =
   match e with
   | EConst _ | EUnit _ | EIdent _ -> ()
-  | EIndex (_, items) ->
+  | EIndex (_, items, _) ->
     List.iter (fun ii ->
       match ii with
       | IPosn e          -> walk_rule1 env ~on_hit e
@@ -313,7 +313,7 @@ let rec show_short (e : expr) : string =
     in
     Printf.sprintf "%s '%s" n us
   | EIdent (s, _) -> s
-  | EIndex (n, _) -> n ^ "[…]"
+  | EIndex (n, _, _) -> n ^ "[…]"
   | EBinOp (op, l, r) ->
     let os = match op with
       | Add -> "+" | Sub -> "-" | Mul -> "*" | Div -> "/"

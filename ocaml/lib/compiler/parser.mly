@@ -1113,7 +1113,15 @@ atom_expr:
   | SUM LPAREN v = IDENT IN d = IDENT WHERE g = guard_expr COMMA body = expr RPAREN
       { ESum (v, d, Some g, body) }
   | name = IDENT LBRACKET items = separated_list(COMMA, index_item) RBRACKET
-      { EIndex (name, items) }
+      { let l =
+          let open Lexing in
+          { file     = $startpos.pos_fname;
+            line     = $startpos.pos_lnum;
+            col      = $startpos.pos_cnum - $startpos.pos_bol + 1;
+            end_line = $endpos.pos_lnum;
+            end_col  = $endpos.pos_cnum - $endpos.pos_bol + 1 }
+        in
+        EIndex (name, items, l) }
   | name = IDENT
       { let l =
           let open Lexing in
