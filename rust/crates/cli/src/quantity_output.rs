@@ -110,6 +110,20 @@ fn reduce_name(r: &ir::quantity::TemporalReduce) -> &'static str {
     }
 }
 
+/// The manifest `source` tag — what a quantity folds over. Preserves the IR's
+/// State-vs-Observation distinction (gh#317): a `Reduced` quantity can reduce
+/// latent state (`"state"`) OR a simulated observation stream (`"observations"`,
+/// the v1.1 `observations.<stream>` source), and a downstream consumer must be
+/// able to tell them apart. Collapsing both to `"state"` was the bug.
+fn manifest_source(body: &ir::quantity::QuantityBody) -> &'static str {
+    use ir::quantity::{QuantityBody, QuantitySource};
+    match body {
+        QuantityBody::Reduced { source: QuantitySource::State(_), .. } => "state",
+        QuantityBody::Reduced { source: QuantitySource::Observation { .. }, .. } => "observations",
+        QuantityBody::Derived(_) => "derived",
+    }
+}
+
 /// The banded TSV header — a deterministic function of `(shape, stratified)`.
 /// Every shape carries `n_draws` + the quantile columns; a series prepends
 /// `time`; a stratified leaf inserts its `<dims…>`; a censorable scalar inserts
@@ -261,10 +275,7 @@ pub(crate) fn render_quantities(
         }
 
         // Manifest entry for this logical quantity (one per group) — mode-independent.
-        let source = match &first.body {
-            QuantityBody::Reduced { .. } => "state",
-            QuantityBody::Derived(_) => "derived",
-        };
+        let source = manifest_source(&first.body);
         let reduce_val: serde_json::Value = match &first.body {
             QuantityBody::Reduced { reduce: Some(r), .. } => {
                 serde_json::Value::String(reduce_name(r).to_string())
@@ -546,6 +557,30 @@ mod tests {
         let olines: Vec<&str> = onset.trim_end().lines().collect();
         assert_eq!(olines[0], "value", "scalar point header");
         assert_eq!(olines[1], "NA", "a censored time scalar writes NA, not a fabricated value");
+    }
+
+    #[test]
+    fn manifest_source_distinguishes_state_observation_and_derived() {
+        // gh#317: the manifest `source` must preserve the IR's State-vs-Observation
+        // distinction. Before the fix, every `Reduced` body collapsed to "state",
+        // so an `observations.<stream>` reduction was mislabeled — this asserts the
+        // observation arm yields "observations", which fails on the old code.
+        use ir::expr::{ConstExpr, Expr};
+        use ir::quantity::{QuantityBody, QuantitySource, ScalarExpr};
+
+        let state = QuantityBody::Reduced {
+            source: QuantitySource::State(Expr::Const(ConstExpr { value: 0.0 })),
+            reduce: None,
+        };
+        let observation = QuantityBody::Reduced {
+            source: QuantitySource::Observation { stream: "cases".to_string() },
+            reduce: None,
+        };
+        let derived = QuantityBody::Derived(ScalarExpr::Const(1.0));
+
+        assert_eq!(manifest_source(&state), "state");
+        assert_eq!(manifest_source(&observation), "observations");
+        assert_eq!(manifest_source(&derived), "derived");
     }
 
     #[test]
