@@ -199,6 +199,7 @@ pub fn plan_grid(job: &SimulateJob) -> (Vec<CellSpec>, Grid) {
 /// merge phase is always in-order. Per-cell seeds are order-independent
 /// (see [`process_seed_for`]), so parallelism never perturbs trajectories.
 pub fn run_job(job: &SimulateJob, sink: &mut dyn RunSink) -> Result<(), String> {
+    check_explicit_draws_scenario_collision(job)?;
     let (specs, grid) = plan_grid(job);
     sink.on_start(&grid);
 
@@ -342,14 +343,106 @@ fn effective_scenarios(job: &SimulateJob) -> Vec<ScenarioRef> {
     }
 }
 
-/// Build the per-cell [`SimRun`], reproducing the field-for-field
-/// construction the pre-unification `run_simulate` loop did
-/// (`main.rs:844-857`): start from the CLI `--param` overrides and extend
-/// with the param-point overrides (so the point/draw wins over `--param`,
-/// matching `combined_overrides`), then route the scenario through either
-/// the named-preset path (`scenario_name = Some`) or the ad-hoc
-/// enable/disable/params path (`scenario_name = None`, params overlaid on
-/// the M layer — σ after M).
+/// Hard-error when a USER-AUTHORED draws file collides with a scenario on a
+/// parameter both touch (spec §1.3 / the run-spec's "draws and sweeps are
+/// different operations" rule).
+///
+/// A `--draws <file.tsv>` pins θ per draw from columns the user authored. A
+/// scenario that ALSO sets/scales one of those parameters is ambiguous: the
+/// user asserted the value two ways. Rather than silently letting the scenario
+/// win (correct for *generated* draws, where the file is not authoritative),
+/// this names the parameter, the scenario, and the file, and tells the user how
+/// to fix it. Generated draws (`posterior`/`prior`/`uniform`) and sweeps do
+/// NOT error — `explicit_file` is `false` there, and the scenario just wins.
+fn check_explicit_draws_scenario_collision(job: &SimulateJob) -> Result<(), String> {
+    use crate::sim_job::ParamSource;
+    // Only an explicit user file triggers the collision check.
+    let ParamSource::Draws { rows, explicit_file: Some(file_path), .. } = &job.source else {
+        return Ok(());
+    };
+    // The set of parameters the draws FILE provides (union across rows — a
+    // ragged file still flags any column that appears).
+    let mut file_cols: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for row in rows {
+        for k in row.keys() {
+            file_cols.insert(k.as_str());
+        }
+    }
+    if file_cols.is_empty() {
+        return Ok(());
+    }
+
+    // A scenario's parameter footprint = its `set` keys ∪ its `scale` keys
+    // (both modify a parameter the file may also provide). For a named preset
+    // this is read from the model; for an inline ad-hoc patch, from its params.
+    // The model is loaded once, only when there is something to check.
+    let scenarios = effective_scenarios(job);
+    // Lazily load the model only if a NAMED preset must be inspected.
+    let mut model_cache: Option<ir::Model> = None;
+    for scenario in &scenarios {
+        let (scen_name, scen_keys): (String, Vec<String>) = match scenario {
+            ScenarioRef::Inline { name, params, .. } => {
+                (name.clone(), params.keys().cloned().collect())
+            }
+            ScenarioRef::Named(name) => {
+                if model_cache.is_none() {
+                    let (m, _) = crate::util::load_model(&job.model)?;
+                    model_cache = Some(m);
+                }
+                let model = model_cache.as_ref().expect("just loaded");
+                // A name that is not a model preset (e.g. `baseline`) sets
+                // nothing — skip it (no collision possible).
+                if !model.presets.iter().any(|p| p.name == *name) {
+                    continue;
+                }
+                let set_keys: Vec<String> =
+                    crate::params_resolver::resolve_preset_params(model, name)
+                        .map_err(|e| e.to_string())?
+                        .into_keys()
+                        .collect();
+                let preset = model.presets.iter().find(|p| p.name == *name)
+                    .expect("preset exists");
+                let mut keys = set_keys;
+                keys.extend(preset.scale.keys().cloned());
+                (name.clone(), keys)
+            }
+        };
+        let mut collisions: Vec<&str> = scen_keys.iter()
+            .map(|k| k.as_str())
+            .filter(|k| file_cols.contains(k))
+            .collect();
+        if !collisions.is_empty() {
+            collisions.sort();
+            collisions.dedup();
+            let param_list = collisions.join(", ");
+            return Err(format!(
+                "scenario '{scen_name}' sets parameter(s) [{param_list}] that the \
+                 --draws file '{file}' also provides as column(s). A draws file pins \
+                 these parameters per draw, so applying a scenario that also sets them \
+                 is ambiguous.\n  \
+                 Fix: drop the column(s) [{param_list}] from the draws file, or use a \
+                 scenario that does not touch them.",
+                file = file_path.display(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Build the per-cell [`SimRun`], routing each M-layer input to the tier
+/// it belongs to (spec §1.3, last wins): genuine `--param` CLI overrides
+/// and an inline scenario's `set` go to `overrides` (the resolver's
+/// `fixed_cli` tier 5); a draw row / sweep point goes to `point_overrides`
+/// (the draw/sweep tier, below scenario), so a scenario `set`/`scale`
+/// wins over a draw/sweep value while `--param` still wins over both.
+///
+/// The scenario is routed through either the named-preset path
+/// (`scenario_name = Some`) — the resolver applies the preset's
+/// enable/disable/set/scale/compose at tier 4 — or the ad-hoc inline path
+/// (`scenario_name = None`, inline `set` overlaid via `overrides`). An
+/// inline scenario's `set` is applied at the same logical scenario tier as
+/// a preset by virtue of overriding the draw/sweep tier; `--param` (also
+/// in `overrides`) still wins over both.
 pub fn build_cell_sim_run(
     job: &SimulateJob,
     scenario: &ScenarioRef,
@@ -357,39 +450,49 @@ pub fn build_cell_sim_run(
     table_files: &HashMap<String, String>,
     process_seed: u64,
 ) -> SimRun {
-    let mut overrides: HashMap<String, f64> =
-        job.cli_overrides.iter().cloned().collect();
-    overrides.extend(point_overrides.iter().map(|(k, v)| (k.clone(), *v)));
+    // Draw row / sweep point → the draw/sweep tier (below scenario).
+    let point_overrides_map: HashMap<String, f64> =
+        point_overrides.iter().map(|(k, v)| (k.clone(), *v)).collect();
 
-    let (scenario_name, adhoc_enable, adhoc_disable, scen_params) = match scenario {
+    // `--param` CLI overrides → the highest M tier (`fixed_cli`).
+    let overrides: HashMap<String, f64> =
+        job.cli_overrides.iter().cloned().collect();
+
+    let (scenario_name, adhoc_enable, adhoc_disable,
+         scenario_inline_name, scenario_inline_set) = match scenario {
         // Named preset → params_resolver applies the preset's
-        // enable/disable/set/scale/compose.
+        // enable/disable/set/scale/compose at the scenario tier (tier 4).
         ScenarioRef::Named(name) => {
-            (Some(name.clone()), Vec::new(), Vec::new(), Vec::new())
+            (Some(name.clone()), Vec::new(), Vec::new(), None, Vec::new())
         }
-        // Inline ad-hoc patch → no preset, apply inline enable/disable and
-        // overlay inline params on the M layer.
-        ScenarioRef::Inline { name: _, enable, disable, params } => (
+        // Inline ad-hoc patch → no preset; the inline enable/disable drive
+        // the intervention filter and the inline `set` params resolve at
+        // the SAME scenario tier as a preset (above the draw/sweep tier,
+        // below `--param`) — NOT folded into `overrides`/`fixed_cli`, so an
+        // inline scenario is identical to the equivalent named preset
+        // (spec §1.3). (Inline scenarios carry only `set`, never `scale`.)
+        ScenarioRef::Inline { name, enable, disable, params } => (
             None,
             enable.clone(),
             disable.clone(),
+            Some(name.clone()),
             params.iter().map(|(k, v)| (k.clone(), *v)).collect::<Vec<_>>(),
         ),
     };
-
-    for (k, v) in &scen_params {
-        overrides.insert(k.clone(), *v);
-    }
 
     SimRun {
         ir_path: job.model.clone(),
         params_files: job.params_files.clone(),
         overrides,
+        point_overrides: point_overrides_map,
         set_vec_entries: job.set_vec_entries.clone(),
         table_files: table_files.clone(),
         scenario_name,
         adhoc_enable,
         adhoc_disable,
+        scenario_inline_name,
+        scenario_inline_set,
+        scenario_inline_scale: Vec::new(),
         backend: job.backend,
         dt: job.dt,
         seed: process_seed,

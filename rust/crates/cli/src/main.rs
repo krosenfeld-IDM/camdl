@@ -829,11 +829,17 @@ fn run_simulate(a: &args::SimulateArgs) {
         ir_path: ir_path_compiled.clone(),
         params_files,
         overrides,
+        // Draw/sweep + inline-scenario tiers are assigned per cell by
+        // `engine::build_cell_sim_run`; the base run carries none.
+        point_overrides: std::collections::HashMap::new(),
         set_vec_entries,
         table_files,
         scenario_name: None, // set per-scenario in the loop
         adhoc_enable,
         adhoc_disable,
+        scenario_inline_name: None,
+        scenario_inline_set: Vec::new(),
+        scenario_inline_scale: Vec::new(),
         backend,
         dt,
         seed, // overridden per-replicate below
@@ -1095,11 +1101,19 @@ fn run_simulate(a: &args::SimulateArgs) {
     // `replicates` times. With explicit --seeds the seed-list length is the
     // replicate count (the engine ignores `Point.replicates` then), so passing
     // `replicates` is correct in both cases.
-    let source = if draws_path.is_some() {
+    let source = if let Some(ref src) = draws_path {
         let rows: Vec<indexmap::IndexMap<String, f64>> = draws.iter()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
             .collect();
-        ParamSource::Draws { rows, replicates }
+        // A user-authored draws FILE (not the generated `uniform`/`prior`/
+        // `posterior` sources). Carried as `Some(path)` so a scenario ×
+        // draws-file column collision is a hard error naming the file (vs.
+        // generated draws, where the scenario simply wins).
+        let explicit_file = match src.as_str() {
+            "uniform" | "prior" | "posterior" => None,
+            _ => Some(std::path::PathBuf::from(src)),
+        };
+        ParamSource::Draws { rows, replicates, explicit_file }
     } else {
         ParamSource::Point { replicates }
     };
@@ -1361,7 +1375,7 @@ fn run_simulate(a: &args::SimulateArgs) {
                 crate::quantity_output::Mode::Point
             };
             let (outs, manifest) =
-                crate::quantity_output::render_quantities(&q.quantities, &q.draws, &q.times, mode)
+                crate::quantity_output::render_quantities(&q.quantities, &q.draws, &q.times, mode, None)
                     .unwrap_or_else(|e| {
                         eprintln!("error rendering quantities: {}", e);
                         std::process::exit(1);

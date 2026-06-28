@@ -38,32 +38,38 @@
 //! Precedence (last wins)
 //! ----------------------
 //!
+//! This implements `docs/camdl-run-spec.md §1.3` exactly:
+//!
 //!   1. Model parameter default (`p.value` from DSL)
 //!   2. `fit.toml [fixed]` block (when present)
 //!   3. `--fixed-file <toml>` (each file layered in order; later
 //!      overrides earlier)
-//!   4. Scenario preset (`preset.params` and multiplicative
-//!      `preset.scale`)
+//!   3.5. Draw row / sweep point (`point_overrides`) — automated
+//!      M-layer variation (a posterior/prior/uniform draw, an
+//!      explicit draws file, or a sweep grid point)
+//!   4. Scenario (`preset.params` + multiplicative `preset.scale`, or
+//!      an inline ad-hoc scenario's `set`/`scale`)
 //!   5. `--fixed NAME=VALUE` (highest)
 //!
-//! **Deliberate deviation from proposal:** the 2026-05-25 CLI UX
-//! rev 2 proposal lists scenario at tier 2 (below `--fixed-file`).
-//! That contradicts `docs/camdl-run-spec.md §1.3` which documents
-//! and tests scenario > `params.toml` for forward simulation
-//! (`scenario_runtime_application.rs` locks the behaviour in).
-//! The proposal's own §"What this proposal does NOT touch" says
-//! the spec order is "preserved exactly" — so the spec is the
-//! load-bearing artifact and the resolver implements that order.
-//! See `docs/dev/notes/2026-05-25-cli-ux-impl-questions.md`
-//! §"Decision D".
+//! The structural distinction between tiers 3.5 and 5: a draw/sweep
+//! value is *automated M-layer variation* and is counterfactual-
+//! modifiable, so a scenario `set`/`scale` (a counterfactual on M)
+//! overrides it. A `--fixed` value is the user's *explicit assertion*
+//! about a specific run and overrides everything, scenario included.
+//! Inline and named scenarios resolve at the SAME tier 4 — an inline
+//! scenario is a preset with no model lookup — so the two are
+//! indistinguishable to a parameter's final value (only the
+//! provenance label differs).
 //!
 //! `[estimate]` membership rule:
 //!   - Start: `estimate_set = inputs.fit_toml_estimate`
 //!   - Remove every name that appears in (3) or (5) — i.e. user-
-//!     explicit `--fixed{,-file}` assertions. Scenario does NOT
-//!     kick from `[estimate]` because scenarios are σ-layer
-//!     constructs (counterfactual modifications), not user
-//!     assertions about a specific value.
+//!     explicit `--fixed{,-file}` assertions. Neither the scenario
+//!     tier (4) nor the draw/sweep tier (3.5) kicks from
+//!     `[estimate]`: scenarios are σ-layer constructs (counterfactual
+//!     modifications) and draws/sweeps are automated M-layer
+//!     variation — neither is a user assertion that a parameter is
+//!     fixed at a value.
 //!   - Emit a warning (not an error) for each such removal
 //!
 //! On non-inference subcommands, `inputs.fit_toml_estimate` is empty;
@@ -82,9 +88,31 @@ use ir::table::TableSource;
 /// per-parameter outcome plus provenance.
 pub struct ParameterInputs<'a> {
     pub model:              &'a ir::Model,
+    /// A NAMED scenario preset (looked up in `model.presets`). Mutually
+    /// exclusive with the inline-scenario fields below — a scenario
+    /// reference is either a preset OR an ad-hoc inline patch, never both.
     pub scenario:           Option<&'a str>,
     pub adhoc_enable:       &'a [String],
     pub adhoc_disable:      &'a [String],
+    /// An INLINE ad-hoc scenario's `set`/`scale` and display name. An
+    /// inline scenario resolves at the SAME tier as a named preset
+    /// (tier 4) — `set` overrides the draw/sweep tier, `scale` multiplies
+    /// the current value, both tagged `ValueSource::Scenario(name)`. This
+    /// is what makes an inline scenario resolve IDENTICALLY to the
+    /// equivalent named preset (spec §1.3). Set only when `scenario` is
+    /// `None` (the ad-hoc path); the named-preset path reads `set`/`scale`
+    /// from the preset instead. `scenario_inline_name` carries the
+    /// display label for provenance; empty `set`/`scale` with no name is
+    /// the no-op baseline.
+    pub scenario_inline_name:  Option<&'a str>,
+    pub scenario_inline_set:   &'a [(String, f64)],
+    pub scenario_inline_scale: &'a [(String, f64)],
+    /// A draw row / sweep point's per-parameter overrides — automated
+    /// M-layer variation (spec §1.3, between `--fixed-file` and scenario).
+    /// Distinct from `fixed_cli`: a draw/sweep value is overridden by a
+    /// scenario `set`/`scale`, whereas `--fixed` is not. Empty for a plain
+    /// single-point run.
+    pub point_overrides:    &'a [(String, f64)],
     pub fixed_cli:          &'a [(String, f64)],
     pub fixed_files:        &'a [PathBuf],
     pub fit_toml_fixed:     &'a IndexMap<String, f64>,
@@ -106,6 +134,10 @@ pub enum ValueSource {
     /// A `--fixed-file <toml>` invocation; carries the path so
     /// provenance distinguishes which file won under layering.
     FixedFile { path: PathBuf },
+    /// A draw row / sweep point override (automated M-layer variation).
+    /// Resolves below scenario (spec §1.3): a scenario `set`/`scale` wins
+    /// over a draw/sweep value.
+    SweepPoint,
     /// A `--fixed NAME=VALUE` CLI flag.
     FixedCli,
 }
@@ -118,6 +150,7 @@ impl ValueSource {
             ValueSource::Scenario(_)     => "scenario",
             ValueSource::FitTomlFixed    => "fit_toml_fixed",
             ValueSource::FixedFile { .. } => "fixed_file",
+            ValueSource::SweepPoint      => "sweep_point",
             ValueSource::FixedCli        => "fixed_cli",
         }
     }
@@ -451,8 +484,15 @@ pub fn resolve_parameters<'a>(
     // because it modifies `model.interventions`, not parameter
     // values.
     let scenario_name = inputs.scenario.map(|s| s.to_string());
-    let (scenario_enable, scenario_disable, scenario_params, scenario_scale):
-        (Vec<String>, Vec<String>, Vec<(String, f64)>, Vec<(String, f64)>) =
+    // The label used for scenario-tier provenance + warnings: the named
+    // preset's name, or (when an inline ad-hoc scenario supplies
+    // `set`/`scale`) the inline scenario's display name. `None` means no
+    // scenario contributes parameter values at tier 4 (a bare baseline /
+    // adhoc enable-disable-only patch).
+    let (scenario_enable, scenario_disable, scenario_params, scenario_scale,
+         scenario_label):
+        (Vec<String>, Vec<String>, Vec<(String, f64)>, Vec<(String, f64)>,
+         Option<String>) =
         if let Some(name) = scenario_name.as_deref() {
             let preset = model.presets.iter().find(|p| p.name == name)
                 .ok_or_else(|| ResolveError::ScenarioNotFound {
@@ -486,10 +526,28 @@ pub fn resolve_parameters<'a>(
             // duplicate keys to re-trigger.
             let composed_params: Vec<(String, f64)> =
                 resolve_preset_params(&model, name)?.into_iter().collect();
-            (composed_enable, composed_disable, composed_params, composed_scale)
+            (composed_enable, composed_disable, composed_params, composed_scale,
+             Some(name.to_string()))
         } else {
+            // Ad-hoc path: enable/disable always drive the filter; an
+            // INLINE scenario's `set`/`scale` resolve at the SAME tier 4 as
+            // a named preset, so an inline scenario is identical to the
+            // equivalent preset (spec §1.3). The inline scenario
+            // contributes a provenance label only when it actually carries
+            // params/scale (an enable/disable-only or empty baseline patch
+            // sets no parameter values, so it does not "win" any tier-4
+            // slot and needs no Scenario provenance).
+            let inline_set: Vec<(String, f64)> =
+                inputs.scenario_inline_set.to_vec();
+            let inline_scale: Vec<(String, f64)> =
+                inputs.scenario_inline_scale.to_vec();
+            let label = if !inline_set.is_empty() || !inline_scale.is_empty() {
+                inputs.scenario_inline_name.map(|s| s.to_string())
+            } else {
+                None
+            };
             (inputs.adhoc_enable.to_vec(), inputs.adhoc_disable.to_vec(),
-             Vec::new(), Vec::new())
+             inline_set, inline_scale, label)
         };
 
     // ── Intervention filter (independent of value precedence) ───────────
@@ -564,12 +622,38 @@ pub fn resolve_parameters<'a>(
         }
     }
 
+    // ── Tier 3.5: draw row / sweep point overrides ──────────────────────
+    //
+    // Automated M-layer variation (spec §1.3): a sweep point or a draw
+    // row sits between `--fixed-file` (tier 3) and scenario (tier 4). It
+    // overrides the model default / fit-toml / file values, but a
+    // scenario `set`/`scale` and `--fixed` (tiers 4/5) override it. This
+    // is the structural difference from `--fixed`: a draw/sweep value is
+    // counterfactual-modifiable; a `--fixed` value is the user's
+    // assertion and is not.
+    for (name, v) in inputs.point_overrides {
+        if !model_param_set.contains(name) {
+            return Err(ResolveError::UnknownParameter {
+                name: name.clone(),
+                source: ValueSource::SweepPoint,
+                candidates: model_param_names.clone(),
+            });
+        }
+        for p in &mut model.parameters {
+            if p.name == *name {
+                p.value = p.value.with_value(*v);
+                current_source.insert(name.clone(), Some(ValueSource::SweepPoint));
+            }
+        }
+    }
+
     // ── Tier 4: scenario params + scale ─────────────────────────────────
     //
     // Order is spec-§1.3-compliant: scenarios override `--fixed-file`
-    // (the legacy `--params FILE`). The intervention filter for the
-    // scenario was applied earlier; only `params` / `scale` happen
-    // here, layered on top of the file overrides.
+    // (the legacy `--params FILE`) and the draw/sweep tier. The
+    // intervention filter for the scenario was applied earlier; only
+    // `params` / `scale` happen here, layered on top of the file +
+    // draw/sweep overrides.
     //
     // Tracking for [`ResolverWarning::ScenarioOverridden`]: record
     // what value the scenario *would have* set each named param to,
@@ -578,7 +662,7 @@ pub fn resolve_parameters<'a>(
     // (scenario_name, value) so we know which preset's intent was
     // overridden.
     let mut scenario_assigned: HashMap<String, (String, f64)> = HashMap::new();
-    if let Some(name) = scenario_name.as_deref() {
+    if let Some(name) = scenario_label.as_deref() {
         for (k, v) in &scenario_params {
             for p in &mut model.parameters {
                 if p.name == *k {
@@ -946,6 +1030,10 @@ mod tests {
             scenario: None,
             adhoc_enable: &[],
             adhoc_disable: &[],
+            scenario_inline_name: None,
+            scenario_inline_set: &[],
+            scenario_inline_scale: &[],
+            point_overrides: &[],
             fixed_cli,
             fixed_files,
             fit_toml_fixed,
@@ -1348,6 +1436,152 @@ mod tests {
             resolved.params[0].value);
     }
 
+    // ── Draw/sweep tier: BELOW scenario, ABOVE fixed-file (spec §1.3) ───
+
+    #[test]
+    fn scenario_set_beats_draw_or_sweep_point() {
+        // Spec §1.3: sweep point overrides < scenario params. A scenario
+        // `set` must override a draw/sweep value on the same parameter.
+        // RED before the draw/sweep tier existed: the draw rode in
+        // `fixed_cli` (tier 5) and WON over scenario.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_params = HashMap::new();
+        scen_params.insert("beta".to_string(), 0.9);
+        model.presets.push(Preset {
+            name: "preset".into(),
+            label: "preset".into(),
+            params: scen_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let point = vec![("beta".to_string(), 0.2)];
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("preset");
+        inputs.point_overrides = &point;
+        let resolved = resolve_parameters(inputs).expect("ok");
+        // Scenario value wins over the draw/sweep point.
+        assert_eq!(resolved.params[0].value, 0.9,
+            "scenario `set` must beat a draw/sweep point (spec §1.3); got {}",
+            resolved.params[0].value);
+        assert!(matches!(&resolved.params[0].source,
+            ValueSource::Scenario(name) if name == "preset"));
+    }
+
+    #[test]
+    fn scenario_scale_beats_draw_or_sweep_point() {
+        // A scenario `scale` multiplies the draw/sweep value and the
+        // RESULT is the winner (source = Scenario): scale applies on top
+        // of the draw tier, then nothing higher overrides it.
+        let mut model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut scen_scale = HashMap::new();
+        scen_scale.insert("beta".to_string(), 2.0);
+        model.presets.push(Preset {
+            name: "doubled".into(),
+            label: "doubled".into(),
+            params: HashMap::new(),
+            scale: scen_scale,
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let point = vec![("beta".to_string(), 0.2)]; // draw sets beta = 0.2
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.scenario = Some("doubled");
+        inputs.point_overrides = &point;
+        let resolved = resolve_parameters(inputs).expect("ok");
+        // 0.2 (draw) × 2.0 (scenario scale) = 0.4; scenario is the winner.
+        assert!((resolved.params[0].value - 0.4).abs() < 1e-12,
+            "scenario `scale` must multiply the draw/sweep value (0.2 × 2.0 = 0.4); got {}",
+            resolved.params[0].value);
+        assert!(matches!(&resolved.params[0].source,
+            ValueSource::Scenario(name) if name == "doubled"));
+    }
+
+    #[test]
+    fn draw_or_sweep_point_beats_fixed_file_and_model_default() {
+        // A draw/sweep point overrides `--fixed-file` (tier 3) and the
+        // model default, but not scenario/`--fixed` (those are absent
+        // here, so the draw is the winner with source = SweepPoint).
+        let model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let mut ftf = IndexMap::new();
+        ftf.insert("beta".into(), 0.7); // tier 2 sets beta = 0.7
+        let fcli = vec![];
+        let ffiles = vec![];
+        let fte = IndexSet::new();
+        let point = vec![("beta".to_string(), 0.33)];
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.point_overrides = &point;
+        let resolved = resolve_parameters(inputs).expect("ok");
+        assert_eq!(resolved.params[0].value, 0.33);
+        assert_eq!(resolved.params[0].source, ValueSource::SweepPoint);
+    }
+
+    #[test]
+    fn fixed_cli_beats_draw_or_sweep_point() {
+        // `--fixed NAME=V` (tier 5) must override a draw/sweep point
+        // (tier ~3.5). Guards against demoting `--param` below draws.
+        let model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let fcli = vec![("beta".to_string(), 1.5)];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let point = vec![("beta".to_string(), 0.2)];
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.point_overrides = &point;
+        let resolved = resolve_parameters(inputs).expect("ok");
+        assert_eq!(resolved.params[0].value, 1.5);
+        assert_eq!(resolved.params[0].source, ValueSource::FixedCli);
+    }
+
+    #[test]
+    fn draw_or_sweep_unknown_param_errors() {
+        let model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let fte = IndexSet::new();
+        let point = vec![("typo".to_string(), 0.2)];
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.point_overrides = &point;
+        let err = resolve_parameters(inputs).unwrap_err();
+        assert!(matches!(err, ResolveError::UnknownParameter { ref name, ref source, .. }
+            if name == "typo" && *source == ValueSource::SweepPoint));
+    }
+
+    #[test]
+    fn draw_or_sweep_does_not_kick_from_estimate() {
+        // A draw/sweep point on an [estimate] parameter does NOT kick it
+        // out of [estimate] — only user-explicit `--fixed{,-file}` do
+        // (mirrors the scenario rule).
+        let model = mk_model(vec![mk_param("beta", Some(0.5))]);
+        let fcli = vec![];
+        let ffiles = vec![];
+        let ftf = IndexMap::new();
+        let mut fte: IndexSet<String> = IndexSet::new();
+        fte.insert("beta".into());
+        let point = vec![("beta".to_string(), 0.2)];
+        let mut inputs = empty_inputs(&model, &fcli, &ffiles, &ftf, &fte);
+        inputs.point_overrides = &point;
+        let resolved = resolve_parameters(inputs).expect("ok");
+        assert!(resolved.estimate_set.contains("beta"),
+            "draw/sweep tier must not kick a parameter from [estimate]");
+        let has_kicked = resolved.warnings.iter().any(|w|
+            matches!(w, ResolverWarning::KickedFromEstimate { .. }));
+        assert!(!has_kicked);
+    }
+
     #[test]
     fn resolved_model_carries_mutated_values() {
         // The `model` field in `ResolvedParameters` must carry the
@@ -1395,6 +1629,7 @@ mod tests {
         assert_eq!(ValueSource::Scenario("x".into()).tag(), "scenario");
         assert_eq!(ValueSource::FitTomlFixed.tag(), "fit_toml_fixed");
         assert_eq!(ValueSource::FixedFile { path: PathBuf::from("p") }.tag(), "fixed_file");
+        assert_eq!(ValueSource::SweepPoint.tag(), "sweep_point");
         assert_eq!(ValueSource::FixedCli.tag(), "fixed_cli");
     }
 

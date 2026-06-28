@@ -2488,12 +2488,30 @@ pub fn print_observations_summary(model: &ir::Model) {
 pub struct SimRun {
     pub ir_path: String,
     pub params_files: Vec<String>,
+    /// Genuine `--param NAME=VALUE` CLI overrides + inline-scenario set
+    /// folded in via the scenario tier — the highest M-layer tier
+    /// (`fixed_cli`, spec §1.3). NOT draw/sweep points: those carry
+    /// separately on `point_overrides` so a scenario can win over them.
     pub overrides: HashMap<String, f64>,
+    /// A draw row / sweep point's per-parameter overrides (automated
+    /// M-layer variation). Routed into the resolver's draw/sweep tier,
+    /// which sits BELOW scenario (spec §1.3) — so a scenario `set`/`scale`
+    /// overrides a draw/sweep value, while genuine `--param` still wins.
+    pub point_overrides: HashMap<String, f64>,
     pub set_vec_entries: Vec<(String, String)>,
     pub table_files: HashMap<String, String>,
     pub scenario_name: Option<String>,
     pub adhoc_enable: Vec<String>,
     pub adhoc_disable: Vec<String>,
+    /// An INLINE ad-hoc scenario's display name + `set`/`scale`. Distinct
+    /// from `scenario_name` (a NAMED preset looked up in the model). An
+    /// inline scenario resolves at the scenario tier (tier 4) just like a
+    /// preset — `set`/`scale` win over a draw/sweep point but lose to
+    /// `--param` — so inline and named scenarios are identical (spec §1.3).
+    /// `None` for the named-preset path and the bare baseline.
+    pub scenario_inline_name: Option<String>,
+    pub scenario_inline_set: Vec<(String, f64)>,
+    pub scenario_inline_scale: Vec<(String, f64)>,
     pub backend: crate::args::types::ForwardBackend,
     pub dt: f64,
     pub seed: u64,
@@ -2533,11 +2551,15 @@ impl Default for SimRun {
             ir_path: String::new(),
             params_files: Vec::new(),
             overrides: HashMap::new(),
+            point_overrides: HashMap::new(),
             set_vec_entries: Vec::new(),
             table_files: HashMap::new(),
             scenario_name: None,
             adhoc_enable: Vec::new(),
             adhoc_disable: Vec::new(),
+            scenario_inline_name: None,
+            scenario_inline_set: Vec::new(),
+            scenario_inline_scale: Vec::new(),
             backend: crate::args::types::ForwardBackend::ChainBinomial,
             dt: 1.0,
             seed: 1,
@@ -2612,6 +2634,15 @@ pub fn resolve_run_model(run: &SimRun) -> Result<(CompiledModel, ir::Model), Str
     override_vec.sort_by(|a, b| a.0.cmp(&b.0));
     fixed_cli.extend(override_vec);
 
+    // Draw row / sweep point overrides feed the resolver's draw/sweep tier
+    // (below scenario, spec §1.3) — kept SEPARATE from `fixed_cli` so a
+    // scenario `set`/`scale` wins over them while genuine `--param` does
+    // not. Sorted for reproducible provenance.
+    let mut point_overrides: Vec<(String, f64)> = run.point_overrides.iter()
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
+    point_overrides.sort_by(|a, b| a.0.cmp(&b.0));
+
     // ── Build resolver inputs ───────────────────────────────────────────
     //
     // `simulate` and `lineage` are non-inference subcommands. The
@@ -2632,6 +2663,10 @@ pub fn resolve_run_model(run: &SimRun) -> Result<(CompiledModel, ir::Model), Str
             scenario: run.scenario_name.as_deref(),
             adhoc_enable: &run.adhoc_enable,
             adhoc_disable: &run.adhoc_disable,
+            scenario_inline_name: run.scenario_inline_name.as_deref(),
+            scenario_inline_set: &run.scenario_inline_set,
+            scenario_inline_scale: &run.scenario_inline_scale,
+            point_overrides: &point_overrides,
             fixed_cli: &fixed_cli,
             fixed_files: &fixed_files,
             fit_toml_fixed: &ftf,

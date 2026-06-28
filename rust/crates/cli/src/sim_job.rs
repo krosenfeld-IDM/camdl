@@ -107,6 +107,15 @@ pub enum ParamSource {
         rows: Vec<IndexMap<String, f64>>,
         /// Stochastic replicates per draw (different seeds, same params).
         replicates: usize,
+        /// `Some(path)` iff the draws came from a USER-AUTHORED FILE
+        /// (`--draws <file.tsv>`); `None` for generated draws
+        /// (`--draws posterior/prior/uniform`). A scenario that sets a
+        /// parameter the file's columns also provide is a hard error (the
+        /// user pinned θ via a file AND via a scenario — ambiguous intent),
+        /// whereas for generated draws the scenario simply wins (spec
+        /// §1.3). The path is carried so the collision diagnostic can name
+        /// the file.
+        explicit_file: Option<PathBuf>,
     },
 }
 
@@ -323,19 +332,22 @@ pub fn resolve_scenario_ref(
                 params,
             })
         }
-        // Case 3a: the literal name `baseline` is the implicit-identity
-        // sentinel (run-spec §3.6: "a single implicit baseline — the
-        // absence of any scenario patch"). It is always valid even when
-        // the model declares no preset by that name: it means "the model
-        // as written, no modifications." Resolves to an empty ad-hoc patch;
-        // the empty scenario delta hashes to its real scenario-level digest
-        // (the canonical baseline dir — `baseline` is the display label only).
-        (false, false) if name == "baseline" => Ok(ResolvedScenario::Adhoc {
-            name: name.to_string(),
-            enable: Vec::new(),
-            disable: Vec::new(),
-            params: Vec::new(),
-        }),
+        // Case 3a: an implicit-identity sentinel name — `baseline` (run-spec
+        // §3.6: "a single implicit baseline — the absence of any scenario
+        // patch") for `simulate`, or `as_fitted` for `camdl fit predict` (the
+        // no-overlay row: the fitted model, no scenario applied). Both are
+        // always valid even when the model declares no preset by that name:
+        // they mean "the model as written, no modifications." Resolves to an
+        // empty ad-hoc patch; the empty scenario delta hashes to its real
+        // scenario-level digest (the name is the display label only).
+        (false, false) if name == "baseline" || name == "as_fitted" => {
+            Ok(ResolvedScenario::Adhoc {
+                name: name.to_string(),
+                enable: Vec::new(),
+                disable: Vec::new(),
+                params: Vec::new(),
+            })
+        }
         // Case 3b: typo / unknown — neither a preset, an ad-hoc patch, nor
         // the implicit baseline.
         (false, false) => {
@@ -446,6 +458,36 @@ mod tests {
                 params: vec![],
             }
         );
+    }
+
+    #[test]
+    fn resolve_as_fitted_with_no_presets_is_implicit_identity() {
+        // `as_fitted` is `camdl fit predict`'s no-overlay sentinel: valid on a
+        // model with no scenarios{} block, resolving to the identity patch (the
+        // sibling of `baseline`).
+        let r = resolve_scenario_ref(&ScenarioRef::Named("as_fitted".into()), &[]).unwrap();
+        assert_eq!(
+            r,
+            ResolvedScenario::Adhoc {
+                name: "as_fitted".into(),
+                enable: vec![],
+                disable: vec![],
+                params: vec![],
+            }
+        );
+        // Also via the inline-no-patch form (what `fit predict` builds for the
+        // no-`--scenario` case).
+        let r2 = resolve_scenario_ref(
+            &ScenarioRef::Inline {
+                name: "as_fitted".into(),
+                enable: vec![],
+                disable: vec![],
+                params: IndexMap::new(),
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(r2, ResolvedScenario::Adhoc { .. }));
     }
 
     #[test]

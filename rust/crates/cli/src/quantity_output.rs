@@ -127,9 +127,13 @@ fn manifest_source(body: &ir::quantity::QuantityBody) -> &'static str {
 /// The banded TSV header — a deterministic function of `(shape, stratified)`.
 /// Every shape carries `n_draws` + the quantile columns; a series prepends
 /// `time`; a stratified leaf inserts its `<dims…>`; a censorable scalar inserts
-/// the censoring trio.
-fn quantity_header(shape: QShape, dims: &[String]) -> String {
+/// the censoring trio. When `scenario_col` is set (the `fit predict` overlay
+/// axis), a leading `scenario` column precedes everything else.
+fn quantity_header(shape: QShape, dims: &[String], scenario_col: bool) -> String {
     let mut cols: Vec<String> = Vec::new();
+    if scenario_col {
+        cols.push("scenario".to_string());
+    }
     if shape.is_series() {
         cols.push("time".to_string());
     }
@@ -149,8 +153,11 @@ fn quantity_header(shape: QShape, dims: &[String]) -> String {
 /// The point TSV header — a single realization, so a bare `value` column. A
 /// series prepends `time`; a stratified leaf inserts its `<dims…>`. No `n_draws`,
 /// no quantiles, no censoring trio (a censored `Time` scalar writes `value = NA`).
-fn point_header(shape: QShape, dims: &[String]) -> String {
+fn point_header(shape: QShape, dims: &[String], scenario_col: bool) -> String {
     let mut cols: Vec<String> = Vec::new();
+    if scenario_col {
+        cols.push("scenario".to_string());
+    }
     if shape.is_series() {
         cols.push("time".to_string());
     }
@@ -186,11 +193,18 @@ fn collect_qrefs(se: &ir::quantity::ScalarExpr, out: &mut Vec<String>) {
 ///
 /// `mode` selects banded (one column per draw → a quantile band) or point (one
 /// realization → a bare `value`).
+///
+/// `scenario` is the `fit predict` overlay axis: `Some(name)` prepends a leading
+/// `scenario` column to every TSV header + row and adds a `scenario` field to
+/// every manifest entry (the same way the predictive TSV tags its rows). `None`
+/// (the `simulate --quantities-out` caller, which pools all cells into one band)
+/// omits the column entirely — today's behaviour, unchanged.
 pub(crate) fn render_quantities(
     quantities: &[ir::quantity::Quantity],
     quant_draws: &[Vec<sim::quantity::QuantityResult>],
     snapshot_times: &[f64],
     mode: Mode,
+    scenario: Option<&str>,
 ) -> Result<(Vec<(String, String)>, String), String> {
     use ir::quantity::{QuantityBody, TemporalReduce};
 
@@ -254,10 +268,11 @@ pub(crate) fn render_quantities(
         };
         let dims: Vec<String> = first.stratum.iter().map(|k| k.dim.clone()).collect();
 
+        let scenario_col = scenario.is_some();
         let mut out = String::new();
         match mode {
-            Mode::Banded => out.push_str(&quantity_header(shape, &dims)),
-            Mode::Point => out.push_str(&point_header(shape, &dims)),
+            Mode::Banded => out.push_str(&quantity_header(shape, &dims, scenario_col)),
+            Mode::Point => out.push_str(&point_header(shape, &dims, scenario_col)),
         }
         out.push('\n');
 
@@ -266,10 +281,10 @@ pub(crate) fn render_quantities(
                 quantities[gi].stratum.iter().map(|k| k.level.clone()).collect();
             match mode {
                 Mode::Banded => render_banded_leaf(
-                    name, gi, shape, &levels, n_draws, quant_draws, snapshot_times, &mut out,
+                    name, gi, shape, &levels, n_draws, quant_draws, snapshot_times, scenario, &mut out,
                 )?,
                 Mode::Point => render_point_leaf(
-                    name, gi, shape, &levels, quant_draws, snapshot_times, &mut out,
+                    name, gi, shape, &levels, quant_draws, snapshot_times, scenario, &mut out,
                 )?,
             }
         }
@@ -287,7 +302,7 @@ pub(crate) fn render_quantities(
         } else {
             serde_json::Value::Null
         };
-        manifest_entries.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "name": name,
             "shape": shape.manifest_shape(),
             "source": source,
@@ -296,7 +311,14 @@ pub(crate) fn render_quantities(
             // The dim → unit renderer is a later phase; the field is present now.
             "unit": serde_json::Value::Null,
             "censoring": censoring,
-        }));
+        });
+        // The `fit predict` overlay axis: one manifest entry per (quantity,
+        // scenario), tagged so a consumer can group/join by scenario. Omitted for
+        // the simulate path (`None`), keeping its manifest byte-identical.
+        if let Some(name) = scenario {
+            entry["scenario"] = serde_json::Value::String(name.to_string());
+        }
+        manifest_entries.push(entry);
 
         outputs.push((name.clone(), out));
     }
@@ -310,7 +332,9 @@ pub(crate) fn render_quantities(
     Ok((outputs, manifest_str))
 }
 
-/// Banded rendering of one leaf (one column per draw → a quantile band).
+/// Banded rendering of one leaf (one column per draw → a quantile band). When
+/// `scenario` is set, every row is prefixed with the scenario name (the
+/// `fit predict` overlay axis).
 fn render_banded_leaf(
     name: &str,
     gi: usize,
@@ -319,6 +343,7 @@ fn render_banded_leaf(
     n_draws: usize,
     quant_draws: &[Vec<sim::quantity::QuantityResult>],
     snapshot_times: &[f64],
+    scenario: Option<&str>,
     out: &mut String,
 ) -> Result<(), String> {
     use sim::quantity::{QuantityDrawValue, QuantityResult};
@@ -347,7 +372,10 @@ fn render_banded_leaf(
                 })
                 .collect();
             let bands = band(&col).map_err(|e| format!("quantity '{name}' at t={}: {e}", fmt_time(t)))?;
-            let mut cells: Vec<String> = Vec::with_capacity(2 + levels.len() + bands.len());
+            let mut cells: Vec<String> = Vec::with_capacity(3 + levels.len() + bands.len());
+            if let Some(s) = scenario {
+                cells.push(s.to_string());
+            }
             cells.push(fmt_time(t));
             cells.extend(levels.iter().cloned());
             cells.push(n_draws.to_string());
@@ -370,6 +398,9 @@ fn render_banded_leaf(
             };
         let total = n_value + n_censored;
         let mut cells: Vec<String> = Vec::new();
+        if let Some(s) = scenario {
+            cells.push(s.to_string());
+        }
         cells.extend(levels.iter().cloned());
         cells.push(total.to_string());
         if shape == QShape::ScalarCensorable {
@@ -398,6 +429,7 @@ fn render_point_leaf(
     levels: &[String],
     quant_draws: &[Vec<sim::quantity::QuantityResult>],
     snapshot_times: &[f64],
+    scenario: Option<&str>,
     out: &mut String,
 ) -> Result<(), String> {
     use sim::quantity::{QuantityDrawValue, QuantityResult};
@@ -425,7 +457,10 @@ fn render_point_leaf(
                     fmt_time(t)
                 ));
             }
-            let mut cells: Vec<String> = Vec::with_capacity(1 + levels.len() + 1);
+            let mut cells: Vec<String> = Vec::with_capacity(2 + levels.len() + 1);
+            if let Some(s) = scenario {
+                cells.push(s.to_string());
+            }
             cells.push(fmt_time(t));
             cells.extend(levels.iter().cloned());
             cells.push(fmt_value(v));
@@ -447,7 +482,10 @@ fn render_point_leaf(
             }
             QuantityDrawValue::Censored => "NA".to_string(),
         };
-        let mut cells: Vec<String> = Vec::with_capacity(levels.len() + 1);
+        let mut cells: Vec<String> = Vec::with_capacity(levels.len() + 2);
+        if let Some(s) = scenario {
+            cells.push(s.to_string());
+        }
         cells.extend(levels.iter().cloned());
         cells.push(value_cell);
         out.push_str(&cells.join("\t"));
@@ -487,33 +525,38 @@ mod tests {
     #[test]
     fn quantity_header_is_a_function_of_shape_and_dims() {
         assert_eq!(
-            quantity_header(QShape::Series, &[]),
+            quantity_header(QShape::Series, &[], false),
             "time\tn_draws\tq05\tq25\tq50\tq75\tq95"
         );
         assert_eq!(
-            quantity_header(QShape::Series, &["patch".to_string()]),
+            quantity_header(QShape::Series, &["patch".to_string()], false),
             "time\tpatch\tn_draws\tq05\tq25\tq50\tq75\tq95"
         );
         assert_eq!(
-            quantity_header(QShape::ScalarPlain, &[]),
+            quantity_header(QShape::ScalarPlain, &[], false),
             "n_draws\tq05\tq25\tq50\tq75\tq95"
         );
         // The censoring trio sits between n_draws and the quantiles, after the dims.
         assert_eq!(
-            quantity_header(QShape::ScalarCensorable, &["patch".to_string()]),
+            quantity_header(QShape::ScalarCensorable, &["patch".to_string()], false),
             "patch\tn_draws\tn_value\tn_censored\tp_censored\tq05\tq25\tq50\tq75\tq95"
+        );
+        // With the scenario overlay column: it leads everything else.
+        assert_eq!(
+            quantity_header(QShape::Series, &["patch".to_string()], true),
+            "scenario\ttime\tpatch\tn_draws\tq05\tq25\tq50\tq75\tq95"
         );
     }
 
     #[test]
     fn point_header_is_a_bare_value_column() {
         // Series: time + value (no n_draws / quantiles).
-        assert_eq!(point_header(QShape::Series, &[]), "time\tvalue");
-        assert_eq!(point_header(QShape::Series, &["patch".to_string()]), "time\tpatch\tvalue");
+        assert_eq!(point_header(QShape::Series, &[], false), "time\tvalue");
+        assert_eq!(point_header(QShape::Series, &["patch".to_string()], false), "time\tpatch\tvalue");
         // Scalar: just value; a censorable scalar gets NO censoring trio (it
         // writes `value = NA` instead).
-        assert_eq!(point_header(QShape::ScalarPlain, &[]), "value");
-        assert_eq!(point_header(QShape::ScalarCensorable, &["patch".to_string()]), "patch\tvalue");
+        assert_eq!(point_header(QShape::ScalarPlain, &[], false), "value");
+        assert_eq!(point_header(QShape::ScalarCensorable, &["patch".to_string()], false), "patch\tvalue");
     }
 
     #[test]
@@ -545,7 +588,7 @@ mod tests {
         ]];
         let times = vec![0.0, 7.0];
         let (outs, _manifest) =
-            render_quantities(&quantities, &draws, &times, Mode::Point).unwrap();
+            render_quantities(&quantities, &draws, &times, Mode::Point, None).unwrap();
 
         let prev = &outs.iter().find(|(n, _)| n == "prevalence").unwrap().1;
         let plines: Vec<&str> = prev.trim_end().lines().collect();
@@ -586,7 +629,63 @@ mod tests {
     #[test]
     fn point_mode_rejects_multiple_realizations() {
         let draws: Vec<Vec<sim::quantity::QuantityResult>> = vec![vec![], vec![]];
-        let err = render_quantities(&[], &draws, &[], Mode::Point).unwrap_err();
+        let err = render_quantities(&[], &draws, &[], Mode::Point, None).unwrap_err();
         assert!(err.contains("exactly one realization"), "got: {err}");
+    }
+
+    #[test]
+    fn banded_render_with_scenario_tags_header_rows_and_manifest() {
+        // The `fit predict` overlay axis: a leading `scenario` column on the TSV
+        // header + every row, and a `scenario` field on the manifest entry. `None`
+        // (simulate) must omit both — guarded by the byte-identical tests above.
+        use ir::observation::StratumKey;
+        use ir::quantity::{Quantity, QuantityBody, QuantitySource, TemporalReduce, ValueReduce};
+        use sim::quantity::{QuantityDrawValue, QuantityResult};
+
+        let quantities = vec![Quantity {
+            name: "peak".to_string(),
+            stratum: Vec::<StratumKey>::new(),
+            body: QuantityBody::Reduced {
+                source: QuantitySource::State(ir::expr::Expr::Const(ir::expr::ConstExpr { value: 0.0 })),
+                reduce: Some(TemporalReduce::Value(ValueReduce::Max)),
+            },
+        }];
+        // Two draws of a plain value scalar.
+        let draws = vec![
+            vec![QuantityResult::Scalar(QuantityDrawValue::Value(0.3))],
+            vec![QuantityResult::Scalar(QuantityDrawValue::Value(0.5))],
+        ];
+
+        let (outs, manifest) =
+            render_quantities(&quantities, &draws, &[], Mode::Banded, Some("with_sia")).unwrap();
+        let peak = &outs.iter().find(|(n, _)| n == "peak").unwrap().1;
+        let lines: Vec<&str> = peak.trim_end().lines().collect();
+        assert_eq!(
+            lines[0],
+            "scenario\tn_draws\tq05\tq25\tq50\tq75\tq95",
+            "scenario leads the banded value-scalar header"
+        );
+        let row: Vec<&str> = lines[1].split('\t').collect();
+        assert_eq!(row[0], "with_sia", "every row is tagged with the scenario");
+        assert_eq!(row[1], "2", "n_draws after the scenario column");
+
+        let mjson: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let entry = mjson["quantities"].as_array().unwrap()[0].clone();
+        assert_eq!(entry["scenario"], "with_sia", "manifest entry carries the scenario");
+
+        // None → no scenario column or field (simulate's byte-identical path).
+        let (outs2, manifest2) =
+            render_quantities(&quantities, &draws, &[], Mode::Banded, None).unwrap();
+        let peak2 = &outs2.iter().find(|(n, _)| n == "peak").unwrap().1;
+        assert_eq!(
+            peak2.lines().next().unwrap(),
+            "n_draws\tq05\tq25\tq50\tq75\tq95",
+            "scenario=None omits the column"
+        );
+        let mjson2: serde_json::Value = serde_json::from_str(&manifest2).unwrap();
+        assert!(
+            mjson2["quantities"].as_array().unwrap()[0].get("scenario").is_none(),
+            "scenario=None omits the manifest field"
+        );
     }
 }

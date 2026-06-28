@@ -336,11 +336,17 @@ pub fn band(xs: &[f64]) -> Result<Vec<f64>, String> {
 
 // ── Rendering the tidy artifact ────────────────────────────────────────────
 
-/// One horizon's contribution to a `predictive/<stream>.tsv`: its rows, plus the
-/// labels they carry (the horizon axis, the treatment, the convergence, the draw
-/// count). Stacking several of these under one header is how a chain-binomial fit
-/// writes both `free_forward` and `one_step` rows into the same file.
+/// One (scenario, horizon) contribution to a `predictive/<stream>.tsv`: its rows,
+/// plus the labels they carry (the scenario overlay axis, the horizon axis, the
+/// treatment, the convergence, the draw count). Stacking several of these under
+/// one header is how `fit predict` writes every scenario's `free_forward` rows
+/// plus the `one_step` rows into the same file — the `scenario` and `horizon`
+/// columns distinguish them.
 pub struct PredictiveSection<'a> {
+    /// The overlay axis value: a scenario name, or `as_fitted` for the no-overlay
+    /// (fitted-model) rows. ALWAYS present (the leading column), the way
+    /// `horizon`/`treatment` are.
+    pub scenario: String,
     pub horizon: Horizon,
     pub treatment: TreatmentKind,
     pub convergence: ConvergenceStatus,
@@ -348,18 +354,19 @@ pub struct PredictiveSection<'a> {
     pub rows: &'a [BandRow],
 }
 
-/// Render `predictive/<stream>.tsv`: `time | <dims…> | horizon | treatment |
-/// rhat_max | ess_min | n_draws | q05 … q95`. Tidy, plot-ready; the axes and
-/// the convergence channel are columns so a new predictive cell — a new horizon,
-/// a new treatment — is more rows, never new consumer code. Several
-/// [`PredictiveSection`]s (one per horizon) stack under the single header.
+/// Render `predictive/<stream>.tsv`: `scenario | time | <dims…> | horizon |
+/// treatment | rhat_max | ess_min | n_draws | q05 … q95`. Tidy, plot-ready; the
+/// axes and the convergence channel are columns so a new predictive cell — a new
+/// scenario, a new horizon, a new treatment — is more rows, never new consumer
+/// code. Several [`PredictiveSection`]s (one per (scenario, horizon)) stack under
+/// the single header.
 pub fn render_predictive_tsv_sections(
     index_dims: &[String],
     sections: &[PredictiveSection],
 ) -> String {
     let mut out = String::new();
-    // Header.
-    out.push_str("time");
+    // Header — `scenario` leads (the overlay axis), always present.
+    out.push_str("scenario\ttime");
     for d in index_dims {
         out.push('\t');
         out.push_str(d);
@@ -376,6 +383,8 @@ pub fn render_predictive_tsv_sections(
         let ess = section.convergence.ess_min_cell();
         let n = section.n_draws.to_string();
         for row in section.rows {
+            out.push_str(&section.scenario);
+            out.push('\t');
             out.push_str(&fmt_time(row.time));
             for dim in index_dims {
                 out.push('\t');
@@ -642,38 +651,73 @@ fn resolve_segment(fit_ref: &Path) -> Result<(PathBuf, crate::fit::config_v2::Fi
 
 // ── The engine sink: sample y_rep per draw at the observed cadence ─────────
 
+/// One scenario's accumulated free-forward output: the per-`(leaf, time)`
+/// `y_rep` samples across that scenario's draws, plus the per-draw quantity
+/// values and the trajectory snapshot grid. The engine runs every draw of one
+/// scenario before the next (scenario is the outermost loop), so a cell merges
+/// into its scenario's accumulator keyed by [`crate::engine::CellSpec::scenario`].
+struct ScenarioAccum {
+    /// `samples[leaf][time_idx]` = the `y_rep` values across this scenario's draws.
+    samples: Vec<Vec<Vec<f64>>>,
+    /// One inner `Vec` per draw: each quantity leaf's value, in
+    /// `model.quantities` order. Empty when the model declares no quantities.
+    quant_draws: Vec<Vec<sim::quantity::QuantityResult>>,
+    /// The trajectory snapshot times, captured once per scenario (every draw
+    /// shares the output cadence) — the time axis a series quantity bands against.
+    quant_times: Vec<f64>,
+}
+
 /// A [`RunSink`] that samples `y_rep` for every fit leaf at the observed times,
-/// for each draw (= cell), accumulating per `(leaf, time)` across draws. The
-/// quantile reduction runs after all cells merge.
+/// for each draw (= cell), accumulating per `(scenario, leaf, time)` across
+/// draws. The quantile reduction runs per scenario after all cells merge.
 struct PredictiveSink {
     compiled: std::sync::Arc<sim::CompiledModel>,
     /// Per leaf (in `model.observations` order): the observation times to score.
     leaf_times: Vec<Vec<f64>>,
-    /// `samples[leaf][time_idx]` = the `y_rep` values across draws.
-    samples: Vec<Vec<Vec<f64>>>,
     /// The generated-quantities evaluator, `Some` iff the model declares a
     /// `quantities {}` block. Composed alongside the obs-sample accumulator (same
     /// draw, same params) — not a second [`RunSink`].
     quant_eval: Option<sim::quantity::QuantityEvaluator>,
-    /// One inner `Vec` per draw (= cell): each quantity leaf's value, in
-    /// `model.quantities` order. Retains derived values, never the trajectory.
-    quant_draws: Vec<Vec<sim::quantity::QuantityResult>>,
-    /// The trajectory snapshot times, captured once (every draw shares the output
-    /// cadence) — the time axis a series quantity bands against.
-    quant_times: Vec<f64>,
+    /// Scenario name → its accumulator. Insertion order (= the engine's canonical
+    /// `scenario → point → rep` order, scenario outermost) is preserved so the
+    /// rendered files list scenarios in CLI order.
+    by_scenario: IndexMap<String, ScenarioAccum>,
+}
+
+impl PredictiveSink {
+    /// Get (or lazily create) the accumulator for `scenario`, sized to the leaf
+    /// cadence.
+    fn accum_for(&mut self, scenario: &str) -> &mut ScenarioAccum {
+        let leaf_times = &self.leaf_times;
+        self.by_scenario.entry(scenario.to_string()).or_insert_with(|| ScenarioAccum {
+            samples: leaf_times.iter().map(|ts| vec![Vec::new(); ts.len()]).collect(),
+            quant_draws: Vec::new(),
+            quant_times: Vec::new(),
+        })
+    }
 }
 
 impl crate::engine::RunSink for PredictiveSink {
     fn merge_cell(&mut self, cell: &crate::engine::CellResult) -> Result<(), String> {
         let model = &cell.model;
-        // The draw's parameter vector — base defaults overlaid with this cell's
-        // overrides. Load-bearing: the observation likelihood (e.g. a reporting
-        // rate) reads the DRAW's parameters, not the model defaults, so the
-        // posterior predictive carries observation-parameter uncertainty too.
+        // The cell's parameter vector for the observation sampler. Load-bearing on
+        // TWO axes: (1) it must read the DRAW's parameters (e.g. an estimated
+        // reporting rate), so the posterior predictive carries observation-
+        // parameter uncertainty; (2) it must read the SCENARIO's overlay (e.g.
+        // `set = { rho = 0.3 }`), so a counterfactual that changes an
+        // observation-only parameter actually shifts the predictive bands. The
+        // engine resolved BOTH into `cell.model.parameters` (the scenario via
+        // `apply_scenario_filter`/`params_resolver`, the draw via the cell's
+        // point_overrides), so we read the resolved values from there — the single
+        // source of truth — rather than re-deriving from default_params + the draw
+        // (which would silently drop the scenario overlay, identical bands across
+        // scenarios for an obs-only parameter).
         let mut params = self.compiled.default_params.clone();
-        for (name, value) in &cell.spec.point_overrides {
-            if let Some(&idx) = self.compiled.param_index.get(name.as_str()) {
-                params[idx] = *value;
+        for p in &model.parameters {
+            if let (Some(&idx), Some(v)) =
+                (self.compiled.param_index.get(p.name.as_str()), p.value.resolved_value())
+            {
+                params[idx] = v;
             }
         }
         // Capture the per-draw y_sim per stream for `observations.<stream>`
@@ -686,6 +730,11 @@ impl crate::engine::RunSink for PredictiveSink {
         let mut obs_set =
             sim::quantity::ObsSeriesSet { streams: std::collections::HashMap::new() };
         let mut obs_rng = sim::rng::StatefulRng::new(cell.spec.obs_seed);
+        // Sample y_rep into a per-leaf scratch first, then commit into this
+        // cell's scenario accumulator (so the borrow of `self.compiled` /
+        // `self.quant_eval` does not overlap the `&mut self` accumulator borrow).
+        let scenario_name = cell.spec.scenario.name().to_string();
+        let mut leaf_y: Vec<Vec<f64>> = vec![Vec::new(); model.observations.len()];
         for (si, obs_ir) in model.observations.iter().enumerate() {
             let times = &self.leaf_times[si];
             if times.is_empty() {
@@ -697,32 +746,45 @@ impl crate::engine::RunSink for PredictiveSink {
                 &params,
             );
             let projected = crate::project_all_obs_times(&cell.traj, obs_ir, model, times);
-            let mut stream_vals: Vec<f64> =
-                if want_obs { Vec::with_capacity(times.len()) } else { Vec::new() };
+            let mut stream_vals: Vec<f64> = Vec::with_capacity(times.len());
             for (ti, &t) in times.iter().enumerate() {
                 let snap = crate::snap_at(&cell.traj, t);
                 let y = sampler(projected[ti], t, &snap.int_state.counts, &mut obs_rng);
-                self.samples[si][ti].push(y);
-                if want_obs {
-                    stream_vals.push(y);
-                }
+                stream_vals.push(y);
             }
             if want_obs {
                 // Key by the stream's declared `name` — what `observations.<name>`
                 // in the DSL references (v1.1 is unstratified, so name == base).
-                obs_set.streams.insert(obs_ir.name.clone(), (times.clone(), stream_vals));
+                obs_set.streams.insert(obs_ir.name.clone(), (times.clone(), stream_vals.clone()));
             }
+            leaf_y[si] = stream_vals;
         }
 
         // Generated quantities: fold this draw's trajectory + the just-drawn y_sim
         // into its per-quantity values, using the SAME resolved params + draws as
         // the predictive output above.
-        if let Some(eval) = &self.quant_eval {
-            let results = eval.eval_draw(&params, &cell.traj, &self.compiled, Some(&obs_set));
-            if self.quant_times.is_empty() {
-                self.quant_times = cell.traj.snapshots.iter().map(|s| s.t).collect();
+        let quant_results = self
+            .quant_eval
+            .as_ref()
+            .map(|eval| eval.eval_draw(&params, &cell.traj, &self.compiled, Some(&obs_set)));
+        let snapshot_times: Vec<f64> = if quant_results.is_some() {
+            cell.traj.snapshots.iter().map(|s| s.t).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Commit into the cell's scenario accumulator.
+        let acc = self.accum_for(&scenario_name);
+        for (si, ys) in leaf_y.into_iter().enumerate() {
+            for (ti, y) in ys.into_iter().enumerate() {
+                acc.samples[si][ti].push(y);
             }
-            self.quant_draws.push(results);
+        }
+        if let Some(results) = quant_results {
+            if acc.quant_times.is_empty() {
+                acc.quant_times = snapshot_times;
+            }
+            acc.quant_draws.push(results);
         }
         Ok(())
     }
@@ -798,6 +860,26 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     let (model, _) = crate::util::load_model(&compiled_ir)?;
     let dt = model.simulation.dt.unwrap_or(1.0);
 
+    // 3b. Parse the prospective scenario overlay (reusing simulate's ScenarioRef
+    // surface). No `--scenario` → a single `as_fitted` row (the fitted model, no
+    // overlay). Validate each ref against the model's presets up front so an
+    // unknown `--scenario NAME` errors with the available presets, BEFORE any
+    // simulation runs (the resolver's actionable message).
+    let scenario_refs = args.scenario_refs()?;
+    let preset_names: Vec<String> =
+        model.presets.iter().map(|p| p.name.clone()).collect();
+    for sref in &scenario_refs {
+        crate::sim_job::resolve_scenario_ref(sref, &preset_names)?;
+    }
+    // Layer 1 supports param-overlay scenarios cleanly; an intervention-toggling
+    // scenario (enable/disable) replays correctly through the engine — the engine
+    // recompiles the model per cell with the scenario's intervention set applied
+    // (`apply_scenario_filter`) and simulates from t_start, so the schedule is
+    // re-seated by construction (NOT a resume-from-saved-state path, so the gh#216
+    // inference hazard does not apply to a forward replay). Should a future change
+    // make a toggle unsupported, route it through the capability/validation path
+    // (a loud error), never a silent baseline replay — see Guard 2.
+
     // 4. Load the observed data per leaf (the cadence + the observed half).
     let leaves = load_leaf_obs(&model, &config, dt, args.stream.as_deref())?;
     if leaves.is_empty() {
@@ -870,13 +952,33 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     } else {
         None
     };
-    // The rendered quantity sidecars + manifest, filled after the free-forward pass.
+    // The rendered quantity sidecars (per logical quantity, all scenarios stacked)
+    // + the merged manifest, filled after the free-forward pass.
     let mut quantity_outputs: Vec<(String, String)> = Vec::new();
     let mut quantity_manifest: Option<String> = None;
+    // Per-scenario free-forward bands, in CLI/engine scenario order. `None` when
+    // the free-forward horizon was not requested.
+    let mut free_forward: Option<IndexMap<String, Vec<StreamBands>>> = None;
 
-    // ── Free-forward horizon: drive the engine over the draws; sample y_rep at
-    // the observed times. Run only when free-forward is requested.
-    let free_forward: Option<Vec<StreamBands>> = if want_free_forward {
+    // ── Free-forward horizon: replay the posterior forward under each scenario.
+    //
+    // The scenario is the OVERLAY on the fitted parameters: its `set`/`scale` must
+    // WIN over the draw (a counterfactual `set = { rho = 0.3 }` has to override the
+    // fitted rho), and its `enable`/`disable` must re-seat the intervention set.
+    // The resolver now enforces exactly this precedence (spec §1.3): a posterior
+    // draw routes through the DRAW/SWEEP tier (below scenario), so a scenario
+    // `set`/`scale` wins over the draw automatically. We therefore hand the engine
+    // the UNMODIFIED draw rows plus the original scenario reference — a `Named`
+    // preset replays the preset's `set`/`scale`/`enable`/`disable` from the model
+    // (the resolver's preset path), and an ad-hoc `Inline` ref applies its inline
+    // `set` + intervention toggle. No hand-folding of `set`/`scale` into draws (a
+    // `scale` folded per draw AND re-applied by the resolver would double-apply,
+    // e.g. ×1.5 → ×2.25); the resolver is the single precedence authority.
+    //
+    // Paired-seed CRN holds across scenarios: each per-scenario job has the same
+    // `total_runs` and the same seed, so `process_seed_for` derives identical
+    // per-draw seeds — the scenarios' pre-divergence trajectories are coupled.
+    if want_free_forward {
         // Leaf order = model.observations order; map the (possibly filtered)
         // leaves back onto that order for the sink.
         let leaf_times: Vec<Vec<f64>> = model
@@ -890,65 +992,110 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
                     .unwrap_or_default()
             })
             .collect();
-        let samples_init: Vec<Vec<Vec<f64>>> = leaf_times
-            .iter()
-            .map(|ts| vec![Vec::new(); ts.len()])
-            .collect();
         let mut sink = PredictiveSink {
             compiled: compiled.clone(),
-            leaf_times,
-            samples: samples_init,
+            leaf_times: leaf_times.clone(),
             quant_eval,
-            quant_draws: Vec::new(),
-            quant_times: Vec::new(),
+            by_scenario: IndexMap::new(),
         };
 
-        let job = crate::sim_job::SimulateJob {
-            model: compiled_ir.clone(),
-            params_files: vec![],
-            // Replay on the SAME forward simulator the fit used (chain_binomial /
-            // ode), resolved from the stage — never a hardcoded default.
-            backend: posterior.backend,
-            dt,
-            integrator: None,
-            source: crate::sim_job::ParamSource::Draws {
-                rows: posterior.draws().to_vec(),
-                replicates: 1,
-            },
-            // A single no-op baseline scenario, matching `simulate`'s
-            // no-`--scenario` path (an empty list would default to a named
-            // "baseline" preset lookup).
-            scenarios: vec![crate::sim_job::ScenarioRef::Inline {
-                name: "baseline".to_string(),
-                enable: vec![],
-                disable: vec![],
-                params: IndexMap::new(),
-            }],
-            seeds: crate::sim_job::Seeds::Single(seed),
-            cli_overrides: vec![],
-            set_vec_entries: vec![],
-            table_files: vec![],
-            obs: crate::sim_job::ObsOutput::None,
-            parallel: 1,
-        };
-        crate::engine::run_job(&job, &mut sink)?;
-
-        // Band the accumulated per-draw quantity values into sidecars + a manifest.
-        if !model.quantities.is_empty() {
-            let (outs, manifest) = crate::quantity_output::render_quantities(
-                &model.quantities,
-                &sink.quant_draws,
-                &sink.quant_times,
-                crate::quantity_output::Mode::Banded,
-            )?;
-            quantity_outputs = outs;
-            quantity_manifest = Some(manifest);
+        for sref in &scenario_refs {
+            // Unmodified draw rows: each routes through the resolver's draw/sweep
+            // tier (below scenario), so the scenario reference applies its
+            // `set`/`scale`/`enable`/`disable` on top — exactly once — via the
+            // resolver's precedence. No per-draw folding (that would double-apply
+            // a `scale`).
+            let rows: Vec<IndexMap<String, f64>> = posterior.draws().to_vec();
+            let job = crate::sim_job::SimulateJob {
+                model: compiled_ir.clone(),
+                params_files: vec![],
+                // Replay on the SAME forward simulator the fit used (chain_binomial
+                // / ode), resolved from the stage — never a hardcoded default.
+                backend: posterior.backend,
+                dt,
+                integrator: None,
+                // Generated posterior draws (not a user-authored file), so a
+                // scenario simply wins over a draw column — no collision error.
+                source: crate::sim_job::ParamSource::Draws {
+                    rows,
+                    replicates: 1,
+                    explicit_file: None,
+                },
+                // The original scenario reference drives the engine's scenario tier:
+                // a `Named` preset replays the model preset's set/scale/enable/
+                // disable; an ad-hoc `Inline` applies its inline set + toggle. The
+                // resolver wins over the draw tier, so `set`/`scale` apply exactly
+                // once. The scenario NAME is carried for the sink's per-scenario
+                // partition (`cell.spec.scenario.name()`).
+                scenarios: vec![sref.clone()],
+                seeds: crate::sim_job::Seeds::Single(seed),
+                cli_overrides: vec![],
+                set_vec_entries: vec![],
+                table_files: vec![],
+                obs: crate::sim_job::ObsOutput::None,
+                parallel: 1,
+            };
+            crate::engine::run_job(&job, &mut sink)?;
         }
 
-        Some(assemble_predictive(&model, &sink, &leaves, schema.as_ref())?)
-    } else {
-        None
-    };
+        // Per scenario: band the predictive samples + (if present) the quantity
+        // draws, stacking quantity rows for all scenarios under one header per
+        // logical quantity and merging the manifests. Scenario order = the sink's
+        // insertion order (engine canonical order, scenario outermost).
+        let mut ff_bands: IndexMap<String, Vec<StreamBands>> = IndexMap::new();
+        // quantity name → accumulated TSV body (header written once, from the
+        // first scenario's render); merged manifest entries across scenarios.
+        let mut quant_bodies: IndexMap<String, String> = IndexMap::new();
+        let mut quant_manifest_entries: Vec<serde_json::Value> = Vec::new();
+        for (scenario_name, accum) in &sink.by_scenario {
+            if !model.quantities.is_empty() {
+                let (outs, manifest) = crate::quantity_output::render_quantities(
+                    &model.quantities,
+                    &accum.quant_draws,
+                    &accum.quant_times,
+                    crate::quantity_output::Mode::Banded,
+                    Some(scenario_name),
+                )?;
+                for (name, content) in outs {
+                    // First scenario for this quantity: keep its header + rows.
+                    // Subsequent scenarios: append only the data rows (drop the
+                    // repeated header line) so all scenarios stack under one header.
+                    match quant_bodies.entry(name) {
+                        indexmap::map::Entry::Vacant(e) => {
+                            e.insert(content);
+                        }
+                        indexmap::map::Entry::Occupied(mut e) => {
+                            let body: String =
+                                content.split_inclusive('\n').skip(1).collect();
+                            e.get_mut().push_str(&body);
+                        }
+                    }
+                }
+                let m: serde_json::Value = serde_json::from_str(&manifest)
+                    .map_err(|e| format!("parsing quantities manifest: {e}"))?;
+                if let Some(arr) = m["quantities"].as_array() {
+                    quant_manifest_entries.extend(arr.iter().cloned());
+                }
+            }
+            ff_bands.insert(
+                scenario_name.clone(),
+                assemble_predictive(&model, accum, &leaf_times, &leaves, schema.as_ref())?,
+            );
+        }
+
+        if !model.quantities.is_empty() {
+            quantity_outputs = quant_bodies.into_iter().collect();
+            let merged = serde_json::json!({
+                "schema": "camdl.quantities/v1",
+                "quantities": quant_manifest_entries,
+            });
+            quantity_manifest = Some(
+                serde_json::to_string_pretty(&merged)
+                    .map_err(|e| format!("serializing quantities manifest: {e}"))?,
+            );
+        }
+        free_forward = Some(ff_bands);
+    }
 
     // ── One-step horizon: per-draw bootstrap filter over the data, pooled. Runs
     // only when the witness was built (a filterable fit and the horizon wanted).
@@ -968,20 +1115,30 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
         None => None,
     };
 
-    // 6. Write the predictive artifact — both horizons stacked into one file per
-    // logical stream (the typed `horizon` column distinguishes the rows). The
+    // 6. Write the predictive artifact — every scenario's free-forward rows plus
+    // the one-step rows stacked into one file per logical stream (the leading
+    // `scenario` column and the typed `horizon` column distinguish the rows). The
     // observed half follows.
+    //
+    // The one-step horizon is scenario-AGNOSTIC: it filters the OBSERVED data
+    // through the fitted model, so it carries no overlay — applying a counter-
+    // factual scenario to a filter over the actual data is ill-defined (you would
+    // condition the modified model on data the unmodified model generated). It is
+    // emitted once, tagged `as_fitted`, alongside every scenario's free-forward
+    // rows. The `scenario`/`horizon` columns keep the file tidy.
     let mut written = Vec::new();
     let one_step_streams: &[StreamBands] = one_step.as_ref().map(|(s, _)| s.as_slice()).unwrap_or(&[]);
     let one_step_n = one_step.as_ref().map(|(_, n)| *n).unwrap_or(0);
 
-    // Union of source names across both horizons, preserving free-forward order
-    // first, then any one-step-only sources.
+    // Union of source names across all scenarios' free-forward streams + the
+    // one-step streams, preserving free-forward order first.
     let mut sources: Vec<String> = Vec::new();
     if let Some(ff) = &free_forward {
-        for s in ff {
-            if !sources.contains(&s.source) {
-                sources.push(s.source.clone());
+        for bands in ff.values() {
+            for s in bands {
+                if !sources.contains(&s.source) {
+                    sources.push(s.source.clone());
+                }
             }
         }
     }
@@ -992,18 +1149,31 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     }
 
     for source in &sources {
-        let ff_stream = free_forward.as_ref().and_then(|ff| ff.iter().find(|s| &s.source == source));
+        // Each scenario's free-forward StreamBands for this source (in scenario
+        // order), plus the one-step StreamBands (scenario-agnostic).
+        let ff_per_scenario: Vec<(&String, &StreamBands)> = free_forward
+            .as_ref()
+            .map(|ff| {
+                ff.iter()
+                    .filter_map(|(name, bands)| {
+                        bands.iter().find(|s| &s.source == source).map(|s| (name, s))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let os_stream = one_step_streams.iter().find(|s| &s.source == source);
-        // index_dims is the same across horizons (same schema/leaf); take it from
-        // whichever section is present.
-        let index_dims = ff_stream
-            .map(|s| s.index_dims.clone())
+        // index_dims is the same across scenarios/horizons (same schema/leaf);
+        // take it from whichever section is present.
+        let index_dims = ff_per_scenario
+            .first()
+            .map(|(_, s)| s.index_dims.clone())
             .or_else(|| os_stream.map(|s| s.index_dims.clone()))
             .unwrap_or_default();
 
         let mut sections: Vec<PredictiveSection> = Vec::new();
-        if let Some(s) = ff_stream {
+        for (scenario_name, s) in &ff_per_scenario {
             sections.push(PredictiveSection {
+                scenario: (*scenario_name).clone(),
                 horizon: Horizon::FreeForward,
                 treatment: treatment_kind,
                 convergence: posterior.convergence,
@@ -1013,6 +1183,7 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
         }
         if let Some(s) = os_stream {
             sections.push(PredictiveSection {
+                scenario: crate::args::AS_FITTED.to_string(),
                 horizon: Horizon::OneStepAhead,
                 treatment: treatment_kind,
                 convergence: posterior.convergence,
@@ -1048,10 +1219,13 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     if one_step.is_some() {
         horizons.push(format!("one_step({one_step_n} draws)"));
     }
+    let scenario_labels: Vec<&str> = scenario_refs.iter().map(|s| s.name()).collect();
     eprintln!(
-        "fit predict: horizon={} treatment=posterior, {} stream(s), \
+        "fit predict: horizon={} treatment=posterior, {} scenario(s) [{}], {} stream(s), \
          {} draws from {} stage '{}'",
         horizons.join("+"),
+        scenario_labels.len(),
+        scenario_labels.join(", "),
         sources.len(),
         posterior.n_draws(),
         method_label,
@@ -1127,13 +1301,14 @@ fn stream_selected(o: &ir::observation::ObservationModel, filter: Option<&str>) 
     }
 }
 
-/// Quantile-reduce the accumulated free-forward samples into per-stream bands,
-/// grouping leaves by logical stream. The horizon/treatment/convergence/n_draws
-/// labels are applied at render time (each [`PredictiveSection`] carries them),
-/// so this returns only the bands.
+/// Quantile-reduce ONE scenario's accumulated free-forward samples into per-stream
+/// bands, grouping leaves by logical stream. The scenario/horizon/treatment/
+/// convergence/n_draws labels are applied at render time (each
+/// [`PredictiveSection`] carries them), so this returns only the bands.
 fn assemble_predictive(
     model: &ir::Model,
-    sink: &PredictiveSink,
+    accum: &ScenarioAccum,
+    leaf_times: &[Vec<f64>],
     leaves: &[LeafObs],
     schema: Option<&ObsSchema>,
 ) -> Result<Vec<StreamBands>, String> {
@@ -1161,12 +1336,12 @@ fn assemble_predictive(
         for &si in leaf_idxs {
             let stratum: Vec<(String, String)> = model.observations[si]
                 .stratum.iter().map(|k| (k.dim.clone(), k.level.clone())).collect();
-            for (ti, draws_at_t) in sink.samples[si].iter().enumerate() {
+            for (ti, draws_at_t) in accum.samples[si].iter().enumerate() {
                 let quantiles = band(draws_at_t).map_err(|e| {
-                    format!("stream '{source}' at t={}: {e}", sink.leaf_times[si][ti])
+                    format!("stream '{source}' at t={}: {e}", leaf_times[si][ti])
                 })?;
                 rows.push(BandRow {
-                    time: sink.leaf_times[si][ti],
+                    time: leaf_times[si][ti],
                     stratum: stratum.clone(),
                     quantiles,
                 });
@@ -1591,6 +1766,7 @@ mod tests {
         let tsv = render_predictive_tsv_sections(
             &stream.index_dims,
             &[PredictiveSection {
+                scenario: "as_fitted".to_string(),
                 horizon: Horizon::FreeForward,
                 treatment: TreatmentKind::Posterior,
                 convergence: ConvergenceStatus::Reported { rhat_max: 1.01, ess_min: 420.0 },
@@ -1600,9 +1776,9 @@ mod tests {
         );
         let lines: Vec<&str> = tsv.trim_end().lines().collect();
         assert_eq!(lines[0],
-            "time\tpatch\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95");
-        assert_eq!(lines[1], "7\tBo\tfree_forward\tposterior\t1.0100\t420\t40\t0\t1\t3\t6\t12");
-        assert_eq!(lines[2], "7\tBombali\tfree_forward\tposterior\t1.0100\t420\t40\t0\t0\t1\t3\t7");
+            "scenario\ttime\tpatch\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95");
+        assert_eq!(lines[1], "as_fitted\t7\tBo\tfree_forward\tposterior\t1.0100\t420\t40\t0\t1\t3\t6\t12");
+        assert_eq!(lines[2], "as_fitted\t7\tBombali\tfree_forward\tposterior\t1.0100\t420\t40\t0\t0\t1\t3\t7");
         assert_eq!(lines.len(), 3, "header + one row per (time, stratum)");
     }
 
@@ -1616,6 +1792,7 @@ mod tests {
         let tsv = render_predictive_tsv_sections(
             &stream.index_dims,
             &[PredictiveSection {
+                scenario: "as_fitted".to_string(),
                 horizon: Horizon::FreeForward,
                 treatment: TreatmentKind::Posterior,
                 convergence: ConvergenceStatus::NotAssessed,
@@ -1625,9 +1802,9 @@ mod tests {
         );
         let lines: Vec<&str> = tsv.trim_end().lines().collect();
         // No dim column; not-assessed rhat/ess are empty cells, not fabricated
-        // values; n_draws is still carried.
-        assert_eq!(lines[0], "time\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95");
-        assert_eq!(lines[1], "1\tfree_forward\tposterior\t\t\t12\t1\t2\t3\t4\t5");
+        // values; n_draws is still carried. Scenario leads.
+        assert_eq!(lines[0], "scenario\ttime\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95");
+        assert_eq!(lines[1], "as_fitted\t1\tfree_forward\tposterior\t\t\t12\t1\t2\t3\t4\t5");
     }
 
     #[test]

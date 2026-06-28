@@ -1145,6 +1145,27 @@ pub struct FitPredictArgs {
     #[arg(long, value_name = "STAGE")]
     pub stage: Option<String>,
 
+    /// Prospective scenario overlay (repeatable; conflicts with --enable/--disable).
+    /// Each `--scenario NAME` selects a model `scenarios {}` preset; the free-forward
+    /// replay is looped over every scenario and the bands are tagged by a leading
+    /// `scenario` column, the same way `horizon`/`treatment` already stack. No
+    /// `--scenario` → a single `as_fitted` row (the fitted model, no overlay).
+    /// `as_fitted` is a reserved name: a preset cannot use it. Layer-1 emits each
+    /// scenario's bands only — never a between-scenario difference ("cases averted"
+    /// lives in the conditioned counterfactual fork).
+    #[arg(long = "scenario", conflicts_with_all = ["enable", "disable"])]
+    pub scenarios: Vec<String>,
+
+    /// Enable an intervention in an ad-hoc scenario overlay (repeatable; conflicts
+    /// with --scenario). Mirrors `simulate --enable`.
+    #[arg(long, conflicts_with = "scenarios")]
+    pub enable: Vec<String>,
+
+    /// Disable an intervention in an ad-hoc scenario overlay (repeatable; conflicts
+    /// with --scenario). Mirrors `simulate --disable`.
+    #[arg(long, conflicts_with = "scenarios")]
+    pub disable: Vec<String>,
+
     /// Which predictive horizon(s) to emit. Omitted = all applicable for the
     /// fit's backend (chain-binomial → `free_forward` + `one_step`; ODE →
     /// `free_forward` only). `--horizon one_step` on an ODE fit is a hard error.
@@ -1163,6 +1184,14 @@ pub struct FitPredictArgs {
     pub seed: Option<u64>,
 }
 
+/// The reserved scenario name for the no-overlay row — the fitted model as
+/// written. Reserved so the `scenario` column's no-overlay value can never be
+/// shadowed by a user preset (which would make rows ambiguous). Mirrors
+/// `simulate`'s `baseline` sentinel, but named `as_fitted` because in
+/// `fit predict` the parameters come from the fit, not a default-parameter
+/// preset, so reusing `baseline` would mislead.
+pub const AS_FITTED: &str = "as_fitted";
+
 impl FitPredictArgs {
     /// The resolved fit reference (`--fit` or the positional form).
     pub fn fit(&self) -> Result<&PathBuf, String> {
@@ -1170,6 +1199,47 @@ impl FitPredictArgs {
             .as_ref()
             .or(self.fit_pos.as_ref())
             .ok_or_else(|| "a fit reference is required: `--fit fit.toml` or a run directory".into())
+    }
+
+    /// Parse the repeatable `--scenario`/`--enable`/`--disable` surface into the
+    /// shared `Vec<ScenarioRef>`, exactly the way `simulate` does (`main.rs`'s
+    /// `from_cli`): `--scenario a,b` comma-splits into `[Named("a"), Named("b")]`
+    /// (the preset path); no `--scenario` yields a single [`AS_FITTED`] inline
+    /// overlay carrying any `--enable`/`--disable` (so the no-overlay path keeps
+    /// `scenario_name = None`, exactly like `simulate`'s baseline). `as_fitted` is
+    /// reserved: an explicit `--scenario as_fitted` is rejected with the same
+    /// migration-style diagnostic the OCaml `scenarios {}` reservation uses.
+    pub fn scenario_refs(&self) -> Result<Vec<crate::sim_job::ScenarioRef>, String> {
+        use crate::sim_job::ScenarioRef;
+        let names: Vec<String> = self
+            .scenarios
+            .iter()
+            .flat_map(|s| s.split(',').map(|t| t.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if let Some(bad) = names.iter().find(|n| n.as_str() == AS_FITTED) {
+            return Err(format!(
+                "scenario name '{bad}' is reserved: it labels the no-overlay row \
+                 (the fitted model, no scenario applied) in the `scenario` column.\n  \
+                 Fix: rename the scenario, or drop `--scenario {AS_FITTED}` (the \
+                 no-overlay row is emitted automatically)."
+            ));
+        }
+        if names.is_empty() {
+            // No overlay: a single inline `as_fitted` scenario carrying any CLI
+            // enable/disable (empty for the bare no-`--scenario` case). The inline
+            // form keeps the engine on the ad-hoc branch (scenario_name = None),
+            // byte-identical to today's hardcoded baseline replay when no
+            // enable/disable is given.
+            Ok(vec![ScenarioRef::Inline {
+                name: AS_FITTED.to_string(),
+                enable: self.enable.clone(),
+                disable: self.disable.clone(),
+                params: indexmap::IndexMap::new(),
+            }])
+        } else {
+            Ok(names.into_iter().map(ScenarioRef::Named).collect())
+        }
     }
 }
 
@@ -2778,5 +2848,97 @@ mod tests {
         let c = parse_cat("abc12345");
         assert_eq!(c.root.to_string_lossy(), expected,
             "CatArgs.root must match DEFAULT_OUTPUT_ROOT");
+    }
+
+    // ── fit predict: scenario overlay parsing (Layer 1) ──────────────────────
+
+    fn parse_fit_predict(args: &[&str]) -> FitPredictArgs {
+        let mut full: Vec<&str> = vec!["camdl", "fit", "predict"];
+        full.extend(args);
+        let cli = Cli::try_parse_from(full).expect("fit predict parse");
+        match cli.command {
+            Command::Fit(FitCmd::Predict(a)) => a,
+            _ => unreachable!("expected fit predict"),
+        }
+    }
+
+    #[test]
+    fn fit_predict_no_scenario_yields_single_as_fitted() {
+        // No `--scenario` → a single inline `as_fitted` overlay carrying no
+        // enable/disable (the no-overlay row, byte-identical to today's
+        // hardcoded baseline replay).
+        let a = parse_fit_predict(&["--fit", "fit.toml"]);
+        let refs = a.scenario_refs().expect("no-scenario parses");
+        assert_eq!(refs.len(), 1, "exactly one scenario when none requested");
+        assert_eq!(refs[0].name(), AS_FITTED, "the no-overlay row is named as_fitted, not baseline");
+        match &refs[0] {
+            crate::sim_job::ScenarioRef::Inline { enable, disable, params, .. } => {
+                assert!(enable.is_empty() && disable.is_empty() && params.is_empty(),
+                    "no overlay → empty inline patch");
+            }
+            other => panic!("expected an inline as_fitted ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fit_predict_repeated_scenario_parses_to_named_vec() {
+        // Repeated `--scenario` → one `Named` ref each, in order (mirrors the
+        // simulate parser). This is the proposal's `no_sia` / `with_sia` form.
+        let a = parse_fit_predict(&[
+            "--fit", "fit.toml",
+            "--scenario", "no_sia",
+            "--scenario", "with_sia",
+        ]);
+        let refs = a.scenario_refs().expect("repeated --scenario parses");
+        let names: Vec<&str> = refs.iter().map(|r| r.name()).collect();
+        assert_eq!(names, vec!["no_sia", "with_sia"]);
+        assert!(refs.iter().all(|r| matches!(r, crate::sim_job::ScenarioRef::Named(_))),
+            "explicit --scenario refs are Named (preset path)");
+    }
+
+    #[test]
+    fn fit_predict_comma_list_scenario_splits() {
+        // `--scenario a,b` comma-splits, exactly like simulate.
+        let a = parse_fit_predict(&["--fit", "fit.toml", "--scenario", "no_sia,with_sia"]);
+        let refs = a.scenario_refs().unwrap();
+        let names: Vec<String> = refs.iter().map(|r| r.name().to_string()).collect();
+        assert_eq!(names, vec!["no_sia".to_string(), "with_sia".to_string()]);
+    }
+
+    #[test]
+    fn fit_predict_enable_disable_form_overlay() {
+        // `--enable`/`--disable` (no `--scenario`) → a single ad-hoc `as_fitted`
+        // overlay carrying the toggles, mirroring `simulate --enable`.
+        let a = parse_fit_predict(&["--fit", "fit.toml", "--enable", "sia", "--disable", "ri"]);
+        let refs = a.scenario_refs().unwrap();
+        assert_eq!(refs.len(), 1);
+        match &refs[0] {
+            crate::sim_job::ScenarioRef::Inline { name, enable, disable, .. } => {
+                assert_eq!(name, AS_FITTED);
+                assert_eq!(enable, &vec!["sia".to_string()]);
+                assert_eq!(disable, &vec!["ri".to_string()]);
+            }
+            other => panic!("expected inline overlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fit_predict_scenario_as_fitted_is_reserved() {
+        // An explicit `--scenario as_fitted` is rejected: it collides with the
+        // reserved no-overlay value. The diagnostic names the reservation + fix.
+        let a = parse_fit_predict(&["--fit", "fit.toml", "--scenario", "as_fitted"]);
+        let err = a.scenario_refs().expect_err("as_fitted must be rejected");
+        assert!(err.contains("reserved"), "names the reservation: {err}");
+        assert!(err.contains("as_fitted"), "names the offending value: {err}");
+    }
+
+    #[test]
+    fn fit_predict_scenario_conflicts_with_enable() {
+        // clap-level: --scenario and --enable are mutually exclusive (mirrors
+        // simulate's σ-flag rule).
+        let full = ["camdl", "fit", "predict", "--fit", "fit.toml",
+                    "--scenario", "no_sia", "--enable", "sia"];
+        assert!(Cli::try_parse_from(full).is_err(),
+            "--scenario + --enable must be a clap conflict");
     }
 }

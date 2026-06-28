@@ -187,55 +187,58 @@ thin = 1
     let header = lines.next().unwrap();
     assert_eq!(
         header,
-        "time\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95",
-        "predictive header carries both axes + convergence (rhat_max, ess_min) + n_draws + band"
+        "scenario\ttime\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95",
+        "predictive header leads with the scenario overlay axis, then both axes + convergence + band"
     );
     let first = lines.next().expect("at least one predictive row");
     let cols: Vec<&str> = first.split('\t').collect();
-    assert_eq!(cols.len(), 11, "row shape matches header");
-    assert_eq!(cols[1], "free_forward", "horizon axis is explicit");
-    assert_eq!(cols[2], "posterior", "treatment axis is explicit (not a plug-in)");
+    assert_eq!(cols.len(), 12, "row shape matches header");
+    assert_eq!(cols[0], "as_fitted", "no --scenario → the no-overlay row tagged as_fitted");
+    assert_eq!(cols[2], "free_forward", "horizon axis is explicit");
+    assert_eq!(cols[3], "posterior", "treatment axis is explicit (not a plug-in)");
     // rhat_max is carried (a finite number), never silently blank for a PGAS fit.
     assert!(
-        cols[3].parse::<f64>().is_ok(),
+        cols[4].parse::<f64>().is_ok(),
         "rhat_max carried on the band, got {:?}",
-        cols[3]
+        cols[4]
     );
     // n_draws is a positive count of the cloud the band was reduced over.
     assert!(
-        cols[5].parse::<usize>().map(|n| n > 0).unwrap_or(false),
+        cols[6].parse::<usize>().map(|n| n > 0).unwrap_or(false),
         "n_draws carried and positive, got {:?}",
-        cols[5]
+        cols[6]
     );
     // The quantile band is monotone non-decreasing q05 ≤ q25 ≤ … ≤ q95.
-    let qs: Vec<f64> = cols[6..11].iter().map(|s| s.parse::<f64>().unwrap()).collect();
+    let qs: Vec<f64> = cols[7..12].iter().map(|s| s.parse::<f64>().unwrap()).collect();
     for w in qs.windows(2) {
         assert!(w[0] <= w[1], "quantiles must be ordered: {qs:?}");
     }
 
     // ── default emits BOTH horizons for a chain-binomial fit: the same file
     // also carries one_step rows (typed `horizon` column distinguishes them).
+    // The one-step rows are scenario-agnostic, tagged `as_fitted`.
     let one_step_rows: Vec<&str> = pred_txt
         .lines()
-        .filter(|l| l.split('\t').nth(1) == Some("one_step"))
+        .filter(|l| l.split('\t').nth(2) == Some("one_step"))
         .collect();
     assert!(
         !one_step_rows.is_empty(),
         "default predict on a chain-binomial fit must also emit one_step rows; \
          got only:\n{pred_txt}"
     );
-    // A one-step row is well-formed: posterior treatment, positive n_draws,
-    // ordered quantile band.
+    // A one-step row is well-formed: as_fitted scenario, posterior treatment,
+    // positive n_draws, ordered quantile band.
     let osr: Vec<&str> = one_step_rows[0].split('\t').collect();
-    assert_eq!(osr.len(), 11, "one_step row shape matches header");
-    assert_eq!(osr[1], "one_step", "horizon axis");
-    assert_eq!(osr[2], "posterior", "one-step is a posterior-treatment band");
+    assert_eq!(osr.len(), 12, "one_step row shape matches header");
+    assert_eq!(osr[0], "as_fitted", "one_step is scenario-agnostic (fitted model)");
+    assert_eq!(osr[2], "one_step", "horizon axis");
+    assert_eq!(osr[3], "posterior", "one-step is a posterior-treatment band");
     assert!(
-        osr[5].parse::<usize>().map(|n| n > 0).unwrap_or(false),
+        osr[6].parse::<usize>().map(|n| n > 0).unwrap_or(false),
         "one_step n_draws carried and positive (the subsample used), got {:?}",
-        osr[5]
+        osr[6]
     );
-    let osq: Vec<f64> = osr[6..11].iter().map(|s| s.parse::<f64>().unwrap()).collect();
+    let osq: Vec<f64> = osr[7..12].iter().map(|s| s.parse::<f64>().unwrap()).collect();
     for w in osq.windows(2) {
         assert!(w[0] <= w[1], "one_step quantiles must be ordered: {osq:?}");
     }
@@ -257,12 +260,13 @@ thin = 1
     let mut plines = prev_txt.lines();
     assert_eq!(
         plines.next().unwrap(),
-        "time\tn_draws\tq05\tq25\tq50\tq75\tq95",
-        "series quantity header: time + banded columns"
+        "scenario\ttime\tn_draws\tq05\tq25\tq50\tq75\tq95",
+        "series quantity header: scenario + time + banded columns"
     );
     let prow: Vec<&str> = plines.next().expect("at least one prevalence row").split('\t').collect();
-    assert_eq!(prow.len(), 7, "series row shape matches header");
-    let pq: Vec<f64> = prow[2..7].iter().map(|s| s.parse::<f64>().unwrap()).collect();
+    assert_eq!(prow.len(), 8, "series row shape matches header");
+    assert_eq!(prow[0], "as_fitted", "quantity rows tagged with the scenario");
+    let pq: Vec<f64> = prow[3..8].iter().map(|s| s.parse::<f64>().unwrap()).collect();
     for w in pq.windows(2) {
         assert!(w[0] <= w[1], "prevalence quantiles ordered: {pq:?}");
     }
@@ -274,11 +278,12 @@ thin = 1
     let mut klines = peak_txt.lines();
     assert_eq!(
         klines.next().unwrap(),
-        "n_draws\tq05\tq25\tq50\tq75\tq95",
-        "value-scalar header: banded columns, no time, no censoring"
+        "scenario\tn_draws\tq05\tq25\tq50\tq75\tq95",
+        "value-scalar header: scenario + banded columns, no time, no censoring"
     );
     let krow: Vec<&str> = klines.next().expect("a peak row").split('\t').collect();
-    assert_eq!(krow.len(), 6, "value-scalar row shape matches header");
+    assert_eq!(krow.len(), 7, "value-scalar row shape matches header");
+    assert_eq!(krow[0], "as_fitted", "value scalar tagged with the scenario");
 
     // ── quantities/peak_obs.tsv: an observation-source value scalar ──────────
     // `max(observations.weekly_cases)` reduces the per-draw y_sim — same banded
@@ -290,12 +295,12 @@ thin = 1
     let mut polines = po_txt.lines();
     assert_eq!(
         polines.next().unwrap(),
-        "n_draws\tq05\tq25\tq50\tq75\tq95",
-        "obs value-scalar header: banded columns, no censoring trio"
+        "scenario\tn_draws\tq05\tq25\tq50\tq75\tq95",
+        "obs value-scalar header: scenario + banded columns, no censoring trio"
     );
     let porow: Vec<&str> = polines.next().expect("a peak_obs row").split('\t').collect();
-    assert_eq!(porow.len(), 6, "obs value-scalar row shape matches header");
-    let q50: f64 = porow[3].parse().expect("peak_obs q50 parses");
+    assert_eq!(porow.len(), 7, "obs value-scalar row shape matches header");
+    let q50: f64 = porow[4].parse().expect("peak_obs q50 parses");
     assert!(
         q50.is_finite() && q50 > 0.0,
         "peak_obs median must be a finite positive count (y_sim materialized), got {q50}"
@@ -308,11 +313,11 @@ thin = 1
     let mut olines2 = onset_txt.lines();
     assert_eq!(
         olines2.next().unwrap(),
-        "n_draws\tn_value\tn_censored\tp_censored\tq05\tq25\tq50\tq75\tq95",
-        "censorable scalar header carries the censoring trio"
+        "scenario\tn_draws\tn_value\tn_censored\tp_censored\tq05\tq25\tq50\tq75\tq95",
+        "censorable scalar header: scenario + the censoring trio"
     );
     let orow: Vec<&str> = olines2.next().expect("an onset row").split('\t').collect();
-    assert_eq!(orow.len(), 9, "censorable row shape matches header");
+    assert_eq!(orow.len(), 10, "censorable row shape matches header");
 
     // ── quantities/spread.tsv: a Derived over Time scalars inherits censoring ──
     // `spread = onset2 - onset` propagates a censored endpoint, so it must carry
@@ -322,8 +327,8 @@ thin = 1
     let spread_txt = std::fs::read_to_string(&spreadf).unwrap();
     assert_eq!(
         spread_txt.lines().next().unwrap(),
-        "n_draws\tn_value\tn_censored\tp_censored\tq05\tq25\tq50\tq75\tq95",
-        "a Derived transitively referencing a Time scalar inherits the censoring trio"
+        "scenario\tn_draws\tn_value\tn_censored\tp_censored\tq05\tq25\tq50\tq75\tq95",
+        "a Derived transitively referencing a Time scalar inherits the censoring trio (scenario-tagged)"
     );
 
     // ── quantities.json: lists all three logical quantities, typed ──
@@ -344,6 +349,387 @@ thin = 1
     assert_eq!(lookup("peak_obs")["shape"], "scalar");
     assert_eq!(lookup("peak_obs")["reduce"], "max");
     assert!(lookup("peak_obs")["censoring"].is_null(), "an obs value reduction is not censorable");
+    // Every manifest entry carries the scenario overlay field (no overlay →
+    // `as_fitted`).
+    assert_eq!(
+        lookup("prevalence")["scenario"], "as_fitted",
+        "manifest entry tagged with the scenario (no overlay → as_fitted)"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A model with two param-overlay scenarios (`set = {...}`) — the supported set.
+/// `low_rho` / `high_rho` change the reporting rate, so the predictive bands
+/// shift between scenarios while the latent dynamics stay coupled (paired-seed CRN).
+const MODEL_WITH_SCENARIOS: &str = r#"
+time_unit = 'days
+
+compartments { S, I, R }
+
+parameters {
+  beta  : rate         in [0.05, 1.0]  ~ log_normal(mu = -1.0, sigma = 0.5)
+  gamma : rate         in [0.01, 0.5]  ~ log_normal(mu = -2.0, sigma = 0.5)
+  N0    : count
+  I0    : count
+  rho   : probability  in [0.05, 0.95] ~ beta(alpha = 2.0, beta = 5.0)
+  k     : positive     in [1.0, 100.0] ~ half_normal(sigma = 10.0)
+}
+
+let N = S + I + R
+
+transitions {
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+observations {
+  weekly_cases {
+    columns       { time : time, weekly_cases : count }
+    projected     = incidence(infection)
+    emit_schedule = every 7 'days
+    weekly_cases  ~ neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+quantities {
+  peak = max(I / N)
+}
+
+scenarios {
+  low_rho  { set = { rho = 0.3 } }
+  high_rho { set = { rho = 0.8 } }
+}
+
+simulate {
+  from = 0 'days
+  to   = 80 'days
+}
+"#;
+
+#[test]
+fn fit_predict_two_scenarios_stack_into_one_file_each_tagged() {
+    let bin = skip_if_missing_binary();
+    let tmp = std::env::temp_dir().join(format!("camdl_predict_scen_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("model.camdl"), MODEL_WITH_SCENARIOS).unwrap();
+    std::fs::write(tmp.join("weekly_cases.tsv"), DATA).unwrap();
+
+    let pgas = r#"[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 2
+particles = 200
+sweeps = 60
+burn_in = 20
+thin = 1
+"#;
+    std::fs::write(tmp.join("fit.toml"), fit_toml(pgas, "results")).unwrap();
+
+    let out = run(&bin, &tmp, &["fit", "run", "fit.toml", "--seed", "1"]);
+    assert!(out.status.success(), "fit run failed:\nstderr={}", String::from_utf8_lossy(&out.stderr));
+
+    // Two scenarios + free_forward only (keeps the test fast and the assertion
+    // about scenario stacking unambiguous).
+    let out = run(&bin, &tmp, &[
+        "fit", "predict", "--fit", "fit.toml",
+        "--horizon", "free_forward",
+        "--scenario", "low_rho",
+        "--scenario", "high_rho",
+    ]);
+    assert!(
+        out.status.success(),
+        "two-scenario fit predict failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let results = tmp.join("results");
+
+    // ── ONE predictive/weekly_cases.tsv carries BOTH scenarios' rows, tagged ──
+    let pred = find_artifact(&results, "predictive", "weekly_cases")
+        .expect("predictive/weekly_cases.tsv must be written");
+    let pred_txt = std::fs::read_to_string(&pred).unwrap();
+    let mut lines = pred_txt.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "scenario\ttime\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95",
+        "one header, scenario leads"
+    );
+    let scenarios_seen: std::collections::BTreeSet<&str> =
+        lines.map(|l| l.split('\t').next().unwrap()).collect();
+    assert!(
+        scenarios_seen.contains("low_rho") && scenarios_seen.contains("high_rho"),
+        "both scenarios' rows are in the one file; saw {scenarios_seen:?}"
+    );
+    assert!(
+        !scenarios_seen.contains("as_fitted"),
+        "explicit --scenario suppresses the no-overlay row; saw {scenarios_seen:?}"
+    );
+
+    // ── ONE quantities/peak.tsv carries BOTH scenarios' rows, tagged ──
+    let peakf = find_artifact(&results, "quantities", "peak")
+        .expect("quantities/peak.tsv must be written");
+    let peak_txt = std::fs::read_to_string(&peakf).unwrap();
+    let mut klines = peak_txt.lines();
+    assert_eq!(
+        klines.next().unwrap(),
+        "scenario\tn_draws\tq05\tq25\tq50\tq75\tq95",
+        "quantity header leads with scenario"
+    );
+    let qscen: std::collections::BTreeSet<&str> =
+        klines.map(|l| l.split('\t').next().unwrap()).collect();
+    assert_eq!(
+        qscen,
+        ["high_rho", "low_rho"].into_iter().collect(),
+        "one quantity row per scenario, each tagged"
+    );
+
+    // ── quantities.json: a `scenario` field per entry (one entry per scenario) ──
+    let manifest = find_segment_file(&results, "quantities.json")
+        .expect("quantities.json manifest");
+    let mtxt = std::fs::read_to_string(&manifest).unwrap();
+    let mjson: serde_json::Value = serde_json::from_str(&mtxt).unwrap();
+    let entries = mjson["quantities"].as_array().expect("quantities array");
+    let scen_fields: std::collections::BTreeSet<String> = entries
+        .iter()
+        .filter(|e| e["name"] == "peak")
+        .filter_map(|e| e["scenario"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        scen_fields,
+        ["high_rho".to_string(), "low_rho".to_string()].into_iter().collect(),
+        "manifest carries one peak entry per scenario, each with its scenario field"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A model whose scenario SCALES the reporting rate `rho` (fixed at 0.2 in the
+/// fit). A `scale = { rho = 2.0 }` applied ONCE gives effective rho = 0.4 (mean
+/// y_rep ∝ 0.4·projected); applied TWICE (the deleted fold-hack double-apply,
+/// which folded scale into each draw AND let the resolver re-apply it) gives
+/// rho = 0.8 — a 4× shift from baseline, not 2×. The bands' median ratio
+/// distinguishes the two: ≈2 if correct, ≈4 if double-applied.
+const MODEL_WITH_SCALE_SCENARIO: &str = r#"
+time_unit = 'days
+
+compartments { S, I, R }
+
+parameters {
+  beta  : rate         in [0.05, 1.0]  ~ log_normal(mu = -1.0, sigma = 0.5)
+  gamma : rate         in [0.01, 0.5]  ~ log_normal(mu = -2.0, sigma = 0.5)
+  N0    : count
+  I0    : count
+  rho   : probability  in [0.01, 0.95] ~ beta(alpha = 2.0, beta = 5.0)
+  k     : positive     in [1.0, 100.0] ~ half_normal(sigma = 10.0)
+}
+
+let N = S + I + R
+
+transitions {
+  infection : S --> I  @ beta * S * I / N
+  recovery  : I --> R  @ gamma * I
+}
+
+init {
+  S = N0 - I0
+  I = I0
+}
+
+observations {
+  weekly_cases {
+    columns       { time : time, weekly_cases : count }
+    projected     = incidence(infection)
+    emit_schedule = every 7 'days
+    weekly_cases  ~ neg_binomial(mean = rho * projected, r = k)
+  }
+}
+
+scenarios {
+  double_rho { scale = { rho = 2.0 } }
+}
+
+simulate {
+  from = 0 'days
+  to   = 80 'days
+}
+"#;
+
+fn fit_toml_rho_fixed(algorithm_block: &str, output_dir: &str, rho: f64) -> String {
+    format!(
+        r#"output_dir = "{output_dir}"
+
+[model]
+camdl = "model.camdl"
+
+[data.observations]
+weekly_cases = "weekly_cases.tsv"
+
+[estimate]
+beta  = {{ bounds = [0.05, 1.0], start = 0.4 }}
+gamma = {{ bounds = [0.01, 0.5], start = 0.15 }}
+
+[fixed]
+N0  = 10000
+I0  = 10
+rho = {rho}
+k   = 10.0
+
+{algorithm_block}
+"#
+    )
+}
+
+/// Read a `predictive/<stream>.tsv`: for each scenario, the per-time q50
+/// (median) cells. Returns scenario → Vec<(time, q50)>.
+fn read_q50_by_scenario(path: &Path) -> std::collections::BTreeMap<String, Vec<(String, f64)>> {
+    let txt = std::fs::read_to_string(path).unwrap();
+    let mut lines = txt.lines();
+    let header: Vec<&str> = lines.next().unwrap().split('\t').collect();
+    let scen_i = header.iter().position(|c| *c == "scenario").unwrap();
+    let time_i = header.iter().position(|c| *c == "time").unwrap();
+    let q50_i = header.iter().position(|c| *c == "q50").unwrap();
+    let horizon_i = header.iter().position(|c| *c == "horizon").unwrap();
+    let mut out: std::collections::BTreeMap<String, Vec<(String, f64)>> =
+        std::collections::BTreeMap::new();
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        // Compare like-for-like horizons only (free_forward).
+        if f[horizon_i] != "free_forward" {
+            continue;
+        }
+        out.entry(f[scen_i].to_string())
+            .or_default()
+            .push((f[time_i].to_string(), f[q50_i].parse::<f64>().unwrap_or(0.0)));
+    }
+    out
+}
+
+#[test]
+fn fit_predict_scale_scenario_applied_exactly_once_not_squared() {
+    // Regression guard for the deleted `ScenarioOverlay::apply_to_draw` fold-hack.
+    // With the resolver doing scenario > draw, the engine applies the scenario
+    // `scale` ONCE; the old hand-fold + resolver re-apply double-applied it
+    // (×2.0 → ×4.0). We emit the `double_rho` scale scenario AND the no-overlay
+    // baseline in one run and compare median bands.
+    let bin = skip_if_missing_binary();
+    let tmp = std::env::temp_dir().join(format!("camdl_predict_scale_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("model.camdl"), MODEL_WITH_SCALE_SCENARIO).unwrap();
+    std::fs::write(tmp.join("weekly_cases.tsv"), DATA).unwrap();
+
+    let pgas = r#"[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 2
+particles = 200
+sweeps = 60
+burn_in = 20
+thin = 1
+"#;
+    // rho fixed at 0.2: ×2.0 = 0.4 (in bounds); a double-apply would be 0.8.
+    std::fs::write(tmp.join("fit.toml"), fit_toml_rho_fixed(pgas, "results", 0.2)).unwrap();
+
+    let out = run(&bin, &tmp, &["fit", "run", "fit.toml", "--seed", "1"]);
+    assert!(out.status.success(), "fit run failed:\nstderr={}", String::from_utf8_lossy(&out.stderr));
+
+    // BOTH the scale scenario and the no-overlay baseline (as_fitted) in one run.
+    let out = run(&bin, &tmp, &[
+        "fit", "predict", "--fit", "fit.toml",
+        "--horizon", "free_forward",
+        "--scenario", "double_rho",
+        "--seed", "1",
+    ]);
+    assert!(
+        out.status.success(),
+        "scale-scenario fit predict failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let pred = find_artifact(&tmp.join("results"), "predictive", "weekly_cases")
+        .expect("predictive/weekly_cases.tsv must be written");
+    let by_scen = read_q50_by_scenario(&pred);
+
+    // Run a SECOND predict with NO scenario to get the as_fitted baseline (the
+    // explicit --scenario above suppresses the no-overlay row).
+    let out2 = run(&bin, &tmp, &[
+        "fit", "predict", "--fit", "fit.toml",
+        "--horizon", "free_forward",
+        "--seed", "1",
+    ]);
+    assert!(out2.status.success(),
+        "baseline fit predict failed:\nstderr={}", String::from_utf8_lossy(&out2.stderr));
+    let base_pred = find_artifact(&tmp.join("results"), "predictive", "weekly_cases")
+        .expect("predictive/weekly_cases.tsv (baseline) must be written");
+    let base_by_scen = read_q50_by_scenario(&base_pred);
+
+    let scaled = by_scen.get("double_rho").expect("double_rho rows present");
+    let baseline = base_by_scen.get("as_fitted").expect("as_fitted rows present");
+
+    // Pair times and take the ratio of medians at peak weeks (where the signal
+    // is strong, so Poisson/NB noise is a small relative perturbation). Pool the
+    // ratio across the high-count weeks to average out per-week noise.
+    let base_map: std::collections::BTreeMap<&str, f64> =
+        baseline.iter().map(|(t, v)| (t.as_str(), *v)).collect();
+    let mut ratios: Vec<f64> = Vec::new();
+    for (t, v_scaled) in scaled {
+        if let Some(&v_base) = base_map.get(t.as_str()) {
+            // Only weeks with a meaningful baseline count (avoid 0/0 and tiny tails).
+            if v_base >= 50.0 {
+                ratios.push(v_scaled / v_base);
+            }
+        }
+    }
+    assert!(!ratios.is_empty(), "no comparable high-count weeks; bands: {scaled:?} / {baseline:?}");
+    let mean_ratio = ratios.iter().sum::<f64>() / ratios.len() as f64;
+
+    // Correct (applied once): ratio ≈ 2.0. Double-applied: ≈ 4.0. A generous
+    // band around 2.0 that EXCLUDES 4.0 is the discriminating assertion.
+    assert!(
+        mean_ratio > 1.5 && mean_ratio < 2.8,
+        "scale = {{ rho = 2.0 }} must shift the median band ≈2× (applied once), \
+         not ≈4× (double-applied fold-hack). mean ratio = {mean_ratio:.3} over \
+         {} weeks; ratios = {ratios:?}",
+        ratios.len()
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn fit_predict_scenario_named_as_fitted_in_model_is_rejected() {
+    // The reserved-name guard at the compiler boundary: a model `scenarios {}`
+    // preset named `as_fitted` is an E291 error naming the reservation + fix.
+    let bin = skip_if_missing_binary();
+    let tmp = std::env::temp_dir().join(format!("camdl_predict_reserved_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let bad_model = MODEL_WITH_SCENARIOS.replace(
+        "scenarios {\n  low_rho  { set = { rho = 0.3 } }\n  high_rho { set = { rho = 0.8 } }\n}",
+        "scenarios {\n  as_fitted { set = { rho = 0.3 } }\n}",
+    );
+    assert!(bad_model.contains("as_fitted { set"), "the substitution applied");
+    std::fs::write(tmp.join("model.camdl"), &bad_model).unwrap();
+    std::fs::write(tmp.join("weekly_cases.tsv"), DATA).unwrap();
+
+    // Compiling the model (via `simulate --dry-run`, which only needs the model)
+    // surfaces the E291 reservation diagnostic.
+    let out = run(&bin, &tmp, &["simulate", "model.camdl", "--dry-run"]);
+    assert!(!out.status.success(), "a model preset named as_fitted must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("E291") && stderr.contains("reserved") && stderr.contains("as_fitted"),
+        "E291 names the reservation and the offending name; got: {stderr}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
