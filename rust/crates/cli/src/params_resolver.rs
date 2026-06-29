@@ -443,6 +443,96 @@ pub fn resolve_preset_params(
     Ok(params)
 }
 
+/// The composed `scale` overlay a named preset applies, walking its `compose`
+/// chain: each composed sub-preset's `scale`, then the parent's own `scale`, in
+/// resolver-application order (parent last). Sub-presets may not themselves
+/// compose (`NestedCompose`).
+///
+/// The single authority for "which parameters does this preset scale," shared by
+/// the value resolver's tier-4 application (so the scaling is applied) and the
+/// scenario×{draws,sweep} collision guards' footprint (so a collision is
+/// caught). Mirrors `resolve_preset_params` for `set`. Before this was shared,
+/// the footprint saw only the parent's `scale.keys()` while the resolver also
+/// applied composed sub-preset scale — so a swept parameter scaled by a COMPOSED
+/// sub-preset slipped past the guard and was then silently overwritten (the grid
+/// collapsed to one value, mislabeled across distinct `sweep:` columns).
+pub fn composed_preset_scale(
+    model: &ir::Model,
+    preset_name: &str,
+) -> Result<Vec<(String, f64)>, ResolveError> {
+    let available = || -> Vec<String> {
+        model.presets.iter().map(|p| p.name.clone()).collect()
+    };
+    let preset = model.presets.iter()
+        .find(|p| p.name == preset_name)
+        .ok_or_else(|| ResolveError::ScenarioNotFound {
+            name: preset_name.to_string(),
+            available: available(),
+        })?;
+    let mut out: Vec<(String, f64)> = Vec::new();
+    for sc_name in &preset.compose {
+        let sub = model.presets.iter().find(|p| p.name == *sc_name)
+            .ok_or_else(|| ResolveError::ScenarioNotFound {
+                name: sc_name.clone(),
+                available: available(),
+            })?;
+        if !sub.compose.is_empty() {
+            return Err(ResolveError::NestedCompose { name: sc_name.clone() });
+        }
+        out.extend(sub.scale.iter().map(|(k, &v)| (k.clone(), v)));
+    }
+    out.extend(preset.scale.iter().map(|(k, &v)| (k.clone(), v)));
+    Ok(out)
+}
+
+/// The set of parameter names a scenario reference touches — its `set` ∪
+/// `scale` ∪ composed-preset keys for a named preset, or its inline `params`
+/// keys for an ad-hoc patch.
+///
+/// Single source of truth for "which parameters does scenario X pin/scale",
+/// shared by the engine's explicit-`--draws` collision guard
+/// ([`crate::engine`]) and `fit predict`'s scenario×sweep collision guard, so
+/// the two guards can never disagree about a scenario's footprint. A `Named`
+/// reference that is not a model preset (e.g. the implicit `baseline`) touches
+/// nothing → an empty set (no collision possible).
+pub fn scenario_param_footprint(
+    model: &ir::Model,
+    scenario: &crate::sim_job::ScenarioRef,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    use crate::sim_job::ScenarioRef;
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    match scenario {
+        // Inline ad-hoc patch: only its `set` params (inline scenarios carry no
+        // `scale`).
+        ScenarioRef::Inline { params, .. } => {
+            keys.extend(params.keys().cloned());
+        }
+        ScenarioRef::Named(name) => {
+            // A name that is not a model preset sets nothing — empty footprint.
+            if model.presets.iter().all(|p| p.name != *name) {
+                return Ok(keys);
+            }
+            // `set` keys ∪ `scale` keys, BOTH walking the `compose` chain via the
+            // SAME authorities the resolver applies (`resolve_preset_params` for
+            // set, `composed_preset_scale` for scale) — so a swept parameter
+            // scaled by a COMPOSED sub-preset is caught, not just one the parent
+            // scales directly.
+            keys.extend(
+                resolve_preset_params(model, name)
+                    .map_err(|e| e.to_string())?
+                    .into_keys(),
+            );
+            keys.extend(
+                composed_preset_scale(model, name)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|(k, _)| k),
+            );
+        }
+    }
+    Ok(keys)
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 /// Resolve a `ParameterInputs` to a `ResolvedParameters`, walking the
@@ -502,7 +592,6 @@ pub fn resolve_parameters<'a>(
                 .clone();
             let mut composed_enable: Vec<String> = Vec::new();
             let mut composed_disable: Vec<String> = Vec::new();
-            let mut composed_scale: Vec<(String, f64)> = Vec::new();
             for sc_name in &preset.compose {
                 let sub = model.presets.iter().find(|p| p.name == *sc_name)
                     .ok_or_else(|| ResolveError::ScenarioNotFound {
@@ -514,11 +603,14 @@ pub fn resolve_parameters<'a>(
                 }
                 composed_enable.extend(sub.enable.clone());
                 composed_disable.extend(sub.disable.clone());
-                composed_scale.extend(sub.scale.iter().map(|(k, &v)| (k.clone(), v)));
             }
             composed_enable.extend(preset.enable.clone());
             composed_disable.extend(preset.disable.clone());
-            composed_scale.extend(preset.scale.iter().map(|(k, &v)| (k.clone(), v)));
+            // Scale walks the same `compose` chain via the shared authority, so
+            // the value applied here and the collision guards' footprint
+            // (`composed_preset_scale`) can never disagree about which params a
+            // composed scenario scales.
+            let composed_scale: Vec<(String, f64)> = composed_preset_scale(&model, name)?;
             // gh#36: the params compose-walk is shared with the fit
             // `[fixed] from_scenario` path via `resolve_preset_params`.
             // Returns a deduped (parent-wins) map; applying it below is
@@ -1150,6 +1242,52 @@ mod tests {
         assert_eq!(resolved.get("N0"), Some(&1000.0));
         assert_eq!(resolved.get("beta"), Some(&0.3));
         assert_eq!(resolved.len(), 3);
+    }
+
+    #[test]
+    fn footprint_includes_composed_sub_preset_scale() {
+        // gh#322 review (silent-wrong): a scenario that COMPOSES a sub-preset
+        // which SCALES `k` must report `k` in its footprint — else `--sweep
+        // k=…` passes the collision guard, then the resolver applies the
+        // composed scale and silently overwrites the swept value, collapsing
+        // the grid to one value mislabeled across distinct `sweep:` columns.
+        // The footprint must walk the same `compose` chain the resolver does
+        // (`composed_preset_scale`), not just the parent's own `scale`.
+        use crate::sim_job::ScenarioRef;
+        let mut model = mk_model(vec![]);
+        // A sub-preset that scales `k`.
+        let mut sub_scale = HashMap::new();
+        sub_scale.insert("k".to_string(), 2.0);
+        model.presets.push(Preset {
+            name: "scale_k".into(),
+            label: "scale_k".into(),
+            params: HashMap::new(),
+            scale: sub_scale,
+            enable: vec![],
+            disable: vec![],
+            compose: vec![],
+            t_end: None,
+        });
+        // A parent that COMPOSES `scale_k` and sets `beta` (its own scale empty).
+        let mut parent_params = HashMap::new();
+        parent_params.insert("beta".to_string(), 0.3);
+        model.presets.push(Preset {
+            name: "combo".into(),
+            label: "combo".into(),
+            params: parent_params,
+            scale: HashMap::new(),
+            enable: vec![],
+            disable: vec![],
+            compose: vec!["scale_k".into()],
+            t_end: None,
+        });
+        let fp =
+            scenario_param_footprint(&model, &ScenarioRef::Named("combo".into())).unwrap();
+        assert!(
+            fp.contains("k"),
+            "footprint must include `k` scaled by the COMPOSED sub-preset; got {fp:?}"
+        );
+        assert!(fp.contains("beta"), "footprint includes the parent's set param; got {fp:?}");
     }
 
     #[test]

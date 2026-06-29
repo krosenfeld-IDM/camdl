@@ -356,6 +356,32 @@ thin = 1
         "manifest entry tagged with the scenario (no overlay → as_fitted)"
     );
 
+    // ── predictive.json: the per-stream join contract (coordinates vs band) ──
+    let pmf = find_segment_file(&results, "predictive.json")
+        .expect("predictive.json manifest must be written");
+    let pjson: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pmf).unwrap()).unwrap();
+    assert_eq!(pjson["schema"], "camdl.predictive/v1", "predictive manifest schema tag");
+    let streams = pjson["streams"].as_array().expect("streams array");
+    let wc = streams
+        .iter()
+        .find(|s| s["name"] == "weekly_cases")
+        .expect("manifest lists the weekly_cases stream");
+    assert_eq!(wc["file"], "predictive/weekly_cases.tsv", "stream file path");
+    assert_eq!(wc["value_kind"], "neg_binomial", "value kind = the obs likelihood family");
+    // No --sweep, no dims → coordinates are exactly scenario/time/horizon/treatment,
+    // matching the predictive TSV header's join keys.
+    let coords: Vec<&str> = wc["coordinates"].as_array().unwrap()
+        .iter().map(|c| c.as_str().unwrap()).collect();
+    assert_eq!(coords, ["scenario", "time", "horizon", "treatment"],
+        "coordinate columns name the group-by keys, in header order");
+    let band: Vec<&str> = wc["band"].as_array().unwrap()
+        .iter().map(|c| c.as_str().unwrap()).collect();
+    assert_eq!(band, ["q05", "q25", "q50", "q75", "q95"], "band columns are the quantile labels");
+    let quantiles: Vec<f64> = wc["quantiles"].as_array().unwrap()
+        .iter().map(|q| q.as_f64().unwrap()).collect();
+    assert_eq!(quantiles, [0.05, 0.25, 0.50, 0.75, 0.95], "band quantile levels");
+
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -730,6 +756,199 @@ fn fit_predict_scenario_named_as_fitted_in_model_is_rejected() {
         stderr.contains("E291") && stderr.contains("reserved") && stderr.contains("as_fitted"),
         "E291 names the reservation and the offending name; got: {stderr}"
     );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn fit_predict_is_self_contained_after_loose_camdl_removed() {
+    // gh#322 / Phase 1a: `fit run` archives the compiled IR in the fit leaf, so
+    // `fit predict` resolves the model from that archive — not from the loose
+    // `.camdl`, which may have moved. We DELETE the source `.camdl` after the
+    // fit; predict must still succeed. (Pre-archival this failed: predict
+    // recompiled `config.model.camdl`, now absent — so this is the red→green
+    // for the portability fix.)
+    let bin = skip_if_missing_binary();
+    let tmp = std::env::temp_dir().join(format!("camdl_predict_portable_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("model.camdl"), MODEL).unwrap();
+    std::fs::write(tmp.join("weekly_cases.tsv"), DATA).unwrap();
+
+    let pgas = r#"[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 2
+particles = 200
+sweeps = 60
+burn_in = 20
+thin = 1
+"#;
+    std::fs::write(tmp.join("fit.toml"), fit_toml(pgas, "results")).unwrap();
+
+    let out = run(&bin, &tmp, &["fit", "run", "fit.toml", "--seed", "1"]);
+    assert!(
+        out.status.success(),
+        "fit run failed:\nstderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The compiled IR is archived in the fit segment, non-empty.
+    let archive = find_segment_file(&tmp.join("results"), "model.ir.json")
+        .expect("fit run must archive model.ir.json in the fit segment");
+    assert!(
+        std::fs::metadata(&archive).unwrap().len() > 0,
+        "archived model.ir.json is non-empty"
+    );
+
+    // Remove the loose source model — the run must remain self-contained.
+    std::fs::remove_file(tmp.join("model.camdl")).unwrap();
+
+    let out = run(
+        &bin,
+        &tmp,
+        &["fit", "predict", "--fit", "fit.toml", "--horizon", "free_forward"],
+    );
+    assert!(
+        out.status.success(),
+        "fit predict must resolve the model from the archived IR after the loose \
+         .camdl is removed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        find_artifact(&tmp.join("results"), "predictive", "weekly_cases").is_some(),
+        "predictive artifact written from the archived model"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// The single fit segment under `results/fits/`.
+fn fit_segment_dir(results: &Path) -> PathBuf {
+    let fits = results.join("fits");
+    std::fs::read_dir(&fits)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .expect("a fit segment")
+}
+
+#[test]
+fn fit_predict_resolves_at_label_and_hash_prefix() {
+    // Phase 1b: a fit referenced by `@label` and by its fit-level hash prefix,
+    // not just a run dir / fit.toml. Both resolve to the same sealed fit.
+    let bin = skip_if_missing_binary();
+    let tmp = std::env::temp_dir().join(format!("camdl_predict_handle_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("model.camdl"), MODEL).unwrap();
+    std::fs::write(tmp.join("weekly_cases.tsv"), DATA).unwrap();
+
+    let pgas = r#"[stages.posterior]
+algorithm = "pgas"
+backend = "chain_binomial"
+chains = 2
+particles = 200
+sweeps = 60
+burn_in = 20
+thin = 1
+"#;
+    std::fs::write(tmp.join("fit.toml"), fit_toml(pgas, "results")).unwrap();
+
+    let out = run(
+        &bin,
+        &tmp,
+        &["fit", "run", "fit.toml", "--label", "jigawa-baseline", "--seed", "1"],
+    );
+    assert!(out.status.success(), "fit run failed:\nstderr={}", String::from_utf8_lossy(&out.stderr));
+
+    // The fit-level hash prefix is the suffix of the segment dir name (`stem-<h8>`).
+    let seg = fit_segment_dir(&tmp.join("results"));
+    let name = seg.file_name().unwrap().to_string_lossy().into_owned();
+    let hash8 = name.rsplit('-').next().unwrap().to_string();
+    assert!(hash8.len() >= 8, "segment hash suffix looks like a hash: {name}");
+
+    // (1) Resolve by @label.
+    let out = run(&bin, &tmp, &["fit", "predict", "@jigawa-baseline", "--horizon", "free_forward"]);
+    assert!(
+        out.status.success(),
+        "fit predict @label failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        find_artifact(&tmp.join("results"), "predictive", "weekly_cases").is_some(),
+        "@label resolved to the fit and predicted"
+    );
+
+    // (2) Resolve by hash prefix (positional handle).
+    let out = run(&bin, &tmp, &["fit", "predict", &hash8, "--horizon", "free_forward"]);
+    assert!(
+        out.status.success(),
+        "fit predict <hash> failed for prefix {hash8}:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // (3) An unknown label is a typed not-found error, not a panic.
+    let out = run(&bin, &tmp, &["fit", "predict", "@nope", "--horizon", "free_forward"]);
+    assert!(!out.status.success(), "unknown @label must error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no fit found for @nope"), "actionable not-found, got: {stderr}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn fit_summary_ambiguous_label_lists_candidates() {
+    // Phase 1b: two distinct fits sharing a label make `@label` ambiguous —
+    // the candidates are listed git-style, never silently resolved to one.
+    let bin = skip_if_missing_binary();
+    let tmp = std::env::temp_dir().join(format!("camdl_handle_ambig_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("model.camdl"), MODEL).unwrap();
+    std::fs::write(tmp.join("weekly_cases.tsv"), DATA).unwrap();
+
+    // Two fits that differ in config (→ distinct fit-level hashes → two
+    // segments) but carry the SAME label. Cheap IF2 fits: resolution ambiguity
+    // fires before any posterior is touched, so `fit summary` is enough.
+    let if2_a = r#"[stages.scout]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 2
+particles = 150
+iterations = 20
+cooling = 0.7
+"#;
+    let if2_b = r#"[stages.scout]
+algorithm = "if2"
+backend = "chain_binomial"
+chains = 2
+particles = 150
+iterations = 30
+cooling = 0.7
+"#;
+    std::fs::write(tmp.join("a.toml"), fit_toml(if2_a, "results")).unwrap();
+    std::fs::write(tmp.join("b.toml"), fit_toml(if2_b, "results")).unwrap();
+
+    for cfg in ["a.toml", "b.toml"] {
+        let out = run(&bin, &tmp, &["fit", "run", cfg, "--label", "dup", "--seed", "1"]);
+        assert!(out.status.success(), "fit run {cfg} failed:\nstderr={}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    let out = run(&bin, &tmp, &["fit", "summary", "@dup"]);
+    assert!(!out.status.success(), "ambiguous @label must error, not pick one");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("@dup resolves to 2 fits"),
+        "ambiguity is typed and counted, got: {stderr}"
+    );
+    // Both candidate segments are listed.
+    let listed = stderr.matches("results/fits/").count();
+    assert!(listed >= 2, "both candidate segments listed, got: {stderr}");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

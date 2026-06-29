@@ -1070,8 +1070,9 @@ Examples:
   camdl fit summary fit/he2010 --strict
 "))]
 pub struct FitSummaryArgs {
-    /// Fit results directory (e.g. `fit/he2010`)
-    pub fit_dir: PathBuf,
+    /// The fit, by handle: `@label`, a fit-level hash prefix, a fit results
+    /// directory (e.g. `results/fits/he2010-…`), or a `fit.toml` config.
+    pub fit: String,
 
     /// Render only one stage's stanza
     #[arg(long, value_name = "STAGE")]
@@ -1125,16 +1126,17 @@ Outputs, under the run directory:
   observed/<stream>.tsv     time | <dims...> | value
 Read both, join on (time, <dims>), plot observed over the predictive ribbon."))]
 pub struct FitPredictArgs {
-    /// The fit: a `fit.toml` config (resolved to its unique run) OR a fit
-    /// results directory. A config that maps to several runs errors and lists
-    /// them — pass a run directory to disambiguate.
+    /// The fit, by handle: `@label`, a fit-level hash prefix, a fit results
+    /// directory, or a `fit.toml` config (resolved to its unique run). A handle
+    /// that maps to several fits errors and lists them — pass a run directory or
+    /// a longer hash prefix to disambiguate.
     #[arg(long = "fit", value_name = "FIT")]
-    pub fit_flag: Option<PathBuf>,
+    pub fit_flag: Option<String>,
 
-    /// Positional form of the fit reference (a run directory or config), so
-    /// `camdl fit predict results/fits/<run>/` works like `fit summary`.
+    /// Positional form of the fit handle, so `camdl fit predict @jigawa-baseline`
+    /// or `camdl fit predict results/fits/<run>/` works like `fit summary`.
     #[arg(value_name = "FIT", conflicts_with = "fit_flag")]
-    pub fit_pos: Option<PathBuf>,
+    pub fit_pos: Option<String>,
 
     /// Restrict to one logical stream. Accepts the logical name (`onset`) or an
     /// expanded leaf name (`onset_Bo`), which maps up to its logical stream.
@@ -1166,6 +1168,17 @@ pub struct FitPredictArgs {
     #[arg(long, conflicts_with = "scenarios")]
     pub disable: Vec<String>,
 
+    /// Vary a parameter across a grid over the posterior (repeatable →
+    /// multiple swept params → Cartesian). Each `--sweep PARAM=GRID` sets the
+    /// swept parameter to each grid value in turn while the rest of every
+    /// posterior draw propagates; cells are keyed by a leading `sweep:<param>`
+    /// column. `GRID` is a list (`q=0,30,60`), `lin(min,max,n)`, or
+    /// `log10(min,max,n)`. Composes with `--scenario` on DISTINCT parameters; a
+    /// scenario and a sweep on the SAME parameter is a hard error (pin OR vary,
+    /// not both). Free-forward only — the one-step horizon is sweep-agnostic.
+    #[arg(long = "sweep", value_name = "PARAM=GRID")]
+    pub sweep: Vec<crate::args::types::SweepSpec>,
+
     /// Which predictive horizon(s) to emit. Omitted = all applicable for the
     /// fit's backend (chain-binomial → `free_forward` + `one_step`; ODE →
     /// `free_forward` only). `--horizon one_step` on an ODE fit is a hard error.
@@ -1193,12 +1206,16 @@ pub struct FitPredictArgs {
 pub const AS_FITTED: &str = "as_fitted";
 
 impl FitPredictArgs {
-    /// The resolved fit reference (`--fit` or the positional form).
-    pub fn fit(&self) -> Result<&PathBuf, String> {
+    /// The raw fit handle (`--fit` or the positional form), unparsed.
+    pub fn fit(&self) -> Result<&str, String> {
         self.fit_flag
-            .as_ref()
-            .or(self.fit_pos.as_ref())
-            .ok_or_else(|| "a fit reference is required: `--fit fit.toml` or a run directory".into())
+            .as_deref()
+            .or(self.fit_pos.as_deref())
+            .ok_or_else(|| {
+                "a fit handle is required: `@label`, a hash prefix, a run directory, \
+                 or `--fit fit.toml`"
+                    .into()
+            })
     }
 
     /// Parse the repeatable `--scenario`/`--enable`/`--disable` surface into the
@@ -1336,6 +1353,17 @@ pub struct FitTableArgs {
     /// renders a GitHub-flavoured table; `csv` is downstream-friendly.
     #[arg(long, value_enum, default_value_t = FitTableFormat::Text)]
     pub format: FitTableFormat,
+
+    /// Add a column showing the posterior median of a SCALAR generated
+    /// quantity declared in the fit's model `quantities {}` block (the
+    /// q50 of the no-overlay `as_fitted` row). Repeatable for several
+    /// quantities. Unlike the default read-only table, `--quantity`
+    /// may DERIVE the value on demand: for a fit that has not been
+    /// predicted yet it runs `fit predict --horizon free_forward`,
+    /// populating that fit's `quantities/` outputs. Optimizer fits
+    /// (IF2 / NLopt) have no posterior cloud, so their cell renders `—`.
+    #[arg(long = "quantity", value_name = "NAME")]
+    pub quantities: Vec<String>,
 }
 
 #[derive(Args)]
@@ -2403,8 +2431,9 @@ pub struct ReindexArgs {
 
 /// `camdl compare` — multi-model prequential comparison table.
 ///
-/// Reads prequential.json from ≥2 fit stage dirs (or a compare.toml)
-/// and renders a baseline-centered comparison.
+/// Takes ≥2 prequential.json files / stage dirs (or fit handles, whose
+/// prequential is auto-derived) or a compare.toml, and renders a
+/// baseline-centered comparison.
 /// See docs/dev/proposals/2026-04-20-prequential-evaluation.md §8.
 #[derive(Args)]
 #[command(after_help = colored_help!("\
@@ -2448,12 +2477,19 @@ Examples:
   # Reproducible preset via compare.toml
   camdl compare --config compare.toml
 
+  # Compare two sealed fits by handle — the prequential is auto-derived
+  # at θ̂ via `camdl pfilter` (same particles/seed for both, so the
+  # scores are commensurable). No pre-run pfilter needed.
+  camdl compare @baseline @candidate --particles 2000 --seed 7
+
   # Render despite different T_score across fits (Δ columns → '—')
   camdl compare fits/a/pf fits/b/pf --allow-mismatched-horizon
 "))]
 pub struct CompareArgs {
-    /// Stage directories (or .json paths) to compare — need ≥2 when
-    /// --config is not used
+    /// Models to compare — need ≥2 when --config is not used. Each is
+    /// either a prequential.json (or a stage dir holding one), read
+    /// as-is, OR a fit handle (@label / hash prefix / run dir / fit.toml),
+    /// whose prequential is auto-derived from its sealed θ̂ + data.
     pub paths: Vec<String>,
 
     /// compare.toml with [[model]] entries (baseline/metrics/format
@@ -2476,6 +2512,19 @@ pub struct CompareArgs {
     /// Render even if T_score differs across models (Δ columns → '—')
     #[arg(long)]
     pub allow_mismatched_horizon: bool,
+
+    /// Particle count for any fit handle whose prequential is
+    /// auto-derived. Applied uniformly to every derived fit so T_score
+    /// and scores stay commensurable. Ignored for an explicit
+    /// prequential.json path (read as-is).
+    #[arg(long, default_value_t = crate::compare::DEFAULT_DERIVE_PARTICLES)]
+    pub particles: usize,
+
+    /// Filter seed for any fit handle whose prequential is auto-derived.
+    /// Applied uniformly across derived fits. Ignored for an explicit
+    /// prequential.json path (read as-is).
+    #[arg(long, default_value_t = crate::compare::DEFAULT_DERIVE_SEED)]
+    pub seed: u64,
 }
 
 // ─── mre (minimal-reproducible-example bundles) ──────────────────────────────

@@ -52,6 +52,13 @@ impl Horizon {
 /// accepts [`ParamTreatment::Posterior`], which can only be constructed from a
 /// real [`PosteriorDraws`] cloud — so a posterior band over a single point is
 /// unrepresentable, and a plug-in band is always explicitly labelled.
+///
+/// This IS the sealed-fit proposal's Phase 4 "can't-drop-uncertainty"
+/// invariant, enforced here by illegal-states-unrepresentable typing rather
+/// than a runtime check. [`PosteriorDraws`] is that proposal's `Ensemble` minus
+/// two additive fields — per-parameter provenance and the latent trajectory —
+/// which the keyed-joint `(θ, X)` output supplies (see
+/// `docs/dev/proposals/2026-06-28-keyed-joint-param-trajectory-output.md`).
 #[derive(Debug, Clone)]
 pub enum ParamTreatment {
     /// Average over the whole posterior cloud — the band carries full
@@ -274,6 +281,20 @@ pub struct StreamBands {
     pub rows: Vec<BandRow>,
 }
 
+/// One free-forward design cell: a sweep coordinate × scenario, with the banded
+/// streams that cell produced. The sweep axis lives here (in `run_predict`'s
+/// loop), NOT in the scenario-keyed [`PredictiveSink`] — a fresh sink runs per
+/// sweep-point, and each `(scenario, accumulator)` it yields becomes one cell.
+struct FreeForwardCell {
+    /// This cell's sweep coordinate: `(param, value)` per swept parameter, in
+    /// sorted-name order. EMPTY when no `--sweep`.
+    sweep: Vec<(String, f64)>,
+    /// The scenario name this cell ran under (`as_fitted` for the no-overlay row).
+    scenario: String,
+    /// The banded predictive streams for this cell.
+    bands: Vec<StreamBands>,
+}
+
 /// One predictive cell: a time, its stratum (dim → level), and the quantiles
 /// of `y_rep` across draws at that cell.
 #[derive(Debug, Clone)]
@@ -347,6 +368,11 @@ pub struct PredictiveSection<'a> {
     /// (fitted-model) rows. ALWAYS present (the leading column), the way
     /// `horizon`/`treatment` are.
     pub scenario: String,
+    /// This cell's sweep coordinate: one `(param, value)` per swept parameter,
+    /// in sorted-name order. EMPTY when no `--sweep` (and on the sweep-agnostic
+    /// one-step section), so no `sweep:<param>` column is emitted and the header
+    /// stays byte-identical to the no-sweep path.
+    pub sweep: Vec<(String, f64)>,
     pub horizon: Horizon,
     pub treatment: TreatmentKind,
     pub convergence: ConvergenceStatus,
@@ -364,9 +390,25 @@ pub fn render_predictive_tsv_sections(
     index_dims: &[String],
     sections: &[PredictiveSection],
 ) -> String {
+    // The swept parameter names for the `sweep:<param>` columns: taken from the
+    // first section that declares any (all free-forward sections share them; the
+    // sweep-agnostic one-step section has none). EMPTY when no `--sweep` → no
+    // sweep columns → byte-identical header.
+    let sweep_names: Vec<String> = sections
+        .iter()
+        .find(|s| !s.sweep.is_empty())
+        .map(|s| s.sweep.iter().map(|(n, _)| n.clone()).collect())
+        .unwrap_or_default();
+
     let mut out = String::new();
-    // Header — `scenario` leads (the overlay axis), always present.
-    out.push_str("scenario\ttime");
+    // Header — `scenario` leads (the overlay axis), then the `sweep:<param>`
+    // columns, then everything else. Both are always present in the layout.
+    out.push_str("scenario");
+    for n in &sweep_names {
+        out.push_str("\tsweep:");
+        out.push_str(n);
+    }
+    out.push_str("\ttime");
     for d in index_dims {
         out.push('\t');
         out.push_str(d);
@@ -384,6 +426,14 @@ pub fn render_predictive_tsv_sections(
         let n = section.n_draws.to_string();
         for row in section.rows {
             out.push_str(&section.scenario);
+            // This section's swept values, aligned to `sweep_names`. A section
+            // with no sweep coordinate (the one-step rows) leaves each cell empty.
+            for name in &sweep_names {
+                out.push('\t');
+                if let Some((_, v)) = section.sweep.iter().find(|(n, _)| n == name) {
+                    out.push_str(&fmt_value(*v));
+                }
+            }
             out.push('\t');
             out.push_str(&fmt_time(row.time));
             for dim in index_dims {
@@ -580,75 +630,6 @@ fn read_convergence(stage_dir: &Path, method: Option<FitAlgorithm>) -> Convergen
         .unwrap_or(ConvergenceStatus::NotAssessed)
 }
 
-// ── Resolving a config to its run segment ──────────────────────────────────
-
-/// Resolve a fit reference to its run segment directory.
-///
-/// A directory is used as the segment directly. A `fit.toml` config is matched
-/// to its run by `fit_toml_hash` (the sha256 the sidecar records) across the
-/// run store — the proposal's "a config resolves to its run; error and list if
-/// it maps to several" rule, without recomputing the CAS identity.
-fn resolve_segment(fit_ref: &Path) -> Result<(PathBuf, crate::fit::config_v2::FitConfigV2), String> {
-    use crate::fit::config_v2::FitConfigV2;
-    if fit_ref.is_dir() {
-        let cfg_path = fit_ref.join("fit.toml.original");
-        let config = FitConfigV2::load(&cfg_path.to_string_lossy()).map_err(|e| {
-            format!(
-                "{} is a fit directory but its archived config could not be read: {e}\n  \
-                 (expected {})",
-                fit_ref.display(),
-                cfg_path.display()
-            )
-        })?;
-        return Ok((fit_ref.to_path_buf(), config));
-    }
-
-    // A config TOML: hash it, match against the run store's sidecars.
-    let bytes = std::fs::read(fit_ref)
-        .map_err(|e| format!("cannot read fit config {}: {e}", fit_ref.display()))?;
-    let toml_hash = crate::hashing::sha256_hex(&bytes);
-    let config = FitConfigV2::load(&fit_ref.to_string_lossy())
-        .map_err(|e| format!("cannot load fit config {}: {e}", fit_ref.display()))?;
-    let cas_root = crate::run_paths::output_root(None, config.output_dir.as_deref());
-    let fits_dir = cas_root.join("fits");
-    let mut matches: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&fits_dir) {
-        for entry in entries.flatten() {
-            let seg = entry.path();
-            if !seg.is_dir() {
-                continue;
-            }
-            if let Some(side) = crate::run_meta::read_fit_sidecar(&seg) {
-                if side.fit_toml_hash == toml_hash {
-                    matches.push(seg);
-                }
-            }
-        }
-    }
-    matches.sort();
-    match matches.len() {
-        0 => Err(format!(
-            "no completed fit found for {} under {}.\n  \
-             Run `camdl fit run {}` first.",
-            fit_ref.display(),
-            fits_dir.display(),
-            fit_ref.display()
-        )),
-        1 => Ok((matches.remove(0), config)),
-        _ => {
-            let list = matches.iter().map(|p| format!("    {}", p.display()))
-                .collect::<Vec<_>>().join("\n");
-            Err(format!(
-                "{} resolves to {} runs:\n{}\n  \
-                 Pass one of these run directories directly.",
-                fit_ref.display(),
-                matches.len(),
-                list
-            ))
-        }
-    }
-}
-
 // ── The engine sink: sample y_rep per draw at the observed cadence ─────────
 
 /// One scenario's accumulated free-forward output: the per-`(leaf, time)`
@@ -676,8 +657,9 @@ struct PredictiveSink {
     leaf_times: Vec<Vec<f64>>,
     /// The generated-quantities evaluator, `Some` iff the model declares a
     /// `quantities {}` block. Composed alongside the obs-sample accumulator (same
-    /// draw, same params) — not a second [`RunSink`].
-    quant_eval: Option<sim::quantity::QuantityEvaluator>,
+    /// draw, same params) — not a second [`RunSink`]. Held behind an `Arc` so a
+    /// fresh sink per sweep-point shares the one evaluator without rebuilding it.
+    quant_eval: Option<std::sync::Arc<sim::quantity::QuantityEvaluator>>,
     /// Scenario name → its accumulator. Insertion order (= the engine's canonical
     /// `scenario → point → rep` order, scenario outermost) is preserved so the
     /// rendered files list scenarios in CLI order.
@@ -816,9 +798,39 @@ struct LeafObs {
     observed: Vec<Option<f64>>,
 }
 
+/// Expand the `--sweep` specs into Cartesian grid cells, each a sorted-by-name
+/// `(param, value)` list. No specs → a single empty cell, so the free-forward
+/// production runs exactly once (byte-identical to the no-sweep path). Mirrors
+/// [`crate::batch`]'s `expand_sweep`, but yields a sorted-name coordinate so the
+/// `sweep:<param>` columns (and the manifest sweep object) are deterministic.
+fn expand_predict_sweep(specs: &[crate::args::types::SweepSpec]) -> Vec<Vec<(String, f64)>> {
+    if specs.is_empty() {
+        return vec![Vec::new()];
+    }
+    // Sort by parameter name for a deterministic column/axis order.
+    let mut sorted: Vec<&crate::args::types::SweepSpec> = specs.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut cells: Vec<Vec<(String, f64)>> = vec![Vec::new()];
+    for spec in sorted {
+        let values = spec.grid.expand();
+        let mut next = Vec::with_capacity(cells.len() * values.len());
+        for cell in &cells {
+            for &v in &values {
+                let mut c = cell.clone();
+                c.push((spec.name.clone(), v));
+                next.push(c);
+            }
+        }
+        cells = next;
+    }
+    cells
+}
+
 fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, String> {
-    // 1. Resolve the run segment + its config.
-    let (segment, config) = resolve_segment(args.fit()?)?;
+    // 1. Resolve the fit handle (@label / hash prefix / run-dir / fit.toml) →
+    //    its segment + config.
+    let crate::fit::handle::ResolvedFit { segment, config } =
+        crate::fit::handle::resolve_fit(args.fit()?).map_err(|e| e.to_string())?;
 
     // 2. Resolve the posterior — by artifact. A point-estimate fit is refused.
     let fit_result = FitResult::resolve(&segment, args.stage.as_deref())?;
@@ -855,8 +867,18 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
         }
     };
 
-    // 3. Compile the model (same recipe the fit runner uses).
-    let (compiled_ir, _ir_tmp) = crate::util::resolve_ir_path(&config.model.camdl)?;
+    // 3. Resolve the model IR. Prefer the IR archived in the fit leaf at
+    //    `fit run` time (gh#322 — a self-contained, portable run); fall back to
+    //    recompiling the loose `.camdl` recorded in the config only when the
+    //    archive is absent (a run produced before IR archival landed). The
+    //    archived IR is itself a compiled-IR path, so the engine's per-cell
+    //    recompile (`job.model`, below) loads it directly.
+    let archived_ir = segment.join("model.ir.json");
+    let (compiled_ir, _ir_tmp): (String, Option<std::path::PathBuf>) = if archived_ir.is_file() {
+        (archived_ir.to_string_lossy().into_owned(), None)
+    } else {
+        crate::util::resolve_ir_path(&config.model.camdl)?
+    };
     let (model, _) = crate::util::load_model(&compiled_ir)?;
     let dt = model.simulation.dt.unwrap_or(1.0);
 
@@ -879,6 +901,79 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     // inference hazard does not apply to a forward replay). Should a future change
     // make a toggle unsupported, route it through the capability/validation path
     // (a loud error), never a silent baseline replay — see Guard 2.
+
+    // 3c. Expand the parameter sweep into Cartesian grid cells, each a sorted
+    // `(param, value)` list. No `--sweep` → a single empty cell, so the
+    // free-forward production runs exactly once, byte-identical to the no-sweep
+    // path. A swept value rides in the SAME draw/sweep tier as a draw (it
+    // OVERRIDES the swept parameter in each draw row), so the resolver applies it
+    // below the scenario tier — a scenario still wins over a sweep.
+    let sweep_points: Vec<Vec<(String, f64)>> = expand_predict_sweep(&args.sweep);
+    let swept_params: std::collections::BTreeSet<String> =
+        args.sweep.iter().map(|s| s.name.clone()).collect();
+
+    // Each swept parameter must be a real model parameter, named at most once —
+    // a sweep over an undeclared (or duplicated) name would vary a `sweep:<param>`
+    // column while the dynamics never move (a silent no-op).
+    {
+        use std::collections::HashSet;
+        if swept_params.len() != args.sweep.len() {
+            return Err(
+                "--sweep names the same parameter more than once; sweep each \
+                 parameter at most once (the grid is the Cartesian product of \
+                 distinct parameters)"
+                    .to_string(),
+            );
+        }
+        let model_params: HashSet<&str> =
+            model.parameters.iter().map(|p| p.name.as_str()).collect();
+        let unknown: Vec<&str> = swept_params
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|p| !model_params.contains(p))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(format!(
+                "--sweep names parameter(s) the model does not declare: {} \
+                 (a sweep must vary a real model parameter)",
+                unknown.join(", ")
+            ));
+        }
+    }
+
+    // 3d. A scenario and a sweep on the SAME parameter is a hard error: the
+    // scenario PINS the parameter (winning over the draw/sweep tier) while the
+    // sweep VARIES it — applying both at once is contradictory (the scenario would
+    // silently override every sweep cell, collapsing the grid). The two guards
+    // (this one and the engine's explicit-`--draws` guard) share one footprint
+    // (`scenario_param_footprint`) so they cannot disagree. Runs BEFORE any
+    // simulation.
+    if !swept_params.is_empty() {
+        for sref in &scenario_refs {
+            let footprint = crate::params_resolver::scenario_param_footprint(&model, sref)?;
+            let mut clash: Vec<&str> = footprint
+                .iter()
+                .map(|k| k.as_str())
+                .filter(|k| swept_params.contains(*k))
+                .collect();
+            if !clash.is_empty() {
+                clash.sort();
+                clash.dedup();
+                let param_list = clash.join(", ");
+                let swept_list: Vec<&str> = swept_params.iter().map(|s| s.as_str()).collect();
+                return Err(format!(
+                    "scenario '{scen}' pins parameter(s) [{param_list}] that --sweep \
+                     also varies (sweep over [{swept}]). A scenario sets/scales these \
+                     parameters and wins over the sweep, so pinning them via the \
+                     scenario and varying them via --sweep at once is contradictory.\n  \
+                     Fix: drop [{param_list}] from one side — pin the parameter via the \
+                     scenario, OR vary it via --sweep, not both.",
+                    scen = sref.name(),
+                    swept = swept_list.join(", "),
+                ));
+            }
+        }
+    }
 
     // 4. Load the observed data per leaf (the cadence + the observed half).
     let leaves = load_leaf_obs(&model, &config, dt, args.stream.as_deref())?;
@@ -944,21 +1039,25 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     // Build the generated-quantities evaluator once (the IR is fixed across draws);
     // `None` when the model declares no `quantities {}` block. The evaluator drives
     // the free-forward sink — the always-fresh path that has a trajectory in hand.
-    let quant_eval: Option<sim::quantity::QuantityEvaluator> = if !model.quantities.is_empty() {
-        Some(
-            sim::quantity::QuantityEvaluator::new(&model.quantities, compiled.as_ref())
-                .map_err(|e| format!("building quantity evaluator: {e}"))?,
-        )
-    } else {
-        None
-    };
-    // The rendered quantity sidecars (per logical quantity, all scenarios stacked)
-    // + the merged manifest, filled after the free-forward pass.
+    // Held behind an `Arc` so each sweep-point's fresh sink shares the one
+    // evaluator without rebuilding it.
+    let quant_eval: Option<std::sync::Arc<sim::quantity::QuantityEvaluator>> =
+        if !model.quantities.is_empty() {
+            Some(std::sync::Arc::new(
+                sim::quantity::QuantityEvaluator::new(&model.quantities, compiled.as_ref())
+                    .map_err(|e| format!("building quantity evaluator: {e}"))?,
+            ))
+        } else {
+            None
+        };
+    // The rendered quantity sidecars (per logical quantity, all design cells
+    // stacked) + the merged manifest, filled after the free-forward pass.
     let mut quantity_outputs: Vec<(String, String)> = Vec::new();
     let mut quantity_manifest: Option<String> = None;
-    // Per-scenario free-forward bands, in CLI/engine scenario order. `None` when
-    // the free-forward horizon was not requested.
-    let mut free_forward: Option<IndexMap<String, Vec<StreamBands>>> = None;
+    // The free-forward bands, one [`FreeForwardCell`] per (sweep-point × scenario)
+    // in engine canonical order. `None` when the free-forward horizon was not
+    // requested.
+    let mut free_forward: Option<Vec<FreeForwardCell>> = None;
 
     // ── Free-forward horizon: replay the posterior forward under each scenario.
     //
@@ -992,95 +1091,125 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
                     .unwrap_or_default()
             })
             .collect();
-        let mut sink = PredictiveSink {
-            compiled: compiled.clone(),
-            leaf_times: leaf_times.clone(),
-            quant_eval,
-            by_scenario: IndexMap::new(),
-        };
 
-        for sref in &scenario_refs {
-            // Unmodified draw rows: each routes through the resolver's draw/sweep
-            // tier (below scenario), so the scenario reference applies its
-            // `set`/`scale`/`enable`/`disable` on top — exactly once — via the
-            // resolver's precedence. No per-draw folding (that would double-apply
-            // a `scale`).
-            let rows: Vec<IndexMap<String, f64>> = posterior.draws().to_vec();
-            let job = crate::sim_job::SimulateJob {
-                model: compiled_ir.clone(),
-                params_files: vec![],
-                // Replay on the SAME forward simulator the fit used (chain_binomial
-                // / ode), resolved from the stage — never a hardcoded default.
-                backend: posterior.backend,
-                dt,
-                integrator: None,
-                // Generated posterior draws (not a user-authored file), so a
-                // scenario simply wins over a draw column — no collision error.
-                source: crate::sim_job::ParamSource::Draws {
-                    rows,
-                    replicates: 1,
-                    explicit_file: None,
-                },
-                // The original scenario reference drives the engine's scenario tier:
-                // a `Named` preset replays the model preset's set/scale/enable/
-                // disable; an ad-hoc `Inline` applies its inline set + toggle. The
-                // resolver wins over the draw tier, so `set`/`scale` apply exactly
-                // once. The scenario NAME is carried for the sink's per-scenario
-                // partition (`cell.spec.scenario.name()`).
-                scenarios: vec![sref.clone()],
-                seeds: crate::sim_job::Seeds::Single(seed),
-                cli_overrides: vec![],
-                set_vec_entries: vec![],
-                table_files: vec![],
-                obs: crate::sim_job::ObsOutput::None,
-                parallel: 1,
-            };
-            crate::engine::run_job(&job, &mut sink)?;
-        }
-
-        // Per scenario: band the predictive samples + (if present) the quantity
-        // draws, stacking quantity rows for all scenarios under one header per
-        // logical quantity and merging the manifests. Scenario order = the sink's
-        // insertion order (engine canonical order, scenario outermost).
-        let mut ff_bands: IndexMap<String, Vec<StreamBands>> = IndexMap::new();
-        // quantity name → accumulated TSV body (header written once, from the
-        // first scenario's render); merged manifest entries across scenarios.
+        // The free-forward cells (one per sweep-point × scenario, engine canonical
+        // order), plus the stacked quantity bodies + merged manifest entries — all
+        // accumulated across the sweep grid. quantity name → accumulated TSV body
+        // (header written once, from the first design cell's render).
+        let mut ff_cells: Vec<FreeForwardCell> = Vec::new();
         let mut quant_bodies: IndexMap<String, String> = IndexMap::new();
         let mut quant_manifest_entries: Vec<serde_json::Value> = Vec::new();
-        for (scenario_name, accum) in &sink.by_scenario {
-            if !model.quantities.is_empty() {
-                let (outs, manifest) = crate::quantity_output::render_quantities(
-                    &model.quantities,
-                    &accum.quant_draws,
-                    &accum.quant_times,
-                    crate::quantity_output::Mode::Banded,
-                    Some(scenario_name),
-                )?;
-                for (name, content) in outs {
-                    // First scenario for this quantity: keep its header + rows.
-                    // Subsequent scenarios: append only the data rows (drop the
-                    // repeated header line) so all scenarios stack under one header.
-                    match quant_bodies.entry(name) {
-                        indexmap::map::Entry::Vacant(e) => {
-                            e.insert(content);
+
+        for sweep_pt in &sweep_points {
+            // A FRESH sink per sweep-point keeps the sink scenario-keyed (no sink
+            // rewrite); the sweep axis lives in this loop, not the sink. The
+            // evaluator is shared via the `Arc` clone.
+            let mut sink = PredictiveSink {
+                compiled: compiled.clone(),
+                leaf_times: leaf_times.clone(),
+                quant_eval: quant_eval.clone(),
+                by_scenario: IndexMap::new(),
+            };
+
+            for sref in &scenario_refs {
+                // Draw rows for this sweep cell: each posterior draw with the swept
+                // parameters OVERWRITTEN to this cell's grid values (the draw
+                // supplies every other parameter). The swept value lands in the
+                // SAME draw/sweep tier as the draw (`point_overrides`), so the
+                // resolver applies the scenario's `set`/`scale`/`enable`/`disable`
+                // ON TOP — exactly once — and a scenario still wins over the sweep.
+                // No per-draw folding of `set`/`scale` (that would double-apply).
+                let rows: Vec<IndexMap<String, f64>> = posterior
+                    .draws()
+                    .iter()
+                    .map(|d| {
+                        let mut r = d.clone();
+                        for (name, val) in sweep_pt {
+                            r.insert(name.clone(), *val);
                         }
-                        indexmap::map::Entry::Occupied(mut e) => {
-                            let body: String =
-                                content.split_inclusive('\n').skip(1).collect();
-                            e.get_mut().push_str(&body);
+                        r
+                    })
+                    .collect();
+                let job = crate::sim_job::SimulateJob {
+                    model: compiled_ir.clone(),
+                    params_files: vec![],
+                    // Replay on the SAME forward simulator the fit used
+                    // (chain_binomial / ode), resolved from the stage — never a
+                    // hardcoded default.
+                    backend: posterior.backend,
+                    dt,
+                    integrator: None,
+                    // Generated posterior draws (not a user-authored file), so a
+                    // scenario simply wins over a draw/sweep column — no collision
+                    // error (the scenario×sweep guard above already rejected a
+                    // same-parameter clash).
+                    source: crate::sim_job::ParamSource::Draws {
+                        rows,
+                        replicates: 1,
+                        explicit_file: None,
+                    },
+                    // The original scenario reference drives the engine's scenario
+                    // tier; the scenario NAME is carried for the sink's per-scenario
+                    // partition (`cell.spec.scenario.name()`).
+                    scenarios: vec![sref.clone()],
+                    seeds: crate::sim_job::Seeds::Single(seed),
+                    cli_overrides: vec![],
+                    set_vec_entries: vec![],
+                    table_files: vec![],
+                    obs: crate::sim_job::ObsOutput::None,
+                    parallel: 1,
+                };
+                crate::engine::run_job(&job, &mut sink)?;
+            }
+
+            // Per (this sweep-point × scenario): band the predictive samples +
+            // (if present) the quantity draws, stacking quantity rows for every
+            // design cell under one header per logical quantity and merging the
+            // manifests. Scenario order = the sink's insertion order (engine
+            // canonical order, scenario outermost).
+            for (scenario_name, accum) in &sink.by_scenario {
+                let coords = crate::quantity_output::DesignCoords {
+                    scenario: Some(scenario_name),
+                    sweep: sweep_pt,
+                };
+                if !model.quantities.is_empty() {
+                    let (outs, manifest) = crate::quantity_output::render_quantities(
+                        &model.quantities,
+                        &accum.quant_draws,
+                        &accum.quant_times,
+                        crate::quantity_output::Mode::Banded,
+                        coords,
+                    )?;
+                    for (name, content) in outs {
+                        // First design cell for this quantity: keep its header +
+                        // rows. Subsequent cells: append only the data rows (drop
+                        // the repeated header line) so all cells stack under one
+                        // header.
+                        match quant_bodies.entry(name) {
+                            indexmap::map::Entry::Vacant(e) => {
+                                e.insert(content);
+                            }
+                            indexmap::map::Entry::Occupied(mut e) => {
+                                let body: String =
+                                    content.split_inclusive('\n').skip(1).collect();
+                                e.get_mut().push_str(&body);
+                            }
                         }
                     }
+                    let m: serde_json::Value = serde_json::from_str(&manifest)
+                        .map_err(|e| format!("parsing quantities manifest: {e}"))?;
+                    if let Some(arr) = m["quantities"].as_array() {
+                        quant_manifest_entries.extend(arr.iter().cloned());
+                    }
                 }
-                let m: serde_json::Value = serde_json::from_str(&manifest)
-                    .map_err(|e| format!("parsing quantities manifest: {e}"))?;
-                if let Some(arr) = m["quantities"].as_array() {
-                    quant_manifest_entries.extend(arr.iter().cloned());
-                }
+                ff_cells.push(FreeForwardCell {
+                    sweep: sweep_pt.clone(),
+                    scenario: scenario_name.clone(),
+                    bands: assemble_predictive(
+                        &model, accum, &leaf_times, &leaves, schema.as_ref(),
+                    )?,
+                });
             }
-            ff_bands.insert(
-                scenario_name.clone(),
-                assemble_predictive(&model, accum, &leaf_times, &leaves, schema.as_ref())?,
-            );
         }
 
         if !model.quantities.is_empty() {
@@ -1094,7 +1223,7 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
                     .map_err(|e| format!("serializing quantities manifest: {e}"))?,
             );
         }
-        free_forward = Some(ff_bands);
+        free_forward = Some(ff_cells);
     }
 
     // ── One-step horizon: per-draw bootstrap filter over the data, pooled. Runs
@@ -1130,12 +1259,12 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
     let one_step_streams: &[StreamBands] = one_step.as_ref().map(|(s, _)| s.as_slice()).unwrap_or(&[]);
     let one_step_n = one_step.as_ref().map(|(_, n)| *n).unwrap_or(0);
 
-    // Union of source names across all scenarios' free-forward streams + the
-    // one-step streams, preserving free-forward order first.
+    // Union of source names across all (sweep × scenario) free-forward streams +
+    // the one-step streams, preserving free-forward order first.
     let mut sources: Vec<String> = Vec::new();
     if let Some(ff) = &free_forward {
-        for bands in ff.values() {
-            for s in bands {
+        for cell in ff {
+            for s in &cell.bands {
                 if !sources.contains(&s.source) {
                     sources.push(s.source.clone());
                 }
@@ -1148,32 +1277,51 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
         }
     }
 
+    // The `sweep:<param>` coordinate columns, in the same sorted-name order the
+    // predictive header uses (empty without `--sweep`). Computed once — uniform
+    // across streams.
+    let sweep_col_names: Vec<String> = {
+        let mut names: Vec<String> = args.sweep.iter().map(|s| s.name.clone()).collect();
+        names.sort();
+        names
+    };
+    // `predictive.json`: the per-stream join contract — which columns are
+    // coordinates (group-by keys) vs the band, plus the value kind and the band
+    // quantiles — so a downstream reader joins without reverse-engineering
+    // headers. Net-new sibling of `quantities.json`.
+    let mut predictive_manifest_entries: Vec<serde_json::Value> = Vec::new();
+
     for source in &sources {
-        // Each scenario's free-forward StreamBands for this source (in scenario
-        // order), plus the one-step StreamBands (scenario-agnostic).
-        let ff_per_scenario: Vec<(&String, &StreamBands)> = free_forward
+        // Each free-forward design cell's StreamBands for this source (in
+        // sweep × scenario order), plus the one-step StreamBands (sweep- and
+        // scenario-agnostic).
+        let ff_for_source: Vec<(&FreeForwardCell, &StreamBands)> = free_forward
             .as_ref()
             .map(|ff| {
                 ff.iter()
-                    .filter_map(|(name, bands)| {
-                        bands.iter().find(|s| &s.source == source).map(|s| (name, s))
+                    .filter_map(|cell| {
+                        cell.bands
+                            .iter()
+                            .find(|s| &s.source == source)
+                            .map(|s| (cell, s))
                     })
                     .collect()
             })
             .unwrap_or_default();
         let os_stream = one_step_streams.iter().find(|s| &s.source == source);
-        // index_dims is the same across scenarios/horizons (same schema/leaf);
+        // index_dims is the same across design cells/horizons (same schema/leaf);
         // take it from whichever section is present.
-        let index_dims = ff_per_scenario
+        let index_dims = ff_for_source
             .first()
             .map(|(_, s)| s.index_dims.clone())
             .or_else(|| os_stream.map(|s| s.index_dims.clone()))
             .unwrap_or_default();
 
         let mut sections: Vec<PredictiveSection> = Vec::new();
-        for (scenario_name, s) in &ff_per_scenario {
+        for (cell, s) in &ff_for_source {
             sections.push(PredictiveSection {
-                scenario: (*scenario_name).clone(),
+                scenario: cell.scenario.clone(),
+                sweep: cell.sweep.clone(),
                 horizon: Horizon::FreeForward,
                 treatment: treatment_kind,
                 convergence: posterior.convergence,
@@ -1184,6 +1332,10 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
         if let Some(s) = os_stream {
             sections.push(PredictiveSection {
                 scenario: crate::args::AS_FITTED.to_string(),
+                // The one-step horizon is sweep-agnostic (it filters the OBSERVED
+                // data through the fitted model, so a swept-parameter overlay is
+                // ill-defined) — empty sweep ⇒ empty `sweep:<param>` cells.
+                sweep: Vec::new(),
                 horizon: Horizon::OneStepAhead,
                 treatment: treatment_kind,
                 convergence: posterior.convergence,
@@ -1191,9 +1343,53 @@ fn run_predict(args: &crate::args::FitPredictArgs) -> Result<Vec<PathBuf>, Strin
                 rows: &s.rows,
             });
         }
+        // Record this stream's join contract for `predictive.json`. Coordinate
+        // columns (the group-by keys) in header order: `scenario`, the
+        // `sweep:<param>` columns, `time`, the stratum dims, `horizon`,
+        // `treatment`. The band columns are the quantile labels; `rhat_max` /
+        // `ess_min` / `n_draws` are per-cell diagnostics. `value_kind` is the
+        // observation's likelihood family (the nature of the banded value).
+        let mut coordinates: Vec<String> = vec!["scenario".to_string()];
+        coordinates.extend(sweep_col_names.iter().map(|n| format!("sweep:{n}")));
+        coordinates.push("time".to_string());
+        coordinates.extend(index_dims.iter().cloned());
+        coordinates.push("horizon".to_string());
+        coordinates.push("treatment".to_string());
+        let value_kind = model
+            .observations
+            .iter()
+            .find(|o| &o.name == source || &o.source == source)
+            .map(|o| o.likelihood.name())
+            .unwrap_or("count");
+        predictive_manifest_entries.push(serde_json::json!({
+            "name": source,
+            "file": format!("predictive/{source}.tsv"),
+            "value_kind": value_kind,
+            "coordinates": coordinates,
+            "diagnostics": ["rhat_max", "ess_min", "n_draws"],
+            "band": QUANTILE_LEVELS.iter().map(|(_, l)| *l).collect::<Vec<_>>(),
+            "quantiles": QUANTILE_LEVELS.iter().map(|(q, _)| *q).collect::<Vec<_>>(),
+        }));
+
         let pred_tsv = render_predictive_tsv_sections(&index_dims, &sections);
         written.push(write_tsv(&segment, "predictive", source, &pred_tsv)?);
     }
+    // `predictive.json`: the per-stream join contract beside the predictive
+    // TSVs — a sibling of `quantities.json`, NOT in the run_id-keyed CAS leaf
+    // (regenerated, overwritten in place). Written whenever any predictive
+    // stream was emitted.
+    if !predictive_manifest_entries.is_empty() {
+        let manifest = serde_json::json!({
+            "schema": "camdl.predictive/v1",
+            "streams": predictive_manifest_entries,
+        });
+        let path = segment.join("predictive.json");
+        let text = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("serializing predictive manifest: {e}"))?;
+        std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        written.push(path);
+    }
+
     // The observed half, grouped by logical stream.
     for (source, index_dims, rows) in observed_by_stream(&leaves, schema.as_ref()) {
         let obs_tsv = render_observed_tsv(&index_dims, &rows);
@@ -1767,6 +1963,7 @@ mod tests {
             &stream.index_dims,
             &[PredictiveSection {
                 scenario: "as_fitted".to_string(),
+                sweep: Vec::new(),
                 horizon: Horizon::FreeForward,
                 treatment: TreatmentKind::Posterior,
                 convergence: ConvergenceStatus::Reported { rhat_max: 1.01, ess_min: 420.0 },
@@ -1793,6 +1990,7 @@ mod tests {
             &stream.index_dims,
             &[PredictiveSection {
                 scenario: "as_fitted".to_string(),
+                sweep: Vec::new(),
                 horizon: Horizon::FreeForward,
                 treatment: TreatmentKind::Posterior,
                 convergence: ConvergenceStatus::NotAssessed,
@@ -1805,6 +2003,78 @@ mod tests {
         // values; n_draws is still carried. Scenario leads.
         assert_eq!(lines[0], "scenario\ttime\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95");
         assert_eq!(lines[1], "as_fitted\t1\tfree_forward\tposterior\t\t\t12\t1\t2\t3\t4\t5");
+    }
+
+    #[test]
+    fn predictive_tsv_sweep_columns_lead_after_scenario_and_one_step_is_blank() {
+        // Two free-forward sweep cells (k=8, k=12) plus a sweep-agnostic one-step
+        // section: the `sweep:k` column follows `scenario`, free-forward rows carry
+        // the cell's swept value, and the one-step rows leave it blank.
+        let conv = ConvergenceStatus::Reported { rhat_max: 1.0, ess_min: 100.0 };
+        let rows = vec![BandRow { time: 7.0, stratum: vec![], quantiles: vec![1.0, 2.0, 3.0, 4.0, 5.0] }];
+        let tsv = render_predictive_tsv_sections(
+            &[],
+            &[
+                PredictiveSection {
+                    scenario: "as_fitted".to_string(),
+                    sweep: vec![("k".to_string(), 8.0)],
+                    horizon: Horizon::FreeForward,
+                    treatment: TreatmentKind::Posterior,
+                    convergence: conv,
+                    n_draws: 10,
+                    rows: &rows,
+                },
+                PredictiveSection {
+                    scenario: "as_fitted".to_string(),
+                    sweep: vec![("k".to_string(), 12.0)],
+                    horizon: Horizon::FreeForward,
+                    treatment: TreatmentKind::Posterior,
+                    convergence: conv,
+                    n_draws: 10,
+                    rows: &rows,
+                },
+                PredictiveSection {
+                    scenario: "as_fitted".to_string(),
+                    sweep: Vec::new(), // one-step is sweep-agnostic
+                    horizon: Horizon::OneStepAhead,
+                    treatment: TreatmentKind::Posterior,
+                    convergence: conv,
+                    n_draws: 10,
+                    rows: &rows,
+                },
+            ],
+        );
+        let lines: Vec<&str> = tsv.trim_end().lines().collect();
+        assert_eq!(
+            lines[0],
+            "scenario\tsweep:k\ttime\thorizon\ttreatment\trhat_max\tess_min\tn_draws\tq05\tq25\tq50\tq75\tq95",
+            "sweep:k column follows scenario"
+        );
+        assert_eq!(lines[1], "as_fitted\t8\t7\tfree_forward\tposterior\t1.0000\t100\t10\t1\t2\t3\t4\t5");
+        assert_eq!(lines[2], "as_fitted\t12\t7\tfree_forward\tposterior\t1.0000\t100\t10\t1\t2\t3\t4\t5");
+        // One-step row: the sweep:k cell is blank (empty), not a fabricated value.
+        assert_eq!(lines[3], "as_fitted\t\t7\tone_step\tposterior\t1.0000\t100\t10\t1\t2\t3\t4\t5");
+    }
+
+    #[test]
+    fn expand_predict_sweep_empty_is_one_null_cell_and_cartesian_is_sorted() {
+        use crate::args::types::{Grid, SweepSpec};
+        // No specs → exactly one empty cell (the no-sweep single-pass path).
+        assert_eq!(expand_predict_sweep(&[]), vec![Vec::<(String, f64)>::new()]);
+        // Two params → Cartesian product, each cell sorted by param name.
+        let specs = vec![
+            SweepSpec { name: "rho".to_string(), grid: Grid::List(vec![0.3, 0.5]) },
+            SweepSpec { name: "k".to_string(), grid: Grid::List(vec![8.0]) },
+        ];
+        let cells = expand_predict_sweep(&specs);
+        assert_eq!(
+            cells,
+            vec![
+                vec![("k".to_string(), 8.0), ("rho".to_string(), 0.3)],
+                vec![("k".to_string(), 8.0), ("rho".to_string(), 0.5)],
+            ],
+            "k sorts before rho; the grid is the Cartesian product"
+        );
     }
 
     #[test]

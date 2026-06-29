@@ -38,17 +38,22 @@ use std::path::{Path, PathBuf};
 /// retyped; field additions are non-breaking and keep version stable.
 const SCHEMA_VERSION: u32 = 1;
 
-/// Top-level entry point. Reads `args.fit_dir`, walks every
-/// completed fit-stage run, dispatches to the right formatter based
-/// on `--format` and `--params-only`. Exits with code 1 if directory
-/// is missing or empty; with code 1 in `--strict` mode if any IF2
-/// stage's provenance cross-check fails.
+/// Top-level entry point. Resolves `args.fit` (the fit handle) to its segment
+/// directory, walks every completed fit-stage run, and dispatches to the right
+/// formatter based on `--format` and `--params-only`. Exits with code 1 if the
+/// handle does not resolve or the segment is empty; with code 1 in `--strict`
+/// mode if any IF2 stage's provenance cross-check fails.
 pub fn cmd_fit_summary(args: &FitSummaryArgs) {
-    let dir = args.fit_dir.to_string_lossy().into_owned();
-    if !Path::new(&dir).exists() {
-        eprintln!("error: no such fit directory: {}", dir);
-        std::process::exit(1);
-    }
+    // Resolve the fit handle (@label / hash prefix / run-dir / fit.toml) → its
+    // segment directory. summary operates on the directory; it needs no config.
+    let segment = match crate::fit::handle::resolve_fit_segment(&args.fit) {
+        Ok(seg) => seg,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let dir = segment.to_string_lossy().into_owned();
 
     let strict = args.strict || ci_env_set();
 
@@ -1287,6 +1292,7 @@ fn build_summary_table_row(fit_dir: &Path, now_unix: i64) -> TableRow {
                 created_at: String::new(),
                 stale: false,
                 stale_reason: None,
+                quantities: BTreeMap::new(),
             }
         }
     }
@@ -1816,6 +1822,20 @@ fn escape_latex(s: &str) -> String {
         '}' => "\\}".into(),
         c   => c.to_string(),
     }).collect()
+}
+
+/// The winning stage's point estimate (θ̂) as a flat params TOML — the same
+/// payload `fit summary --params-only` prints. A `pub(crate)` seam over
+/// [`discover_stages`] + [`dump_params_only`] so `compare` can derive a
+/// prequential at θ̂ from a sealed fit without touching the private
+/// `ResolvedStage` type. `stage` selects a stage; `None` = the terminal stage.
+pub(crate) fn winner_params_toml(
+    segment: &Path,
+    stage: Option<&str>,
+) -> Result<String, String> {
+    let dir = segment.to_string_lossy();
+    let discovered = discover_stages(segment);
+    dump_params_only(&dir, stage, &discovered)
 }
 
 /// Dump the chosen stage's winner params as a flat TOML, pipeable
