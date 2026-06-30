@@ -69,6 +69,7 @@
       "transitions",   TRANSITIONS;
       "observations",  OBSERVATIONS;
       "quantities",    QUANTITIES;
+      "contrasts",     CONTRASTS;                         (* counterfactual contrasts *)
       "interventions", INTERVENTIONS;
       "reactive_interventions", REACTIVE_INTERVENTIONS;  (* gh#204 *)
       "when",          WHEN;                             (* gh#204 trigger head *)
